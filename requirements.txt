@@ -1,0 +1,17 @@
+# Web Framework
+django>=5.1
+djangorestframework
+
+# RSS & HTML Processing
+feedparser
+podgen
+nh3
+
+# Database & Task Queue
+psycopg[binary]
+celery
+redis
+
+# Utilities
+python-dotenv
+requests

@@ -1,0 +1,19 @@
+# Python junk
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+
+# Environment secrets (CRITICAL)
+.env
+
+# Database
+db.sqlite3
+
+# Local Dev Hacks
+.feed_cache/
+
+# IDE settings
+.vscode/
+.idea/

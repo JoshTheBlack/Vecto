@@ -12,6 +12,7 @@ import hmac
 import hashlib
 from django.views.decorators.csrf import csrf_exempt
 import json
+from django.core.cache import cache
 
 # Ensure you import your models correctly based on your app name
 from .models import PatronProfile, Podcast
@@ -186,10 +187,13 @@ def dashboard(request):
 # FEED GENERATOR
 # ==========================================
 
+from django.core.cache import cache # NEW IMPORT
+# ... your other imports ...
+
 def generate_custom_feed(request, network_slug):
     """
     Validates the user via query parameters and generates a safe XML feed.
-    Format: /feed/<network_slug>/?auth=<uuid>&show=<slug>
+    Uses Django's caching framework to reduce database load.
     """
     feed_token = request.GET.get('auth')
     podcast_slug = request.GET.get('show')
@@ -200,30 +204,40 @@ def generate_custom_feed(request, network_slug):
     # 1. Look up the podcast
     podcast = get_object_or_404(Podcast, slug=podcast_slug)
     
-    # 2. Ensure the requested podcast actually belongs to the network in the URL
+    # 2. Ensure the requested podcast actually belongs to the network
     if podcast.network.slug != network_slug:
         return HttpResponseForbidden("This podcast does not belong to the requested network.")
 
-    # 3. Look up the user securely via their UUID token
+    # 3. Look up the user securely via their UUID token (The Security Check)
     try:
         profile = get_object_or_404(PatronProfile, feed_token=feed_token)
     except ValueError:
-        # Protects against malformed UUID strings crashing the database query
         return HttpResponseForbidden("Invalid authentication token format.")
 
-    # 4. Check if they are paying enough for this specific show
+    # 4. Check if they are paying enough
     required_cents = podcast.required_tier.minimum_cents if podcast.required_tier else 0
     if profile.pledge_amount_cents < required_cents:
         return HttpResponseForbidden("Your current Patreon pledge does not grant access to this feed.")
 
-    # 5. Assemble the Feed Data
-    episodes = podcast.episodes.all().order_by('-pub_date')
+    # ==========================================
+    # CACHE CHECK
+    # ==========================================
+    # Create a unique key for this specific user and this specific show
+    cache_key = f"xml_feed_{profile.feed_token}_{podcast.slug}"
     
-    # CRITICAL FIX: Escape ampersands and special characters for strict XML compliance
-    safe_podcast_title = escape(f"{podcast.title} (Custom Feed)")
-    safe_user_name = escape(profile.user.first_name)
-    
-    xml = f"""<?xml version="1.0" encoding="UTF-8"?>
+    # Try to grab the pre-built XML string from memory
+    xml = cache.get(cache_key)
+
+    # If it's empty (Cache Miss), we have to build it
+    if not xml:
+        print("CACHE MISS - Building XML")
+        # 5. Assemble the Feed Data
+        episodes = podcast.episodes.all().order_by('-pub_date')
+        
+        safe_podcast_title = escape(f"{podcast.title} (Custom Feed)")
+        safe_user_name = escape(profile.user.first_name)
+        
+        xml = f"""<?xml version="1.0" encoding="UTF-8"?>
 <rss version="2.0" xmlns:itunes="http://www.itunes.com/dtds/podcast-1.0.dtd">
   <channel>
     <title>{safe_podcast_title}</title>
@@ -231,19 +245,17 @@ def generate_custom_feed(request, network_slug):
     <description>Premium ad-free feed for {safe_user_name}.</description>
     <language>en-us</language>
 """
-    for ep in episodes:
-        # Stitch together the main description and the footers
-        assembled_desc = ep.clean_description
-        if podcast.show_footer_private:
-            assembled_desc += f"<br><br>{podcast.show_footer_private}"
-        if podcast.network.global_footer_private:
-            assembled_desc += f"<br><br>{podcast.network.global_footer_private}"
+        for ep in episodes:
+            assembled_desc = ep.clean_description
+            if podcast.show_footer_private:
+                assembled_desc += f"<br><br>{podcast.show_footer_private}"
+            if podcast.network.global_footer_private:
+                assembled_desc += f"<br><br>{podcast.network.global_footer_private}"
 
-        # CRITICAL FIX: Escape episode titles and URLs so characters like "&" don't crash the parser
-        safe_ep_title = escape(ep.title)
-        safe_audio_url = escape(ep.audio_url_subscriber)
+            safe_ep_title = escape(ep.title)
+            safe_audio_url = escape(ep.audio_url_subscriber)
 
-        xml += f"""
+            xml += f"""
     <item>
       <title>{safe_ep_title}</title>
       <guid isPermaLink="false">{ep.guid}</guid>
@@ -252,9 +264,14 @@ def generate_custom_feed(request, network_slug):
       <enclosure url="{safe_audio_url}" type="audio/mpeg" />
     </item>"""
 
-    xml += "\n  </channel>\n</rss>"
-    
-    # Return as XML so podcast apps treat it as a valid RSS feed
+        xml += "\n  </channel>\n</rss>"
+        
+        # Save the newly built string into the cache for the next time!
+        # Convert minutes to seconds for Django's cache timeout
+        timeout_seconds = podcast.network.feed_cache_minutes * 60
+        cache.set(cache_key, xml, timeout=timeout_seconds)
+
+    # Return the XML
     return HttpResponse(xml, content_type='application/xml')
 
 @csrf_exempt
@@ -279,7 +296,7 @@ def patreon_webhook(request):
     try:
         data = json.loads(request.body)
         attributes = data['data']['attributes']
-        relationships = data['data']['relationships']
+       # relationships = data['data']['relationships']
         
         # Patreon ID for the member (the link between user and campaign)
         patreon_id = data['data']['id']

@@ -17,3 +17,6 @@ db.sqlite3
 # IDE settings
 .vscode/
 .idea/
+
+*.txt
+!requirements.txt

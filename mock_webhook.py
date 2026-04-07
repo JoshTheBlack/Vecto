@@ -7,7 +7,7 @@ import json
 WEBHOOK_URL = "http://localhost:8000/patreon/callback/webhook/" # Update to your actual URL
 WEBHOOK_SECRET = "test_secret_123"
 # FIND THIS IN YOUR ADMIN PANEL: Pick a patreon_id from an existing PatronProfile
-TARGET_PATREON_ID = "PASTE_YOUR_PATREON_ID_HERE" 
+TARGET_PATREON_ID = "MOCK_USER_999" 
 
 payload = {
     "data": {

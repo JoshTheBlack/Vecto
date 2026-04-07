@@ -22,6 +22,7 @@ PATREON_CLIENT_ID = os.getenv("PATREON_CLIENT_ID")
 PATREON_CLIENT_SECRET = os.getenv("PATREON_CLIENT_SECRET")
 # The URL Patreon will send the user back to (needs to match your portal settings)
 PATREON_REDIRECT_URI = os.getenv("PATREON_REDIRECT_URI")
+PATREON_WEBHOOK_SECRET = os.getenv("PATREON_WEBHOOK_SECRET")
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent

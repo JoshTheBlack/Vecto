@@ -7,6 +7,9 @@ class Network(models.Model):
     slug = models.SlugField(unique=True)
     theme_config = models.JSONField(default=dict, blank=True)
     
+    # NEW: Cache control
+    feed_cache_minutes = models.IntegerField(default=15, help_text="How long to cache feeds in minutes.")
+    
     # Global Footers
     global_footer_public = models.TextField(blank=True, help_text="Appended to all public feeds in this network.")
     global_footer_private = models.TextField(blank=True, help_text="Appended to all private feeds in this network.")

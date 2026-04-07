@@ -1,5 +1,6 @@
 from django.contrib import admin
-from .models import Network, PatreonTier, Podcast, Episode, UserMix
+# ADDED PatronProfile to the import
+from .models import Network, PatreonTier, Podcast, Episode, UserMix, PatronProfile
 
 @admin.register(Episode)
 class EpisodeAdmin(admin.ModelAdmin):
@@ -9,11 +10,15 @@ class EpisodeAdmin(admin.ModelAdmin):
     
     def has_premium_audio(self, obj):
         return obj.audio_url_public != obj.audio_url_subscriber
-    has_premium_audio.boolean = True # Shows a nice Green Check / Red X
-    # Orders by newest first
+    has_premium_audio.boolean = True
     ordering = ('-pub_date',)
 
-# Keep these simple for now or customize them similarly
+# NEW: Register the PatronProfile with a custom layout
+@admin.register(PatronProfile)
+class PatronProfileAdmin(admin.ModelAdmin):
+    list_display = ('user', 'patreon_id', 'pledge_amount_cents', 'last_sync')
+    search_fields = ('user__username', 'user__email', 'patreon_id')
+
 admin.site.register(Network)
 admin.site.register(PatreonTier)
 admin.site.register(Podcast)

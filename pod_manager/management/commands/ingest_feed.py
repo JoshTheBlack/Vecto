@@ -1,3 +1,4 @@
+from difflib import SequenceMatcher
 import feedparser
 import time
 import re
@@ -54,6 +55,13 @@ class Command(BaseCommand):
         # 4. FINAL CLEANUP
         return re.sub(r'[^a-zA-Z0-9]', '', title_lower).strip()
 
+    def is_fuzzy_match(self, public_fp, private_fp):
+        """Compares two alphanumeric fingerprints and returns True if they are 95%+ identical."""
+        if not public_fp or not private_fp:
+            return False
+        ratio = SequenceMatcher(None, public_fp, private_fp).ratio()
+        return ratio >= 0.95
+    
     def get_enclosure(self, entry):
         if hasattr(entry, 'enclosures') and entry.enclosures:
             return entry.enclosures[0].href
@@ -245,3 +253,16 @@ class Command(BaseCommand):
             count += 1
 
         self.stdout.write(self.style.SUCCESS(f"Finished. Total: {count} | Matches: {matches}"))
+
+    
+    def generate_fingerprint(title):
+        # Lowercase and remove all non-alphanumeric characters entirely
+        clean_title = re.sub(r'[^a-z0-9]', '', title.lower())
+        return clean_title
+    
+    
+
+    def is_fuzzy_match(public_fp, private_fp):
+        # Returns a ratio between 0.0 and 1.0
+        ratio = SequenceMatcher(None, public_fp, private_fp).ratio()
+        return ratio > 0.95  # 95% similar will easily catch a 1-digit typo

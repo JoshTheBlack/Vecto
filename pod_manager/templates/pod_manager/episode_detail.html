@@ -1,6 +1,37 @@
 {% extends 'pod_manager/base.html' %}
 
 {% block content %}
+<link rel="stylesheet" href="https://cdn.plyr.io/3.7.8/plyr.css" />
+<style>
+    /* Customizing Plyr to match our Vecto Dark/Warning Theme */
+    :root {
+        --plyr-color-main: #ffc107;
+        --plyr-audio-controls-background: #000000;
+        --plyr-audio-control-color: #e0e0e0;
+    }
+    
+    .plyr--audio .plyr__controls {
+        border: 1px solid #333;
+        border-radius: 0.5rem;
+        padding: 10px;
+    }
+
+    /* NEW: Constrain the height of the settings menu and make it scrollable */
+    .plyr__menu__container {
+        max-height: 250px;
+        overflow-y: auto;
+    }
+    
+    /* Optional: Style the scrollbar to match the theme */
+    .plyr__menu__container::-webkit-scrollbar {
+        width: 6px;
+    }
+    .plyr__menu__container::-webkit-scrollbar-thumb {
+        background: var(--plyr-color-main);
+        border-radius: 3px;
+    }
+</style>
+
 <nav aria-label="breadcrumb" class="mb-4">
   <ol class="breadcrumb">
     <li class="breadcrumb-item"><a href="{% url 'home' %}" class="text-decoration-none text-warning">Home</a></li>
@@ -10,36 +41,93 @@
 
 <div class="row justify-content-center">
     <div class="col-md-10">
-        <div class="card shadow-lg mb-4">
-            <div class="card-header d-flex justify-content-between align-items-center">
-                <span class="text-muted"><i class="bi bi-mic"></i> {{ ep.podcast.title }}</span>
+        <div class="card shadow-lg mb-4 border-secondary">
+            <div class="card-header d-flex justify-content-between align-items-center bg-dark">
+                <span class="text-muted"><i class="bi bi-mic text-warning"></i> {{ ep.podcast.title }}</span>
                 <span class="text-muted">{{ ep.pub_date|date:"F d, Y" }}</span>
             </div>
             
-            <div class="card-body">
+            <div class="card-body bg-black">
                 <h2 class="card-title fw-bold mb-4">
                     {{ ep.title }}
-                    {% if ep.is_premium %}
+                    
+                    {% if ep.is_premium and not ep.user_has_access %}
                         <span class="badge bg-warning text-dark fs-6 float-end"><i class="bi bi-unlock-fill"></i> Ad-Free Available</span>
+                    {% elif ep.is_premium and ep.user_has_access %}
+                        <span class="badge bg-success fs-6 float-end"><i class="bi bi-star-fill"></i> Premium Enabled</span>
                     {% endif %}
                 </h2>
                 
-                <audio controls class="w-100 mb-4">
-                    <source src="{{ ep.audio_url_public }}" type="audio/mpeg">
-                    Your browser does not support the audio element.
-                </audio>
+                <div class="mb-3">
+                    <audio class="js-player" controls>
+                        <source src="{% if ep.user_has_access %}{{ ep.audio_url_subscriber }}{% else %}{{ ep.audio_url_public }}{% endif %}" type="audio/mpeg">
+                    </audio>
+                </div>
 
-                {% if ep.is_premium %}
+                {% if ep.user_has_access %}
+                <div class="mb-4">
+                    <a href="{{ ep.audio_url_subscriber }}" class="btn btn-outline-light btn-sm" download>
+                        <i class="bi bi-cloud-download"></i> Download
+                    </a>
+                </div>
+                {% endif %}
+
+                {% if ep.is_premium and not ep.user_has_access %}
                     <div class="alert alert-dark border border-warning text-warning py-2 px-3 mb-4" role="alert">
-                        <i class="bi bi-star-fill"></i> An ad-free version of this episode is available in your <a href="{% url 'user_feeds' %}" class="alert-link">private feed</a>.
+                        <i class="bi bi-star-fill"></i> An ad-free version of this episode is available by <a href="{% url 'patreon_login' %}" class="alert-link">logging in</a>.
                     </div>
                 {% endif %}
 
+                {% if ep.is_premium and ep.user_has_access %}
+                    <div class="mb-4">
+                        <button class="btn btn-sm btn-outline-secondary" type="button" data-bs-toggle="collapse" data-bs-target="#publicAudioCollapse" aria-expanded="false" aria-controls="publicAudioCollapse">
+                            <i class="bi bi-music-note-list"></i> Show Ad-Supported Version
+                        </button>
+                        
+                        <div class="collapse mt-3" id="publicAudioCollapse">
+                            <div class="card card-body bg-dark border-secondary">
+                                <p class="small text-muted mb-2">Public (Ad-Supported) Audio:</p>
+                                <audio class="js-player" controls>
+                                    <source src="{{ ep.audio_url_public }}" type="audio/mpeg">
+                                </audio>
+                                <div class="mt-2">
+                                    <a href="{{ ep.audio_url_public }}" class="text-muted small text-decoration-none" download>
+                                        <i class="bi bi-cloud-download"></i> Download Public MP3
+                                    </a>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                {% endif %}
+
+                <hr class="border-secondary mb-4">
+
                 <div class="card-text text-light" style="line-height: 1.6;">
-                    {{ ep.clean_description|safe }}
+                    {{ ep.display_description|safe }}
                 </div>
             </div>
         </div>
     </div>
 </div>
+
+<script src="https://cdn.plyr.io/3.7.8/plyr.polyfilled.js"></script>
+<script>
+    document.addEventListener('DOMContentLoaded', () => {
+        // Initialize all elements with the 'js-player' class
+        const players = Plyr.setup('.js-player', {
+            controls: [
+                'play',             // Play/pause playback
+                'progress',         // The progress bar and scrubber for playback and buffering
+                'current-time',     // The current time of playback
+                'duration',         // The full duration of the media
+                'mute',             // Toggle mute
+                'volume',           // Volume control
+                'settings'          // Settings menu (for Speed)
+            ],
+            settings: ['speed'],
+            speed: { selected: 1, options: [0.5, 0.75, 0.8, 0.9, 1, 1.1, 1.2, 1.25, 1.5, 1.75, 2, 2.5] },
+            iconUrl: 'https://cdn.plyr.io/3.7.8/plyr.svg'
+        });
+    });
+</script>
 {% endblock %}

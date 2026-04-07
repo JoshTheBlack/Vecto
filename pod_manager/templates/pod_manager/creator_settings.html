@@ -13,7 +13,7 @@
                 <i class="bi bi-globe2 me-2"></i> Networks
             </a>
             <a class="list-group-item list-group-item-action bg-dark text-light border-secondary" id="list-shows-list" data-bs-toggle="list" href="#list-shows" role="tab">
-                <i class="bi bi-mic me-2"></i> Manage Shows
+                <i class="bi bi-mic me-2"></i> Manage Podcasts
             </a>
             <a class="list-group-item list-group-item-action bg-dark text-light border-secondary" id="list-sync-list" data-bs-toggle="list" href="#list-sync" role="tab">
                 <i class="bi bi-people me-2"></i> Patreon Sync
@@ -37,6 +37,7 @@
                         <h5 class="fw-bold mb-3 border-bottom border-secondary pb-2">Configuration</h5>
                         <form method="POST" action="{% url 'creator_settings' %}">
                             {% csrf_token %}
+                            <input type="hidden" name="action" value="update_network">
                             <input type="hidden" name="network_id" value="{{ network.id }}">
                             
                             <div class="mb-3">
@@ -63,30 +64,148 @@
             <div class="tab-pane fade" id="list-shows" role="tabpanel">
                 <div class="card shadow-sm mb-4 border-secondary bg-dark">
                     <div class="card-body">
-                        <h4 class="fw-bold mb-4">All Podcasts</h4>
-                        <div class="row">
+                        
+                        <div class="d-flex justify-content-between align-items-center mb-4">
+                            <h4 class="fw-bold mb-0">All Podcasts</h4>
+                            <button type="button" class="btn btn-warning btn-sm" data-bs-toggle="modal" data-bs-target="#addShowModal">
+                                <i class="bi bi-plus-lg"></i> Add New Show
+                            </button>
+                        </div>
+                        
+                        <div class="accordion accordion-flush" id="showsAccordion">
                             {% for network in networks %}
                                 {% for show in network.podcasts.all %}
-                                    <div class="col-md-6 mb-3">
-                                        <div class="p-3 border border-secondary rounded bg-black d-flex align-items-center">
+                                <div class="accordion-item bg-black border-secondary mb-2 rounded">
+                                    <h2 class="accordion-header" id="heading-{{ show.id }}">
+                                        <button class="accordion-button collapsed bg-black text-light border-secondary" type="button" data-bs-toggle="collapse" data-bs-target="#collapse-{{ show.id }}" aria-expanded="false" aria-controls="collapse-{{ show.id }}">
                                             {% if show.image_url %}
-                                                <img src="{{ show.image_url }}" alt="cover" class="rounded me-3" style="width: 50px; height: 50px; object-fit: cover;">
-                                            {% else %}
-                                                <div class="rounded me-3 bg-secondary d-flex justify-content-center align-items-center" style="width: 50px; height: 50px;">
-                                                    <i class="bi bi-mic text-dark"></i>
-                                                </div>
+                                                <img src="{{ show.image_url }}" alt="cover" class="rounded me-3" style="width: 40px; height: 40px; object-fit: cover;">
                                             {% endif %}
-                                            <div>
-                                                <h6 class="mb-0 fw-bold">{{ show.title }}</h6>
-                                                <span class="badge bg-secondary">Tier: ${{ show.required_tier.minimum_cents|default:0|add:0 }}</span>
+                                            <div class="d-flex flex-column">
+                                                <span class="fw-bold">{{ show.title }}</span>
+                                                <small class="text-muted text-uppercase" style="font-size: 0.7rem;">Tier: ${{ show.required_tier.minimum_dollars|default:0|floatformat:2 }}</small>
                                             </div>
+                                        </button>
+                                    </h2>
+                                    <div id="collapse-{{ show.id }}" class="accordion-collapse collapse" aria-labelledby="heading-{{ show.id }}" data-bs-parent="#showsAccordion">
+                                        <div class="accordion-body">
+                                            
+                                            <div class="mb-4 border-bottom border-secondary pb-3">
+                                                <div class="d-flex justify-content-between align-items-center mb-2">
+                                                    <span class="text-muted small fw-bold text-uppercase">Data Ingestion</span>
+                                                    <button type="button" class="btn btn-sm btn-success text-dark fw-bold" id="btn-import-{{ show.id }}" onclick="startLiveImport({{ show.id }})">
+                                                        <i class="bi bi-cloud-arrow-down-fill"></i> Run Live Import
+                                                    </button>
+                                                </div>
+                                                
+                                                <div id="terminal-container-{{ show.id }}" class="d-none">
+                                                    <pre id="terminal-{{ show.id }}" class="bg-black text-light p-3 rounded border border-secondary font-monospace" style="height: 250px; overflow-y: auto; font-size: 0.85rem; white-space: pre-wrap;"></pre>
+                                                </div>
+                                            </div>
+                                            
+                                            <form method="POST" action="{% url 'creator_settings' %}">
+                                                {% csrf_token %}
+                                                <input type="hidden" name="action" value="update_show">
+                                                <input type="hidden" name="show_id" value="{{ show.id }}">
+                                                
+                                                <div class="mb-3">
+                                                    <label class="form-label text-muted small fw-bold">Required Patreon Tier</label>
+                                                    <select name="tier_id" class="form-select bg-dark text-light border-secondary">
+                                                        <option value="">Public / Free</option>
+                                                        {% for tier in tiers %}
+                                                            <option value="{{ tier.id }}" {% if show.required_tier_id == tier.id %}selected{% endif %}>
+                                                                ${{ tier.minimum_dollars|floatformat:2 }} - {{ tier.name }}
+                                                            </option>
+                                                        {% endfor %}
+                                                    </select>
+                                                </div>
+                                                
+                                                <div class="mb-3">
+                                                    <label class="form-label text-muted small fw-bold">Show-Specific Public Footer (Optional)</label>
+                                                    <textarea name="show_footer_public" class="form-control bg-dark text-light border-secondary" rows="2">{{ show.show_footer_public }}</textarea>
+                                                </div>
+                                                
+                                                <div class="mb-4">
+                                                    <label class="form-label text-muted small fw-bold">Show-Specific Private Footer (Optional)</label>
+                                                    <textarea name="show_footer_private" class="form-control bg-dark text-light border-secondary" rows="2">{{ show.show_footer_private }}</textarea>
+                                                </div>
+                                                
+                                                <button type="submit" class="btn btn-outline-warning btn-sm"><i class="bi bi-floppy"></i> Save Show Settings</button>
+                                            </form>
+                                            
                                         </div>
                                     </div>
+                                </div>
                                 {% endfor %}
                             {% endfor %}
                         </div>
+
                     </div>
                 </div>
+            </div>
+            
+            <div class="modal fade" id="addShowModal" tabindex="-1" aria-labelledby="addShowModalLabel" aria-hidden="true">
+              <div class="modal-dialog modal-lg">
+                <div class="modal-content bg-dark text-light border-secondary">
+                  <div class="modal-header border-bottom border-secondary">
+                    <h5 class="modal-title fw-bold" id="addShowModalLabel"><i class="bi bi-mic text-warning"></i> Add New Podcast</h5>
+                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+                  </div>
+                  <form method="POST" action="{% url 'creator_settings' %}">
+                      <div class="modal-body">
+                          {% csrf_token %}
+                          <input type="hidden" name="action" value="add_show">
+                          
+                          <div class="mb-3">
+                              <label class="form-label text-muted small fw-bold">Network</label>
+                              <select name="network_id" class="form-select bg-black text-light border-secondary" required>
+                                  {% for network in networks %}
+                                      <option value="{{ network.id }}">{{ network.name }}</option>
+                                  {% endfor %}
+                              </select>
+                          </div>
+                          
+                          <div class="row">
+                              <div class="col-md-6 mb-3">
+                                  <label class="form-label text-muted small fw-bold">Show Title</label>
+                                  <input type="text" name="title" class="form-control bg-black text-light border-secondary" required placeholder="e.g., Prestige">
+                              </div>
+                              <div class="col-md-6 mb-3">
+                                  <label class="form-label text-muted small fw-bold">Slug</label>
+                                  <input type="text" name="slug" class="form-control bg-black text-light border-secondary" required placeholder="e.g., prestige">
+                                  <div class="form-text text-muted">URL-friendly name. No spaces.</div>
+                              </div>
+                          </div>
+                          
+                          <div class="mb-3">
+                              <label class="form-label text-muted small fw-bold">Required Tier</label>
+                              <select name="tier_id" class="form-select bg-black text-light border-secondary">
+                                  <option value="">Public / Free</option>
+                                  {% for tier in tiers %}
+                                      <option value="{{ tier.id }}">${{ tier.minimum_dollars|floatformat:2 }} - {{ tier.name }}</option>
+                                  {% endfor %}
+                              </select>
+                          </div>
+                          
+                          <div class="mb-3">
+                              <label class="form-label text-muted small fw-bold">Public Feed RSS URL</label>
+                              <input type="url" name="public_feed_url" class="form-control bg-black text-light border-secondary" required placeholder="https://...">
+                          </div>
+                          
+                          <div class="mb-3">
+                              <label class="form-label text-muted small fw-bold">Megaphone Private Feed URL (Base)</label>
+                              <input type="url" name="subscriber_feed_url" class="form-control bg-black text-light border-secondary" required placeholder="https://...">
+                              <div class="form-text text-muted">The root URL provided by Megaphone before any subscriber auth keys are appended.</div>
+                          </div>
+                          
+                      </div>
+                      <div class="modal-footer border-top border-secondary">
+                        <button type="button" class="btn btn-outline-light" data-bs-dismiss="modal">Cancel</button>
+                        <button type="submit" class="btn btn-warning"><i class="bi bi-plus-circle"></i> Create Show</button>
+                      </div>
+                  </form>
+                </div>
+              </div>
             </div>
 
             <div class="tab-pane fade" id="list-sync" role="tabpanel">
@@ -103,4 +222,44 @@
         </div>
     </div>
 </div>
+<script>
+function startLiveImport(showId) {
+    const btn = document.getElementById(`btn-import-${showId}`);
+    const terminalContainer = document.getElementById(`terminal-container-${showId}`);
+    const terminal = document.getElementById(`terminal-${showId}`);
+    
+    // UI Updates
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span> Running...';
+    terminalContainer.classList.remove('d-none');
+    terminal.textContent = ''; // Clear previous logs
+    
+    // Open Server-Sent Events Connection
+    const eventSource = new EventSource(`/import/stream/${showId}/`);
+    
+    eventSource.onmessage = function(event) {
+        if (event.data === '[DONE]') {
+            eventSource.close();
+            btn.innerHTML = '<i class="bi bi-check-circle-fill"></i> Import Complete';
+            btn.classList.replace('btn-success', 'btn-outline-success');
+            setTimeout(() => { 
+                btn.disabled = false; 
+                btn.innerHTML = '<i class="bi bi-cloud-arrow-down-fill"></i> Run Live Import';
+                btn.classList.replace('btn-outline-success', 'btn-success');
+            }, 3000);
+        } else {
+            // Append line and auto-scroll to the bottom
+            terminal.textContent += event.data + '\n';
+            terminal.scrollTop = terminal.scrollHeight;
+        }
+    };
+
+    eventSource.onerror = function() {
+        terminal.textContent += '\n[CONNECTION ERROR] Lost connection to server.\n';
+        eventSource.close();
+        btn.disabled = false;
+        btn.innerHTML = '<i class="bi bi-cloud-arrow-down-fill"></i> Retry Import';
+    };
+}
+</script>
 {% endblock %}

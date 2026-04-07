@@ -1,14 +1,17 @@
 import urllib.parse
 import requests
+import sys
+import subprocess
 from django.conf import settings
 from django.shortcuts import redirect, get_object_or_404, render
-from django.http import JsonResponse, HttpResponse, HttpResponseForbidden
+from django.http import JsonResponse, HttpResponse, HttpResponseForbidden, StreamingHttpResponse
 from django.contrib.auth.models import User
 from django.contrib.auth import login
 from django.contrib.auth.decorators import login_required
 from django.urls import reverse
 from django.utils.html import escape
 from django.contrib.admin.views.decorators import staff_member_required
+from django.conf import settings
 import hmac
 import hashlib
 from django.views.decorators.csrf import csrf_exempt
@@ -16,8 +19,11 @@ import json
 from django.core.cache import cache
 from podgen import Podcast as PodgenPodcast, Episode as PodgenEpisode, Media
 from datetime import timedelta
-from .models import PatronProfile, Podcast, Episode, Network
+from .models import PatronProfile, Podcast, Episode, Network, PatreonTier
 from django.contrib import messages
+from django.core.management import call_command
+import io
+from django.core.paginator import Paginator
 
 # ==========================================
 # HELPER FUNCTIONS
@@ -195,83 +201,194 @@ def dashboard(request):
 def creator_settings(request):
     """
     The Custom Admin Dashboard for Network Owners.
+    Handles Network updates, Show updates, and Adding new Shows.
     """
-    # HANDLE FORM SAVING
     if request.method == 'POST':
-        network_id = request.POST.get('network_id')
-        theme_config_str = request.POST.get('theme_config', '{}')
-        footer_public = request.POST.get('footer_public', '')
-        footer_private = request.POST.get('footer_private', '')
+        action = request.POST.get('action')
 
-        try:
-            network = Network.objects.get(id=network_id)
-            
-            # Safely validate the JSON
+        # === UPDATE NETWORK ACTION ===
+        if action == 'update_network':
+            network_id = request.POST.get('network_id')
+            theme_config_str = request.POST.get('theme_config', '{}')
+            footer_public = request.POST.get('footer_public', '')
+            footer_private = request.POST.get('footer_private', '')
+
             try:
-                # We replace single quotes with double quotes just in case the user typed it wrong
-                clean_json_str = theme_config_str.replace("'", '"')
-                network.theme_config = json.loads(clean_json_str)
-            except json.JSONDecodeError:
-                messages.error(request, f"Invalid JSON format for {network.name}. Settings not saved.")
-                return redirect('creator_settings')
+                network = Network.objects.get(id=network_id)
+                try:
+                    clean_json_str = theme_config_str.replace("'", '"')
+                    network.theme_config = json.loads(clean_json_str)
+                except json.JSONDecodeError:
+                    messages.error(request, f"Invalid JSON format for {network.name}. Settings not saved.")
+                    return redirect('creator_settings')
 
-            # Save the footers
-            network.global_footer_public = footer_public
-            network.global_footer_private = footer_private
-            network.save()
+                network.global_footer_public = footer_public
+                network.global_footer_private = footer_private
+                network.save()
 
-            # CRITICAL: Clear the Redis cache so users get the new footers immediately
-            cache.clear()
+                cache.clear()
+                messages.success(request, f"{network.name} settings saved successfully! Cache cleared.")
+                
+            except Network.DoesNotExist:
+                messages.error(request, "Error finding that Network.")
 
-            # Trigger the green success popup
-            messages.success(request, f"{network.name} settings saved successfully! Cache cleared.")
-            
-        except Network.DoesNotExist:
-            messages.error(request, "Error finding that Network.")
+        # === UPDATE SHOW ACTION ===
+        elif action == 'update_show':
+            show_id = request.POST.get('show_id')
+            tier_id = request.POST.get('tier_id')
+            show_footer_public = request.POST.get('show_footer_public', '')
+            show_footer_private = request.POST.get('show_footer_private', '')
 
-        # Redirect back to the same page to prevent "Confirm Form Resubmission" browser popups
+            try:
+                show = Podcast.objects.get(id=show_id)
+                
+                if tier_id:
+                    show.required_tier_id = tier_id
+                else:
+                    show.required_tier = None
+                    
+                show.show_footer_public = show_footer_public
+                show.show_footer_private = show_footer_private
+                show.save()
+                
+                cache.clear()
+                messages.success(request, f"{show.title} updated successfully! Cache cleared.")
+            except Podcast.DoesNotExist:
+                messages.error(request, "Error finding that Show.")
+
+        # === ADD SHOW ACTION ===
+        elif action == 'add_show':
+            network_id = request.POST.get('network_id')
+            title = request.POST.get('title')
+            slug = request.POST.get('slug')
+            public_feed_url = request.POST.get('public_feed_url')
+            subscriber_feed_url = request.POST.get('subscriber_feed_url')
+            tier_id = request.POST.get('tier_id')
+
+            try:
+                network = Network.objects.get(id=network_id)
+                new_show = Podcast(
+                    network=network,
+                    title=title,
+                    slug=slug,
+                    public_feed_url=public_feed_url,
+                    subscriber_feed_url=subscriber_feed_url,
+                )
+                if tier_id:
+                    new_show.required_tier_id = tier_id
+                
+                new_show.save()
+                
+                # AUTOMATICALLY INGEST FEED AND CAPTURE OUTPUT
+                out = io.StringIO()
+                try:
+                    call_command('ingest_feed', new_show.id, stdout=out, stderr=out)
+                    messages.success(request, f"Show '{title}' added and feed successfully imported!")
+                    messages.info(request, out.getvalue(), extra_tags="log")
+                except Exception as e:
+                    messages.warning(request, f"Show '{title}' added, but automatic import failed: {str(e)}")
+                    if out.getvalue():
+                        messages.error(request, out.getvalue(), extra_tags="log")
+                    
+            except Exception as e:
+                messages.error(request, f"Error adding show: {str(e)}")
+
         return redirect('creator_settings')
 
-
-    # DEFAULT GET LOGIC (Loading the page normally)
-    networks = Network.objects.prefetch_related('podcasts').all()
+    # DEFAULT GET LOGIC
+    networks = Network.objects.prefetch_related('podcasts', 'podcasts__required_tier').all()
     total_patrons = PatronProfile.objects.filter(pledge_amount_cents__gt=0).count()
+    tiers = PatreonTier.objects.all().order_by('minimum_cents')
     
     context = {
         'networks': networks,
         'total_patrons': total_patrons,
+        'tiers': tiers,
     }
     return render(request, 'pod_manager/creator_settings.html', context)
 
 def home(request):
-    """
-    The main public landing page. 
-    Surfaces the 20 most recent episodes across all networks.
-    """
-    # Grab the latest 20 episodes. select_related optimizes the database query.
-    latest_episodes = Episode.objects.select_related('podcast', 'podcast__network').order_by('-pub_date')[:20]
+    podcasts = Podcast.objects.all().order_by('title')
+    show_slug = request.GET.get('show')
     
+    query = Episode.objects.select_related('podcast', 'podcast__network', 'podcast__required_tier')
+    
+    if show_slug:
+        query = query.filter(podcast__slug=show_slug)
+        
+    all_episodes = query.order_by('-pub_date')
+    
+    paginator = Paginator(all_episodes, 20)
+    
+    # Safely get the page number (defaults to 1 if missing or invalid)
+    try:
+        page_number = int(request.GET.get('page', 1))
+    except ValueError:
+        page_number = 1
+        
+    page_obj = paginator.get_page(page_number)
+    
+    # NEW: Calculate a 10-page sliding window (5 before, 5 after)
+    start_index = max(1, page_obj.number - 5)
+    end_index = min(paginator.num_pages, page_obj.number + 5)
+    custom_page_range = range(start_index, end_index + 1)
+    
+    user_cents = 0
+    if request.user.is_authenticated and hasattr(request.user, 'patron_profile'):
+        user_cents = request.user.patron_profile.pledge_amount_cents
+        
+    for ep in page_obj:
+        req_cents = ep.podcast.required_tier.minimum_cents if ep.podcast.required_tier else 0
+        ep.user_has_access = (user_cents >= req_cents)
+
+    # Grab the primary network to load its theme config
+    current_network = Network.objects.first()
+
     context = {
-        'episodes': latest_episodes,
+        'episodes': page_obj,          
+        'page_obj': page_obj,          
+        'custom_page_range': custom_page_range,  # Pass the new range to the template
+        'podcasts': podcasts,          
+        'current_filter': show_slug,   
+        'current_network': current_network,
     }
     return render(request, 'pod_manager/home.html', context)
 
-@login_required(login_url='/login/')
-def subscriber_dashboard(request):
+def episode_detail(request, episode_id):
     """
-    The listening dashboard for logged-in users. 
-    Surfaces the same episodes as the home page but uses subscriber audio.
+    Displays a single episode. Dynamically loads the premium ad-free audio
+    and assembles the correct footers based on Patreon access.
     """
-    if not hasattr(request.user, 'patron_profile'):
-        return render(request, 'pod_manager/no_patreon.html')
-        
-    latest_episodes = Episode.objects.select_related('podcast', 'podcast__network').order_by('-pub_date')[:20]
-    
-    context = {
-        'episodes': latest_episodes,
-    }
-    return render(request, 'pod_manager/subscriber_dashboard.html', context)
+    ep = get_object_or_404(Episode.objects.select_related('podcast', 'podcast__network', 'podcast__required_tier'), id=episode_id)
 
+    # 1. Determine user's active pledge
+    user_cents = 0
+    if request.user.is_authenticated and hasattr(request.user, 'patron_profile'):
+        user_cents = request.user.patron_profile.pledge_amount_cents
+        
+    # 2. Annotate access flags
+    req_cents = ep.podcast.required_tier.minimum_cents if ep.podcast.required_tier else 0
+    ep.user_has_access = (user_cents >= req_cents)
+    
+    # 3. Assemble the dynamic description with Footers
+    assembled_desc = ep.clean_description
+    if ep.user_has_access:
+        if hasattr(ep.podcast, 'show_footer_private') and ep.podcast.show_footer_private:
+            assembled_desc += f"<br><br>{ep.podcast.show_footer_private}"
+        if ep.podcast.network.global_footer_private:
+            assembled_desc += f"<br><br>{ep.podcast.network.global_footer_private}"
+    else:
+        if hasattr(ep.podcast, 'show_footer_public') and ep.podcast.show_footer_public:
+            assembled_desc += f"<br><br>{ep.podcast.show_footer_public}"
+        if ep.podcast.network.global_footer_public:
+            assembled_desc += f"<br><br>{ep.podcast.network.global_footer_public}"
+            
+    ep.display_description = assembled_desc
+
+    context = {
+        'ep': ep,
+    }
+    return render(request, 'pod_manager/episode_detail.html', context)
 
 @login_required(login_url='/login/')
 def user_feeds(request):
@@ -481,15 +598,36 @@ def patreon_webhook(request):
 
     except (ValueError, KeyError) as e:
         return HttpResponse("Malformed JSON", status=400)
-    
-def episode_detail(request, episode_id):
-    """
-    Displays a single episode's full details and the audio player.
-    """
-    # Fetch the episode or return a 404 if it doesn't exist
-    ep = get_object_or_404(Episode, id=episode_id)
 
-    context = {
-        'ep': ep,
-    }
-    return render(request, 'pod_manager/episode_detail.html', context)
+@staff_member_required(login_url='/login/')
+def stream_feed_import(request, show_id):
+    """
+    Spawns the ingest_feed management command in a separate process
+    and streams its stdout line-by-line to the frontend via Server-Sent Events.
+    """
+    def event_stream():
+        yield f"data: Initiating Vecto Feed Importer for Show ID {show_id}...\n\n"
+        
+        # Spawn the terminal command as a background process
+        process = subprocess.Popen(
+            [sys.executable, 'manage.py', 'ingest_feed', str(show_id)],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1, # Line buffered so it streams instantly
+            cwd=settings.BASE_DIR
+        )
+        
+        # Read lines as they are printed in real-time
+        for line in iter(process.stdout.readline, ''):
+            # Clean up the line break since SSE uses \n\n to separate events
+            clean_line = line.replace('\n', '')
+            yield f"data: {clean_line}\n\n"
+            
+        process.stdout.close()
+        process.wait()
+        
+        # Send a special completion flag
+        yield "data: [DONE]\n\n"
+
+    return StreamingHttpResponse(event_stream(), content_type='text/event-stream')

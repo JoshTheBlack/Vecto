@@ -29,6 +29,10 @@ class PatreonTier(models.Model):
 
     class Meta:
         ordering = ['minimum_cents']
+
+    @property
+    def minimum_dollars(self):
+        return self.minimum_cents / 100
     
     def save(self, *args, **kwargs):
         # Safety check: If this tier is marked as default, uncheck 'default' on all other tiers for this network
@@ -81,7 +85,7 @@ class Episode(models.Model):
     # Store descriptions separately for cleaning/normalization
     raw_description = models.TextField()
     clean_description = models.TextField(blank=True)
-    
+
     duration = models.CharField(max_length=20, blank=True)
     
     class Meta:

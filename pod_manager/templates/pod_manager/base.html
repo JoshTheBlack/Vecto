@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="en" data-bs-theme="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Vecto | Podcast Manager</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.1/font/bootstrap-icons.css">
+    <style>
+        body { background-color: #121212; color: #e0e0e0; }
+        .navbar { background-color: #000000; border-bottom: 1px solid #333; }
+        .card { background-color: #1e1e1e; border: 1px solid #333; }
+        .card-header { border-bottom: 1px solid #333; }
+    </style>
+</head>
+<body>
+
+<nav class="navbar navbar-expand-lg navbar-dark mb-4">
+    <div class="container">
+        <a class="navbar-brand fw-bold" href="{% url 'home' %}">
+            {% if current_network and current_network.theme_config.logo_url %}
+                <img src="{{ current_network.theme_config.logo_url }}" alt="Logo" height="30" class="d-inline-block align-text-top me-2">
+            {% else %}
+                <i class="bi bi-broadcast text-warning"></i> Vecto
+            {% endif %}
+        </a>
+        
+        <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav">
+            <span class="navbar-toggler-icon"></span>
+        </button>
+        
+        <div class="collapse navbar-collapse" id="navbarNav">
+            <ul class="navbar-nav me-auto">
+                <li class="nav-item"><a class="nav-link" href="{% url 'home' %}">Public Dashboard</a></li>
+                {% if user.is_authenticated %}
+                    <li class="nav-item"><a class="nav-link" href="{% url 'subscriber_dashboard' %}">Subscriber Dashboard</a></li>
+                    <li class="nav-item"><a class="nav-link" href="{% url 'user_feeds' %}">Your Feeds</a></li>
+                {% endif %}
+            </ul>
+            
+            <div class="d-flex align-items-center">
+                {% if user.is_authenticated %}
+                    <span class="text-muted small me-3">{{ user.email }}</span>
+                    {% if user.is_staff %}
+                        <a href="{% url 'creator_settings' %}" class="btn btn-warning btn-sm me-2">Creator Settings</a>
+                    {% endif %}
+                {% else %}
+                    <a href="{% url 'patreon_login' %}" class="btn btn-danger btn-sm"><i class="bi bi-patreon"></i> Login</a>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+</nav>
+
+<div class="container">
+    <div class="container mt-3">
+    {% if messages %}
+        {% for message in messages %}
+            <div class="alert alert-{% if message.tags == 'error' %}danger{% else %}{{ message.tags }}{% endif %} alert-dismissible fade show shadow-sm" role="alert">
+                {{ message }}
+                <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+            </div>
+        {% endfor %}
+    {% endif %}
+
+    {% block content %}
+    {% endblock %}
+</div>
+    {% block content %}
+    {% endblock %}
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+</body>
+</html>

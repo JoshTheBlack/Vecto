@@ -1,0 +1,106 @@
+{% extends 'pod_manager/base.html' %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4 border-bottom border-secondary pb-3">
+    <h2 class="fw-bold"><i class="bi bi-gear-fill text-warning"></i> Creator Settings</h2>
+    <span class="badge bg-primary fs-6">{{ total_patrons }} Active Patrons</span>
+</div>
+
+<div class="row">
+    <div class="col-md-3 mb-4">
+        <div class="list-group shadow-sm" id="list-tab" role="tablist">
+            <a class="list-group-item list-group-item-action bg-dark text-warning border-secondary active" id="list-networks-list" data-bs-toggle="list" href="#list-networks" role="tab">
+                <i class="bi bi-globe2 me-2"></i> Networks
+            </a>
+            <a class="list-group-item list-group-item-action bg-dark text-light border-secondary" id="list-shows-list" data-bs-toggle="list" href="#list-shows" role="tab">
+                <i class="bi bi-mic me-2"></i> Manage Shows
+            </a>
+            <a class="list-group-item list-group-item-action bg-dark text-light border-secondary" id="list-sync-list" data-bs-toggle="list" href="#list-sync" role="tab">
+                <i class="bi bi-people me-2"></i> Patreon Sync
+            </a>
+            <a href="/admin/" class="list-group-item list-group-item-action bg-dark text-danger border-secondary mt-3">
+                <i class="bi bi-database me-2"></i> Advanced DB Admin
+            </a>
+        </div>
+    </div>
+
+    <div class="col-md-9">
+        <div class="tab-content" id="nav-tabContent">
+            
+            <div class="tab-pane fade show active" id="list-networks" role="tabpanel">
+                {% for network in networks %}
+                <div class="card shadow-sm mb-4 border-secondary bg-dark">
+                    <div class="card-header bg-black border-bottom border-secondary d-flex justify-content-between align-items-center">
+                        <h4 class="mb-0 fw-bold">{{ network.name }}</h4>
+                    </div>
+                    <div class="card-body">
+                        <h5 class="fw-bold mb-3 border-bottom border-secondary pb-2">Configuration</h5>
+                        <form method="POST" action="{% url 'creator_settings' %}">
+                            {% csrf_token %}
+                            <input type="hidden" name="network_id" value="{{ network.id }}">
+                            
+                            <div class="mb-3">
+                                <label class="form-label text-muted small fw-bold">Theme Config (JSON)</label>
+                                <textarea name="theme_config" class="form-control bg-black text-light border-secondary font-monospace" rows="3">{{ network.theme_config }}</textarea>
+                                <div class="form-text text-muted">Example: {"logo_url": "https://example.com/logo.png"}</div>
+                            </div>
+                            <div class="mb-3">
+                                <label class="form-label text-muted small fw-bold">Public Footer</label>
+                                <textarea name="footer_public" class="form-control bg-black text-light border-secondary" rows="2">{{ network.global_footer_public }}</textarea>
+                            </div>
+                            <div class="mb-4">
+                                <label class="form-label text-muted small fw-bold">Private Footer</label>
+                                <textarea name="footer_private" class="form-control bg-black text-light border-secondary" rows="2">{{ network.global_footer_private }}</textarea>
+                            </div>
+                            
+                            <button type="submit" class="btn btn-warning">Save Configurations</button>
+                        </form>
+                    </div>
+                </div>
+                {% endfor %}
+            </div>
+
+            <div class="tab-pane fade" id="list-shows" role="tabpanel">
+                <div class="card shadow-sm mb-4 border-secondary bg-dark">
+                    <div class="card-body">
+                        <h4 class="fw-bold mb-4">All Podcasts</h4>
+                        <div class="row">
+                            {% for network in networks %}
+                                {% for show in network.podcasts.all %}
+                                    <div class="col-md-6 mb-3">
+                                        <div class="p-3 border border-secondary rounded bg-black d-flex align-items-center">
+                                            {% if show.image_url %}
+                                                <img src="{{ show.image_url }}" alt="cover" class="rounded me-3" style="width: 50px; height: 50px; object-fit: cover;">
+                                            {% else %}
+                                                <div class="rounded me-3 bg-secondary d-flex justify-content-center align-items-center" style="width: 50px; height: 50px;">
+                                                    <i class="bi bi-mic text-dark"></i>
+                                                </div>
+                                            {% endif %}
+                                            <div>
+                                                <h6 class="mb-0 fw-bold">{{ show.title }}</h6>
+                                                <span class="badge bg-secondary">Tier: ${{ show.required_tier.minimum_cents|default:0|add:0 }}</span>
+                                            </div>
+                                        </div>
+                                    </div>
+                                {% endfor %}
+                            {% endfor %}
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="tab-pane fade" id="list-sync" role="tabpanel">
+                <div class="card shadow-sm border-secondary bg-dark text-center py-5">
+                    <i class="bi bi-arrow-repeat text-warning mb-3" style="font-size: 3rem;"></i>
+                    <h4 class="fw-bold">Global Patreon Sync</h4>
+                    <p class="text-muted w-75 mx-auto">This will trigger a background task to refresh the pledge amounts for all {{ total_patrons }} patrons against the Patreon API. This is usually handled by webhooks.</p>
+                    <div>
+                        <button class="btn btn-outline-warning mt-3 disabled"><i class="bi bi-play-fill"></i> Run Manual Sync</button>
+                    </div>
+                </div>
+            </div>
+
+        </div>
+    </div>
+</div>
+{% endblock %}

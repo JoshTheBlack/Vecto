@@ -48,6 +48,8 @@ class Podcast(models.Model):
     subscriber_feed_url = models.URLField()
     required_tier = models.ForeignKey(PatreonTier, on_delete=models.SET_NULL, null=True, blank=True)
 
+    image_url = models.URLField(blank=True, help_text="Automatically populated from the RSS feed.")
+
     # Show-Specific Footers (e.g., Apple Podcasts Review Link for this specific show)
     show_footer_public = models.TextField(blank=True, help_text="Appended above the global public footer.")
     show_footer_private = models.TextField(blank=True, help_text="Appended above the global private footer.")
@@ -79,6 +81,8 @@ class Episode(models.Model):
     # Store descriptions separately for cleaning/normalization
     raw_description = models.TextField()
     clean_description = models.TextField(blank=True)
+    
+    duration = models.CharField(max_length=20, blank=True)
     
     class Meta:
         indexes = [

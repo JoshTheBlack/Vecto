@@ -1,4 +1,3 @@
-from difflib import SequenceMatcher
 import feedparser
 import time
 import re
@@ -12,6 +11,7 @@ import os
 import urllib.request
 import hashlib
 import base64
+from difflib import SequenceMatcher
 
 class Command(BaseCommand):
     help = 'Ingests episodes and prints debug logs for unmatched items'
@@ -32,14 +32,9 @@ class Command(BaseCommand):
         if not title:
             return ""
         
-        # 1. CHARACTER NORMALIZATION
-        title = title.replace('–', '-').replace('—', '-') 
-        title = title.replace('“', '"').replace('”', '"') 
-        title = title.replace('‘', "'").replace('’', "'") 
-        
         title_lower = title.lower()
         
-        # 2. TAG STRIPPING
+        # 1. TAG STRIPPING
         tags = [
             '(ad-free)', '(premium)', '(private)', 
             '(instant)', 'instant take', 'instant talk',
@@ -49,11 +44,12 @@ class Command(BaseCommand):
         for tag in tags:
             title_lower = title_lower.replace(tag, '')
             
-        # 3. KNOWN PREFIX STRIPPING
+        # 2. KNOWN PREFIX STRIPPING
         title_lower = re.sub(r'^(ahs:\d{4}|american horror story podcast|bald move pulp|pulp|the pitt|into the pitt)\s*-\s*', '', title_lower)
 
-        # 4. FINAL CLEANUP
-        return re.sub(r'[^a-zA-Z0-9]', '', title_lower).strip()
+        # 3. THE NUCLEAR STRIP
+        # Remove absolutely everything that isn't a lowercase letter or number
+        return re.sub(r'[^a-z0-9]', '', title_lower)
 
     def is_fuzzy_match(self, public_fp, private_fp):
         """Compares two alphanumeric fingerprints and returns True if they are 95%+ identical."""
@@ -76,8 +72,6 @@ class Command(BaseCommand):
             return ""
             
         # 1. The Guillotine: Chop off the entire boilerplate footer
-        # This regex looks for the start of the boilerplate and splits the string.
-        # We only keep the first half (parts[0]).
         boilerplate_triggers = r'(Hey there!\s*Check out|Join the discussion:|Follow us:|Leave Us A Review)'
         text = re.split(boilerplate_triggers, raw_text, flags=re.IGNORECASE)[0]
         
@@ -188,6 +182,17 @@ class Command(BaseCommand):
         # 2. Fetch Public Feed
         public_data = self.get_cached_feed(podcast.public_feed_url, "PUBLIC")
 
+        feed_image = ""
+        # Feedparser is a little weird with images, so we check both common locations
+        if 'image' in public_data.feed:
+            feed_image = public_data.feed.image.get('href') or public_data.feed.image.get('url', '')
+            
+        # If we found an image and it's not currently saved, update the Podcast
+        if feed_image and podcast.image_url != feed_image:
+            podcast.image_url = feed_image
+            podcast.save()
+            self.stdout.write(self.style.SUCCESS(f"  [Artwork Captured]: {feed_image}"))
+
         count = 0
         matches = 0
         for entry in public_data.entries:
@@ -206,16 +211,26 @@ class Command(BaseCommand):
             if p_slug and p_slug in slug_map:
                 sub_audio = slug_map[p_slug]
 
+            # 1. Exact Match Check
             p_fp = self.get_fingerprint(entry_title)
             if not sub_audio and p_fp in fingerprint_map:
                 sub_audio = fingerprint_map[p_fp]
 
+            # 2. Substring Match Check
             if not sub_audio and len(p_fp) >= 5:
                 for sub_fp, audio in fingerprint_map.items():
                     if len(sub_fp) >= 5 and (sub_fp in p_fp or p_fp in sub_fp):
                         sub_audio = audio
                         break
 
+            # 3. NEW: Fuzzy Match Check
+            if not sub_audio and len(p_fp) >= 5:
+                for sub_fp, audio in fingerprint_map.items():
+                    if self.is_fuzzy_match(p_fp, sub_fp):
+                        sub_audio = audio
+                        break
+
+            # 4. Guid fallback
             if not sub_audio and hasattr(entry, 'id') and entry.id in sub_guid_map:
                 sub_audio = sub_guid_map[entry.id]
 
@@ -238,6 +253,9 @@ class Command(BaseCommand):
                         self.stdout.write(f"           Raw: '{priv_raw}' | FP: '{priv_fp}'")
             raw_desc = getattr(entry, 'description', '')
 
+            # NEW: Grab the duration from the feed
+            duration_val = entry.get('itunes_duration', '')
+
             Episode.objects.update_or_create(
                 podcast=podcast,
                 guid=getattr(entry, 'id', entry_title),
@@ -248,21 +266,9 @@ class Command(BaseCommand):
                     'audio_url_subscriber': final_sub_audio,
                     'raw_description': raw_desc,
                     'clean_description': self.clean_html_description(raw_desc), 
+                    'duration': duration_val,
                 }
             )
             count += 1
 
         self.stdout.write(self.style.SUCCESS(f"Finished. Total: {count} | Matches: {matches}"))
-
-    
-    def generate_fingerprint(title):
-        # Lowercase and remove all non-alphanumeric characters entirely
-        clean_title = re.sub(r'[^a-z0-9]', '', title.lower())
-        return clean_title
-    
-    
-
-    def is_fuzzy_match(public_fp, private_fp):
-        # Returns a ratio between 0.0 and 1.0
-        ratio = SequenceMatcher(None, public_fp, private_fp).ratio()
-        return ratio > 0.95  # 95% similar will easily catch a 1-digit typo

@@ -1,26 +1,44 @@
 import urllib.parse
 import requests
 from django.conf import settings
-from django.shortcuts import redirect, get_object_or_404
+from django.shortcuts import redirect, get_object_or_404, render
 from django.http import JsonResponse, HttpResponse, HttpResponseForbidden
 from django.contrib.auth.models import User
 from django.contrib.auth import login
 from django.contrib.auth.decorators import login_required
 from django.urls import reverse
 from django.utils.html import escape
+from django.contrib.admin.views.decorators import staff_member_required
 import hmac
 import hashlib
 from django.views.decorators.csrf import csrf_exempt
 import json
 from django.core.cache import cache
-
-# Ensure you import your models correctly based on your app name
-from .models import PatronProfile, Podcast
+from podgen import Podcast as PodgenPodcast, Episode as PodgenEpisode, Media
+from datetime import timedelta
+from .models import PatronProfile, Podcast, Episode, Network
+from django.contrib import messages
 
 # ==========================================
 # HELPER FUNCTIONS
 # ==========================================
 
+def parse_duration(duration_str):
+    """Converts a duration string (seconds or HH:MM:SS) into a timedelta object for Podgen."""
+    if not duration_str:
+        return None
+    try:
+        if ':' in duration_str:
+            parts = duration_str.split(':')
+            if len(parts) == 3:
+                return timedelta(hours=int(parts[0]), minutes=int(parts[1]), seconds=int(parts[2]))
+            elif len(parts) == 2:
+                return timedelta(minutes=int(parts[0]), seconds=int(parts[1]))
+        else:
+            return timedelta(seconds=int(duration_str))
+    except ValueError:
+        return None
+    
 def get_bald_move_pledge_amount(patreon_json):
     """
     Parses the Patreon API response and returns the user's active 
@@ -140,81 +158,176 @@ def patreon_callback(request):
 @login_required(login_url='/login/')
 def dashboard(request):
     """
-    Displays the user's customized RSS links using the query parameter format.
+    The Listener Dashboard: Shows a user their active pledge and generates
+    their custom private RSS URLs for the apps.
     """
-    # Safely check if this user has a Patreon profile (in case an Admin logs in directly)
-    if hasattr(request.user, 'patron_profile'):
-        profile = request.user.patron_profile
-    else:
-        return HttpResponse(
-            "<h1>No Patreon Account Linked</h1>"
-            f"<p>You are currently logged in as: <strong>{request.user.username}</strong>, but this account has no Patreon data.</p>"
-            "<p><a href='/login/'>Click here to authenticate with Patreon</a></p>"
-        )
+    if not hasattr(request.user, 'patron_profile'):
+        return render(request, 'pod_manager/no_patreon.html')
 
-    dollars = profile.pledge_amount_cents / 100
+    profile = request.user.patron_profile
     
-    html = f"""
-        <h1>Welcome, {request.user.first_name}!</h1>
-        <p>Your current Bald Move pledge is: <strong>${dollars:.2f}</strong></p>
-        <hr>
-        <h2>Your Private Podcast Feeds</h2>
-        <ul>
-    """
-    
-    # Use select_related to optimize the database query for network and tier data
+    # Pre-build the feed data so the template is clean and logic-free
+    feed_data = []
     for podcast in Podcast.objects.select_related('network', 'required_tier').all():
         required_cents = podcast.required_tier.minimum_cents if podcast.required_tier else 0
+        has_access = profile.pledge_amount_cents >= required_cents
         
-        if profile.pledge_amount_cents >= required_cents:
-            # Build the base URL using the podcast's network slug
-            base_feed_url = reverse('custom_feed', args=[podcast.network.slug])
-            raw_url = f"{base_feed_url}?auth={profile.feed_token}&show={podcast.slug}"
-            
-            # Convert to a full absolute URI (e.g., http://localhost:8000/...)
-            full_feed_url = request.build_absolute_uri(raw_url)
-            
-            html += f'<li><strong>{podcast.title}</strong>: <a href="{full_feed_url}">{full_feed_url}</a></li>'
-        else:
-            req_dollars = required_cents / 100
-            html += f'<li style="color: gray;"><em>{podcast.title}</em> (Requires ${req_dollars:.2f} tier)</li>'
-            
-    html += "</ul>"
-    return HttpResponse(html)
+        base_feed_url = reverse('custom_feed', args=[podcast.network.slug])
+        raw_url = f"{base_feed_url}?auth={profile.feed_token}&show={podcast.slug}"
+        full_feed_url = request.build_absolute_uri(raw_url)
 
+        feed_data.append({
+            'podcast': podcast,
+            'has_access': has_access,
+            'req_dollars': required_cents / 100,
+            'feed_url': full_feed_url if has_access else None
+        })
+
+    context = {
+        'profile': profile,
+        'dollars': profile.pledge_amount_cents / 100,
+        'feed_data': feed_data,
+    }
+    return render(request, 'pod_manager/dashboard.html', context)
+
+
+@staff_member_required(login_url='/login/')
+def creator_settings(request):
+    """
+    The Custom Admin Dashboard for Network Owners.
+    """
+    # HANDLE FORM SAVING
+    if request.method == 'POST':
+        network_id = request.POST.get('network_id')
+        theme_config_str = request.POST.get('theme_config', '{}')
+        footer_public = request.POST.get('footer_public', '')
+        footer_private = request.POST.get('footer_private', '')
+
+        try:
+            network = Network.objects.get(id=network_id)
+            
+            # Safely validate the JSON
+            try:
+                # We replace single quotes with double quotes just in case the user typed it wrong
+                clean_json_str = theme_config_str.replace("'", '"')
+                network.theme_config = json.loads(clean_json_str)
+            except json.JSONDecodeError:
+                messages.error(request, f"Invalid JSON format for {network.name}. Settings not saved.")
+                return redirect('creator_settings')
+
+            # Save the footers
+            network.global_footer_public = footer_public
+            network.global_footer_private = footer_private
+            network.save()
+
+            # CRITICAL: Clear the Redis cache so users get the new footers immediately
+            cache.clear()
+
+            # Trigger the green success popup
+            messages.success(request, f"{network.name} settings saved successfully! Cache cleared.")
+            
+        except Network.DoesNotExist:
+            messages.error(request, "Error finding that Network.")
+
+        # Redirect back to the same page to prevent "Confirm Form Resubmission" browser popups
+        return redirect('creator_settings')
+
+
+    # DEFAULT GET LOGIC (Loading the page normally)
+    networks = Network.objects.prefetch_related('podcasts').all()
+    total_patrons = PatronProfile.objects.filter(pledge_amount_cents__gt=0).count()
+    
+    context = {
+        'networks': networks,
+        'total_patrons': total_patrons,
+    }
+    return render(request, 'pod_manager/creator_settings.html', context)
+
+def home(request):
+    """
+    The main public landing page. 
+    Surfaces the 20 most recent episodes across all networks.
+    """
+    # Grab the latest 20 episodes. select_related optimizes the database query.
+    latest_episodes = Episode.objects.select_related('podcast', 'podcast__network').order_by('-pub_date')[:20]
+    
+    context = {
+        'episodes': latest_episodes,
+    }
+    return render(request, 'pod_manager/home.html', context)
+
+@login_required(login_url='/login/')
+def subscriber_dashboard(request):
+    """
+    The listening dashboard for logged-in users. 
+    Surfaces the same episodes as the home page but uses subscriber audio.
+    """
+    if not hasattr(request.user, 'patron_profile'):
+        return render(request, 'pod_manager/no_patreon.html')
+        
+    latest_episodes = Episode.objects.select_related('podcast', 'podcast__network').order_by('-pub_date')[:20]
+    
+    context = {
+        'episodes': latest_episodes,
+    }
+    return render(request, 'pod_manager/subscriber_dashboard.html', context)
+
+
+@login_required(login_url='/login/')
+def user_feeds(request):
+    """
+    Formerly the 'dashboard'. Displays the RSS links to copy to a podcast app.
+    """
+    if not hasattr(request.user, 'patron_profile'):
+        return render(request, 'pod_manager/no_patreon.html')
+
+    profile = request.user.patron_profile
+    
+    feed_data = []
+    for podcast in Podcast.objects.select_related('network', 'required_tier').all():
+        required_cents = podcast.required_tier.minimum_cents if podcast.required_tier else 0
+        has_access = profile.pledge_amount_cents >= required_cents
+        
+        base_feed_url = reverse('custom_feed', args=[podcast.network.slug])
+        raw_url = f"{base_feed_url}?auth={profile.feed_token}&show={podcast.slug}"
+        full_feed_url = request.build_absolute_uri(raw_url)
+
+        feed_data.append({
+            'podcast': podcast,
+            'has_access': has_access,
+            'req_dollars': required_cents / 100,
+            'feed_url': full_feed_url if has_access else None
+        })
+
+    context = {
+        'profile': profile,
+        'dollars': profile.pledge_amount_cents / 100,
+        'feed_data': feed_data,
+    }
+    # Notice the template name change here!
+    return render(request, 'pod_manager/user_feeds.html', context)
 
 # ==========================================
 # FEED GENERATOR
 # ==========================================
 
-from django.core.cache import cache # NEW IMPORT
-# ... your other imports ...
-
 def generate_custom_feed(request, network_slug):
-    """
-    Validates the user via query parameters and generates a safe XML feed.
-    Uses Django's caching framework to reduce database load.
-    """
     feed_token = request.GET.get('auth')
     podcast_slug = request.GET.get('show')
 
     if not feed_token or not podcast_slug:
         return HttpResponseForbidden("Missing authentication or show parameters.")
 
-    # 1. Look up the podcast
     podcast = get_object_or_404(Podcast, slug=podcast_slug)
     
-    # 2. Ensure the requested podcast actually belongs to the network
     if podcast.network.slug != network_slug:
         return HttpResponseForbidden("This podcast does not belong to the requested network.")
 
-    # 3. Look up the user securely via their UUID token (The Security Check)
     try:
         profile = get_object_or_404(PatronProfile, feed_token=feed_token)
     except ValueError:
         return HttpResponseForbidden("Invalid authentication token format.")
 
-    # 4. Check if they are paying enough
     required_cents = podcast.required_tier.minimum_cents if podcast.required_tier else 0
     if profile.pledge_amount_cents < required_cents:
         return HttpResponseForbidden("Your current Patreon pledge does not grant access to this feed.")
@@ -222,29 +335,23 @@ def generate_custom_feed(request, network_slug):
     # ==========================================
     # CACHE CHECK
     # ==========================================
-    # Create a unique key for this specific user and this specific show
     cache_key = f"xml_feed_{profile.feed_token}_{podcast.slug}"
-    
-    # Try to grab the pre-built XML string from memory
-    xml = cache.get(cache_key)
+    xml_output = cache.get(cache_key)
 
-    # If it's empty (Cache Miss), we have to build it
-    if not xml:
-        print("CACHE MISS - Building XML")
-        # 5. Assemble the Feed Data
+    if not xml_output:
+        print("CACHE MISS - Building XML with Podgen")
         episodes = podcast.episodes.all().order_by('-pub_date')
         
-        safe_podcast_title = escape(f"{podcast.title} (Custom Feed)")
-        safe_user_name = escape(profile.user.first_name)
-        
-        xml = f"""<?xml version="1.0" encoding="UTF-8"?>
-<rss version="2.0" xmlns:itunes="http://www.itunes.com/dtds/podcast-1.0.dtd">
-  <channel>
-    <title>{safe_podcast_title}</title>
-    <link>https://baldmove.com</link>
-    <description>Premium ad-free feed for {safe_user_name}.</description>
-    <language>en-us</language>
-"""
+        # 1. Initialize the Podgen object
+        p = PodgenPodcast(
+            name=f"{podcast.title} (Custom Feed)",
+            description=f"Premium ad-free feed for {profile.user.first_name}.",
+            website="https://baldmove.com",
+            explicit=True,
+            image=podcast.image_url or "https://baldmove.com/wp-content/uploads/2014/06/bald-move-logo.png",
+        )
+
+        # 2. Add Episodes
         for ep in episodes:
             assembled_desc = ep.clean_description
             if podcast.show_footer_private:
@@ -252,27 +359,76 @@ def generate_custom_feed(request, network_slug):
             if podcast.network.global_footer_private:
                 assembled_desc += f"<br><br>{podcast.network.global_footer_private}"
 
-            safe_ep_title = escape(ep.title)
-            safe_audio_url = escape(ep.audio_url_subscriber)
-
-            xml += f"""
-    <item>
-      <title>{safe_ep_title}</title>
-      <guid isPermaLink="false">{ep.guid}</guid>
-      <pubDate>{ep.pub_date.strftime("%a, %d %b %Y %H:%M:%S %z")}</pubDate>
-      <description><![CDATA[{assembled_desc}]]></description>
-      <enclosure url="{safe_audio_url}" type="audio/mpeg" />
-    </item>"""
-
-        xml += "\n  </channel>\n</rss>"
+            p.episodes.append(PodgenEpisode(
+                title=ep.title,
+                media=Media(ep.audio_url_subscriber,duration=parse_duration(ep.duration)),
+                id=ep.guid,
+                publication_date=ep.pub_date,
+                summary=assembled_desc, # Podgen handles the CDATA escaping for us
+            ))
+            
+        # 3. Generate the final XML string
+        xml_output = p.rss_str()
         
-        # Save the newly built string into the cache for the next time!
-        # Convert minutes to seconds for Django's cache timeout
+        # Save to cache
         timeout_seconds = podcast.network.feed_cache_minutes * 60
-        cache.set(cache_key, xml, timeout=timeout_seconds)
+        cache.set(cache_key, xml_output, timeout=timeout_seconds)
 
-    # Return the XML
-    return HttpResponse(xml, content_type='application/xml')
+    # Return the perfectly compliant RSS feed
+    return HttpResponse(xml_output, content_type='application/rss+xml')
+
+def generate_public_feed(request, podcast_slug):
+    """
+    Generates a public, unauthenticated feed for a specific podcast.
+    Uses public audio URLs and public footers.
+    """
+    # 1. Look up the podcast directly (No network slug needed for public links)
+    podcast = get_object_or_404(Podcast, slug=podcast_slug)
+
+    # ==========================================
+    # CACHE CHECK
+    # ==========================================
+    # Unique key for the public version of this show
+    cache_key = f"xml_feed_public_{podcast.slug}"
+    xml_output = cache.get(cache_key)
+
+    if not xml_output:
+        print(f"CACHE MISS - Building Public XML for {podcast.title}")
+        episodes = podcast.episodes.all().order_by('-pub_date')
+        
+        # Initialize the Podgen object for the public feed
+        p = PodgenPodcast(
+            name=podcast.title,
+            description=f"Public feed for {podcast.title}.",
+            website="https://baldmove.com",
+            explicit=True,
+            image=podcast.image_url or "https://baldmove.com/wp-content/uploads/2014/06/bald-move-logo.png",
+        )
+
+        for ep in episodes:
+            assembled_desc = ep.clean_description
+            
+            # Apply PUBLIC footers instead of private
+            if podcast.show_footer_public:
+                assembled_desc += f"<br><br>{podcast.show_footer_public}"
+            if podcast.network.global_footer_public:
+                assembled_desc += f"<br><br>{podcast.network.global_footer_public}"
+
+            p.episodes.append(PodgenEpisode(
+                title=ep.title,
+                # CRITICAL: Serve the public audio file!
+                media=Media(ep.audio_url_public,duration=parse_duration(ep.duration)),
+                id=ep.guid,
+                publication_date=ep.pub_date,
+                summary=assembled_desc, 
+            ))
+            
+        xml_output = p.rss_str()
+        
+        timeout_seconds = podcast.network.feed_cache_minutes * 60
+        cache.set(cache_key, xml_output, timeout=timeout_seconds)
+
+    return HttpResponse(xml_output, content_type='application/rss+xml')
 
 @csrf_exempt
 def patreon_webhook(request):
@@ -325,3 +481,15 @@ def patreon_webhook(request):
 
     except (ValueError, KeyError) as e:
         return HttpResponse("Malformed JSON", status=400)
+    
+def episode_detail(request, episode_id):
+    """
+    Displays a single episode's full details and the audio player.
+    """
+    # Fetch the episode or return a 404 if it doesn't exist
+    ep = get_object_or_404(Episode, id=episode_id)
+
+    context = {
+        'ep': ep,
+    }
+    return render(request, 'pod_manager/episode_detail.html', context)

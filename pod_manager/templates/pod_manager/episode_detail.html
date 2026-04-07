@@ -1,0 +1,45 @@
+{% extends 'pod_manager/base.html' %}
+
+{% block content %}
+<nav aria-label="breadcrumb" class="mb-4">
+  <ol class="breadcrumb">
+    <li class="breadcrumb-item"><a href="{% url 'home' %}" class="text-decoration-none text-warning">Home</a></li>
+    <li class="breadcrumb-item active text-light" aria-current="page">{{ ep.podcast.title }}</li>
+  </ol>
+</nav>
+
+<div class="row justify-content-center">
+    <div class="col-md-10">
+        <div class="card shadow-lg mb-4">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <span class="text-muted"><i class="bi bi-mic"></i> {{ ep.podcast.title }}</span>
+                <span class="text-muted">{{ ep.pub_date|date:"F d, Y" }}</span>
+            </div>
+            
+            <div class="card-body">
+                <h2 class="card-title fw-bold mb-4">
+                    {{ ep.title }}
+                    {% if ep.is_premium %}
+                        <span class="badge bg-warning text-dark fs-6 float-end"><i class="bi bi-unlock-fill"></i> Ad-Free Available</span>
+                    {% endif %}
+                </h2>
+                
+                <audio controls class="w-100 mb-4">
+                    <source src="{{ ep.audio_url_public }}" type="audio/mpeg">
+                    Your browser does not support the audio element.
+                </audio>
+
+                {% if ep.is_premium %}
+                    <div class="alert alert-dark border border-warning text-warning py-2 px-3 mb-4" role="alert">
+                        <i class="bi bi-star-fill"></i> An ad-free version of this episode is available in your <a href="{% url 'user_feeds' %}" class="alert-link">private feed</a>.
+                    </div>
+                {% endif %}
+
+                <div class="card-text text-light" style="line-height: 1.6;">
+                    {{ ep.clean_description|safe }}
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

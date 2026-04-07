@@ -1,0 +1,71 @@
+{% extends 'pod_manager/base.html' %}
+
+{% block content %}
+<div class="row mb-4">
+    <div class="col-md-8">
+        <h2 class="fw-bold">Listener Dashboard</h2>
+        <p class="text-muted">Welcome back, {{ request.user.first_name }}! Manage your premium feeds below.</p>
+    </div>
+    <div class="col-md-4 text-md-end">
+        <div class="card bg-dark border-warning shadow-sm">
+            <div class="card-body py-2">
+                <span class="text-muted small text-uppercase">Active Patreon Pledge</span>
+                <h4 class="text-warning mb-0 fw-bold">${{ dollars|floatformat:2 }} <span class="fs-6 text-muted fw-normal">/ month</span></h4>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="card shadow-sm mb-4">
+    <div class="card-header bg-dark border-bottom border-secondary">
+        <h5 class="mb-0"><i class="bi bi-rss-fill text-warning"></i> Your Premium Feeds</h5>
+    </div>
+    <ul class="list-group list-group-flush bg-dark">
+        {% for item in feed_data %}
+            <li class="list-group-item bg-transparent text-light py-3">
+                <div class="row align-items-center">
+                    <div class="col-md-4">
+                        <h5 class="mb-1 fw-bold">{{ item.podcast.title }}</h5>
+                        <p class="mb-0 text-muted small">{{ item.podcast.network.name }} Network</p>
+                    </div>
+                    
+                    <div class="col-md-8 mt-2 mt-md-0">
+                        {% if item.has_access %}
+                            <div class="input-group">
+                                <input type="text" class="form-control bg-dark text-light border-secondary" id="feed-{{ forloop.counter }}" value="{{ item.feed_url }}" readonly>
+                                <button class="btn btn-outline-warning" type="button" onclick="copyFeed('feed-{{ forloop.counter }}')">
+                                    <i class="bi bi-clipboard"></i> Copy
+                                </button>
+                            </div>
+                            <small class="text-success mt-1 d-block"><i class="bi bi-check-circle-fill"></i> Unlocked via your tier.</small>
+                        {% else %}
+                            <div class="alert alert-dark border border-secondary text-muted mb-0 py-2">
+                                <i class="bi bi-lock-fill"></i> Requires a <strong>${{ item.req_dollars|floatformat:2 }}</strong> pledge tier to unlock.
+                            </div>
+                        {% endif %}
+                    </div>
+                </div>
+            </li>
+        {% endfor %}
+    </ul>
+</div>
+
+<script>
+function copyFeed(elementId) {
+    var copyText = document.getElementById(elementId);
+    copyText.select();
+    copyText.setSelectionRange(0, 99999); /* For mobile devices */
+    navigator.clipboard.writeText(copyText.value);
+    
+    // Quick visual feedback
+    var btn = copyText.nextElementSibling;
+    var originalHTML = btn.innerHTML;
+    btn.innerHTML = '<i class="bi bi-check2"></i> Copied!';
+    btn.classList.replace('btn-outline-warning', 'btn-success');
+    setTimeout(function() {
+        btn.innerHTML = originalHTML;
+        btn.classList.replace('btn-success', 'btn-outline-warning');
+    }, 2000);
+}
+</script>
+{% endblock %}

@@ -1,0 +1,58 @@
+{% extends 'pod_manager/base.html' %}
+
+{% block content %}
+<div class="row mb-4">
+    <div class="col">
+        <h1 class="fw-bold">Latest Episodes</h1>
+        <p class="text-muted">Browse the newest releases. Premium episodes require a Patreon subscription.</p>
+    </div>
+</div>
+
+<div class="row">
+    <div class="col-md-8">
+        {% for ep in episodes %}
+        <div class="card mb-4 shadow-sm">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <span class="text-muted small"><i class="bi bi-mic"></i> {{ ep.podcast.title }}</span>
+                <span class="text-muted small">{{ ep.pub_date|date:"M d, Y" }}</span>
+            </div>
+            <div class="card-body">
+                <h4 class="card-title fw-bold">
+                    <a href="{% url 'episode_detail' ep.id %}" class="text-light text-decoration-none text-hover-warning">
+                        {{ ep.title }}
+                    </a>
+                    {% if ep.is_premium %}
+                        <span class="badge bg-warning text-dark fs-6 float-end"><i class="bi bi-unlock-fill"></i> Ad-Free Available</span>
+                    {% endif %}
+                </h4>
+                
+                <div class="card-text mb-3 text-secondary" style="max-height: 120px; overflow: hidden; position: relative;">
+                    {{ ep.clean_description|safe }}
+                    <div style="position: absolute; bottom: 0; left: 0; right: 0; height: 50px; background: linear-gradient(transparent, #1e1e1e);"></div>
+                </div>
+
+                <a href="{% url 'episode_detail' ep.id %}" class="btn btn-outline-light btn-sm mt-2">
+                    <i class="bi bi-play-circle"></i> Play Episode
+                </a>
+            </div>
+        </div>
+        {% empty %}
+        <div class="alert alert-info">No episodes have been ingested yet.</div>
+        {% endfor %}
+    </div>
+    
+    <div class="col-md-4">
+        <div class="card">
+            <div class="card-body">
+                <h5 class="card-title border-bottom pb-2">Filter by Show</h5>
+                <p class="text-muted small">Show filtering coming soon...</p>
+            </div>
+        </div>
+    </div>
+</div>
+
+<style>
+    /* Small hover effect for the links */
+    .text-hover-warning:hover { color: #ffc107 !important; }
+</style>
+{% endblock %}

@@ -1,0 +1,8 @@
+{% extends 'pod_manager/base.html' %}
+{% block content %}
+<div class="alert alert-warning text-center mt-5">
+    <h3>No Patreon Account Linked</h3>
+    <p>You are logged in, but we couldn't find Patreon pledge data associated with your account.</p>
+    <a href="{% url 'patreon_login' %}" class="btn btn-dark">Authenticate with Patreon</a>
+</div>
+{% endblock %}

@@ -1,6 +1,7 @@
 # Web Framework
 django>=5.1
 djangorestframework
+hypercorn
 
 # RSS & HTML Processing
 feedparser

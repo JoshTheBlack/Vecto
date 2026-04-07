@@ -8,6 +8,10 @@ from django.contrib.auth import login
 from django.contrib.auth.decorators import login_required
 from django.urls import reverse
 from django.utils.html import escape
+import hmac
+import hashlib
+from django.views.decorators.csrf import csrf_exempt
+import json
 
 # Ensure you import your models correctly based on your app name
 from .models import PatronProfile, Podcast
@@ -252,3 +256,55 @@ def generate_custom_feed(request, network_slug):
     
     # Return as XML so podcast apps treat it as a valid RSS feed
     return HttpResponse(xml, content_type='application/xml')
+
+@csrf_exempt
+def patreon_webhook(request):
+    """
+    Handles Patreon Webhooks: members:create, members:update, members:delete
+    """
+    signature = request.headers.get('X-Patreon-Signature')
+    if not signature:
+        return HttpResponseForbidden("Missing signature")
+
+    # 1. Verify the signature
+    # In .env, set PATREON_WEBHOOK_SECRET to a random string for now
+    secret = settings.PATREON_WEBHOOK_SECRET.encode('utf-8')
+    # Patreon uses MD5 for their webhook signatures
+    expected_sig = hmac.new(secret, request.body, hashlib.md5).hexdigest()
+
+    if not hmac.compare_digest(expected_sig, signature):
+        return HttpResponseForbidden("Invalid signature")
+
+    # 2. Parse the JSON
+    try:
+        data = json.loads(request.body)
+        attributes = data['data']['attributes']
+        relationships = data['data']['relationships']
+        
+        # Patreon ID for the member (the link between user and campaign)
+        patreon_id = data['data']['id']
+        
+        # The amount they are currently paying
+        new_cents = attributes.get('currently_entitled_amount_cents', 0)
+        status = attributes.get('patron_status') # 'active_patron', 'declined_patron', etc.
+
+        # 3. Update the database
+        try:
+            profile = PatronProfile.objects.get(patreon_id=patreon_id)
+            
+            # If status isn't active, they effectively pay $0
+            final_amount = new_cents if status == 'active_patron' else 0
+            
+            if profile.pledge_amount_cents != final_amount:
+                profile.pledge_amount_cents = final_amount
+                profile.save()
+                print(f"Webhook Success: Updated {profile.user.email} to {final_amount} cents.")
+            
+            return HttpResponse("Success", status=200)
+            
+        except PatronProfile.DoesNotExist:
+            # We don't have this user in our DB yet, which is fine
+            return HttpResponse("User not in Vecto", status=200)
+
+    except (ValueError, KeyError) as e:
+        return HttpResponse("Malformed JSON", status=400)

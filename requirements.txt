@@ -7,6 +7,7 @@ hypercorn
 feedparser
 podgen
 nh3
+beautifulsoup4
 
 # Database & Task Queue
 psycopg[binary]

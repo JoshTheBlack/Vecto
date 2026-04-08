@@ -248,6 +248,7 @@ def creator_settings(request):
                 network.website_url = request.POST.get('website_url', '')
                 network.default_image_url = request.POST.get('default_image_url', '')
                 network.ignored_title_tags = request.POST.get('ignored_title_tags', '')
+                network.description_cut_triggers = request.POST.get('description_cut_triggers', '')
 
                 network.global_footer_public = footer_public
                 network.global_footer_private = footer_private

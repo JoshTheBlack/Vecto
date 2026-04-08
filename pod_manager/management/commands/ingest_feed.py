@@ -9,10 +9,10 @@ from django.conf import settings
 from pod_manager.models import Podcast, Episode
 import nh3
 import os
-import urllib.request
+import requests
 import hashlib
-import base64
 from difflib import SequenceMatcher
+from bs4 import BeautifulSoup
 
 class Command(BaseCommand):
     help = 'Ingests episodes and prints debug logs for unmatched items'
@@ -60,30 +60,27 @@ class Command(BaseCommand):
                     return link.href
         return ""
 
-    def clean_html_description(self, raw_text):
-        if not raw_text:
+    def clean_html_description(self, html_content, network):
+        if not html_content:
             return ""
             
-        # 1. The Guillotine: Chop off the entire boilerplate footer
-        boilerplate_triggers = r'(Hey there!\s*Check out|Join the discussion:|Follow us:|Leave Us A Review)'
-        text = re.split(boilerplate_triggers, raw_text, flags=re.IGNORECASE)[0]
+        soup = BeautifulSoup(html_content, "html.parser")
         
-        # 2. Remove any lingering Megaphone Ad Choices that might have been ABOVE the guillotine
-        text = re.sub(r'<p>\s*Learn more about your ad choices.*?adchoices.*?</a>\s*</p>', '', text, flags=re.IGNORECASE | re.DOTALL)
-        text = re.sub(r'Learn more about your ad choices.*?adchoices\.?', '', text, flags=re.IGNORECASE | re.DOTALL)
+        # FIX: Point to the new, dedicated description triggers
+        if network.description_cut_triggers:
+            triggers = [t.strip().lower() for t in network.description_cut_triggers.split(',') if t.strip()]
+            
+            # Find all common text containers
+            for element in soup.find_all(['p', 'div', 'li', 'em', 'strong']):
+                text = element.get_text().lower()
+                if any(trigger in text for trigger in triggers):
+                    element.decompose()
         
-        # 3. Normalize spaces
-        text = text.replace('\xa0', '&nbsp;')
-        
-        # 4. Clean with nh3
-        allowed_tags = {'a', 'p', 'b', 'i', 'em', 'strong', 'br', 'ul', 'ol', 'li'}
-        allowed_attributes = {'a': {'href'}} 
-        text = nh3.clean(text, tags=allowed_tags, attributes=allowed_attributes)
-        
-        # 5. Final cleanup
-        text = text.replace('<p></p>', '').replace('<p> </p>', '').strip()
-        
-        return text
+        # Clean up empty tags left behind
+        for empty in soup.find_all(lambda tag: not tag.contents and not tag.get_text(strip=True)):
+            empty.decompose()
+            
+        return str(soup).strip()
 
     def get_cached_feed(self, url, feed_type):
         """
@@ -93,58 +90,38 @@ class Command(BaseCommand):
         # 1. Check the toggle (Defaults to False in production)
         use_cache = os.getenv('USE_LOCAL_FEED_CACHE', 'False') == 'True'
         
-        # 2. Parse URL and create a clean version without credentials
+        # Requests handles URL parsing and Auth automatically
         parsed_url = urlparse(url)
+        # Extract credentials if they exist in the URL
+        auth = (parsed_url.username, parsed_url.password) if parsed_url.username else None
+        # Create a clean URL without credentials for logging/caching
         clean_url = parsed_url._replace(netloc=parsed_url.hostname).geturl()
-        
-        # 3. Setup Request headers USING THE CLEAN URL
-        req = urllib.request.Request(clean_url, headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'})
-        
-        # 4. Inject Basic Authentication if credentials exist in the original URL
-        if parsed_url.username and parsed_url.password:
-            auth_str = f"{parsed_url.username}:{parsed_url.password}"
-            b64_auth_str = base64.b64encode(auth_str.encode('utf-8')).decode('utf-8')
-            req.add_header('Authorization', f'Basic {b64_auth_str}')
 
-        # ==========================================
-        # PRODUCTION MODE: NO CACHE
-        # ==========================================
+        # --- PRODUCTION MODE / CACHE MISS ---
+        def fetch_live():
+            self.stdout.write(f"  [LIVE FETCH] Downloading {feed_type} feed...")
+            # 'auth' parameter handles redirects correctly!
+            response = requests.get(clean_url, auth=auth, timeout=30, headers={'User-Agent': 'Vecto/1.0'})
+            response.raise_for_status()
+            return response.content
+
         if not use_cache:
-            self.stdout.write(f"  [LIVE FETCH] Downloading {feed_type} feed from web...")
-            try:
-                with urllib.request.urlopen(req) as response:
-                    raw_xml = response.read()
-                    return feedparser.parse(raw_xml)
-            except Exception as e:
-                self.stderr.write(self.style.ERROR(f"  [WARNING] Live fetch failed ({e}). Falling back to simple fetch."))
-                return feedparser.parse(url)
+            return feedparser.parse(fetch_live())
 
-        # ==========================================
-        # DEV MODE: DISK CACHING
-        # ==========================================
-        # Anchor the cache directory to the Django project root
+        # --- DEV MODE: DISK CACHING ---
         cache_dir = os.path.join(settings.BASE_DIR, '.feed_cache')
-        if not os.path.exists(cache_dir):
-            os.makedirs(cache_dir)
-            
+        if not os.path.exists(cache_dir): os.makedirs(cache_dir)
         url_hash = hashlib.md5(clean_url.encode('utf-8')).hexdigest()
         cache_file = os.path.join(cache_dir, f"{feed_type}_{url_hash}.xml")
-        
+
         if os.path.exists(cache_file):
-            self.stdout.write(self.style.WARNING(f"  [CACHE HIT] Loading {feed_type} feed from local disk..."))
+            self.stdout.write(self.style.WARNING(f"  [CACHE HIT] Loading {feed_type} from disk..."))
             return feedparser.parse(cache_file)
-            
-        self.stdout.write(f"  [CACHE MISS] Downloading {feed_type} feed from web and caching...")
-        
-        try:
-            with urllib.request.urlopen(req) as response:
-                raw_xml = response.read()
-                with open(cache_file, 'wb') as f:
-                    f.write(raw_xml)
-                return feedparser.parse(raw_xml)
-        except Exception as e:
-            self.stderr.write(self.style.ERROR(f"  [WARNING] Caching failed ({e}). Falling back to live fetch."))
-            return feedparser.parse(url)
+
+        content = fetch_live()
+        with open(cache_file, 'wb') as f:
+            f.write(content)
+        return feedparser.parse(content)
         
     def handle(self, *args, **options):
         try:
@@ -282,7 +259,7 @@ class Command(BaseCommand):
                     'audio_url_public': public_audio,
                     'audio_url_subscriber': final_sub_audio,
                     'raw_description': raw_desc,
-                    'clean_description': self.clean_html_description(raw_desc), 
+                    'clean_description': self.clean_html_description(raw_desc, podcast.network), 
                     'duration': duration_val,
                     }
                 )   

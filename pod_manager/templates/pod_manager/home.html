@@ -163,37 +163,42 @@ document.addEventListener('DOMContentLoaded', function() {
     }
 
     async function loadMore() {
+        if (isFetching || !nextPage) return; // Guard clause
         isFetching = true;
         spinner.style.display = 'block';
 
-        // Construct the URL exactly as the paginator does
-        const currentFilter = "{{ current_filter|default:'' }}";
-        let url = `?page=${nextPage}`;
-        if (currentFilter) url += `&show=${currentFilter}`;
+        // 1. Grab all CURRENT parameters from the address bar (e.g., ?show=slug&q=test)
+        const urlParams = new URLSearchParams(window.location.search);
+        
+        // 2. Overwrite or set the 'page' parameter for the next request
+        urlParams.set('page', nextPage);
+
+        // 3. Construct the fetch URL preserving every existing filter
+        const fetchUrl = `?${urlParams.toString()}`;
 
         try {
-            // Fetch the raw HTML of the next page
-            const response = await fetch(url);
+            // Fetch the next page using the combined parameters
+            const response = await fetch(fetchUrl);
             const htmlText = await response.text();
 
-            // Parse the HTML into a virtual DOM
             const parser = new DOMParser();
             const doc = parser.parseFromString(htmlText, 'text/html');
             
-            // Extract the episode cards and append them
             const newEpisodes = doc.querySelectorAll('#episodes-container > .card');
             newEpisodes.forEach(ep => container.appendChild(ep));
 
-            // Update the 'nextPage' variable from the newly fetched page
             const nextMeta = doc.getElementById('next-page-data');
             if (nextMeta && nextMeta.dataset.next) {
                 nextPage = nextMeta.dataset.next;
             } else {
-                nextPage = null; // We hit the very last page
+                nextPage = null; 
             }
 
-            if (!nextPage) spinner.innerHTML = '<small class="text-muted"><i class="bi bi-check-circle"></i> No more episodes to load.</small>';
-            else spinner.style.display = 'none';
+            if (!nextPage) {
+                spinner.innerHTML = '<small class="text-muted"><i class="bi bi-check-circle"></i> No more episodes to load.</small>';
+            } else {
+                spinner.style.display = 'none';
+            }
 
         } catch (e) {
             console.error('Infinite Scroll Failed', e);

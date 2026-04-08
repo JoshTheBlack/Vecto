@@ -60,6 +60,15 @@
                                     <input type="text" name="ignored_title_tags" class="form-control bg-black text-light border-secondary" value="{{ network.ignored_title_tags }}" placeholder="(ad-free), (premium), instant">
                                     <div class="form-text text-muted">Comma-separated tags to strip during matching.</div>
                                 </div>
+                                <div class="row">
+                                    <div class="col-12 mb-3">
+                                        <label class="form-label text-muted small fw-bold">Description Cut Triggers</label>
+                                        <input type="text" name="description_cut_triggers" class="form-control bg-black text-light border-secondary" value="{{ network.description_cut_triggers }}" placeholder="Ad Choices, Please leave a review on Apple Podcasts">
+                                        <div class="form-text text-muted">Any paragraph or list item containing one of these exact, comma-separated phrases will be completely deleted from the show notes.</div>
+                                    </div>
+                                </div>
+                            </div>
+                            </div>
                             </div>
                             <div class="mb-3">
                                 <label class="form-label text-muted small fw-bold">Theme Config (JSON)</label>

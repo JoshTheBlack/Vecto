@@ -12,6 +12,7 @@ class Network(models.Model):
     website_url = models.URLField(blank=True, help_text="e.g., https://yournetwork.com")
     default_image_url = models.URLField(blank=True, help_text="Fallback logo for RSS feeds")
     ignored_title_tags = models.TextField(blank=True, help_text="Comma-separated list of tags to strip during import (e.g., '(ad-free), premium')")
+    description_cut_triggers = models.TextField(blank=True, help_text="Comma-separated phrases to trigger paragraph deletion (e.g., 'ad choices, leave a review')")
     
     feed_cache_minutes = models.IntegerField(default=15, help_text="How long to cache feeds in minutes.")
     

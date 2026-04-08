@@ -1,6 +1,14 @@
-import uuid
+import uuid, os, requests
 from django.db import models
 from django.contrib.auth.models import User
+from django.core.files.base import ContentFile
+from django.core.files.storage import FileSystemStorage
+from django.db.models.signals import post_delete
+from django.dispatch import receiver
+from PIL import Image
+from io import BytesIO
+
+from django.conf import settings
 
 class Network(models.Model):
     name = models.TextField()
@@ -13,7 +21,7 @@ class Network(models.Model):
     default_image_url = models.URLField(blank=True, help_text="Fallback logo for RSS feeds")
     ignored_title_tags = models.TextField(blank=True, help_text="Comma-separated list of tags to strip during import (e.g., '(ad-free), premium')")
     description_cut_triggers = models.TextField(blank=True, help_text="Comma-separated phrases to trigger paragraph deletion (e.g., 'ad choices, leave a review')")
-    
+
     feed_cache_minutes = models.IntegerField(default=15, help_text="How long to cache feeds in minutes.")
     
     global_footer_public = models.TextField(blank=True, help_text="Appended to all public feeds in this network.")
@@ -110,19 +118,85 @@ class Episode(models.Model):
         """Returns True if this episode has a unique subscriber URL."""
         return self.audio_url_public != self.audio_url_subscriber
 
+def mix_cover_path(instance, filename):
+    """Always name the file exactly <UUID>.<ext>"""
+    ext = filename.split('.')[-1]
+    return os.path.join('mix_covers', f"{instance.unique_id}.{ext}")
+
+class OverwriteStorage(FileSystemStorage):
+    def get_available_name(self, name, max_length=None):
+        """Returns the same name even if it already exists on the system."""
+        if self.exists(name):
+            os.remove(os.path.join(settings.MEDIA_ROOT, name))
+        return name
+    
+mix_storage = OverwriteStorage()
+
 class UserMix(models.Model):
     """A user's custom-built feed."""
     user = models.ForeignKey(User, on_delete=models.CASCADE)
     network = models.ForeignKey(Network, on_delete=models.CASCADE)
+    
+    name = models.CharField(max_length=200, default="My Custom Mix")
+    image_url = models.URLField(blank=True, help_text="Optional custom artwork URL")
+    image_upload = models.ImageField(upload_to=mix_cover_path, storage=mix_storage, blank=True, null=True, help_text="Uploaded artwork")
+    
     unique_id = models.UUIDField(default=uuid.uuid4, editable=False, unique=True)
     selected_podcasts = models.ManyToManyField(Podcast)
-    
-    # Track when they last checked in
     last_accessed = models.DateTimeField(auto_now=True)
     is_active = models.BooleanField(default=True)
 
     def __str__(self):
-        return f"{self.user.username}'s Mix - {self.network.name}"
+        return f"{self.user.username}'s Mix - {self.name}"
+        
+    @property
+    def display_image(self):
+        if self.image_upload:
+            return self.image_upload.url
+        return self.image_url
+
+    def save(self, *args, **kwargs):
+        # 1. Handle URL downloads first
+        # If image_url is populated, we fetch it and move it to image_upload
+        if self.image_url:
+            try:
+                response = requests.get(self.image_url, timeout=10)
+                if response.status_code == 200:
+                    temp_name = os.path.basename(self.image_url).split('?')[0] or "cover.jpg"
+                    # We use save=False to prevent a recursion loop
+                    self.image_upload.save(temp_name, ContentFile(response.content), save=False)
+                    # Clear the URL so we don't re-download it every single save
+                    self.image_url = "" 
+            except Exception as e:
+                print(f"URL Download failed: {e}")
+
+        # 2. Save the record (triggers OverwriteStorage via mix_cover_path)
+        super().save(*args, **kwargs)
+
+        # 3. Post-process (Crop & Resize)
+        if self.image_upload:
+            img_path = self.image_upload.path
+            if os.path.exists(img_path):
+                try:
+                    img = Image.open(img_path)
+                    
+                    # Square Crop
+                    width, height = img.size
+                    if width != height:
+                        new_size = min(width, height)
+                        left = (width - new_size) / 2
+                        top = (height - new_size) / 2
+                        right = (width + new_size) / 2
+                        bottom = (height + new_size) / 2
+                        img = img.crop((left, top, right, bottom))
+                    
+                    # Resize to 500x500
+                    if img.height > 500 or img.width > 500:
+                        img.thumbnail((500, 500), Image.Resampling.LANCZOS)
+                    
+                    img.save(img_path)
+                except Exception as e:
+                    print(f"Image processing failed: {e}")
     
 class PatronProfile(models.Model):
     user = models.OneToOneField(User, on_delete=models.CASCADE, related_name='patron_profile')
@@ -135,3 +209,13 @@ class PatronProfile(models.Model):
 
     def __str__(self):
         return f"{self.user.email} - ${self.pledge_amount_cents / 100:.2f}"
+    
+@receiver(post_delete, sender=UserMix)
+def auto_delete_file_on_delete(sender, instance, **kwargs):
+    """
+    Deletes the physical file from the filesystem 
+    whenever a UserMix object is deleted from the database.
+    """
+    if instance.image_upload:
+        if os.path.isfile(instance.image_upload.path):
+            os.remove(instance.image_upload.path)

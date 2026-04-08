@@ -16,7 +16,7 @@
     </div>
 </div>
 
-<div class="card shadow-sm mb-4">
+<div class="card shadow-sm mb-5">
     <div class="card-header bg-dark border-bottom border-secondary">
         <h5 class="mb-0"><i class="bi bi-rss-fill text-warning"></i> Your Premium Feeds</h5>
     </div>
@@ -24,22 +24,33 @@
         {% for item in feed_data %}
             <li class="list-group-item bg-transparent text-light py-3">
                 <div class="row align-items-center">
-                    <div class="col-md-4">
-                        <h5 class="mb-1 fw-bold">{{ item.podcast.title }}</h5>
-                        <p class="mb-0 text-muted small">{{ item.podcast.network.name }} Network</p>
+                    <div class="col-md-4 d-flex align-items-center">
+                        {% if item.podcast.image_url %}
+                            <img src="{{ item.podcast.image_url }}" class="rounded me-3 shadow-sm border border-secondary" style="width: 56px; height: 56px; object-fit: cover;">
+                        {% elif item.podcast.network.default_image_url %}
+                            <img src="{{ item.podcast.network.default_image_url }}" class="rounded me-3 shadow-sm border border-secondary" style="width: 56px; height: 56px; object-fit: cover;">
+                        {% else %}
+                            <div class="rounded bg-black d-flex justify-content-center align-items-center me-3 border border-secondary shadow-sm" style="width: 56px; height: 56px;">
+                                <i class="bi bi-mic text-warning fs-4"></i>
+                            </div>
+                        {% endif %}
+                        <div>
+                            <h5 class="mb-1 fw-bold">{{ item.podcast.title }}</h5>
+                            <p class="mb-0 text-muted small">{{ item.podcast.network.name }} Network</p>
+                        </div>
                     </div>
                     
-                    <div class="col-md-8 mt-2 mt-md-0">
+                    <div class="col-md-8 mt-3 mt-md-0">
                         {% if item.has_access %}
                             <div class="input-group">
-                                <input type="text" class="form-control bg-dark text-light border-secondary" id="feed-{{ forloop.counter }}" value="{{ item.feed_url }}" readonly>
+                                <input type="text" class="form-control bg-black text-light border-secondary" id="feed-{{ forloop.counter }}" value="{{ item.feed_url }}" readonly>
                                 <button class="btn btn-outline-warning" type="button" onclick="copyFeed('feed-{{ forloop.counter }}')">
                                     <i class="bi bi-clipboard"></i> Copy
                                 </button>
                             </div>
                             <small class="text-success mt-1 d-block"><i class="bi bi-check-circle-fill"></i> Unlocked via your tier.</small>
                         {% else %}
-                            <div class="alert alert-dark border border-secondary text-muted mb-0 py-2">
+                            <div class="alert bg-black border border-secondary text-muted mb-0 py-2">
                                 <i class="bi bi-lock-fill"></i> Requires a <strong>${{ item.req_dollars|floatformat:2 }}</strong> pledge tier to unlock.
                             </div>
                         {% endif %}
@@ -50,14 +61,172 @@
     </ul>
 </div>
 
+<div class="card shadow-sm mb-5">
+    <div class="card-header bg-dark border-bottom border-secondary d-flex justify-content-between align-items-center py-3">
+        <h5 class="mb-0"><i class="bi bi-collection-play-fill text-warning"></i> Your Custom Mixes</h5>
+        <button class="btn btn-warning btn-sm fw-bold shadow-sm" data-bs-toggle="modal" data-bs-target="#createMixModal">
+            <i class="bi bi-plus-lg"></i> Add Mix
+        </button>
+    </div>
+    
+    {% if mix_data %}
+        <ul class="list-group list-group-flush bg-dark">
+            {% for item in mix_data %}
+            <li class="list-group-item bg-transparent text-light py-3">
+                <div class="row align-items-center">
+                    
+                    <div class="col-md-4 d-flex align-items-center">
+                        {% if item.mix.display_image %}
+                            <img src="{{ item.mix.display_image }}" class="rounded me-3 shadow-sm border border-secondary" style="width: 56px; height: 56px; object-fit: cover;">
+                        {% else %}
+                            <div class="rounded bg-black d-flex justify-content-center align-items-center me-3 border border-secondary shadow-sm" style="width: 56px; height: 56px;">
+                                <i class="bi bi-music-note-list text-warning fs-4"></i>
+                            </div>
+                        {% endif %}
+                        <div>
+                            <h5 class="fw-bold text-light mb-1">{{ item.mix.name }}</h5>
+                            <p class="text-muted small mb-0 text-truncate" style="max-width: 250px;" title="{% for show in item.mix.selected_podcasts.all %}{{ show.title }}{% if not forloop.last %}, {% endif %}{% endfor %}">
+                                {% for show in item.mix.selected_podcasts.all %}
+                                    {{ show.title }}{% if not forloop.last %}, {% endif %}
+                                {% empty %}
+                                    No shows selected
+                                {% endfor %}
+                            </p>
+                        </div>
+                    </div>
+                    
+                    <div class="col-md-6 mt-3 mt-md-0">
+                        <div class="input-group">
+                            <input type="text" class="form-control bg-black text-light border-secondary" id="mix-feed-{{ item.mix.id }}" value="{{ item.feed_url }}" readonly>
+                            <button class="btn btn-outline-warning" type="button" onclick="copyFeed('mix-feed-{{ item.mix.id }}')">
+                                <i class="bi bi-clipboard"></i> Copy
+                            </button>
+                        </div>
+                    </div>
+
+                    <div class="col-md-2 mt-3 mt-md-0 d-flex justify-content-md-end justify-content-start gap-2">
+                        <button class="btn btn-sm btn-outline-info border-0" data-bs-toggle="modal" data-bs-target="#editMixModal-{{ item.mix.id }}" title="Edit Mix">
+                            <i class="bi bi-pencil fs-5"></i>
+                        </button>
+                        
+                        <form method="POST" action="{% url 'user_feeds' %}" onsubmit="return confirm('Are you sure you want to delete this mix?');" class="d-inline m-0">
+                            {% csrf_token %}
+                            <input type="hidden" name="delete_mix" value="1">
+                            <input type="hidden" name="mix_id" value="{{ item.mix.id }}">
+                            <button type="submit" class="btn btn-sm btn-outline-danger border-0" title="Delete Mix"><i class="bi bi-trash fs-5"></i></button>
+                        </form>
+                    </div>
+
+                </div>
+            </li>
+
+            <div class="modal fade" id="editMixModal-{{ item.mix.id }}" tabindex="-1">
+                <div class="modal-dialog">
+                    <div class="modal-content bg-dark border-secondary">
+                        <form method="POST" action="{% url 'user_feeds' %}" enctype="multipart/form-data">
+                            {% csrf_token %}
+                            <input type="hidden" name="edit_mix" value="1">
+                            <input type="hidden" name="mix_id" value="{{ item.mix.id }}">
+                            <div class="modal-header border-bottom border-secondary bg-black">
+                                <h5 class="modal-title text-info fw-bold"><i class="bi bi-pencil"></i> Edit "{{ item.mix.name }}"</h5>
+                                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                            </div>
+                            <div class="modal-body p-4">
+                                <div class="mb-3">
+                                    <label class="form-label text-light small fw-bold">Mix Name</label>
+                                    <input type="text" class="form-control bg-black text-light border-secondary" name="mix_name" value="{{ item.mix.name }}" placeholder="Leave blank to auto-generate">
+                                </div>
+                                <div class="mb-4">
+                                    <label class="form-label text-light small fw-bold">Custom Artwork</label>
+                                    <input type="file" class="form-control bg-black text-light border-secondary mb-2" name="mix_image_upload" accept="image/*">
+                                    <div class="form-text text-muted mb-2">Note: Images should be a perfect square (e.g., 500x500) for best results.</div>
+                                    <input type="url" class="form-control bg-black text-light border-secondary" name="mix_image" value="{{ item.mix.image_url }}" placeholder="Or paste an image URL (https://...)">
+                                </div>
+                                
+                                <h6 class="text-muted small fw-bold text-uppercase mb-2">Select Shows to Include:</h6>
+                                <div class="bg-black border border-secondary rounded p-3" style="max-height: 250px; overflow-y: auto;">
+                                    {% for podcast in available_podcasts %}
+                                    <div class="form-check mb-2">
+                                        <input class="form-check-input" type="checkbox" name="podcasts" value="{{ podcast.id }}" id="edit-show-{{ item.mix.id }}-{{ podcast.id }}"
+                                            {% if podcast in item.mix.selected_podcasts.all %}checked{% endif %}>
+                                        <label class="form-check-label text-light" for="edit-show-{{ item.mix.id }}-{{ podcast.id }}">
+                                            {{ podcast.title }}
+                                        </label>
+                                    </div>
+                                    {% endfor %}
+                                </div>
+                            </div>
+                            <div class="modal-footer border-top border-secondary">
+                                <button type="button" class="btn btn-outline-light" data-bs-dismiss="modal">Cancel</button>
+                                <button type="submit" class="btn btn-info fw-bold"><i class="bi bi-floppy"></i> Save Changes</button>
+                            </div>
+                        </form>
+                    </div>
+                </div>
+            </div>
+            {% endfor %}
+        </ul>
+    {% else %}
+        <div class="card-body text-center py-5 bg-black">
+            <i class="bi bi-inbox fs-1 d-block mb-2 text-secondary"></i>
+            <p class="text-muted mb-0">You haven't created any custom mixes yet.<br>Click "Add Mix" to combine your favorite shows into a single feed!</p>
+        </div>
+    {% endif %}
+</div>
+
+<div class="modal fade" id="createMixModal" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content bg-dark border-secondary">
+            <form method="POST" action="{% url 'user_feeds' %}" enctype="multipart/form-data">
+                {% csrf_token %}
+                <input type="hidden" name="create_mix" value="1">
+                <div class="modal-header border-bottom border-secondary bg-black">
+                    <h5 class="modal-title text-warning fw-bold"><i class="bi bi-magic"></i> Create Custom Mix</h5>
+                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body p-4">
+                    <div class="mb-3">
+                        <label class="form-label text-light small fw-bold">Mix Name</label>
+                        <input type="text" class="form-control bg-black text-light border-secondary" name="mix_name" placeholder="Leave blank to auto-generate">
+                    </div>
+                    <div class="mb-4">
+                        <label class="form-label text-light small fw-bold">Custom Artwork</label>
+                        <input type="file" class="form-control bg-black text-light border-secondary mb-2" name="mix_image_upload" accept="image/*">
+                        <div class="form-text text-muted mb-2">Note: Images should be a perfect square (e.g., 500x500) for best results.</div>
+                        <input type="url" class="form-control bg-black text-light border-secondary" name="mix_image" placeholder="Or paste an image URL (https://...)">
+                        <div class="form-text text-muted">Upload a square image or provide a URL to use as the podcast cover art.</div>
+                    </div>
+                    
+                    <h6 class="text-muted small fw-bold text-uppercase mb-2">Select Shows to Include:</h6>
+                    <div class="bg-black border border-secondary rounded p-3" style="max-height: 250px; overflow-y: auto;">
+                        {% for podcast in available_podcasts %}
+                        <div class="form-check mb-2">
+                            <input class="form-check-input" type="checkbox" name="podcasts" value="{{ podcast.id }}" id="modal-show-{{ podcast.id }}">
+                            <label class="form-check-label text-light" for="modal-show-{{ podcast.id }}">
+                                {{ podcast.title }}
+                            </label>
+                        </div>
+                        {% empty %}
+                        <div class="text-muted small p-2">You don't have access to any premium shows yet.</div>
+                        {% endfor %}
+                    </div>
+                </div>
+                <div class="modal-footer border-top border-secondary">
+                    <button type="button" class="btn btn-outline-light" data-bs-dismiss="modal">Cancel</button>
+                    <button type="submit" class="btn btn-warning fw-bold"><i class="bi bi-floppy"></i> Save Mix</button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+
 <script>
 function copyFeed(elementId) {
     var copyText = document.getElementById(elementId);
     copyText.select();
-    copyText.setSelectionRange(0, 99999); /* For mobile devices */
+    copyText.setSelectionRange(0, 99999);
     navigator.clipboard.writeText(copyText.value);
     
-    // Quick visual feedback
     var btn = copyText.nextElementSibling;
     var originalHTML = btn.innerHTML;
     btn.innerHTML = '<i class="bi bi-check2"></i> Copied!';

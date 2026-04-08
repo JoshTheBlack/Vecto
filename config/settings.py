@@ -158,3 +158,20 @@ USE_TZ = True
 # https://docs.djangoproject.com/en/6.0/howto/static-files/
 
 STATIC_URL = 'static/'
+# ==========================================
+# MEDIA SETTINGS (For User Uploads)
+# ==========================================
+MEDIA_URL = '/media/'
+MEDIA_ROOT = os.path.join(BASE_DIR, 'media')
+
+# ==========================================
+# AUTHENTICATION ROUTING
+# ==========================================
+# Where to send users if they try to access a protected page
+LOGIN_URL = 'patreon_login'
+
+# Where to send users after they successfully log in
+LOGIN_REDIRECT_URL = 'home'
+
+# Where to send users after they log out
+LOGOUT_REDIRECT_URL = 'home'

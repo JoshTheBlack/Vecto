@@ -109,6 +109,14 @@
                     {% if user.is_staff %}
                         <a href="{% url 'creator_settings' %}" class="btn btn-warning btn-sm me-2">Creator Settings</a>
                     {% endif %}
+                    
+                    <form action="{% url 'logout' %}" method="post" class="d-inline">
+                        {% csrf_token %}
+                        <button type="submit" class="btn btn-outline-danger btn-sm">
+                            <i class="bi bi-box-arrow-right"></i> Logout
+                        </button>
+                    </form>
+                    
                 {% else %}
                     <a href="{% url 'patreon_login' %}" class="btn btn-danger btn-sm"><i class="bi bi-patreon"></i> Login with Patreon</a>
                 {% endif %}

@@ -17,3 +17,4 @@ redis
 # Utilities
 python-dotenv
 requests
+Pillow==10.3.0

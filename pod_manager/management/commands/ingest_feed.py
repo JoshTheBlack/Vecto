@@ -64,23 +64,38 @@ class Command(BaseCommand):
         if not html_content:
             return ""
             
+        import re 
+        
+        # 1. PRE-PROCESS: Standardize the text into HTML blocks.
+        # Convert double-newlines into paragraph boundaries
+        html_content = re.sub(r'\n{2,}', '</p><p>', html_content)
+        # Convert double-<br> tags into paragraph boundaries
+        html_content = re.sub(r'(<br\s*/?>\s*){2,}', '</p><p>', html_content)
+        # Wrap the entire thing in <p> tags so BeautifulSoup can read it
+        html_content = f"<p>{html_content}</p>"
+        
+        # Now we parse the properly formatted HTML
         soup = BeautifulSoup(html_content, "html.parser")
         
-        # FIX: Point to the new, dedicated description triggers
+        # 2. Search and Destroy
         if network.description_cut_triggers:
             triggers = [t.strip().lower() for t in network.description_cut_triggers.split(',') if t.strip()]
             
-            # Find all common text containers
+            # Now this will successfully find all the <p> blocks we just created!
             for element in soup.find_all(['p', 'div', 'li', 'em', 'strong']):
                 text = element.get_text().lower()
                 if any(trigger in text for trigger in triggers):
                     element.decompose()
         
-        # Clean up empty tags left behind
+        # 3. Clean up empty tags left behind
         for empty in soup.find_all(lambda tag: not tag.contents and not tag.get_text(strip=True)):
             empty.decompose()
             
-        return str(soup).strip()
+        # Convert remaining single newlines inside surviving blocks to <br> so they render nicely
+        final_html = str(soup).strip()
+        final_html = final_html.replace('\n', '<br>')
+            
+        return final_html
 
     def get_cached_feed(self, url, feed_type):
         """

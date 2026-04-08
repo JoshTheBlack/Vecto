@@ -9,16 +9,16 @@
 <div class="row">
     <div class="col-md-3 mb-4">
         <div class="list-group shadow-sm" id="list-tab" role="tablist">
-            <a class="list-group-item list-group-item-action bg-dark text-warning border-secondary active" id="list-networks-list" data-bs-toggle="list" href="#list-networks" role="tab">
+            <a class="list-group-item list-group-item-action border-secondary active" id="list-networks-list" data-bs-toggle="list" href="#list-networks" role="tab">
                 <i class="bi bi-globe2 me-2"></i> Networks
             </a>
-            <a class="list-group-item list-group-item-action bg-dark text-light border-secondary" id="list-shows-list" data-bs-toggle="list" href="#list-shows" role="tab">
+            <a class="list-group-item list-group-item-action border-secondary" id="list-shows-list" data-bs-toggle="list" href="#list-shows" role="tab">
                 <i class="bi bi-mic me-2"></i> Manage Podcasts
             </a>
-            <a class="list-group-item list-group-item-action bg-dark text-light border-secondary" id="list-sync-list" data-bs-toggle="list" href="#list-sync" role="tab">
+            <a class="list-group-item list-group-item-action border-secondary" id="list-sync-list" data-bs-toggle="list" href="#list-sync" role="tab">
                 <i class="bi bi-people me-2"></i> Patreon Sync
             </a>
-            <a href="/admin/" class="list-group-item list-group-item-action bg-dark text-danger border-secondary mt-3">
+            <a href="/admin/" class="list-group-item list-group-item-action text-danger border-secondary mt-3">
                 <i class="bi bi-database me-2"></i> Advanced DB Admin
             </a>
         </div>
@@ -67,9 +67,14 @@
                         
                         <div class="d-flex justify-content-between align-items-center mb-4">
                             <h4 class="fw-bold mb-0">All Podcasts</h4>
-                            <button type="button" class="btn btn-warning btn-sm" data-bs-toggle="modal" data-bs-target="#addShowModal">
-                                <i class="bi bi-plus-lg"></i> Add New Show
-                            </button>
+                            <div>
+                                <button type="button" class="btn btn-success btn-sm me-2 text-dark fw-bold" onclick="startAllLiveImports()">
+                                    <i class="bi bi-cloud-arrow-down-fill"></i> Import All
+                                </button>
+                                <button type="button" class="btn btn-warning btn-sm" data-bs-toggle="modal" data-bs-target="#addShowModal">
+                                    <i class="bi bi-plus-lg"></i> Add New Show
+                                </button>
+                            </div>
                         </div>
                         
                         <div class="accordion accordion-flush" id="showsAccordion">
@@ -83,7 +88,9 @@
                                             {% endif %}
                                             <div class="d-flex flex-column">
                                                 <span class="fw-bold">{{ show.title }}</span>
-                                                <small class="text-muted text-uppercase" style="font-size: 0.7rem;">Tier: ${{ show.required_tier.minimum_dollars|default:0|floatformat:2 }}</small>
+                                                <small class="text-muted text-uppercase" style="font-size: 0.7rem;">
+                                                    Tier: ${{ show.required_tier.minimum_dollars|default:0|floatformat:2 }} &bull; {{ show.episodes.count }} Episodes
+                                                </small>
                                             </div>
                                         </button>
                                     </h2>
@@ -98,7 +105,12 @@
                                                     </button>
                                                 </div>
                                                 
-                                                <div id="terminal-container-{{ show.id }}" class="d-none">
+                                                <div id="terminal-container-{{ show.id }}" class="d-none mt-3">
+                                                    <div class="text-end mb-1">
+                                                        <button type="button" class="btn btn-sm text-muted text-hover-warning p-0" onclick="document.getElementById('terminal-container-{{ show.id }}').classList.add('d-none')">
+                                                            <i class="bi bi-x-circle"></i> Close Log
+                                                        </button>
+                                                    </div>
                                                     <pre id="terminal-{{ show.id }}" class="bg-black text-light p-3 rounded border border-secondary font-monospace" style="height: 250px; overflow-y: auto; font-size: 0.85rem; white-space: pre-wrap;"></pre>
                                                 </div>
                                             </div>
@@ -260,6 +272,28 @@ function startLiveImport(showId) {
         btn.disabled = false;
         btn.innerHTML = '<i class="bi bi-cloud-arrow-down-fill"></i> Retry Import';
     };
+}
+function startAllLiveImports() {
+    // Find all buttons that start with "btn-import-"
+    const importButtons = document.querySelectorAll('[id^="btn-import-"]');
+    
+    importButtons.forEach(btn => {
+        // Only click the button if it's not currently running an import
+        if(!btn.disabled) {
+            // Extract the show ID from the button's ID (e.g., "btn-import-5" -> "5")
+            const showId = btn.id.replace('btn-import-', '');
+            
+            // Visually expand the accordion so the user can see the terminals streaming!
+            const collapseElement = document.getElementById(`collapse-${showId}`);
+            if (collapseElement && !collapseElement.classList.contains('show')) {
+                const bsCollapse = new bootstrap.Collapse(collapseElement, {toggle: false});
+                bsCollapse.show();
+            }
+            
+            // Trigger the live import!
+            startLiveImport(showId);
+        }
+    });
 }
 </script>
 {% endblock %}

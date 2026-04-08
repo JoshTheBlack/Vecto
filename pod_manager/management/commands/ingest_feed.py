@@ -5,6 +5,7 @@ from datetime import datetime
 from urllib.parse import urlparse
 from django.core.management.base import BaseCommand
 from django.utils.timezone import make_aware
+from django.conf import settings
 from pod_manager.models import Podcast, Episode
 import nh3
 import os
@@ -94,18 +95,46 @@ class Command(BaseCommand):
 
     def get_cached_feed(self, url, feed_type):
         """
-        [DEV HACK] Caches the raw XML to disk to prevent hammering servers.
-        Includes Basic Auth handling for private feeds.
+        Fetches the raw XML. Can cache to disk to prevent hammering servers during dev.
+        Controlled via the USE_LOCAL_FEED_CACHE environment variable.
         """
-        cache_dir = '.feed_cache'
-        if not os.path.exists(cache_dir):
-            os.makedirs(cache_dir)
-            
-        # Parse URL and create a clean version without credentials
+        # 1. Check the toggle (Defaults to False in production)
+        use_cache = os.getenv('USE_LOCAL_FEED_CACHE', 'False') == 'True'
+        
+        # 2. Parse URL and create a clean version without credentials
         parsed_url = urlparse(url)
         clean_url = parsed_url._replace(netloc=parsed_url.hostname).geturl()
         
-        # Create a unique filename based on the clean URL
+        # 3. Setup Request headers USING THE CLEAN URL
+        req = urllib.request.Request(clean_url, headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'})
+        
+        # 4. Inject Basic Authentication if credentials exist in the original URL
+        if parsed_url.username and parsed_url.password:
+            auth_str = f"{parsed_url.username}:{parsed_url.password}"
+            b64_auth_str = base64.b64encode(auth_str.encode('utf-8')).decode('utf-8')
+            req.add_header('Authorization', f'Basic {b64_auth_str}')
+
+        # ==========================================
+        # PRODUCTION MODE: NO CACHE
+        # ==========================================
+        if not use_cache:
+            self.stdout.write(f"  [LIVE FETCH] Downloading {feed_type} feed from web...")
+            try:
+                with urllib.request.urlopen(req) as response:
+                    raw_xml = response.read()
+                    return feedparser.parse(raw_xml)
+            except Exception as e:
+                self.stderr.write(self.style.ERROR(f"  [WARNING] Live fetch failed ({e}). Falling back to simple fetch."))
+                return feedparser.parse(url)
+
+        # ==========================================
+        # DEV MODE: DISK CACHING
+        # ==========================================
+        # Anchor the cache directory to the Django project root
+        cache_dir = os.path.join(settings.BASE_DIR, '.feed_cache')
+        if not os.path.exists(cache_dir):
+            os.makedirs(cache_dir)
+            
         url_hash = hashlib.md5(clean_url.encode('utf-8')).hexdigest()
         cache_file = os.path.join(cache_dir, f"{feed_type}_{url_hash}.xml")
         
@@ -113,17 +142,8 @@ class Command(BaseCommand):
             self.stdout.write(self.style.WARNING(f"  [CACHE HIT] Loading {feed_type} feed from local disk..."))
             return feedparser.parse(cache_file)
             
-        self.stdout.write(f"  [CACHE MISS] Downloading {feed_type} feed from web...")
+        self.stdout.write(f"  [CACHE MISS] Downloading {feed_type} feed from web and caching...")
         
-        # Setup Request headers USING THE CLEAN URL to avoid the port error
-        req = urllib.request.Request(clean_url, headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'})
-        
-        # Inject Basic Authentication if credentials exist in the original URL
-        if parsed_url.username and parsed_url.password:
-            auth_str = f"{parsed_url.username}:{parsed_url.password}"
-            b64_auth_str = base64.b64encode(auth_str.encode('utf-8')).decode('utf-8')
-            req.add_header('Authorization', f'Basic {b64_auth_str}')
-
         try:
             with urllib.request.urlopen(req) as response:
                 raw_xml = response.read()
@@ -252,13 +272,18 @@ class Command(BaseCommand):
                     for priv_fp, priv_raw in debug_private_titles.items():
                         self.stdout.write(f"           Raw: '{priv_raw}' | FP: '{priv_fp}'")
             raw_desc = getattr(entry, 'description', '')
-
-            # NEW: Grab the duration from the feed
             duration_val = entry.get('itunes_duration', '')
+
+            entry_guid = getattr(entry, 'id', None)
+            if not entry_guid:
+                # Hash the title, timestamp, and audio URL to guarantee a unique, repeatable ID
+                fallback_string = f"{entry_title}-{dt.timestamp()}-{public_audio}"
+                entry_guid = hashlib.md5(fallback_string.encode('utf-8')).hexdigest()
+                self.stdout.write(self.style.WARNING(f"  [Warning] No GUID found for '{entry_title}'. Generated fallback: {entry_guid}"))
 
             Episode.objects.update_or_create(
                 podcast=podcast,
-                guid=getattr(entry, 'id', entry_title),
+                guid=entry_guid,
                 defaults={
                     'title': entry_title,
                     'pub_date': dt,
@@ -267,8 +292,8 @@ class Command(BaseCommand):
                     'raw_description': raw_desc,
                     'clean_description': self.clean_html_description(raw_desc), 
                     'duration': duration_val,
-                }
-            )
+                    }
+                )   
             count += 1
 
         self.stdout.write(self.style.SUCCESS(f"Finished. Total: {count} | Matches: {matches}"))

@@ -131,15 +131,20 @@ def patreon_callback(request):
     # C. Extract core info
     patreon_id = user_data['data']['id']
     attributes = user_data['data']['attributes']
-    email = attributes.get('email')
+    
+    # Safely handle the case where a user has hidden their email
+    raw_email = attributes.get('email')
+    safe_username = raw_email if raw_email else patreon_id
+    safe_email = raw_email if raw_email else ''
+    
     full_name = attributes.get('full_name', '')
 
     pledge_amount = get_bald_move_pledge_amount(user_data)
 
-    # D. Get or Create the Django User (Using email as the username)
+    # D. Get or Create the Django User (Using safe_username)
     user, created = User.objects.get_or_create(
-        username=email, 
-        defaults={'email': email, 'first_name': full_name}
+        username=safe_username, 
+        defaults={'email': safe_email, 'first_name': full_name}
     )
 
     # E. Get or Create their Patron Profile and update their pledge

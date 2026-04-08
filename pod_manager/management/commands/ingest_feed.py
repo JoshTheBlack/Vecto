@@ -29,27 +29,19 @@ class Command(BaseCommand):
         except Exception:
             return None
 
-    def get_fingerprint(self, title):
+    def get_fingerprint(self, title, network):
         if not title:
             return ""
         
         title_lower = title.lower()
         
-        # 1. TAG STRIPPING
-        tags = [
-            '(ad-free)', '(premium)', '(private)', 
-            '(instant)', 'instant take', 'instant talk',
-            '- public premiere', 'public premiere',
-            'off the clock'
-        ]
-        for tag in tags:
-            title_lower = title_lower.replace(tag, '')
-            
-        # 2. KNOWN PREFIX STRIPPING
-        title_lower = re.sub(r'^(ahs:\d{4}|american horror story podcast|bald move pulp|pulp|the pitt|into the pitt)\s*-\s*', '', title_lower)
-
-        # 3. THE NUCLEAR STRIP
-        # Remove absolutely everything that isn't a lowercase letter or number
+        # Pull custom tags from the DB, split by comma, and clean up whitespace
+        if network.ignored_title_tags:
+            tags = [t.strip().lower() for t in network.ignored_title_tags.split(',') if t.strip()]
+            for tag in tags:
+                title_lower = title_lower.replace(tag, '')
+                
+        # The Nuclear Strip: Remove absolutely everything that isn't a lowercase letter or number
         return re.sub(r'[^a-z0-9]', '', title_lower)
 
     def is_fuzzy_match(self, public_fp, private_fp):
@@ -190,7 +182,7 @@ class Command(BaseCommand):
                 slug_map[slug] = audio_url
 
             raw_title = getattr(entry, 'title', '')
-            fp = self.get_fingerprint(raw_title)
+            fp = self.get_fingerprint(raw_title, podcast.network)
             if fp:
                 fingerprint_map[fp] = audio_url
                 debug_private_titles[fp] = raw_title
@@ -232,7 +224,7 @@ class Command(BaseCommand):
                 sub_audio = slug_map[p_slug]
 
             # 1. Exact Match Check
-            p_fp = self.get_fingerprint(entry_title)
+            p_fp = self.get_fingerprint(entry_title, podcast.network)
             if not sub_audio and p_fp in fingerprint_map:
                 sub_audio = fingerprint_map[p_fp]
 

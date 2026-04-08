@@ -24,6 +24,9 @@ from django.contrib import messages
 from django.core.management import call_command
 import io
 from django.core.paginator import Paginator
+import threading
+import time
+import queue
 
 # ==========================================
 # HELPER FUNCTIONS
@@ -45,14 +48,12 @@ def parse_duration(duration_str):
     except ValueError:
         return None
     
-def get_bald_move_pledge_amount(patreon_json):
+def get_active_pledge_amount(patreon_json, campaign_id):
     """
     Parses the Patreon API response and returns the user's active 
-    pledge amount (in cents) for Bald Move. Returns 0 if not a patron.
+    pledge amount (in cents) for the specified Campaign ID. Returns 0 if not a patron.
     """
-    BALD_MOVE_CAMPAIGN_ID = "113757"
-    
-    if 'included' not in patreon_json:
+    if 'included' not in patreon_json or not campaign_id:
         return 0
         
     for item in patreon_json['included']:
@@ -60,13 +61,24 @@ def get_bald_move_pledge_amount(patreon_json):
             relationships = item.get('relationships', {})
             campaign_data = relationships.get('campaign', {}).get('data', {})
             
-            if campaign_data and campaign_data.get('id') == BALD_MOVE_CAMPAIGN_ID:
+            if campaign_data and str(campaign_data.get('id')) == str(campaign_id):
                 attributes = item.get('attributes', {})
                 if attributes.get('patron_status') == 'active_patron':
                     return attributes.get('currently_entitled_amount_cents', 0)
                     
     return 0
 
+def invalidate_show_cache(show_id):
+    """
+    Increments the cache version for a specific show. 
+    This instantly invalidates all public and private cached feeds for this show
+    without wiping the rest of the Redis database.
+    """
+    version_key = f"podcast_cache_version_{show_id}"
+    try:
+        cache.incr(version_key)
+    except ValueError:
+        cache.set(version_key, 1, timeout=None) # Set it to 1 if it doesn't exist
 
 # ==========================================
 # OAUTH AUTHENTICATION
@@ -139,7 +151,11 @@ def patreon_callback(request):
     
     full_name = attributes.get('full_name', '')
 
-    pledge_amount = get_bald_move_pledge_amount(user_data)
+    # Fetch the primary network to check its Patreon Campaign ID
+    primary_network = Network.objects.first()
+    campaign_id = primary_network.patreon_campaign_id if primary_network else None
+    
+    pledge_amount = get_active_pledge_amount(user_data, campaign_id)
 
     # D. Get or Create the Django User (Using safe_username)
     user, created = User.objects.get_or_create(
@@ -227,11 +243,19 @@ def creator_settings(request):
                     messages.error(request, f"Invalid JSON format for {network.name}. Settings not saved.")
                     return redirect('creator_settings')
 
+                # NEW: Save the network-agnostic fields
+                network.patreon_campaign_id = request.POST.get('patreon_campaign_id', '')
+                network.website_url = request.POST.get('website_url', '')
+                network.default_image_url = request.POST.get('default_image_url', '')
+                network.ignored_title_tags = request.POST.get('ignored_title_tags', '')
+
                 network.global_footer_public = footer_public
                 network.global_footer_private = footer_private
                 network.save()
 
-                cache.clear()
+                for show in network.podcasts.all():
+                    invalidate_show_cache(show.id)
+
                 messages.success(request, f"{network.name} settings saved successfully! Cache cleared.")
                 
             except Network.DoesNotExist:
@@ -457,7 +481,10 @@ def generate_custom_feed(request, network_slug):
     # ==========================================
     # CACHE CHECK
     # ==========================================
-    cache_key = f"xml_feed_{profile.feed_token}_{podcast.slug}"
+    # Grab the current version (defaults to 1)
+    version = cache.get(f"podcast_cache_version_{podcast.id}", 1)
+    # Inject it into the key
+    cache_key = f"xml_feed_{version}_{profile.feed_token}_{podcast.slug}"
     xml_output = cache.get(cache_key)
 
     if not xml_output:
@@ -468,9 +495,9 @@ def generate_custom_feed(request, network_slug):
         p = PodgenPodcast(
             name=f"{podcast.title} (Custom Feed)",
             description=f"Premium ad-free feed for {profile.user.first_name}.",
-            website="https://baldmove.com",
+            website=podcast.network.website_url or "https://example.com",
             explicit=True,
-            image=podcast.image_url or "https://baldmove.com/wp-content/uploads/2014/06/bald-move-logo.png",
+            image=podcast.image_url or podcast.network.default_image_url or "https://example.com/logo.png",
         )
 
         # 2. Add Episodes
@@ -510,8 +537,8 @@ def generate_public_feed(request, podcast_slug):
     # ==========================================
     # CACHE CHECK
     # ==========================================
-    # Unique key for the public version of this show
-    cache_key = f"xml_feed_public_{podcast.slug}"
+    version = cache.get(f"podcast_cache_version_{podcast.id}", 1)
+    cache_key = f"xml_feed_public_{version}_{podcast.slug}"
     xml_output = cache.get(cache_key)
 
     if not xml_output:
@@ -522,9 +549,9 @@ def generate_public_feed(request, podcast_slug):
         p = PodgenPodcast(
             name=podcast.title,
             description=f"Public feed for {podcast.title}.",
-            website="https://baldmove.com",
+            website=podcast.network.website_url or "https://example.com",
             explicit=True,
-            image=podcast.image_url or "https://baldmove.com/wp-content/uploads/2014/06/bald-move-logo.png",
+            image=podcast.image_url or podcast.network.default_image_url or "https://example.com/logo.png",
         )
 
         for ep in episodes:
@@ -604,35 +631,84 @@ def patreon_webhook(request):
     except (ValueError, KeyError) as e:
         return HttpResponse("Malformed JSON", status=400)
 
+class CacheLogStream:
+    """A virtual terminal that writes output directly to the Django Cache."""
+    def __init__(self, task_id):
+        self.task_id = task_id
+        cache.set(self.task_id, "data: Initiating Background Import...\n\n", timeout=3600)
+        
+    def write(self, text):
+        # Ignore empty newline prints from standard Python print() statements
+        if not text.strip(): return 
+        
+        current_log = cache.get(self.task_id, "")
+        clean_line = text.replace('\n', '')
+        cache.set(self.task_id, current_log + f"data: {clean_line}\n\n", timeout=3600)
+        
+    def flush(self):
+        pass
+
+# Create a single queue for all import tasks
+feed_import_queue = queue.Queue()
+
+def feed_import_worker():
+    """
+    A single background worker that processes imports one-by-one.
+    This entirely eliminates SQLite 'Database Locked' errors because 
+    only one feed can write to the database at a time!
+    """
+    while True:
+        # Grab the next show in line (this pauses automatically if the queue is empty)
+        show_id, task_id = feed_import_queue.get()
+        stream = CacheLogStream(task_id)
+        
+        try:
+            stream.write("\n[SYSTEM] Worker acquired task. Starting ingestion...\n")
+            call_command('ingest_feed', show_id, stdout=stream, stderr=stream, no_color=True)
+            invalidate_show_cache(show_id) 
+        except Exception as e:
+            stream.write(f"\n[ERROR] {str(e)}\n")
+        finally:
+            stream.write("[DONE]")
+            feed_import_queue.task_done()
+
+# Start the worker thread exactly once when Django boots up
+threading.Thread(target=feed_import_worker, daemon=True).start()
+
+
 @staff_member_required(login_url='/login/')
 def stream_feed_import(request, show_id):
     """
-    Spawns the ingest_feed management command in a separate process
-    and streams its stdout line-by-line to the frontend via Server-Sent Events.
+    Connects the UI to the background process. 
+    Puts the task in the queue if it isn't already running.
     """
+    task_id = f"import_logs_{show_id}"
+    
+    # 1. Add to the queue ONLY if it isn't already running or queued
+    if not cache.get(task_id):
+        # Set the initial cache message so the UI knows it's waiting
+        cache.set(task_id, "data: [QUEUED] Waiting for database availability...\n\n", timeout=3600)
+        feed_import_queue.put((show_id, task_id))
+
+    # 2. Stream the logs from the cache to the browser
     def event_stream():
-        yield f"data: Initiating Vecto Feed Importer for Show ID {show_id}...\n\n"
-        
-        # Spawn the terminal command as a background process
-        process = subprocess.Popen(
-            [sys.executable, 'manage.py', 'ingest_feed', str(show_id)],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            bufsize=1, # Line buffered so it streams instantly
-            cwd=settings.BASE_DIR
-        )
-        
-        # Read lines as they are printed in real-time
-        for line in iter(process.stdout.readline, ''):
-            # Clean up the line break since SSE uses \n\n to separate events
-            clean_line = line.replace('\n', '')
-            yield f"data: {clean_line}\n\n"
+        last_length = 0
+        while True:
+            logs = cache.get(task_id, "")
             
-        process.stdout.close()
-        process.wait()
-        
-        # Send a special completion flag
-        yield "data: [DONE]\n\n"
+            # If new logs have been added since we last checked
+            if len(logs) > last_length:
+                new_logs = logs[last_length:]
+                yield new_logs
+                last_length = len(logs)
+                
+                # If the background thread wrote [DONE], exit the loop and close connection
+                if "[DONE]" in new_logs:
+                    cache.delete(task_id) # Clean up the cache
+                    break
+                    
+            # Non-blocking pause before checking the cache again
+            time.sleep(0.5)
 
     return StreamingHttpResponse(event_stream(), content_type='text/event-stream')
+    

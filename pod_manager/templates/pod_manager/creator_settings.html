@@ -39,7 +39,28 @@
                             {% csrf_token %}
                             <input type="hidden" name="action" value="update_network">
                             <input type="hidden" name="network_id" value="{{ network.id }}">
+                            <div class="row">
+                                <div class="col-md-6 mb-3">
+                                    <label class="form-label text-muted small fw-bold">Patreon Campaign ID</label>
+                                    <input type="text" name="patreon_campaign_id" class="form-control bg-black text-light border-secondary" value="{{ network.patreon_campaign_id }}">
+                                </div>
+                                <div class="col-md-6 mb-3">
+                                    <label class="form-label text-muted small fw-bold">Website URL</label>
+                                    <input type="url" name="website_url" class="form-control bg-black text-light border-secondary" value="{{ network.website_url }}" placeholder="https://...">
+                                </div>
+                            </div>
                             
+                            <div class="row">
+                                <div class="col-md-6 mb-3">
+                                    <label class="form-label text-muted small fw-bold">Default Image URL</label>
+                                    <input type="url" name="default_image_url" class="form-control bg-black text-light border-secondary" value="{{ network.default_image_url }}">
+                                </div>
+                                <div class="col-md-6 mb-3">
+                                    <label class="form-label text-muted small fw-bold">Ignored Title Tags</label>
+                                    <input type="text" name="ignored_title_tags" class="form-control bg-black text-light border-secondary" value="{{ network.ignored_title_tags }}" placeholder="(ad-free), (premium), instant">
+                                    <div class="form-text text-muted">Comma-separated tags to strip during matching.</div>
+                                </div>
+                            </div>
                             <div class="mb-3">
                                 <label class="form-label text-muted small fw-bold">Theme Config (JSON)</label>
                                 <textarea name="theme_config" class="form-control bg-black text-light border-secondary font-monospace" rows="3">{{ network.theme_config }}</textarea>
@@ -249,8 +270,12 @@ function startLiveImport(showId) {
     // Open Server-Sent Events Connection
     const eventSource = new EventSource(`/import/stream/${showId}/`);
     
+    // NEW: Flag to track graceful completion
+    let isDone = false;
+    
     eventSource.onmessage = function(event) {
         if (event.data === '[DONE]') {
+            isDone = true; // Mark as successfully completed
             eventSource.close();
             btn.innerHTML = '<i class="bi bi-check-circle-fill"></i> Import Complete';
             btn.classList.replace('btn-success', 'btn-outline-success');
@@ -267,6 +292,9 @@ function startLiveImport(showId) {
     };
 
     eventSource.onerror = function() {
+        // NEW: If we already finished gracefully, silently ignore the server hangup
+        if (isDone) return; 
+        
         terminal.textContent += '\n[CONNECTION ERROR] Lost connection to server.\n';
         eventSource.close();
         btn.disabled = false;

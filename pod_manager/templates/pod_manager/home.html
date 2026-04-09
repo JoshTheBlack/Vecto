@@ -2,15 +2,16 @@
 
 {% block content %}
 
-{% block navbar_extra %}
-<div class="form-check form-switch d-flex align-items-center mb-0 pt-1">
-    <input class="form-check-input border-secondary me-2 mt-0" type="checkbox" role="switch" id="infiniteScrollToggle" style="cursor: pointer;">
-    <label class="form-check-label text-light small fw-bold mb-0" for="infiniteScrollToggle" style="white-space: nowrap; cursor: pointer;">Auto-load Next Page</label>
-</div>
-{% endblock %}
-
 <div class="row">
     <div class="col-md-8">
+        
+        <div class="d-flex justify-content-between align-items-center mb-4 border-bottom border-secondary pb-2">
+            <h3 class="fw-bold mb-0 text-light"><i class="bi bi-collection-play text-warning"></i> Latest Episodes</h3>
+            <div class="form-check form-switch d-flex align-items-center mb-0">
+                <input class="form-check-input border-secondary me-2 mt-0" type="checkbox" role="switch" id="infiniteScrollToggle" style="cursor: pointer;">
+                <label class="form-check-label text-muted small fw-bold mb-0" for="infiniteScrollToggle" style="white-space: nowrap; cursor: pointer;">Auto-load Next Page</label>
+            </div>
+        </div>
 
         <div id="next-page-data" data-next="{% if page_obj.has_next %}{{ page_obj.next_page_number }}{% endif %}"></div>
 
@@ -54,27 +55,27 @@
             <ul class="pagination justify-content-center flex-wrap">
                 
                 {% if page_obj.number > 1 %}
-                    <li class="page-item"><a class="page-link bg-dark text-warning border-secondary" href="?page=1{% if current_filter %}&show={{ current_filter }}{% endif %}">&laquo; First</a></li>
+                    <li class="page-item"><a class="page-link bg-dark text-warning border-secondary" href="?page=1{% if selected_network %}&network={{ selected_network }}{% endif %}{% if current_filter %}&show={{ current_filter }}{% endif %}">&laquo; First</a></li>
                 {% endif %}
 
                 {% if page_obj.has_previous %}
-                    <li class="page-item"><a class="page-link bg-dark text-warning border-secondary" href="?page={{ page_obj.previous_page_number }}{% if current_filter %}&show={{ current_filter }}{% endif %}">&lsaquo; Prev</a></li>
+                    <li class="page-item"><a class="page-link bg-dark text-warning border-secondary" href="?page={{ page_obj.previous_page_number }}{% if selected_network %}&network={{ selected_network }}{% endif %}{% if current_filter %}&show={{ current_filter }}{% endif %}">&lsaquo; Prev</a></li>
                 {% endif %}
 
                 {% for i in custom_page_range %}
                     {% if page_obj.number == i %}
                         <li class="page-item active" aria-current="page"><span class="page-link bg-warning border-warning fw-bold">{{ i }}</span></li>
                     {% else %}
-                        <li class="page-item"><a class="page-link bg-dark text-light border-secondary" href="?page={{ i }}{% if current_filter %}&show={{ current_filter }}{% endif %}">{{ i }}</a></li>
+                        <li class="page-item"><a class="page-link bg-dark text-light border-secondary" href="?page={{ i }}{% if selected_network %}&network={{ selected_network }}{% endif %}{% if current_filter %}&show={{ current_filter }}{% endif %}">{{ i }}</a></li>
                     {% endif %}
                 {% endfor %}
 
                 {% if page_obj.has_next %}
-                    <li class="page-item"><a class="page-link bg-dark text-warning border-secondary" href="?page={{ page_obj.next_page_number }}{% if current_filter %}&show={{ current_filter }}{% endif %}">Next &rsaquo;</a></li>
+                    <li class="page-item"><a class="page-link bg-dark text-warning border-secondary" href="?page={{ page_obj.next_page_number }}{% if selected_network %}&network={{ selected_network }}{% endif %}{% if current_filter %}&show={{ current_filter }}{% endif %}">Next &rsaquo;</a></li>
                 {% endif %}
                 
                 {% if page_obj.number < page_obj.paginator.num_pages %}
-                    <li class="page-item"><a class="page-link bg-dark text-warning border-secondary" href="?page={{ page_obj.paginator.num_pages }}{% if current_filter %}&show={{ current_filter }}{% endif %}">Last &raquo;</a></li>
+                    <li class="page-item"><a class="page-link bg-dark text-warning border-secondary" href="?page={{ page_obj.paginator.num_pages }}{% if selected_network %}&network={{ selected_network }}{% endif %}{% if current_filter %}&show={{ current_filter }}{% endif %}">Last &raquo;</a></li>
                 {% endif %}
                 
             </ul>
@@ -84,18 +85,47 @@
     </div>
     
     <div class="col-md-4">
+        
+        {% if user_networks|length > 1 %}
+        <div class="card border-secondary shadow-sm bg-dark mb-4">
+            <div class="card-body p-3">
+                <h6 class="text-muted fw-bold text-uppercase mb-2 small"><i class="bi bi-globe"></i> Active Network</h6>
+                <div class="dropdown d-grid">
+                    <button class="btn btn-outline-warning dropdown-toggle text-start d-flex justify-content-between align-items-center" type="button" data-bs-toggle="dropdown">
+                        <span class="text-light">
+                            {% if selected_network %}
+                                {% for net in user_networks %}
+                                    {% if net.slug == selected_network %}{{ net.name }}{% endif %}
+                                {% endfor %}
+                            {% else %}
+                                All My Networks (Blended)
+                            {% endif %}
+                        </span>
+                    </button>
+                    <ul class="dropdown-menu dropdown-menu-dark w-100 border-secondary shadow">
+                        <li><a class="dropdown-item {% if not selected_network %}active bg-warning text-dark fw-bold{% endif %}" href="?network=">All My Networks (Blended)</a></li>
+                        <li><hr class="dropdown-divider border-secondary"></li>
+                        {% for net in user_networks %}
+                        <li><a class="dropdown-item {% if selected_network == net.slug %}active bg-warning text-dark fw-bold{% endif %}" href="?network={{ net.slug }}">{{ net.name }}</a></li>
+                        {% endfor %}
+                    </ul>
+                </div>
+            </div>
+        </div>
+        {% endif %}
+
         <div class="card border-secondary shadow-sm bg-dark">
             <div class="card-header bg-black border-bottom border-secondary">
                 <h5 class="card-title mb-0 fw-bold"><i class="bi bi-funnel"></i> Filter by Show</h5>
             </div>
-            <div class="list-group list-group-flush">
+            <div class="list-group list-group-flush" style="max-height: 500px; overflow-y: auto;">
                 
-                <a href="{% url 'home' %}" class="list-group-item list-group-item-action bg-black text-light border-secondary {% if not current_filter %}active text-warning fw-bold{% endif %}">
+                <a href="?{% if selected_network %}network={{ selected_network }}{% endif %}" class="list-group-item list-group-item-action bg-black text-light border-secondary {% if not current_filter %}active text-warning fw-bold{% endif %}">
                     <i class="bi bi-grid-fill me-2"></i> All Shows
                 </a>
                 
                 {% for podcast in podcasts %}
-                <a href="{% url 'home' %}?show={{ podcast.slug }}" class="list-group-item list-group-item-action bg-black text-light border-secondary {% if current_filter == podcast.slug %}active text-warning fw-bold{% endif %}">
+                <a href="?show={{ podcast.slug }}{% if selected_network %}&network={{ selected_network }}{% endif %}" class="list-group-item list-group-item-action bg-black text-light border-secondary {% if current_filter == podcast.slug %}active text-warning fw-bold{% endif %}">
                     {{ podcast.title }}
                 </a>
                 {% endfor %}
@@ -106,9 +136,9 @@
 </div>
 
 <style>
-    /* Small hover effect for the links */
     .text-hover-warning:hover { color: var(--vecto-primary) !important; }
 </style>
+
 <script>
 document.addEventListener('DOMContentLoaded', function() {
     const toggle = document.getElementById('infiniteScrollToggle');
@@ -120,38 +150,34 @@ document.addEventListener('DOMContentLoaded', function() {
     let isFetching = false;
     let infiniteEnabled = false;
 
-    // Load saved preference from localStorage
     if (localStorage.getItem('vecto_infinite_scroll') === 'true') {
         toggle.checked = true;
         infiniteEnabled = true;
         if (paginationBar) paginationBar.style.display = 'none';
     }
 
-    // Handle toggle switch
     toggle.addEventListener('change', function() {
         infiniteEnabled = this.checked;
         localStorage.setItem('vecto_infinite_scroll', infiniteEnabled);
         
         if (infiniteEnabled) {
             if (paginationBar) paginationBar.style.display = 'none';
-            checkScroll(); // Check immediately in case they are already at the bottom
+            checkScroll(); 
         } else {
             if (paginationBar) paginationBar.style.display = 'flex';
         }
     });
 
-    // Create a loading spinner to show at the bottom
     const sentinel = document.createElement('div');
     sentinel.innerHTML = '<div class="text-center py-4 text-muted" id="loading-spinner" style="display:none;"><div class="spinner-border text-warning mb-2" role="status"></div><br><small>Loading more episodes...</small></div>';
     container.parentNode.insertBefore(sentinel, container.nextSibling);
     const spinner = document.getElementById('loading-spinner');
 
-    // Use IntersectionObserver to detect when the user hits the bottom
     const observer = new IntersectionObserver((entries) => {
         if (entries[0].isIntersecting && infiniteEnabled && !isFetching && nextPage) {
             loadMore();
         }
-    }, { rootMargin: '400px' }); // Trigger 400px before reaching the exact bottom
+    }, { rootMargin: '400px' }); 
 
     observer.observe(sentinel);
 
@@ -163,21 +189,16 @@ document.addEventListener('DOMContentLoaded', function() {
     }
 
     async function loadMore() {
-        if (isFetching || !nextPage) return; // Guard clause
+        if (isFetching || !nextPage) return; 
         isFetching = true;
         spinner.style.display = 'block';
 
-        // 1. Grab all CURRENT parameters from the address bar (e.g., ?show=slug&q=test)
         const urlParams = new URLSearchParams(window.location.search);
-        
-        // 2. Overwrite or set the 'page' parameter for the next request
         urlParams.set('page', nextPage);
 
-        // 3. Construct the fetch URL preserving every existing filter
         const fetchUrl = `?${urlParams.toString()}`;
 
         try {
-            // Fetch the next page using the combined parameters
             const response = await fetch(fetchUrl);
             const htmlText = await response.text();
 
@@ -201,10 +222,8 @@ document.addEventListener('DOMContentLoaded', function() {
             }
 
         } catch (e) {
-            console.error('Infinite Scroll Failed', e);
             spinner.innerHTML = '<small class="text-danger">Failed to load more episodes.</small>';
         }
-
         isFetching = false;
     }
 });

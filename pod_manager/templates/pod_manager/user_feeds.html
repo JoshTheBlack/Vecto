@@ -44,9 +44,19 @@
                         {% if item.has_access %}
                             <div class="input-group">
                                 <input type="text" class="form-control bg-black text-light border-secondary" id="feed-{{ forloop.counter }}" value="{{ item.feed_url }}" readonly>
-                                <button class="btn btn-outline-warning" type="button" onclick="copyFeed('feed-{{ forloop.counter }}')">
+                                <button class="btn btn-outline-warning" type="button" onclick="copyFeed(this, 'feed-{{ forloop.counter }}')">
                                     <i class="bi bi-clipboard"></i> Copy
                                 </button>
+                                <button class="btn btn-warning dropdown-toggle fw-bold text-dark" type="button" data-bs-toggle="dropdown" aria-expanded="false">
+                                    <i class="bi bi-phone"></i> Add to App
+                                </button>
+                                <ul class="dropdown-menu dropdown-menu-dark dropdown-menu-end border-secondary shadow">
+                                    <li><a class="dropdown-item fw-bold text-light" href="#" onclick="openPodcastApp('apple', '{{ item.feed_url }}')"><i class="bi bi-apple me-2"></i>Apple Podcasts</a></li>
+                                    <li><a class="dropdown-item text-light" href="#" onclick="openPodcastApp('pocketcasts', '{{ item.feed_url }}')">Pocket Casts</a></li>
+                                    <li><a class="dropdown-item text-light" href="#" onclick="openPodcastApp('overcast', '{{ item.feed_url }}')">Overcast</a></li>
+                                    <li><a class="dropdown-item text-light" href="#" onclick="openPodcastApp('castro', '{{ item.feed_url }}')">Castro</a></li>
+                                    <li><a class="dropdown-item text-light" href="#" onclick="openPodcastApp('podcastaddict', '{{ item.feed_url }}')">Podcast Addict</a></li>
+                                </ul>
                             </div>
                             <small class="text-success mt-1 d-block"><i class="bi bi-check-circle-fill"></i> Unlocked via your tier.</small>
                         {% else %}
@@ -98,9 +108,19 @@
                     <div class="col-md-6 mt-3 mt-md-0">
                         <div class="input-group">
                             <input type="text" class="form-control bg-black text-light border-secondary" id="mix-feed-{{ item.mix.id }}" value="{{ item.feed_url }}" readonly>
-                            <button class="btn btn-outline-warning" type="button" onclick="copyFeed('mix-feed-{{ item.mix.id }}')">
+                            <button class="btn btn-outline-warning" type="button" onclick="copyFeed(this, 'mix-feed-{{ item.mix.id }}')">
                                 <i class="bi bi-clipboard"></i> Copy
                             </button>
+                            <button class="btn btn-warning dropdown-toggle fw-bold text-dark" type="button" data-bs-toggle="dropdown" aria-expanded="false">
+                                <i class="bi bi-phone"></i> Add to App
+                            </button>
+                            <ul class="dropdown-menu dropdown-menu-dark dropdown-menu-end border-secondary shadow">
+                                <li><a class="dropdown-item fw-bold text-light" href="#" onclick="openPodcastApp('apple', '{{ item.feed_url }}')"><i class="bi bi-apple me-2"></i>Apple Podcasts</a></li>
+                                <li><a class="dropdown-item text-light" href="#" onclick="openPodcastApp('pocketcasts', '{{ item.feed_url }}')">Pocket Casts</a></li>
+                                <li><a class="dropdown-item text-light" href="#" onclick="openPodcastApp('overcast', '{{ item.feed_url }}')">Overcast</a></li>
+                                <li><a class="dropdown-item text-light" href="#" onclick="openPodcastApp('castro', '{{ item.feed_url }}')">Castro</a></li>
+                                <li><a class="dropdown-item text-light" href="#" onclick="openPodcastApp('podcastaddict', '{{ item.feed_url }}')">Podcast Addict</a></li>
+                            </ul>
                         </div>
                     </div>
 
@@ -221,13 +241,13 @@
 </div>
 
 <script>
-function copyFeed(elementId) {
+// JS for the standard "Copy" button
+function copyFeed(btn, elementId) {
     var copyText = document.getElementById(elementId);
     copyText.select();
     copyText.setSelectionRange(0, 99999);
     navigator.clipboard.writeText(copyText.value);
     
-    var btn = copyText.nextElementSibling;
     var originalHTML = btn.innerHTML;
     btn.innerHTML = '<i class="bi bi-check2"></i> Copied!';
     btn.classList.replace('btn-outline-warning', 'btn-success');
@@ -235,6 +255,30 @@ function copyFeed(elementId) {
         btn.innerHTML = originalHTML;
         btn.classList.replace('btn-success', 'btn-outline-warning');
     }, 2000);
+}
+
+// NEW: JS to deep link directly into Podcast Apps!
+function openPodcastApp(app, feedUrl) {
+    // Strip the http(s):// off the front for apps that require naked URLs
+    let cleanUrl = feedUrl.replace(/^https?:\/\//, '');
+    let encodedUrl = encodeURIComponent(feedUrl);
+    let appUrl = '';
+
+    if (app === 'apple') {
+        appUrl = 'podcast://' + cleanUrl;
+    } else if (app === 'pocketcasts') {
+        appUrl = 'pktc://subscribe/' + cleanUrl;
+    } else if (app === 'overcast') {
+        appUrl = 'overcast://x-callback-url/add?url=' + encodedUrl;
+    } else if (app === 'castro') {
+        appUrl = 'castro://subscribe/' + cleanUrl;
+    } else if (app === 'podcastaddict') {
+        appUrl = 'podcastaddict://' + cleanUrl;
+    }
+    
+    if (appUrl) {
+        window.location.href = appUrl;
+    }
 }
 </script>
 {% endblock %}

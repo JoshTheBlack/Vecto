@@ -225,13 +225,13 @@ class PatronProfile(models.Model):
     user = models.OneToOneField(User, on_delete=models.CASCADE, related_name='patron_profile')
     patreon_id = models.CharField(max_length=50, unique=True)
     pledge_amount_cents = models.IntegerField(default=0)
-    last_sync = models.DateTimeField(auto_now=True)
+    active_pledges = models.JSONField(default=dict, blank=True)
     
-    # NEW: The secret token for their podcast app
+    last_sync = models.DateTimeField(auto_now=True)
     feed_token = models.UUIDField(default=uuid.uuid4, editable=False, unique=True)
 
     def __str__(self):
-        return f"{self.user.email} - ${self.pledge_amount_cents / 100:.2f}"
+        return f"{self.user.email} - Profile"
     
 @receiver(post_delete, sender=UserMix)
 def auto_delete_file_on_delete(sender, instance, **kwargs):

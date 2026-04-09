@@ -1,6 +1,11 @@
 from django.contrib import admin
-# ADDED PatronProfile to the import
 from .models import Network, PatreonTier, Podcast, Episode, UserMix, PatronProfile
+
+@admin.register(Network)
+class NetworkAdmin(admin.ModelAdmin):
+    list_display = ('name', 'slug')
+    search_fields = ('name',)
+    filter_horizontal = ('owners',)
 
 @admin.register(Episode)
 class EpisodeAdmin(admin.ModelAdmin):
@@ -19,7 +24,6 @@ class PatronProfileAdmin(admin.ModelAdmin):
     list_display = ('user', 'patreon_id', 'pledge_amount_cents', 'last_sync')
     search_fields = ('user__username', 'user__email', 'patreon_id')
 
-admin.site.register(Network)
 admin.site.register(PatreonTier)
 admin.site.register(Podcast)
 admin.site.register(UserMix)

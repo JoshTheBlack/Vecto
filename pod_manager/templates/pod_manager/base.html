@@ -109,15 +109,26 @@
             border-color: var(--vecto-primary) !important;
             color: var(--vecto-primary-text) !important;
         }
+        
+        /* Base outline buttons (sitting on the main background) */
         .btn-outline-warning, .btn-outline-primary {
-            /* FIX: Use the bright surface text color instead of the primary color */
-            color: var(--vecto-surface-text) !important; 
+            color: var(--vecto-bg-text) !important; 
             border-color: var(--vecto-primary) !important;
         }
+        
+        /* Outline buttons sitting INSIDE a card or surface */
+        .card .btn-outline-warning, .card .btn-outline-primary,
+        .list-group-item .btn-outline-warning, .list-group-item .btn-outline-primary,
+        .modal-content .btn-outline-warning, .modal-content .btn-outline-primary,
+        .bg-dark .btn-outline-warning, .bg-black .btn-outline-warning {
+            color: var(--vecto-surface-text) !important;
+        }
+        
         .btn-outline-warning:hover, .btn-outline-primary:hover {
             background-color: var(--vecto-primary) !important;
             color: var(--vecto-primary-text) !important;
         }
+        
         .text-warning, .text-primary { color: var(--vecto-primary) !important; }
         .border-warning, .border-primary { border-color: var(--vecto-primary) !important; }
         .badge.bg-warning, .badge.bg-primary { background-color: var(--vecto-primary) !important; color: var(--vecto-primary-text) !important; }

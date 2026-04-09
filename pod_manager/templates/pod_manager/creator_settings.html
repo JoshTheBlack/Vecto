@@ -3,14 +3,32 @@
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-4 border-bottom border-secondary pb-3">
     <h2 class="fw-bold"><i class="bi bi-gear-fill text-warning"></i> Creator Settings</h2>
-    <span class="badge bg-primary fs-6">{{ total_patrons }} Active Patrons</span>
+    
+    <div class="d-flex align-items-center gap-3">
+        <span class="badge bg-primary fs-6">{{ total_patrons }} Active Patrons</span>
+        
+        <div class="dropdown">
+            <button class="btn btn-outline-warning dropdown-toggle fw-bold shadow-sm" type="button" data-bs-toggle="dropdown" aria-expanded="false">
+                <i class="bi bi-globe2 me-1"></i> {{ current_network.name }}
+            </button>
+            <ul class="dropdown-menu dropdown-menu-dark dropdown-menu-end border-secondary shadow">
+                {% for net in networks %}
+                <li>
+                    <a class="dropdown-item {% if current_network.id == net.id %}active bg-warning text-dark fw-bold{% endif %}" href="?network={{ net.slug }}">
+                        {{ net.name }}
+                    </a>
+                </li>
+                {% endfor %}
+            </ul>
+        </div>
+    </div>
 </div>
 
 <div class="row">
     <div class="col-md-3 mb-4">
         <div class="list-group shadow-sm" id="list-tab" role="tablist">
             <a class="list-group-item list-group-item-action border-secondary active" id="list-networks-list" data-bs-toggle="list" href="#list-networks" role="tab">
-                <i class="bi bi-globe2 me-2"></i> Networks
+                <i class="bi bi-globe2 me-2"></i> Network Profile
             </a>
             <a class="list-group-item list-group-item-action border-secondary" id="list-shows-list" data-bs-toggle="list" href="#list-shows" role="tab">
                 <i class="bi bi-mic me-2"></i> Manage Podcasts
@@ -28,67 +46,69 @@
         <div class="tab-content" id="nav-tabContent">
             
             <div class="tab-pane fade show active" id="list-networks" role="tabpanel">
-                {% for network in networks %}
                 <div class="card shadow-sm mb-4 border-secondary bg-dark">
                     <div class="card-header bg-black border-bottom border-secondary d-flex justify-content-between align-items-center">
-                        <h4 class="mb-0 fw-bold">{{ network.name }}</h4>
+                        <h4 class="mb-0 fw-bold">{{ current_network.name }} Settings</h4>
                     </div>
                     <div class="card-body">
-                        <h5 class="fw-bold mb-3 border-bottom border-secondary pb-2">Configuration</h5>
                         <form method="POST" action="{% url 'creator_settings' %}">
                             {% csrf_token %}
                             <input type="hidden" name="action" value="update_network">
-                            <input type="hidden" name="network_id" value="{{ network.id }}">
-                            <div class="row">
+                            <input type="hidden" name="network_id" value="{{ current_network.id }}">
+                            
+                            <h5 class="fw-bold mb-3 border-bottom border-secondary pb-2 text-warning">Integrations & URLs</h5>
+                            <div class="row mb-4">
                                 <div class="col-md-6 mb-3">
                                     <label class="form-label text-muted small fw-bold">Patreon Campaign ID</label>
-                                    <input type="text" name="patreon_campaign_id" class="form-control bg-black text-light border-secondary" value="{{ network.patreon_campaign_id }}">
+                                    <input type="text" name="patreon_campaign_id" class="form-control bg-black text-light border-secondary" value="{{ current_network.patreon_campaign_id }}">
                                 </div>
                                 <div class="col-md-6 mb-3">
                                     <label class="form-label text-muted small fw-bold">Website URL</label>
-                                    <input type="url" name="website_url" class="form-control bg-black text-light border-secondary" value="{{ network.website_url }}" placeholder="https://...">
+                                    <input type="url" name="website_url" class="form-control bg-black text-light border-secondary" value="{{ current_network.website_url }}" placeholder="https://...">
                                 </div>
-                            </div>
-                            
-                            <div class="row">
-                                <div class="col-md-6 mb-3">
+                                <div class="col-md-12 mb-3">
                                     <label class="form-label text-muted small fw-bold">Default Image URL</label>
-                                    <input type="url" name="default_image_url" class="form-control bg-black text-light border-secondary" value="{{ network.default_image_url }}">
+                                    <input type="url" name="default_image_url" class="form-control bg-black text-light border-secondary" value="{{ current_network.default_image_url }}">
+                                    <div class="form-text text-muted">Fallback logo for RSS feeds and Custom Mixes.</div>
                                 </div>
-                                <div class="col-md-6 mb-3">
-                                    <label class="form-label text-muted small fw-bold">Ignored Title Tags</label>
-                                    <input type="text" name="ignored_title_tags" class="form-control bg-black text-light border-secondary" value="{{ network.ignored_title_tags }}" placeholder="(ad-free), (premium), instant">
-                                    <div class="form-text text-muted">Comma-separated tags to strip during matching.</div>
-                                </div>
-                                <div class="row">
-                                    <div class="col-12 mb-3">
-                                        <label class="form-label text-muted small fw-bold">Description Cut Triggers</label>
-                                        <input type="text" name="description_cut_triggers" class="form-control bg-black text-light border-secondary" value="{{ network.description_cut_triggers }}" placeholder="Ad Choices, Please leave a review on Apple Podcasts">
-                                        <div class="form-text text-muted">Any paragraph or list item containing one of these exact, comma-separated phrases will be completely deleted from the show notes.</div>
-                                    </div>
-                                </div>
-                            </div>
-                            </div>
-                            </div>
-                            <div class="mb-3">
-                                <label class="form-label text-muted small fw-bold">Theme Config (JSON)</label>
-                                <textarea name="theme_config" class="form-control bg-black text-light border-secondary font-monospace" rows="3">{{ network.theme_config }}</textarea>
-                                <div class="form-text text-muted">Example: {"logo_url": "https://example.com/logo.png"}</div>
-                            </div>
-                            <div class="mb-3">
-                                <label class="form-label text-muted small fw-bold">Public Footer</label>
-                                <textarea name="footer_public" class="form-control bg-black text-light border-secondary" rows="2">{{ network.global_footer_public }}</textarea>
-                            </div>
-                            <div class="mb-4">
-                                <label class="form-label text-muted small fw-bold">Private Footer</label>
-                                <textarea name="footer_private" class="form-control bg-black text-light border-secondary" rows="2">{{ network.global_footer_private }}</textarea>
                             </div>
                             
-                            <button type="submit" class="btn btn-warning">Save Configurations</button>
+                            <h5 class="fw-bold mb-3 border-bottom border-secondary pb-2 text-warning">Feed Processing Rules</h5>
+                            <div class="row mb-4">
+                                <div class="col-md-12 mb-3">
+                                    <label class="form-label text-muted small fw-bold">Ignored Title Tags</label>
+                                    <input type="text" name="ignored_title_tags" class="form-control bg-black text-light border-secondary" value="{{ current_network.ignored_title_tags }}" placeholder="(ad-free), (premium), instant">
+                                    <div class="form-text text-muted">Comma-separated tags to strip from titles during import.</div>
+                                </div>
+                                <div class="col-md-12 mb-3">
+                                    <label class="form-label text-muted small fw-bold">Description Cut Triggers</label>
+                                    <input type="text" name="description_cut_triggers" class="form-control bg-black text-light border-secondary" value="{{ current_network.description_cut_triggers }}" placeholder="Ad Choices, Please leave a review on Apple Podcasts">
+                                    <div class="form-text text-muted">Any paragraph or list item containing one of these exact, comma-separated phrases will be completely deleted from the show notes.</div>
+                                </div>
+                            </div>
+                            
+                            <h5 class="fw-bold mb-3 border-bottom border-secondary pb-2 text-warning">Global Feed Footers</h5>
+                            <div class="row mb-4">
+                                <div class="col-md-12 mb-3">
+                                    <label class="form-label text-muted small fw-bold">Public Feed Footer (HTML)</label>
+                                    <textarea name="footer_public" class="form-control bg-black text-light border-secondary" rows="2">{{ current_network.global_footer_public }}</textarea>
+                                </div>
+                                <div class="col-md-12 mb-3">
+                                    <label class="form-label text-muted small fw-bold">Private Feed Footer (HTML)</label>
+                                    <textarea name="footer_private" class="form-control bg-black text-light border-secondary" rows="2">{{ current_network.global_footer_private }}</textarea>
+                                </div>
+                            </div>
+                            
+                            <h5 class="fw-bold mb-3 border-bottom border-secondary pb-2 text-warning">White-Label Theming</h5>
+                            <div class="mb-4">
+                                <label class="form-label text-muted small fw-bold">Theme Config (JSON)</label>
+                                <textarea name="theme_config" class="form-control bg-black text-light border-secondary font-monospace" rows="15">{{ theme_config_json|safe }}</textarea>
+                            </div>
+                            
+                            <button type="submit" class="btn btn-warning fw-bold"><i class="bi bi-floppy"></i> Save Network Configurations</button>
                         </form>
                     </div>
                 </div>
-                {% endfor %}
             </div>
 
             <div class="tab-pane fade" id="list-shows" role="tabpanel">
@@ -96,89 +116,91 @@
                     <div class="card-body">
                         
                         <div class="d-flex justify-content-between align-items-center mb-4">
-                            <h4 class="fw-bold mb-0">All Podcasts</h4>
+                            <h4 class="fw-bold mb-0">Podcasts in {{ current_network.name }}</h4>
                             <div>
                                 <button type="button" class="btn btn-success btn-sm me-2 text-dark fw-bold" onclick="startAllLiveImports()">
                                     <i class="bi bi-cloud-arrow-down-fill"></i> Import All
                                 </button>
-                                <button type="button" class="btn btn-warning btn-sm" data-bs-toggle="modal" data-bs-target="#addShowModal">
+                                <button type="button" class="btn btn-warning btn-sm fw-bold" data-bs-toggle="modal" data-bs-target="#addShowModal">
                                     <i class="bi bi-plus-lg"></i> Add New Show
                                 </button>
                             </div>
                         </div>
                         
                         <div class="accordion accordion-flush" id="showsAccordion">
-                            {% for network in networks %}
-                                {% for show in network.podcasts.all %}
-                                <div class="accordion-item bg-black border-secondary mb-2 rounded">
-                                    <h2 class="accordion-header" id="heading-{{ show.id }}">
-                                        <button class="accordion-button collapsed bg-black text-light border-secondary" type="button" data-bs-toggle="collapse" data-bs-target="#collapse-{{ show.id }}" aria-expanded="false" aria-controls="collapse-{{ show.id }}">
-                                            {% if show.image_url %}
-                                                <img src="{{ show.image_url }}" alt="cover" class="rounded me-3" style="width: 40px; height: 40px; object-fit: cover;">
-                                            {% endif %}
-                                            <div class="d-flex flex-column">
-                                                <span class="fw-bold">{{ show.title }}</span>
-                                                <small class="text-muted text-uppercase" style="font-size: 0.7rem;">
-                                                    Tier: ${{ show.required_tier.minimum_dollars|default:0|floatformat:2 }} &bull; {{ show.episodes.count }} Episodes
-                                                </small>
+                            {% for show in current_network.podcasts.all %}
+                            <div class="accordion-item bg-black border-secondary mb-2 rounded">
+                                <h2 class="accordion-header" id="heading-{{ show.id }}">
+                                    <button class="accordion-button collapsed bg-black text-light border-secondary" type="button" data-bs-toggle="collapse" data-bs-target="#collapse-{{ show.id }}">
+                                        {% if show.image_url %}
+                                            <img src="{{ show.image_url }}" alt="cover" class="rounded me-3" style="width: 40px; height: 40px; object-fit: cover;">
+                                        {% endif %}
+                                        <div class="d-flex flex-column">
+                                            <span class="fw-bold">{{ show.title }}</span>
+                                            <small class="text-muted text-uppercase" style="font-size: 0.7rem;">
+                                                Tier: ${{ show.required_tier.minimum_dollars|default:0|floatformat:2 }} &bull; {{ show.episodes.count }} Episodes
+                                            </small>
+                                        </div>
+                                    </button>
+                                </h2>
+                                <div id="collapse-{{ show.id }}" class="accordion-collapse collapse" data-bs-parent="#showsAccordion">
+                                    <div class="accordion-body">
+                                        
+                                        <div class="mb-4 border-bottom border-secondary pb-3">
+                                            <div class="d-flex justify-content-between align-items-center mb-2">
+                                                <span class="text-muted small fw-bold text-uppercase">Data Ingestion</span>
+                                                <button type="button" class="btn btn-sm btn-success text-dark fw-bold" id="btn-import-{{ show.id }}" onclick="startLiveImport({{ show.id }})">
+                                                    <i class="bi bi-cloud-arrow-down-fill"></i> Run Live Import
+                                                </button>
                                             </div>
-                                        </button>
-                                    </h2>
-                                    <div id="collapse-{{ show.id }}" class="accordion-collapse collapse" aria-labelledby="heading-{{ show.id }}" data-bs-parent="#showsAccordion">
-                                        <div class="accordion-body">
                                             
-                                            <div class="mb-4 border-bottom border-secondary pb-3">
-                                                <div class="d-flex justify-content-between align-items-center mb-2">
-                                                    <span class="text-muted small fw-bold text-uppercase">Data Ingestion</span>
-                                                    <button type="button" class="btn btn-sm btn-success text-dark fw-bold" id="btn-import-{{ show.id }}" onclick="startLiveImport({{ show.id }})">
-                                                        <i class="bi bi-cloud-arrow-down-fill"></i> Run Live Import
+                                            <div id="terminal-container-{{ show.id }}" class="d-none mt-3">
+                                                <div class="text-end mb-1">
+                                                    <button type="button" class="btn btn-sm text-muted text-hover-warning p-0" onclick="document.getElementById('terminal-container-{{ show.id }}').classList.add('d-none')">
+                                                        <i class="bi bi-x-circle"></i> Close Log
                                                     </button>
                                                 </div>
-                                                
-                                                <div id="terminal-container-{{ show.id }}" class="d-none mt-3">
-                                                    <div class="text-end mb-1">
-                                                        <button type="button" class="btn btn-sm text-muted text-hover-warning p-0" onclick="document.getElementById('terminal-container-{{ show.id }}').classList.add('d-none')">
-                                                            <i class="bi bi-x-circle"></i> Close Log
-                                                        </button>
-                                                    </div>
-                                                    <pre id="terminal-{{ show.id }}" class="bg-black text-light p-3 rounded border border-secondary font-monospace" style="height: 250px; overflow-y: auto; font-size: 0.85rem; white-space: pre-wrap;"></pre>
-                                                </div>
+                                                <pre id="terminal-{{ show.id }}" class="bg-black text-light p-3 rounded border border-secondary font-monospace" style="height: 250px; overflow-y: auto; font-size: 0.85rem; white-space: pre-wrap;"></pre>
+                                            </div>
+                                        </div>
+                                        
+                                        <form method="POST" action="{% url 'creator_settings' %}">
+                                            {% csrf_token %}
+                                            <input type="hidden" name="action" value="update_show">
+                                            <input type="hidden" name="show_id" value="{{ show.id }}">
+                                            
+                                            <div class="mb-3">
+                                                <label class="form-label text-muted small fw-bold">Required Patreon Tier</label>
+                                                <select name="tier_id" class="form-select bg-dark text-light border-secondary">
+                                                    <option value="">Public / Free</option>
+                                                    {% for tier in current_network.tiers.all %}
+                                                        <option value="{{ tier.id }}" {% if show.required_tier_id == tier.id %}selected{% endif %}>
+                                                            ${{ tier.minimum_dollars|floatformat:2 }} - {{ tier.name }}
+                                                        </option>
+                                                    {% endfor %}
+                                                </select>
                                             </div>
                                             
-                                            <form method="POST" action="{% url 'creator_settings' %}">
-                                                {% csrf_token %}
-                                                <input type="hidden" name="action" value="update_show">
-                                                <input type="hidden" name="show_id" value="{{ show.id }}">
-                                                
-                                                <div class="mb-3">
-                                                    <label class="form-label text-muted small fw-bold">Required Patreon Tier</label>
-                                                    <select name="tier_id" class="form-select bg-dark text-light border-secondary">
-                                                        <option value="">Public / Free</option>
-                                                        {% for tier in tiers %}
-                                                            <option value="{{ tier.id }}" {% if show.required_tier_id == tier.id %}selected{% endif %}>
-                                                                ${{ tier.minimum_dollars|floatformat:2 }} - {{ tier.name }}
-                                                            </option>
-                                                        {% endfor %}
-                                                    </select>
-                                                </div>
-                                                
-                                                <div class="mb-3">
-                                                    <label class="form-label text-muted small fw-bold">Show-Specific Public Footer (Optional)</label>
-                                                    <textarea name="show_footer_public" class="form-control bg-dark text-light border-secondary" rows="2">{{ show.show_footer_public }}</textarea>
-                                                </div>
-                                                
-                                                <div class="mb-4">
-                                                    <label class="form-label text-muted small fw-bold">Show-Specific Private Footer (Optional)</label>
-                                                    <textarea name="show_footer_private" class="form-control bg-dark text-light border-secondary" rows="2">{{ show.show_footer_private }}</textarea>
-                                                </div>
-                                                
-                                                <button type="submit" class="btn btn-outline-warning btn-sm"><i class="bi bi-floppy"></i> Save Show Settings</button>
-                                            </form>
+                                            <div class="mb-3">
+                                                <label class="form-label text-muted small fw-bold">Show-Specific Public Footer (Optional)</label>
+                                                <textarea name="show_footer_public" class="form-control bg-dark text-light border-secondary" rows="2">{{ show.show_footer_public }}</textarea>
+                                            </div>
                                             
-                                        </div>
+                                            <div class="mb-4">
+                                                <label class="form-label text-muted small fw-bold">Show-Specific Private Footer (Optional)</label>
+                                                <textarea name="show_footer_private" class="form-control bg-dark text-light border-secondary" rows="2">{{ show.show_footer_private }}</textarea>
+                                            </div>
+                                            
+                                            <button type="submit" class="btn btn-outline-warning btn-sm fw-bold"><i class="bi bi-floppy"></i> Save Show Settings</button>
+                                        </form>
+                                        
                                     </div>
                                 </div>
-                                {% endfor %}
+                            </div>
+                            {% empty %}
+                            <div class="text-center py-5">
+                                <p class="text-muted mb-0">No shows added to this network yet.</p>
+                            </div>
                             {% endfor %}
                         </div>
 
@@ -186,25 +208,22 @@
                 </div>
             </div>
             
-            <div class="modal fade" id="addShowModal" tabindex="-1" aria-labelledby="addShowModalLabel" aria-hidden="true">
+            <div class="modal fade" id="addShowModal" tabindex="-1" aria-hidden="true">
               <div class="modal-dialog modal-lg">
                 <div class="modal-content bg-dark text-light border-secondary">
-                  <div class="modal-header border-bottom border-secondary">
-                    <h5 class="modal-title fw-bold" id="addShowModalLabel"><i class="bi bi-mic text-warning"></i> Add New Podcast</h5>
-                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+                  <div class="modal-header border-bottom border-secondary bg-black">
+                    <h5 class="modal-title fw-bold"><i class="bi bi-mic text-warning"></i> Add New Podcast</h5>
+                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
                   </div>
                   <form method="POST" action="{% url 'creator_settings' %}">
-                      <div class="modal-body">
+                      <div class="modal-body p-4">
                           {% csrf_token %}
                           <input type="hidden" name="action" value="add_show">
+                          <input type="hidden" name="network_id" value="{{ current_network.id }}">
                           
                           <div class="mb-3">
-                              <label class="form-label text-muted small fw-bold">Network</label>
-                              <select name="network_id" class="form-select bg-black text-light border-secondary" required>
-                                  {% for network in networks %}
-                                      <option value="{{ network.id }}">{{ network.name }}</option>
-                                  {% endfor %}
-                              </select>
+                              <label class="form-label text-muted small fw-bold">Adding to Network</label>
+                              <input type="text" class="form-control bg-dark text-muted border-secondary" value="{{ current_network.name }}" disabled>
                           </div>
                           
                           <div class="row">
@@ -223,7 +242,7 @@
                               <label class="form-label text-muted small fw-bold">Required Tier</label>
                               <select name="tier_id" class="form-select bg-black text-light border-secondary">
                                   <option value="">Public / Free</option>
-                                  {% for tier in tiers %}
+                                  {% for tier in current_network.tiers.all %}
                                       <option value="{{ tier.id }}">${{ tier.minimum_dollars|floatformat:2 }} - {{ tier.name }}</option>
                                   {% endfor %}
                               </select>
@@ -234,7 +253,7 @@
                               <input type="url" name="public_feed_url" class="form-control bg-black text-light border-secondary" required placeholder="https://...">
                           </div>
                           
-                          <div class="mb-3">
+                          <div class="mb-4">
                               <label class="form-label text-muted small fw-bold">Megaphone Private Feed URL (Base)</label>
                               <input type="url" name="subscriber_feed_url" class="form-control bg-black text-light border-secondary" required placeholder="https://...">
                               <div class="form-text text-muted">The root URL provided by Megaphone before any subscriber auth keys are appended.</div>
@@ -243,7 +262,7 @@
                       </div>
                       <div class="modal-footer border-top border-secondary">
                         <button type="button" class="btn btn-outline-light" data-bs-dismiss="modal">Cancel</button>
-                        <button type="submit" class="btn btn-warning"><i class="bi bi-plus-circle"></i> Create Show</button>
+                        <button type="submit" class="btn btn-warning fw-bold"><i class="bi bi-plus-circle"></i> Create Show</button>
                       </div>
                   </form>
                 </div>
@@ -254,7 +273,7 @@
                 <div class="card shadow-sm border-secondary bg-dark text-center py-5">
                     <i class="bi bi-arrow-repeat text-warning mb-3" style="font-size: 3rem;"></i>
                     <h4 class="fw-bold">Global Patreon Sync</h4>
-                    <p class="text-muted w-75 mx-auto">This will trigger a background task to refresh the pledge amounts for all {{ total_patrons }} patrons against the Patreon API. This is usually handled by webhooks.</p>
+                    <p class="text-muted w-75 mx-auto">This will trigger a background task to refresh the pledge amounts for all {{ total_patrons }} patrons against the Patreon API. This is usually handled automatically by webhooks.</p>
                     <div>
                         <button class="btn btn-outline-warning mt-3 disabled"><i class="bi bi-play-fill"></i> Run Manual Sync</button>
                     </div>
@@ -264,6 +283,7 @@
         </div>
     </div>
 </div>
+
 <script>
 function startLiveImport(showId) {
     const btn = document.getElementById(`btn-import-${showId}`);
@@ -279,12 +299,11 @@ function startLiveImport(showId) {
     // Open Server-Sent Events Connection
     const eventSource = new EventSource(`/import/stream/${showId}/`);
     
-    // NEW: Flag to track graceful completion
     let isDone = false;
     
     eventSource.onmessage = function(event) {
         if (event.data === '[DONE]') {
-            isDone = true; // Mark as successfully completed
+            isDone = true; 
             eventSource.close();
             btn.innerHTML = '<i class="bi bi-check-circle-fill"></i> Import Complete';
             btn.classList.replace('btn-success', 'btn-outline-success');
@@ -294,14 +313,12 @@ function startLiveImport(showId) {
                 btn.classList.replace('btn-outline-success', 'btn-success');
             }, 3000);
         } else {
-            // Append line and auto-scroll to the bottom
             terminal.textContent += event.data + '\n';
             terminal.scrollTop = terminal.scrollHeight;
         }
     };
 
     eventSource.onerror = function() {
-        // NEW: If we already finished gracefully, silently ignore the server hangup
         if (isDone) return; 
         
         terminal.textContent += '\n[CONNECTION ERROR] Lost connection to server.\n';
@@ -310,24 +327,17 @@ function startLiveImport(showId) {
         btn.innerHTML = '<i class="bi bi-cloud-arrow-down-fill"></i> Retry Import';
     };
 }
+
 function startAllLiveImports() {
-    // Find all buttons that start with "btn-import-"
     const importButtons = document.querySelectorAll('[id^="btn-import-"]');
-    
     importButtons.forEach(btn => {
-        // Only click the button if it's not currently running an import
         if(!btn.disabled) {
-            // Extract the show ID from the button's ID (e.g., "btn-import-5" -> "5")
             const showId = btn.id.replace('btn-import-', '');
-            
-            // Visually expand the accordion so the user can see the terminals streaming!
             const collapseElement = document.getElementById(`collapse-${showId}`);
             if (collapseElement && !collapseElement.classList.contains('show')) {
                 const bsCollapse = new bootstrap.Collapse(collapseElement, {toggle: false});
                 bsCollapse.show();
             }
-            
-            // Trigger the live import!
             startLiveImport(showId);
         }
     });

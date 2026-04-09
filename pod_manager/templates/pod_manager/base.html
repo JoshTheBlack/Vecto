@@ -132,7 +132,7 @@
         .text-warning, .text-primary { color: var(--vecto-primary) !important; }
         .border-warning, .border-primary { border-color: var(--vecto-primary) !important; }
         .badge.bg-warning, .badge.bg-primary { background-color: var(--vecto-primary) !important; color: var(--vecto-primary-text) !important; }
-        
+
         /* 5.5 Success Colors */
         :root {
             --vecto-success: {{ current_network.theme_config.success_color|default:"#198754" }};
@@ -182,9 +182,7 @@
         <div class="collapse navbar-collapse" id="navbarNav">
             <ul class="navbar-nav me-auto">
                 <li class="nav-item"><a class="nav-link" href="{% url 'home' %}">Dashboard</a></li>
-                {% if user.is_authenticated %}
-                    <li class="nav-item"><a class="nav-link" href="{% url 'user_feeds' %}">Your Feeds</a></li>
-                {% endif %}
+                <li class="nav-item"><a class="nav-link" href="{% url 'user_feeds' %}">Your Feeds</a></li>
             </ul>
             
             <div class="me-4 d-none d-lg-block">
@@ -198,8 +196,9 @@
                 
                 {% if user.is_authenticated %}
                     <span class="text-muted small me-3">{{ user.email }}</span>
-                    {% if user.is_staff %}
-                        <a href="{% url 'creator_settings' %}" class="btn btn-warning btn-sm me-2">Creator Settings</a>
+                    
+                    {% if user.is_superuser or user.owned_networks.exists %}
+                        <a href="{% url 'creator_settings' %}" class="btn btn-warning btn-sm fw-bold me-2"><i class="bi bi-gear-fill"></i> Creator Settings</a>
                     {% endif %}
                     
                     <form action="{% url 'logout' %}" method="post" class="d-inline">

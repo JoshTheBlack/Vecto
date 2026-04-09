@@ -4,13 +4,18 @@
 <div class="row mb-4">
     <div class="col-md-8">
         <h2 class="fw-bold">Listener Dashboard</h2>
-        <p class="text-muted">Welcome back, {{ request.user.first_name }}! Manage your premium feeds below.</p>
+        <p class="text-muted">Welcome back, {{ request.user.first_name|default:"Listener" }}! Manage your podcast feeds below.</p>
     </div>
     <div class="col-md-4 text-md-end">
         <div class="card bg-dark border-warning shadow-sm">
             <div class="card-body py-2">
-                <span class="text-muted small text-uppercase">Active Patreon Pledge</span>
-                <h4 class="text-warning mb-0 fw-bold">${{ dollars|floatformat:2 }} <span class="fs-6 text-muted fw-normal">/ month</span></h4>
+                {% if user.is_authenticated %}
+                    <span class="text-muted small text-uppercase">Active Patreon Pledge</span>
+                    <h4 class="text-warning mb-0 fw-bold">${{ dollars|floatformat:2 }} <span class="fs-6 text-muted fw-normal">/ month</span></h4>
+                {% else %}
+                    <span class="text-muted small text-uppercase d-block mb-1">Unlock Ad-Free Audio</span>
+                    <a href="{% url 'patreon_login' %}" class="btn btn-warning btn-sm fw-bold w-100"><i class="bi bi-star-fill"></i> Connect Patreon</a>
+                {% endif %}
             </div>
         </div>
     </div>
@@ -18,7 +23,7 @@
 
 <div class="card shadow-sm mb-5">
     <div class="card-header bg-dark border-bottom border-secondary">
-        <h5 class="mb-0"><i class="bi bi-rss-fill text-warning"></i> Your Premium Feeds</h5>
+        <h5 class="mb-0"><i class="bi bi-rss-fill text-warning"></i> Your Feeds</h5>
     </div>
     <ul class="list-group list-group-flush bg-dark">
         {% for item in feed_data %}
@@ -41,28 +46,27 @@
                     </div>
                     
                     <div class="col-md-8 mt-3 mt-md-0">
+                        <div class="input-group">
+                            <input type="text" class="form-control bg-black text-light border-secondary" id="feed-{{ forloop.counter }}" value="{{ item.feed_url }}" readonly>
+                            <button class="btn btn-outline-warning" type="button" onclick="copyFeed(this, 'feed-{{ forloop.counter }}')">
+                                <i class="bi bi-clipboard"></i> Copy
+                            </button>
+                            <button class="btn btn-warning dropdown-toggle fw-bold text-dark" type="button" data-bs-toggle="dropdown" aria-expanded="false">
+                                <i class="bi bi-phone"></i> Add to App
+                            </button>
+                            <ul class="dropdown-menu dropdown-menu-dark dropdown-menu-end border-secondary shadow">
+                                <li><a class="dropdown-item fw-bold text-light" href="#" onclick="openPodcastApp('apple', '{{ item.feed_url }}')"><i class="bi bi-apple me-2"></i>Apple Podcasts</a></li>
+                                <li><a class="dropdown-item text-light" href="#" onclick="openPodcastApp('pocketcasts', '{{ item.feed_url }}')">Pocket Casts</a></li>
+                                <li><a class="dropdown-item text-light" href="#" onclick="openPodcastApp('overcast', '{{ item.feed_url }}')">Overcast</a></li>
+                                <li><a class="dropdown-item text-light" href="#" onclick="openPodcastApp('castro', '{{ item.feed_url }}')">Castro</a></li>
+                                <li><a class="dropdown-item text-light" href="#" onclick="openPodcastApp('podcastaddict', '{{ item.feed_url }}')">Podcast Addict</a></li>
+                            </ul>
+                        </div>
+                        
                         {% if item.has_access %}
-                            <div class="input-group">
-                                <input type="text" class="form-control bg-black text-light border-secondary" id="feed-{{ forloop.counter }}" value="{{ item.feed_url }}" readonly>
-                                <button class="btn btn-outline-warning" type="button" onclick="copyFeed(this, 'feed-{{ forloop.counter }}')">
-                                    <i class="bi bi-clipboard"></i> Copy
-                                </button>
-                                <button class="btn btn-warning dropdown-toggle fw-bold text-dark" type="button" data-bs-toggle="dropdown" aria-expanded="false">
-                                    <i class="bi bi-phone"></i> Add to App
-                                </button>
-                                <ul class="dropdown-menu dropdown-menu-dark dropdown-menu-end border-secondary shadow">
-                                    <li><a class="dropdown-item fw-bold text-light" href="#" onclick="openPodcastApp('apple', '{{ item.feed_url }}')"><i class="bi bi-apple me-2"></i>Apple Podcasts</a></li>
-                                    <li><a class="dropdown-item text-light" href="#" onclick="openPodcastApp('pocketcasts', '{{ item.feed_url }}')">Pocket Casts</a></li>
-                                    <li><a class="dropdown-item text-light" href="#" onclick="openPodcastApp('overcast', '{{ item.feed_url }}')">Overcast</a></li>
-                                    <li><a class="dropdown-item text-light" href="#" onclick="openPodcastApp('castro', '{{ item.feed_url }}')">Castro</a></li>
-                                    <li><a class="dropdown-item text-light" href="#" onclick="openPodcastApp('podcastaddict', '{{ item.feed_url }}')">Podcast Addict</a></li>
-                                </ul>
-                            </div>
-                            <small class="text-success mt-1 d-block"><i class="bi bi-check-circle-fill"></i> Unlocked via your tier.</small>
+                            <small class="text-success mt-1 d-block"><i class="bi bi-star-fill"></i> Premium Unlocked via your tier.</small>
                         {% else %}
-                            <div class="alert bg-black border border-secondary text-muted mb-0 py-2">
-                                <i class="bi bi-lock-fill"></i> Requires a <strong>${{ item.req_dollars|floatformat:2 }}</strong> pledge tier to unlock.
-                            </div>
+                            <small class="text-muted mt-1 d-block"><i class="bi bi-info-circle"></i> Public (Ad-Supported) version. Requires a <strong>${{ item.req_dollars|floatformat:2 }}</strong> pledge to unlock Premium.</small>
                         {% endif %}
                     </div>
                 </div>
@@ -74,9 +78,16 @@
 <div class="card shadow-sm mb-5">
     <div class="card-header bg-dark border-bottom border-secondary d-flex justify-content-between align-items-center py-3">
         <h5 class="mb-0"><i class="bi bi-collection-play-fill text-warning"></i> Your Custom Mixes</h5>
+        
+        {% if user.is_authenticated %}
         <button class="btn btn-warning btn-sm fw-bold shadow-sm" data-bs-toggle="modal" data-bs-target="#createMixModal">
             <i class="bi bi-plus-lg"></i> Add Mix
         </button>
+        {% else %}
+        <a href="{% url 'patreon_login' %}" class="btn btn-outline-warning btn-sm fw-bold shadow-sm">
+            Login to Mix
+        </a>
+        {% endif %}
     </div>
     
     {% if mix_data %}
@@ -165,12 +176,17 @@
                                 
                                 <h6 class="text-muted small fw-bold text-uppercase mb-2">Select Shows to Include:</h6>
                                 <div class="bg-black border border-secondary rounded p-3" style="max-height: 250px; overflow-y: auto;">
-                                    {% for podcast in available_podcasts %}
+                                    {% for avail_item in available_podcasts %}
                                     <div class="form-check mb-2">
-                                        <input class="form-check-input" type="checkbox" name="podcasts" value="{{ podcast.id }}" id="edit-show-{{ item.mix.id }}-{{ podcast.id }}"
-                                            {% if podcast in item.mix.selected_podcasts.all %}checked{% endif %}>
-                                        <label class="form-check-label text-light" for="edit-show-{{ item.mix.id }}-{{ podcast.id }}">
-                                            {{ podcast.title }}
+                                        <input class="form-check-input" type="checkbox" name="podcasts" value="{{ avail_item.podcast.id }}" id="edit-show-{{ item.mix.id }}-{{ avail_item.podcast.id }}"
+                                            {% if avail_item.podcast in item.mix.selected_podcasts.all %}checked{% endif %}>
+                                        <label class="form-check-label text-light" for="edit-show-{{ item.mix.id }}-{{ avail_item.podcast.id }}">
+                                            {{ avail_item.podcast.title }}
+                                            {% if not avail_item.has_access %}
+                                                <span class="badge bg-secondary ms-2" style="font-size: 0.65rem;">Public (Ad-Supported)</span>
+                                            {% else %}
+                                                <span class="badge bg-success ms-2" style="font-size: 0.65rem;"><i class="bi bi-star-fill"></i> Premium</span>
+                                            {% endif %}
                                         </label>
                                     </div>
                                     {% endfor %}
@@ -187,13 +203,18 @@
             {% endfor %}
         </ul>
     {% else %}
-        <div class="card-body text-center py-5 bg-black">
+        <div class="card-body text-center py-5 bg-black border border-secondary border-top-0 rounded-bottom">
             <i class="bi bi-inbox fs-1 d-block mb-2 text-secondary"></i>
+            {% if user.is_authenticated %}
             <p class="text-muted mb-0">You haven't created any custom mixes yet.<br>Click "Add Mix" to combine your favorite shows into a single feed!</p>
+            {% else %}
+            <p class="text-muted mb-0">Custom mixes allow you to blend multiple shows into a single feed.<br>Connect your Patreon account to build your first mix!</p>
+            {% endif %}
         </div>
     {% endif %}
 </div>
 
+{% if user.is_authenticated %}
 <div class="modal fade" id="createMixModal" tabindex="-1">
     <div class="modal-dialog">
         <div class="modal-content bg-dark border-secondary">
@@ -219,15 +240,20 @@
                     
                     <h6 class="text-muted small fw-bold text-uppercase mb-2">Select Shows to Include:</h6>
                     <div class="bg-black border border-secondary rounded p-3" style="max-height: 250px; overflow-y: auto;">
-                        {% for podcast in available_podcasts %}
+                        {% for avail_item in available_podcasts %}
                         <div class="form-check mb-2">
-                            <input class="form-check-input" type="checkbox" name="podcasts" value="{{ podcast.id }}" id="modal-show-{{ podcast.id }}">
-                            <label class="form-check-label text-light" for="modal-show-{{ podcast.id }}">
-                                {{ podcast.title }}
+                            <input class="form-check-input" type="checkbox" name="podcasts" value="{{ avail_item.podcast.id }}" id="modal-show-{{ avail_item.podcast.id }}">
+                            <label class="form-check-label text-light" for="modal-show-{{ avail_item.podcast.id }}">
+                                {{ avail_item.podcast.title }}
+                                {% if not avail_item.has_access %}
+                                    <span class="badge bg-secondary ms-2" style="font-size: 0.65rem;">Public (Ad-Supported)</span>
+                                {% else %}
+                                    <span class="badge bg-success ms-2" style="font-size: 0.65rem;"><i class="bi bi-star-fill"></i> Premium</span>
+                                {% endif %}
                             </label>
                         </div>
                         {% empty %}
-                        <div class="text-muted small p-2">You don't have access to any premium shows yet.</div>
+                        <div class="text-muted small p-2">No shows are available on this network yet.</div>
                         {% endfor %}
                     </div>
                 </div>
@@ -239,9 +265,9 @@
         </div>
     </div>
 </div>
+{% endif %}
 
 <script>
-// JS for the standard "Copy" button
 function copyFeed(btn, elementId) {
     var copyText = document.getElementById(elementId);
     copyText.select();
@@ -257,9 +283,7 @@ function copyFeed(btn, elementId) {
     }, 2000);
 }
 
-// NEW: JS to deep link directly into Podcast Apps!
 function openPodcastApp(app, feedUrl) {
-    // Strip the http(s):// off the front for apps that require naked URLs
     let cleanUrl = feedUrl.replace(/^https?:\/\//, '');
     let encodedUrl = encodeURIComponent(feedUrl);
     let appUrl = '';

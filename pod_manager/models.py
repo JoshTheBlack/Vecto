@@ -21,6 +21,7 @@ def default_theme_config():
         "nav_bg_color": "#000000",
         "nav_text_color": "#ffffff",
         "nav_muted_text_color": "#6c757d",
+        "nav_socials_bg_color": "#222222", # NEW
         "primary_color": "#ffc107",
         "primary_text_color": "#000000",
         "success_color": "#198754",
@@ -38,12 +39,19 @@ class Network(models.Model):
     owners = models.ManyToManyField(User, related_name="owned_networks", blank=True, help_text="Users who have admin access to this network's settings.")
     theme_config = models.JSONField(default=default_theme_config, blank=True)
     
-    # NEW: Network Agnostic Info
+    # Network Agnostic Info
     patreon_campaign_id = models.CharField(max_length=100, blank=True, help_text="The numeric ID of the Patreon Campaign")
     website_url = models.URLField(blank=True, help_text="e.g., https://yournetwork.com")
     default_image_url = models.URLField(blank=True, help_text="Fallback logo for RSS feeds")
     ignored_title_tags = models.TextField(blank=True, help_text="Comma-separated list of tags to strip during import (e.g., '(ad-free), premium')")
     description_cut_triggers = models.TextField(blank=True, help_text="Comma-separated phrases to trigger paragraph deletion (e.g., 'ad choices, leave a review')")
+
+    # NEW: Social Media Links
+    url_patreon = models.URLField(blank=True)
+    url_youtube = models.URLField(blank=True)
+    url_twitch = models.URLField(blank=True)
+    url_bluesky = models.URLField(blank=True)
+    url_twitter = models.URLField(blank=True)
 
     feed_cache_minutes = models.IntegerField(default=15, help_text="How long to cache feeds in minutes.")
     

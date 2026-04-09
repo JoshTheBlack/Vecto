@@ -32,6 +32,7 @@
 
             /* Navigation */
             --vecto-nav-bg: {{ current_network.theme_config.nav_bg_color|default:"#000000" }};
+            --vecto-nav-socials-bg: {{ current_network.theme_config.nav_socials_bg_color|default:"#222222" }};
             --vecto-nav-text: {{ current_network.theme_config.nav_text_color|default:"#ffffff" }};
             --vecto-nav-muted: {{ current_network.theme_config.nav_muted_text_color|default:"#6c757d" }};
 
@@ -58,7 +59,9 @@
         /* 2. Navigation */
         .navbar {
             background-color: var(--vecto-nav-bg) !important;
-            border-bottom: 2px solid var(--vecto-primary) !important;
+        }
+        .header-wrapper {
+            border-bottom: 2px solid var(--vecto-primary);
         }
         .navbar .navbar-brand, .navbar-nav .nav-link, .navbar-text {
             color: var(--vecto-nav-text) !important;
@@ -159,62 +162,119 @@
             --plyr-audio-controls-background: var(--vecto-surface-bg);
             --plyr-audio-control-color: var(--vecto-surface-text);
         }
+
+        /* 8. Social Bar Row */
+        .social-bar {
+            display: flex;
+            width: 100%;
+            background-color: var(--vecto-nav-socials-bg);
+            border-bottom: 1px solid var(--bs-border-color);
+        }
+        .social-bar-item {
+            flex: 1; /* Splits the width evenly regardless of how many exist */
+            text-align: center;
+            padding: 6px 0;
+            color: #ffffff !important;
+            text-decoration: none;
+            transition: background-color 0.2s ease;
+            font-size: 1.1rem;
+        }
+        /* Brand Colors on Hover */
+        .social-patreon:hover { background-color: #FF424D !important; }
+        .social-youtube:hover { background-color: #FF0000 !important; }
+        .social-twitch:hover { background-color: #9146FF !important; }
+        .social-bluesky:hover { background-color: #0085FF !important; }
+        .social-twitter:hover { background-color: #1da1f2 !important; }
         {% endif %}
     </style>
 </head>
 <body>
 
-<nav class="navbar navbar-expand-lg navbar-dark mb-4 sticky-top shadow-sm">
-    <div class="container">
-        <a class="navbar-brand text-light fw-bold d-flex align-items-center" href="{% url 'home' %}">
-            {% if current_network and current_network.theme_config.logo_url %}
-                <img src="{{ current_network.theme_config.logo_url }}" alt="{{ current_network.name }}" style="height: 32px; width: auto;" class="me-2">
-            {% else %}
-                <i class="bi bi-broadcast text-warning me-2 fs-4"></i> 
-                {{ current_network.name|default:"Vecto" }}
-            {% endif %}
-        </a>
-        
-        <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav">
-            <span class="navbar-toggler-icon"></span>
-        </button>
-        
-        <div class="collapse navbar-collapse" id="navbarNav">
-            <ul class="navbar-nav me-auto">
-                <li class="nav-item"><a class="nav-link" href="{% url 'home' %}">Dashboard</a></li>
-                <li class="nav-item"><a class="nav-link" href="{% url 'user_feeds' %}">Your Feeds</a></li>
-            </ul>
+<div class="sticky-top mb-4 shadow-sm header-wrapper">
+    
+    <nav class="navbar navbar-expand-lg navbar-dark border-0">
+        <div class="container">
+            <a class="navbar-brand text-light fw-bold d-flex align-items-center" href="{% url 'home' %}">
+                {% if current_network and current_network.theme_config.logo_url %}
+                    <img src="{{ current_network.theme_config.logo_url }}" alt="{{ current_network.name }}" style="height: 32px; width: auto;" class="me-2">
+                {% else %}
+                    <i class="bi bi-broadcast text-warning me-2 fs-4"></i> 
+                    {{ current_network.name|default:"Vecto" }}
+                {% endif %}
+            </a>
             
-            <div class="me-4 d-none d-lg-block">
-                {% block navbar_extra %}{% endblock %}
-            </div>
+            <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav">
+                <span class="navbar-toggler-icon"></span>
+            </button>
             
-            <div class="d-flex align-items-center mt-3 mt-lg-0">
-                <div class="d-block d-lg-none me-3 mb-2 mb-lg-0">
-                    {% block navbar_extra_mobile %}{% endblock %}
+            <div class="collapse navbar-collapse" id="navbarNav">
+                <ul class="navbar-nav me-auto">
+                    <li class="nav-item"><a class="nav-link" href="{% url 'home' %}">Dashboard</a></li>
+                    <li class="nav-item"><a class="nav-link" href="{% url 'user_feeds' %}">Your Feeds</a></li>
+                </ul>
+                
+                <div class="me-4 d-none d-lg-block">
+                    {% block navbar_extra %}{% endblock %}
                 </div>
                 
-                {% if user.is_authenticated %}
-                    <span class="text-muted small me-3">{{ user.email }}</span>
+                <div class="d-flex align-items-center mt-3 mt-lg-0">
+                    <div class="d-block d-lg-none me-3 mb-2 mb-lg-0">
+                        {% block navbar_extra_mobile %}{% endblock %}
+                    </div>
                     
-                    {% if user.is_superuser or user.owned_networks.exists %}
-                        <a href="{% url 'creator_settings' %}" class="btn btn-warning btn-sm fw-bold me-2"><i class="bi bi-gear-fill"></i> Creator Settings</a>
-                    {% endif %}
-                    
-                    <form action="{% url 'logout' %}" method="post" class="d-inline">
-                        {% csrf_token %}
-                        <button type="submit" class="btn btn-outline-danger btn-sm">
-                            <i class="bi bi-box-arrow-right"></i> Logout
-                        </button>
-                    </form>
-                    
-                {% else %}
-                    <a href="{% url 'patreon_login' %}" class="btn btn-danger btn-sm"><i class="bi bi-patreon"></i> Login with Patreon</a>
-                {% endif %}
+                    <ul class="navbar-nav">
+                        {% if user.is_authenticated %}
+                            <span class="text-muted small me-3 d-flex align-items-center">{{ user.email }}</span>
+                            
+                            {% if user.is_superuser or user.owned_networks.exists %}
+                                <a href="{% url 'creator_settings' %}" class="btn btn-warning btn-sm fw-bold me-2 d-flex align-items-center"><i class="bi bi-gear-fill me-1"></i> Creator Settings</a>
+                            {% endif %}
+                            
+                            <form action="{% url 'logout' %}" method="post" class="d-inline">
+                                {% csrf_token %}
+                                <button type="submit" class="btn btn-outline-danger btn-sm d-flex align-items-center">
+                                    <i class="bi bi-box-arrow-right me-1"></i> Logout
+                                </button>
+                            </form>
+                            
+                        {% else %}
+                            <li class="nav-item"><a class="btn btn-warning btn-sm fw-bold mt-1" href="{% url 'patreon_login' %}"><i class="bi bi-star-fill"></i> Connect Patreon</a></li>
+                        {% endif %}
+                    </ul>
+                </div>
             </div>
         </div>
+    </nav>
+
+    {% if current_network.url_patreon or current_network.url_youtube or current_network.url_twitch or current_network.url_bluesky or current_network.url_twitter %}
+    <div class="social-bar">
+        {% if current_network.url_patreon %}
+            <a href="{{ current_network.url_patreon }}" target="_blank" class="social-bar-item social-patreon" title="Patreon">
+                <svg xmlns="http://www.w3.org/2000/svg" width="1em" height="1em" fill="currentColor" viewBox="0 0 512 512"><path d="M512 194.8c0 101.3-82.4 183.8-183.8 183.8-101.7 0-184.4-82.4-184.4-183.8 0-101.6 82.7-184.3 184.4-184.3C429.6 10.5 512 93.2 512 194.8zM0 501.5h90v-491H0v491z"/></svg>
+            </a>
+        {% endif %}
+        {% if current_network.url_youtube %}
+            <a href="{{ current_network.url_youtube }}" target="_blank" class="social-bar-item social-youtube" title="YouTube"><i class="bi bi-youtube"></i></a>
+        {% endif %}
+        {% if current_network.url_twitch %}
+            <a href="{{ current_network.url_twitch }}" target="_blank" class="social-bar-item social-twitch" title="Twitch"><i class="bi bi-twitch"></i></a>
+        {% endif %}
+        {% if current_network.url_bluesky %}
+            <a href="{{ current_network.url_bluesky }}" target="_blank" class="social-bar-item social-bluesky" title="Bluesky">
+                <svg fill="none" viewBox="0 0 64 57" width="1.2em" height="1.2em" style="margin-top: -2px;"><path fill="currentColor" d="M13.873 3.805C21.21 9.332 29.103 20.537 32 26.55v15.882c0-.338-.13.044-.41.867-1.512 4.456-7.418 21.847-20.923 7.944-7.111-7.32-3.819-14.64 9.125-16.85-7.405 1.264-15.73-.825-18.014-9.015C1.12 23.022 0 8.51 0 6.55 0-3.268 8.579-.182 13.873 3.805ZM50.127 3.805C42.79 9.332 34.897 20.537 32 26.55v15.882c0-.338.13.044.41.867 1.512 4.456 7.418 21.847 20.923 7.944 7.111-7.32 3.819-14.64-9.125-16.85 7.405 1.264 15.73-.825 18.014-9.015C62.88 23.022 64 8.51 64 6.55c0-9.818-8.578-6.732-13.873-2.745Z"></path></svg>
+            </a>
+        {% endif %}
+        {% if current_network.url_twitter %}
+            <a href="{{ current_network.url_twitter }}" target="_blank" class="social-bar-item social-twitter" title="Twitter">
+                <svg xmlns="http://www.w3.org/2000/svg" width="1.2em" height="1.2em" fill="currentColor" viewBox="0 0 512 512">
+                    <path d="M459.4 151.7c.3 4.5.3 9.1.3 13.6 0 138.7-105.6 298.6-298.6 298.6-59.5 0-114.7-17.2-161.1-47.1 8.4 1 16.6 1.3 25.3 1.3 49.1 0 94.2-16.6 130.3-44.8-46.1-1-84.8-31.2-98.1-72.8 6.5 1 13 1.6 19.8 1.6 9.4 0 18.8-1.3 27.6-3.6-48.1-9.7-84.1-52-84.1-103v-1.3c14 7.8 30.2 12.7 47.4 13.3-28.3-18.8-46.8-51-46.8-87.4 0-19.5 5.2-37.4 14.3-53 51.7 63.7 129.3 105.3 216.4 109.8-1.6-7.8-2.6-15.9-2.6-24 0-57.8 46.8-104.7 104.7-104.7 30.2 0 57.5 12.7 76.7 33.1 23.7-4.5 46.5-13.3 66.6-25.3-7.8 24.4-24.4 44.8-46.1 57.8 21.1-2.3 41.6-8.1 60.4-16.2-14.3 20.8-32.2 39.3-52.6 54.3z"/>
+                </svg>
+            </a>
+        {% endif %}
     </div>
-</nav>
+    {% endif %}
+
+</div>
 
 <div class="container mt-3">
     {% if messages %}

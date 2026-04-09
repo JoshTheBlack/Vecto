@@ -197,6 +197,12 @@ def creator_settings(request):
             network.ignored_title_tags = request.POST.get('ignored_title_tags', '')
             network.description_cut_triggers = request.POST.get('description_cut_triggers', '')
 
+            network.url_patreon = request.POST.get('url_patreon', '')
+            network.url_youtube = request.POST.get('url_youtube', '')
+            network.url_twitch = request.POST.get('url_twitch', '')
+            network.url_bluesky = request.POST.get('url_bluesky', '')
+            network.url_twitter = request.POST.get('url_twitter', '')
+            
             network.global_footer_public = footer_public
             network.global_footer_private = footer_private
             network.save()
@@ -210,17 +216,21 @@ def creator_settings(request):
         elif action == 'update_show':
             show_id = request.POST.get('show_id')
             show = get_object_or_404(Podcast, id=show_id, network__in=allowed_networks)
+            
+            # Capture the new URL fields
+            show.public_feed_url = request.POST.get('public_feed_url', show.public_feed_url)
+            show.subscriber_feed_url = request.POST.get('subscriber_feed_url', show.subscriber_feed_url)
+            
             tier_id = request.POST.get('tier_id')
+            show.show_footer_public = request.POST.get('show_footer_public', '')
+            show.show_footer_private = request.POST.get('show_footer_private', '')
 
             if tier_id:
                 show.required_tier_id = tier_id
             else:
                 show.required_tier = None
                 
-            show.show_footer_public = request.POST.get('show_footer_public', '')
-            show.show_footer_private = request.POST.get('show_footer_private', '')
             show.save()
-            
             invalidate_show_cache(show.id)
             messages.success(request, f"{show.title} updated successfully! Feed cache invalidated.")
             return redirect(f"{reverse('creator_settings')}?network={show.network.slug}")

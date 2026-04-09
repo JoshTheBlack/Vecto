@@ -99,6 +99,30 @@
                                 </div>
                             </div>
                             
+                            <h5 class="fw-bold mb-3 border-bottom border-secondary pb-2 mt-4 text-warning">Social Media Links</h5>
+                            <div class="row">
+                                <div class="col-md-4 mb-3">
+                                    <label class="form-label text-muted small fw-bold">Patreon</label>
+                                    <input type="url" name="url_patreon" class="form-control bg-black text-light border-secondary" value="{{ current_network.url_patreon }}">
+                                </div>
+                                <div class="col-md-4 mb-3">
+                                    <label class="form-label text-muted small fw-bold">YouTube</label>
+                                    <input type="url" name="url_youtube" class="form-control bg-black text-light border-secondary" value="{{ current_network.url_youtube }}">
+                                </div>
+                                <div class="col-md-4 mb-3">
+                                    <label class="form-label text-muted small fw-bold">Twitch</label>
+                                    <input type="url" name="url_twitch" class="form-control bg-black text-light border-secondary" value="{{ current_network.url_twitch }}">
+                                </div>
+                                <div class="col-md-6 mb-3">
+                                    <label class="form-label text-muted small fw-bold">Bluesky</label>
+                                    <input type="url" name="url_bluesky" class="form-control bg-black text-light border-secondary" value="{{ current_network.url_bluesky }}">
+                                </div>
+                                <div class="col-md-6 mb-3">
+                                    <label class="form-label text-muted small fw-bold">Twitter (X)</label>
+                                    <input type="url" name="url_twitter" class="form-control bg-black text-light border-secondary" value="{{ current_network.url_twitter }}">
+                                </div>
+                            </div>
+
                             <h5 class="fw-bold mb-3 border-bottom border-secondary pb-2 text-warning">White-Label Theming</h5>
                             <div class="mb-4">
                                 <label class="form-label text-muted small fw-bold">Theme Config (JSON)</label>
@@ -169,6 +193,17 @@
                                             <input type="hidden" name="action" value="update_show">
                                             <input type="hidden" name="show_id" value="{{ show.id }}">
                                             
+                                            <div class="row">
+                                                <div class="col-md-6 mb-3">
+                                                    <label class="form-label text-muted small fw-bold">Public Feed RSS URL</label>
+                                                    <input type="url" name="public_feed_url" class="form-control bg-dark text-light border-secondary" value="{{ show.public_feed_url }}" required>
+                                                </div>
+                                                <div class="col-md-6 mb-3">
+                                                    <label class="form-label text-muted small fw-bold">Subscriber Feed URL (Base)</label>
+                                                    <input type="url" name="subscriber_feed_url" class="form-control bg-dark text-light border-secondary" value="{{ show.subscriber_feed_url }}" required>
+                                                </div>
+                                            </div>
+
                                             <div class="mb-3">
                                                 <label class="form-label text-muted small fw-bold">Required Patreon Tier</label>
                                                 <select name="tier_id" class="form-select bg-dark text-light border-secondary">

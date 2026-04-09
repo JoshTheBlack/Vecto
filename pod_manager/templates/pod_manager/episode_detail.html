@@ -3,31 +3,18 @@
 {% block content %}
 <link rel="stylesheet" href="https://cdn.plyr.io/3.7.8/plyr.css" />
 <style>
-    /* Customizing Plyr to match our Vecto Dark/Warning Theme */
-    :root {
-        --plyr-color-main: #ffc107;
-        --plyr-audio-controls-background: #000000;
-        --plyr-audio-control-color: #e0e0e0;
-    }
-    
-    .plyr--audio .plyr__controls {
-        border: 1px solid #333;
-        border-radius: 0.5rem;
-        padding: 10px;
-    }
-
-    /* NEW: Constrain the height of the settings menu and make it scrollable */
+    /* Constrain the height of the settings menu and make it scrollable */
     .plyr__menu__container {
         max-height: 250px;
         overflow-y: auto;
     }
     
-    /* Optional: Style the scrollbar to match the theme */
+    /* Style the scrollbar to match the theme */
     .plyr__menu__container::-webkit-scrollbar {
         width: 6px;
     }
     .plyr__menu__container::-webkit-scrollbar-thumb {
-        background: var(--plyr-color-main);
+        background: var(--vecto-primary); /* Automatically uses your theme color */
         border-radius: 3px;
     }
 </style>
@@ -52,7 +39,7 @@
                     {{ ep.title }}
                     
                     {% if ep.is_premium and not ep.user_has_access %}
-                        <span class="badge bg-warning text-dark fs-6 float-end"><i class="bi bi-unlock-fill"></i> Ad-Free Available</span>
+                        <span class="badge bg-warning fs-6 float-end"><i class="bi bi-unlock-fill"></i> Ad-Free Available</span>
                     {% elif ep.is_premium and ep.user_has_access %}
                         <span class="badge bg-success fs-6 float-end"><i class="bi bi-star-fill"></i> Premium Enabled</span>
                     {% endif %}

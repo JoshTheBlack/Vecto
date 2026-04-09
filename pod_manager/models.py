@@ -10,10 +10,33 @@ from io import BytesIO
 
 from django.conf import settings
 
+def default_theme_config():
+    return {
+        "bg_color": "#121212",
+        "bg_text_color": "#f8f9fa",
+        "bg_muted_text_color": "#6c757d",
+        "surface_bg_color": "#1e1e1e",
+        "surface_text_color": "#f8f9fa",
+        "surface_muted_text_color": "#adb5bd",
+        "nav_bg_color": "#000000",
+        "nav_text_color": "#ffffff",
+        "nav_muted_text_color": "#6c757d",
+        "primary_color": "#ffc107",
+        "primary_text_color": "#000000",
+        "success_color": "#198754",
+        "success_text_color": "#ffffff",
+        "border_color": "#343a40",
+        "font_family": "system-ui, sans-serif",
+        "google_fonts_url": "",
+        "border_radius": "0.375rem",
+        "logo_url": ""
+    }
+
 class Network(models.Model):
     name = models.TextField()
     slug = models.SlugField(unique=True)
-    theme_config = models.JSONField(default=dict, blank=True)
+    owners = models.ManyToManyField(User, related_name="owned_networks", blank=True, help_text="Users who have admin access to this network's settings.")
+    theme_config = models.JSONField(default=default_theme_config, blank=True)
     
     # NEW: Network Agnostic Info
     patreon_campaign_id = models.CharField(max_length=100, blank=True, help_text="The numeric ID of the Patreon Campaign")

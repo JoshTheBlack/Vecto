@@ -40,7 +40,8 @@ DEBUG = True
 ALLOWED_HOSTS = ['localhost',
     '127.0.0.1',
     '.ngrok-free.dev', # Allows any subdomain from ngrok-free.dev
-    '.ngrok.app',]
+    '.ngrok.app',
+    '.local',]
 
 CSRF_TRUSTED_ORIGINS = [
     'https://*.ngrok-free.dev',

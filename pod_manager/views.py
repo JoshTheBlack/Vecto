@@ -280,18 +280,24 @@ def creator_settings(request):
     return render(request, 'pod_manager/creator_settings.html', context)
 
 def home(request):
-    podcasts = Podcast.objects.all().order_by('title')
     show_slug = request.GET.get('show')
-    selected_network = request.GET.get('network', None)
+    selected_network_slug = request.GET.get('network', None)
     
-    user_networks = Network.objects.filter(podcasts__in=podcasts).distinct()
+    user_networks = Network.objects.none()
+    if request.user.is_authenticated and hasattr(request.user, 'patron_profile'):
+        pledges = request.user.patron_profile.active_pledges or {}
+        # Get slugs of networks where the user has an active pledge > $0
+        active_campaign_ids = [cid for cid, amt in pledges.items() if amt > 0]
+        user_networks = Network.objects.filter(patreon_campaign_id__in=active_campaign_ids).distinct()
+
+    if selected_network_slug:
+        current_view_network = get_object_or_404(Network, slug=selected_network_slug)
+    else:
+        current_view_network = request.network
+
+    podcasts = current_view_network.podcasts.all().order_by('title')
     query = Episode.objects.select_related('podcast', 'podcast__network', 'podcast__required_tier')
-    
-    if selected_network:
-        podcasts = podcasts.filter(network__slug=selected_network)
-        query = query.filter(podcast__network__slug=selected_network)
-    if show_slug:
-        query = query.filter(podcast__slug=show_slug)
+    query = query.filter(podcast__network=current_view_network)
         
     all_episodes = query.order_by('-pub_date')
     paginator = Paginator(all_episodes, 20)
@@ -302,9 +308,6 @@ def home(request):
         page_number = 1
         
     page_obj = paginator.get_page(page_number)
-    start_index = max(1, page_obj.number - 5)
-    end_index = min(paginator.num_pages, page_obj.number + 5)
-    custom_page_range = range(start_index, end_index + 1)
     
     user_active_pledges = {}
     if request.user.is_authenticated and hasattr(request.user, 'patron_profile'):
@@ -313,25 +316,23 @@ def home(request):
     for ep in page_obj:
         req_cents = ep.podcast.required_tier.minimum_cents if ep.podcast.required_tier else 0
         camp_id = str(ep.podcast.network.patreon_campaign_id)
-        user_cents = user_active_pledges.get(camp_id, 0)
+        user_cents = request.user.patron_profile.active_pledges.get(camp_id, 0) if request.user.is_authenticated else 0
         ep.user_has_access = (user_cents >= req_cents)
-
-    current_network = Network.objects.filter(slug=selected_network).first() if selected_network else request.network
 
     context = {
         'episodes': page_obj,          
         'page_obj': page_obj,          
-        'custom_page_range': custom_page_range, 
+        'custom_page_range': range(max(1, page_obj.number - 5), min(paginator.num_pages, page_obj.number + 5) + 1),
         'podcasts': podcasts,          
         'current_filter': show_slug,   
-        'current_network': current_network,
+        'current_network': current_view_network,
         'user_networks': user_networks,
-        'selected_network': selected_network,
+        'selected_network': selected_network_slug,
     }
     return render(request, 'pod_manager/home.html', context)
 
 def episode_detail(request, episode_id):
-    ep = get_object_or_404(Episode.objects.select_related('podcast', 'podcast__network', 'podcast__required_tier'), id=episode_id)
+    ep = get_object_or_404(Episode.objects.select_related('podcast', 'podcast__network', 'podcast__required_tier'), id=episode_id, podcast__network=request.network)
 
     user_active_pledges = {}
     if request.user.is_authenticated and hasattr(request.user, 'patron_profile'):
@@ -428,7 +429,7 @@ def user_feeds(request):
         has_premium_access = (user_cents >= req_cents) and (req_cents > 0) and (profile is not None)
         
         if has_premium_access:
-            base_feed_url = reverse('custom_feed', args=[podcast.network.slug])
+            base_feed_url = reverse('custom_feed')
             raw_url = f"{base_feed_url}?auth={profile.feed_token}&show={podcast.slug}"
             ui_has_access = True
         elif req_cents == 0:
@@ -456,7 +457,7 @@ def user_feeds(request):
     user_mixes = UserMix.objects.filter(user=request.user, network=network).prefetch_related('selected_podcasts') if request.user.is_authenticated else []
     mix_data = []
     for mix in user_mixes:
-        raw_mix_url = f"/feed/{network.slug}/mix/{mix.unique_id}"
+        raw_mix_url = reverse('mix_feed', args=[mix.unique_id])
         mix_data.append({
             'mix': mix,
             'feed_url': request.build_absolute_uri(raw_mix_url)
@@ -472,7 +473,7 @@ def user_feeds(request):
     return render(request, 'pod_manager/user_feeds.html', context)
 
 
-def generate_custom_feed(request, network_slug):
+def generate_custom_feed(request):
     feed_token = request.GET.get('auth')
     podcast_slug = request.GET.get('show')
 
@@ -531,7 +532,7 @@ def generate_custom_feed(request, network_slug):
     return HttpResponse(xml_output, content_type='application/rss+xml')
 
 def generate_public_feed(request, podcast_slug):
-    podcast = get_object_or_404(Podcast, slug=podcast_slug)
+    podcast = get_object_or_404(Podcast, slug=podcast_slug, network=request.network)
 
     version = cache.get(f"podcast_cache_version_{podcast.id}", 1)
     cache_key = f"xml_feed_public_{version}_{podcast.slug}"

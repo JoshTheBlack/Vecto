@@ -125,6 +125,7 @@ class Episode(models.Model):
     # We store both versions of the audio
     audio_url_public = models.URLField()
     audio_url_subscriber = models.URLField()
+    match_reason = models.CharField(max_length=100, blank=True, help_text="Audit trail for how the private audio was matched during ingestion.")
     
     # Store descriptions separately for cleaning/normalization
     raw_description = models.TextField()

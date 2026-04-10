@@ -9,9 +9,9 @@ class NetworkAdmin(admin.ModelAdmin):
 
 @admin.register(Episode)
 class EpisodeAdmin(admin.ModelAdmin):
-    list_display = ('title', 'podcast', 'pub_date', 'has_premium_audio')
-    list_filter = ('podcast', 'pub_date')
-    search_fields = ('title', 'raw_description')
+    list_display = ('title', 'podcast', 'pub_date', 'match_reason', 'has_premium_audio')
+    list_filter = ('podcast__network', 'podcast', 'pub_date', 'match_reason')
+    search_fields = ('title', 'raw_description', 'guid')
     
     def has_premium_audio(self, obj):
         return obj.audio_url_public != obj.audio_url_subscriber

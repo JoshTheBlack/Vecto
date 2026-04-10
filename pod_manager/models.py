@@ -1,10 +1,11 @@
-import uuid, os, requests
+import uuid, os, requests, base64
 from django.db import models
 from django.contrib.auth.models import User
 from django.core.files.base import ContentFile
 from django.core.files.storage import FileSystemStorage
 from django.db.models.signals import post_delete
 from django.dispatch import receiver
+from cryptography.fernet import Fernet
 from PIL import Image
 from io import BytesIO
 
@@ -21,7 +22,7 @@ def default_theme_config():
         "nav_bg_color": "#000000",
         "nav_text_color": "#ffffff",
         "nav_muted_text_color": "#6c757d",
-        "nav_socials_bg_color": "#222222", # NEW
+        "nav_socials_bg_color": "#222222",
         "primary_color": "#ffc107",
         "primary_text_color": "#000000",
         "success_color": "#198754",
@@ -33,14 +34,33 @@ def default_theme_config():
         "logo_url": ""
     }
 
+class EncryptedCharField(models.CharField):
+    """A custom field that encrypts data at rest using settings.SECRET_KEY."""
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        # Use your Django Secret Key to derive a 32-byte Fernet key
+        key = base64.urlsafe_b64encode(settings.SECRET_KEY[:32].encode().ljust(32, b'0'))
+        self.fernet = Fernet(key)
+
+    def get_prep_value(self, value):
+        if value is None: return None
+        return self.fernet.encrypt(value.encode()).decode()
+
+    def from_db_value(self, value, expression, connection):
+        if value is None: return None
+        return self.fernet.decrypt(value.encode()).decode()
+    
 class Network(models.Model):
     name = models.TextField()
     slug = models.SlugField(unique=True)
     owners = models.ManyToManyField(User, related_name="owned_networks", blank=True, help_text="Users who have admin access to this network's settings.")
     theme_config = models.JSONField(default=default_theme_config, blank=True)
+    custom_domain = models.CharField(max_length=255, unique=True, blank=True, null=True, db_index=True)
     
-    # Network Agnostic Info
     patreon_campaign_id = models.CharField(max_length=100, blank=True, help_text="The numeric ID of the Patreon Campaign")
+    patreon_sync_enabled = models.BooleanField(default=False)
+    patreon_creator_access_token = EncryptedCharField(max_length=500, blank=True, null=True)
+    patreon_creator_refresh_token = EncryptedCharField(max_length=500, blank=True, null=True)
     website_url = models.URLField(blank=True, help_text="e.g., https://yournetwork.com")
     default_image_url = models.URLField(blank=True, help_text="Fallback logo for RSS feeds")
     ignored_title_tags = models.TextField(blank=True, help_text="Comma-separated list of tags to strip during import (e.g., '(ad-free), premium')")

@@ -50,6 +50,7 @@ CSRF_TRUSTED_ORIGINS = [
 # Application definition
 
 INSTALLED_APPS = [
+    'cryptography',
     'django.contrib.admin',
     'django.contrib.auth',
     'django.contrib.contenttypes',
@@ -58,6 +59,8 @@ INSTALLED_APPS = [
     'django.contrib.staticfiles',
     'pod_manager',
 ]
+
+CRYPTOGRAPHY_KEY = os.environ.get('DJANGO_CRYPTOGRAPHY_KEY', 'generate-a-secure-random-string-here')
 
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',

@@ -10,7 +10,7 @@
         align-items: center;
         justify-content: space-between;
         padding-right: 12px;
-        min-width: 160px;
+        min-width: 60px;
     }
 
     .app-preview-tray {
@@ -64,6 +64,16 @@
     .icon-rssradio { background-image: url("{% static 'pod_manager/img/icons/rssradio.svg' %}"); }
     .icon-youtubemusic { background-image: url("{% static 'pod_manager/img/icons/youtubemusic.svg' %}"); }
     .icon-rss { background-image: url("{% static 'pod_manager/img/icons/rss.png' %}"); }
+
+    .copy-btn {
+        background-color: rgba(255, 255, 255, 0.05) !important;
+        transition: all 0.2s ease;
+    }
+    .copy-btn:hover {
+        background-color: var(--vecto-primary) !important;
+        color: var(--vecto-primary-text) !important;
+        border-color: var(--vecto-primary) !important;
+    }
 </style>
 
 <div class="row mb-4">
@@ -72,15 +82,13 @@
         <p class="text-muted">Welcome back, {{ request.user.first_name|default:"Listener" }}! Manage your podcast feeds below.</p>
     </div>
     <div class="col-md-4 text-md-end">
-        <div class="card bg-dark border-warning shadow-sm">
+        <div class="card bg-warning text-white shadow-sm border-0">
             <div class="card-body py-2">
                 {% if user.is_authenticated %}
-                    <span class="text-muted small text-uppercase">Active Patreon Pledge</span>
-                    <h4 class="text-warning mb-0 fw-bold">${{ dollars|floatformat:2 }} <span class="fs-6 text-muted fw-normal">/ month</span></h4>
+                    <span class="text-white-50 small text-uppercase fw-bold">Active Patreon Pledge</span>
+                    <h4 class="text-white mb-0 fw-bold">${{ dollars|floatformat:2 }} <span class="fs-6 text-white-50 fw-normal">/ month</span></h4>
                 {% else %}
-                    <span class="text-muted small text-uppercase d-block mb-1">Unlock Ad-Free Audio</span>
-                    <a href="{% url 'patreon_login' %}" class="btn btn-warning btn-sm fw-bold w-100"><i class="bi bi-star-fill"></i> Connect Patreon</a>
-                {% endif %}
+                    {% endif %}
             </div>
         </div>
     </div>
@@ -113,17 +121,15 @@
                     <div class="col-md-8 mt-3 mt-md-0">
                         <div class="input-group">
                             <input type="text" class="form-control bg-black text-light border-secondary" id="feed-{{ forloop.counter }}" value="{{ item.feed_url }}" readonly>
-                            <button class="btn btn-outline-warning" type="button" onclick="copyFeed(this, 'feed-{{ forloop.counter }}')">
+                            <button class="btn bg-dark text-light border-secondary copy-btn" type="button" onclick="copyFeed(this, 'feed-{{ forloop.counter }}')">
                                 <i class="bi bi-clipboard"></i> Copy
                             </button>
                             
                             <button class="btn btn-warning dropdown-toggle fw-bold text-dark btn-add-to-app shadow-sm" type="button" data-bs-toggle="dropdown">
-                                <span>Add to App</span>
-                                <div class="app-preview-tray border-dark">
+                                <!-- <span>Add to App</span> 
+                                <div class="app-preview-tray border-dark">-->
                                     <i class="icon-mini icon-pocketcasts"></i>
-                                    <i class="icon-mini icon-youtubemusic"></i>
-                                    <i class="icon-mini icon-apple"></i>
-                                </div>
+                               <!--  </div>-->
                             </button>
                             <ul class="dropdown-menu dropdown-menu-dark dropdown-menu-end border-secondary shadow p-2" style="min-width: 240px;">
                                 <li><a class="dropdown-item dropdown-item-podcast rounded" href="#" onclick="openPodcastApp('apple', '{{ item.feed_url }}')">
@@ -208,17 +214,15 @@
                     <div class="col-md-8 mt-3 mt-md-0">
                         <div class="input-group">
                             <input type="text" class="form-control bg-black text-light border-secondary" id="mix-feed-{{ item.mix.id }}" value="{{ item.feed_url }}" readonly>
-                            <button class="btn btn-outline-warning" type="button" onclick="copyFeed(this, 'mix-feed-{{ item.mix.id }}')">
+                            <button class="btn bg-dark text-light border-secondary copy-btn" type="button" onclick="copyFeed(this, 'mix-feed-{{ item.mix.id }}')">
                                 <i class="bi bi-clipboard"></i> Copy
                             </button>
                             
                             <button class="btn btn-warning dropdown-toggle fw-bold text-dark btn-add-to-app shadow-sm" type="button" data-bs-toggle="dropdown">
-                                <span>Add to App</span>
-                                <div class="app-preview-tray border-dark">
+                                <!-- <span>Add to App</span> 
+                                <div class="app-preview-tray border-dark">-->
                                     <i class="icon-mini icon-pocketcasts"></i>
-                                    <i class="icon-mini icon-youtubemusic"></i>
-                                    <i class="icon-mini icon-apple"></i>
-                                </div>
+                               <!--  </div>-->
                             </button>
                             <ul class="dropdown-menu dropdown-menu-dark dropdown-menu-end border-secondary shadow p-2" style="min-width: 240px;">
                                 <li class="px-3 py-1 small text-muted text-uppercase fw-bold" style="font-size: 0.65rem;">Most Popular</li>
@@ -390,12 +394,18 @@ function copyFeed(btn, elementId) {
     copyText.setSelectionRange(0, 99999);
     navigator.clipboard.writeText(copyText.value);
     
+    // Save the original HTML and exact CSS classes
     var originalHTML = btn.innerHTML;
+    var originalClasses = btn.className; 
+    
+    // Swap to the success state
     btn.innerHTML = '<i class="bi bi-check2"></i> Copied!';
-    btn.classList.replace('btn-outline-warning', 'btn-success');
+    btn.className = 'btn btn-success fw-bold border-success text-white';
+    
+    // Restore back to original after 2 seconds
     setTimeout(function() {
         btn.innerHTML = originalHTML;
-        btn.classList.replace('btn-success', 'btn-outline-warning');
+        btn.className = originalClasses; 
     }, 2000);
 }
 

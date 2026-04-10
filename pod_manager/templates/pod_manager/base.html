@@ -57,7 +57,8 @@
         }
         
         /* Text directly on the background */
-        .text-muted { color: var(--vecto-bg-muted) !important; }
+        /* We darken the muted color for better contrast on white backgrounds */
+        .text-muted { color: #757575 !important; } 
         .text-light, .text-white { color: var(--vecto-bg-text) !important; }
 
         /* 3. Navigation & Social Bar (Restored Flex Layout) */

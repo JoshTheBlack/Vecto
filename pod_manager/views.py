@@ -316,7 +316,7 @@ def home(request):
         user_cents = user_active_pledges.get(camp_id, 0)
         ep.user_has_access = (user_cents >= req_cents)
 
-    current_network = Network.objects.filter(slug=selected_network).first() if selected_network else Network.objects.first()
+    current_network = Network.objects.filter(slug=selected_network).first() if selected_network else request.network
 
     context = {
         'episodes': page_obj,          
@@ -357,7 +357,7 @@ def episode_detail(request, episode_id):
     return render(request, 'pod_manager/episode_detail.html', {'ep': ep})
 
 def user_feeds(request):
-    network = Network.objects.first()
+    network = request.network
     active_pledges = {}
     profile = None
     total_dollars = 0
@@ -479,10 +479,7 @@ def generate_custom_feed(request, network_slug):
     if not feed_token or not podcast_slug:
         return HttpResponseForbidden("Missing authentication or show parameters.")
 
-    podcast = get_object_or_404(Podcast, slug=podcast_slug)
-    
-    if podcast.network.slug != network_slug:
-        return HttpResponseForbidden("This podcast does not belong to the requested network.")
+    podcast = get_object_or_404(Podcast, slug=podcast_slug, network=request.network)
 
     try:
         profile = get_object_or_404(PatronProfile, feed_token=feed_token)
@@ -573,12 +570,12 @@ def generate_public_feed(request, podcast_slug):
 
     return HttpResponse(xml_output, content_type='application/rss+xml')
 
-def generate_mix_feed(request, network_slug, unique_id):
+def generate_mix_feed(request, unique_id):
     cache_key = f"mix_feed_{unique_id}"
     feed_xml = cache.get(cache_key)
 
     if not feed_xml:
-        user_mix = get_object_or_404(UserMix, unique_id=unique_id, network__slug=network_slug, is_active=True)
+        user_mix = get_object_or_404(UserMix, unique_id=unique_id, network=request.network, is_active=True)
         
         profile = user_mix.user.patron_profile
         active_pledges = profile.active_pledges or {}

@@ -23,9 +23,9 @@ urlpatterns = [
     path('patreon/callback/webhook/', views.patreon_webhook, name='patreon_webhook'),
 
     # Feed Endpoints
-    path('feed/<slug:network_slug>', views.generate_custom_feed, name='custom_feed'),
+    path('feed/', views.generate_custom_feed, name='custom_feed'),
     path('public/feed/<slug:podcast_slug>/', views.generate_public_feed, name='public_feed'),
-    path('feed/<slug:network_slug>/mix/<uuid:unique_id>', views.generate_mix_feed, name='mix_feed'),
+    path('feed/mix/<uuid:unique_id>', views.generate_mix_feed, name='mix_feed'),
     path('import/stream/<int:show_id>/', views.stream_feed_import, name='stream_feed_import'),
 ]
 

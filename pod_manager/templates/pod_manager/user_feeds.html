@@ -74,6 +74,19 @@
         color: var(--vecto-primary-text) !important;
         border-color: var(--vecto-primary) !important;
     }
+    /* Allows the modal to grow horizontally to fit long podcast names */
+    .modal-flexible {
+        max-width: 95vw !important;
+        width: fit-content !important;
+        min-width: 500px;
+    }
+    
+    /* Ensures the podcast selection labels stay on a single line */
+    .text-nowrap-label {
+        white-space: nowrap !important;
+        display: flex;
+        align-items: center;
+    }
 </style>
 
 <div class="row mb-4">
@@ -272,7 +285,7 @@
             </li>
 
             <div class="modal fade" id="editMixModal-{{ item.mix.id }}" tabindex="-1">
-                <div class="modal-dialog">
+                <div class="modal-dialog modal-lg modal-flexible">
                     <div class="modal-content bg-dark border-secondary">
                         <form method="POST" action="{% url 'user_feeds' %}" enctype="multipart/form-data">
                             {% csrf_token %}
@@ -300,12 +313,14 @@
                                     <div class="form-check mb-2">
                                         <input class="form-check-input" type="checkbox" name="podcasts" value="{{ avail_item.podcast.id }}" id="edit-show-{{ item.mix.id }}-{{ avail_item.podcast.id }}"
                                             {% if avail_item.podcast in item.mix.selected_podcasts.all %}checked{% endif %}>
-                                        <label class="form-check-label text-light" for="edit-show-{{ item.mix.id }}-{{ avail_item.podcast.id }}">
-                                            {{ avail_item.podcast.title }}
+                                        <label class="form-check-label text-light text-nowrap-label" for="edit-show-{{ item.mix.id }}-{{ avail_item.podcast.id }}">
+                                            <span class="fw-bold">{{ avail_item.podcast.title }}</span>
+                                            <small class="text-muted ms-1">({{ avail_item.podcast.network.name }})</small>
+                                            
                                             {% if not avail_item.has_access %}
-                                                <span class="badge bg-secondary ms-2" style="font-size: 0.65rem;">Public (Ad-Supported)</span>
+                                                <span class="badge bg-secondary ms-2" style="font-size: 0.65rem;">Public</span>
                                             {% else %}
-                                                <span class="badge bg-success ms-2" style="font-size: 0.65rem;"><i class="bi bi-star-fill"></i> Premium</span>
+                                                <span class="badge bg-success ms-2" style="font-size: 0.65rem;"><i class="bi bi-star-fill"></i></span>
                                             {% endif %}
                                         </label>
                                     </div>
@@ -336,7 +351,7 @@
 
 {% if user.is_authenticated %}
 <div class="modal fade" id="createMixModal" tabindex="-1">
-    <div class="modal-dialog">
+    <div class="modal-dialog modal-lg modal-flexible">
         <div class="modal-content bg-dark border-secondary">
             <form method="POST" action="{% url 'user_feeds' %}" enctype="multipart/form-data">
                 {% csrf_token %}
@@ -363,12 +378,14 @@
                         {% for avail_item in available_podcasts %}
                         <div class="form-check mb-2">
                             <input class="form-check-input" type="checkbox" name="podcasts" value="{{ avail_item.podcast.id }}" id="modal-show-{{ avail_item.podcast.id }}">
-                            <label class="form-check-label text-light" for="modal-show-{{ avail_item.podcast.id }}">
-                                {{ avail_item.podcast.title }}
+                            <label class="form-check-label text-light text-nowrap-label" for="modal-show-{{ avail_item.podcast.id }}">
+                                <span class="fw-bold">{{ avail_item.podcast.title }}</span>
+                                <small class="text-muted ms-1">({{ avail_item.podcast.network.name }})</small>
+                                
                                 {% if not avail_item.has_access %}
-                                    <span class="badge bg-secondary ms-2" style="font-size: 0.65rem;">Public (Ad-Supported)</span>
+                                    <span class="badge bg-secondary ms-2" style="font-size: 0.65rem;">Public</span>
                                 {% else %}
-                                    <span class="badge bg-success ms-2" style="font-size: 0.65rem;"><i class="bi bi-star-fill"></i> Premium</span>
+                                    <span class="badge bg-success ms-2" style="font-size: 0.65rem;"><i class="bi bi-star-fill"></i></span>
                                 {% endif %}
                             </label>
                         </div>

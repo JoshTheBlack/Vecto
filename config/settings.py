@@ -43,6 +43,8 @@ ALLOWED_HOSTS = ['localhost',
     '.ngrok.app',
     '.local',]
 
+SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
+
 CSRF_TRUSTED_ORIGINS = [
     'https://*.ngrok-free.dev',
     'https://*.ngrok.app',

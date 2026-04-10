@@ -12,18 +12,13 @@
     {% endif %}
 
     <style>
-        /* Fallback Defaults if no network is loaded */
-        body { background-color: #121212; color: #e0e0e0; }
-        .navbar { background-color: #000000; border-bottom: 1px solid #333; }
-        .card { background-color: #1e1e1e; border: 1px solid #333; }
-        .card-header { border-bottom: 1px solid #333; }
-
-        {% if current_network and current_network.theme_config %}
+        /* 1. Global Variable Definitions with Fallbacks */
         :root {
-            /* Background */
+            /* Background & Typography */
             --vecto-bg: {{ current_network.theme_config.bg_color|default:"#121212" }};
             --vecto-bg-text: {{ current_network.theme_config.bg_text_color|default:"#f8f9fa" }};
             --vecto-bg-muted: {{ current_network.theme_config.bg_muted_text_color|default:"#6c757d" }};
+            --bs-body-font-family: {{ current_network.theme_config.font_family|default:"system-ui, sans-serif" }} !important;
 
             /* Surfaces */
             --vecto-surface-bg: {{ current_network.theme_config.surface_bg_color|default:"#1e1e1e" }};
@@ -40,53 +35,70 @@
             --vecto-primary: {{ current_network.theme_config.primary_color|default:"#ffc107" }};
             --vecto-primary-text: {{ current_network.theme_config.primary_text_color|default:"#000000" }};
 
+            /* Success States */
+            --vecto-success: {{ current_network.theme_config.success_color|default:"#198754" }};
+            --vecto-success-text: {{ current_network.theme_config.success_text_color|default:"#ffffff" }};
+
             /* Globals */
             --bs-border-color: {{ current_network.theme_config.border_color|default:"#343a40" }};
             --bs-border-radius: {{ current_network.theme_config.border_radius|default:"0.375rem" }};
-            --bs-body-font-family: {{ current_network.theme_config.font_family|default:"system-ui, sans-serif" }} !important;
+            
+            /* Plyr Audio Player Defaults */
+            --plyr-color-main: var(--vecto-primary);
+            --plyr-audio-controls-background: var(--vecto-surface-bg);
+            --plyr-audio-control-color: var(--vecto-surface-text);
         }
 
-        /* 1. Core Typography & Background */
+        /* 2. Core Layout & Typography */
         body {
             background-color: var(--vecto-bg) !important;
             color: var(--vecto-bg-text) !important;
             font-family: var(--bs-body-font-family);
         }
-        /* Default generic text overrides */
+        
+        /* Text directly on the background */
         .text-muted { color: var(--vecto-bg-muted) !important; }
         .text-light, .text-white { color: var(--vecto-bg-text) !important; }
 
-        /* 2. Navigation */
-        .navbar {
-            background-color: var(--vecto-nav-bg) !important;
+        /* 3. Navigation & Social Bar (Restored Flex Layout) */
+        .navbar { background-color: var(--vecto-nav-bg) !important; }
+        .header-wrapper { border-bottom: 2px solid var(--vecto-primary); }
+        .navbar .navbar-brand, .navbar-nav .nav-link, .navbar-text { color: var(--vecto-nav-text) !important; }
+        .navbar .text-muted { color: var(--vecto-nav-muted) !important; }
+
+        .social-bar {
+            display: flex;
+            width: 100%;
+            background-color: var(--vecto-nav-socials-bg);
+            border-bottom: 1px solid var(--bs-border-color);
         }
-        .header-wrapper {
-            border-bottom: 2px solid var(--vecto-primary);
-        }
-        .navbar .navbar-brand, .navbar-nav .nav-link, .navbar-text {
-            color: var(--vecto-nav-text) !important;
-        }
-        .navbar .text-muted, .navbar-nav .nav-link.disabled {
-            color: var(--vecto-nav-muted) !important;
+        .social-bar-item {
+            flex: 1; /* Splits the width evenly */
+            text-align: center;
+            padding: 6px 0;
+            color: #ffffff !important;
+            transition: background-color 0.2s ease;
+            text-decoration: none;
         }
 
-        /* 3. Surfaces (Cards, Modals, Lists) */
+        /* 4. Surfaces (Cards, Alerts, Lists) */
         .card, .modal-content, .list-group-item, .alert, .bg-dark, .bg-black {
             background-color: var(--vecto-surface-bg) !important;
             border-color: var(--bs-border-color) !important;
             color: var(--vecto-surface-text) !important;
         }
-        /* Contextual overrides for text sitting INSIDE a surface */
-        .card .text-muted, .modal-content .text-muted, .list-group-item .text-muted, .bg-dark .text-muted, .bg-black .text-muted {
-            color: var(--vecto-surface-muted) !important;
+        
+        /* Contextual Text Overrides: Restores readable text inside dark cards */
+        .card .text-muted, .list-group-item .text-muted, .bg-dark .text-muted, .bg-black .text-muted, .modal-content .text-muted { 
+            color: var(--vecto-surface-muted) !important; 
         }
-        .card .text-light, .modal-content .text-light, .list-group-item .text-light, .bg-dark .text-light, .bg-black .text-light {
-            color: var(--vecto-surface-text) !important;
+        .card .text-light, .card .text-white, .list-group-item .text-light, .bg-dark .text-light, .bg-black .text-light, .modal-content .text-light { 
+            color: var(--vecto-surface-text) !important; 
         }
         
-        .card-header, .modal-header, .modal-footer {
+        .card-header, .modal-header {
             background-color: rgba(0,0,0,0.2) !important;
-            border-color: var(--bs-border-color) !important;
+            border-bottom: 1px solid var(--bs-border-color) !important;
         }
         
         .list-group-item.active { 
@@ -95,7 +107,60 @@
             border-color: var(--vecto-primary) !important; 
         }
 
-        /* 4. Inputs */
+        /* 5. Dropdowns & Form States */
+        .dropdown-menu.dropdown-menu-dark {
+            background-color: var(--vecto-surface-bg) !important;
+            border: 1px solid var(--vecto-primary) !important;
+            color: var(--vecto-surface-text) !important;
+        }
+        .dropdown-menu.dropdown-menu-dark .text-light {
+            color: var(--vecto-surface-text) !important;
+        }
+        .dropdown-item {
+            color: var(--vecto-surface-text) !important;
+            transition: background-color 0.2s ease;
+        }
+        .dropdown-item:hover, .dropdown-item:focus, .dropdown-item.active {
+            background-color: var(--vecto-primary) !important;
+            color: var(--vecto-primary-text) !important;
+        }
+        .dropdown-menu .form-check-input:checked {
+            background-color: var(--vecto-primary) !important;
+            border-color: var(--vecto-primary) !important;
+        }
+
+        /* 6. Primary Buttons & Interactive States */
+        .btn-warning, .btn-primary, .badge.bg-warning, .badge.bg-primary {
+            background-color: var(--vecto-primary) !important;
+            border-color: var(--vecto-primary) !important;
+            color: var(--vecto-primary-text) !important;
+        }
+        
+        .btn-outline-warning {
+            color: var(--vecto-primary) !important;
+            border-color: var(--vecto-primary) !important;
+        }
+        .btn-outline-warning:hover, 
+        .btn-outline-warning:active, 
+        .btn-outline-warning:focus,
+        .show > .btn-outline-warning.dropdown-toggle {
+            background-color: var(--vecto-primary) !important;
+            border-color: var(--vecto-primary) !important;
+            color: var(--vecto-primary-text) !important;
+        }
+        
+        .text-warning, .text-primary { color: var(--vecto-primary) !important; }
+        .border-warning, .border-primary { border-color: var(--vecto-primary) !important; }
+
+        /* 7. Success Colors */
+        .text-success { color: var(--vecto-success) !important; }
+        .btn-success, .bg-success, .badge.bg-success { 
+            background-color: var(--vecto-success) !important; 
+            border-color: var(--vecto-success) !important;
+            color: var(--vecto-success-text) !important; 
+        }
+
+        /* 8. Forms & Inputs */
         .form-control, .form-select {
             background-color: rgba(0,0,0,0.3) !important;
             border-color: var(--bs-border-color) !important;
@@ -106,86 +171,22 @@
             box-shadow: 0 0 0 0.15rem var(--vecto-primary) !important;
         }
 
-        /* 5. Primary Colors (Buttons, Badges) */
-        .btn-warning, .btn-primary {
-            background-color: var(--vecto-primary) !important;
-            border-color: var(--vecto-primary) !important;
-            color: var(--vecto-primary-text) !important;
-        }
-        
-        /* Base outline buttons (sitting on the main background) */
-        .btn-outline-warning, .btn-outline-primary {
-            color: var(--vecto-bg-text) !important; 
-            border-color: var(--vecto-primary) !important;
-        }
-        
-        /* Outline buttons sitting INSIDE a card or surface */
-        .card .btn-outline-warning, .card .btn-outline-primary,
-        .list-group-item .btn-outline-warning, .list-group-item .btn-outline-primary,
-        .modal-content .btn-outline-warning, .modal-content .btn-outline-primary,
-        .bg-dark .btn-outline-warning, .bg-black .btn-outline-warning {
-            color: var(--vecto-surface-text) !important;
-        }
-        
-        .btn-outline-warning:hover, .btn-outline-primary:hover {
-            background-color: var(--vecto-primary) !important;
-            color: var(--vecto-primary-text) !important;
-        }
-        
-        .text-warning, .text-primary { color: var(--vecto-primary) !important; }
-        .border-warning, .border-primary { border-color: var(--vecto-primary) !important; }
-        .badge.bg-warning, .badge.bg-primary { background-color: var(--vecto-primary) !important; color: var(--vecto-primary-text) !important; }
-
-        /* 5.5 Success Colors */
-        :root {
-            --vecto-success: {{ current_network.theme_config.success_color|default:"#198754" }};
-            --vecto-success-text: {{ current_network.theme_config.success_text_color|default:"#ffffff" }};
-        }
-        .text-success { color: var(--vecto-success) !important; }
-        .btn-success, .bg-success, .badge.bg-success { 
-            background-color: var(--vecto-success) !important; 
-            border-color: var(--vecto-success) !important;
-            color: var(--vecto-success-text) !important; 
-        }
-        /* 6. Utilities */
+        /* 9. Utilities & Plyr */
         .border-secondary { border-color: var(--bs-border-color) !important; }
-        .rounded, .card, .modal-content, .form-control, .btn { border-radius: var(--bs-border-radius) !important; }
-        
-        /* 7. Plyr Audio Player */
+        .rounded, .card, .btn { border-radius: var(--bs-border-radius) !important; }
+
         .plyr--audio .plyr__controls {
             background: var(--vecto-surface-bg) !important;
             border: 1px solid var(--bs-border-color) !important;
             color: var(--vecto-surface-text) !important;
         }
-        :root {
-            --plyr-color-main: var(--vecto-primary);
-            --plyr-audio-controls-background: var(--vecto-surface-bg);
-            --plyr-audio-control-color: var(--vecto-surface-text);
-        }
-
-        /* 8. Social Bar Row */
-        .social-bar {
-            display: flex;
-            width: 100%;
-            background-color: var(--vecto-nav-socials-bg);
-            border-bottom: 1px solid var(--bs-border-color);
-        }
-        .social-bar-item {
-            flex: 1; /* Splits the width evenly regardless of how many exist */
-            text-align: center;
-            padding: 6px 0;
-            color: #ffffff !important;
-            text-decoration: none;
-            transition: background-color 0.2s ease;
-            font-size: 1.1rem;
-        }
-        /* Brand Colors on Hover */
+        
+        /* Social Brand Colors on Hover */
         .social-patreon:hover { background-color: #FF424D !important; }
         .social-youtube:hover { background-color: #FF0000 !important; }
         .social-twitch:hover { background-color: #9146FF !important; }
         .social-bluesky:hover { background-color: #0085FF !important; }
         .social-twitter:hover { background-color: #1da1f2 !important; }
-        {% endif %}
     </style>
 </head>
 <body>

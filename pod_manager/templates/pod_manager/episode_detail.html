@@ -34,18 +34,39 @@
                 <span class="text-muted">{{ ep.pub_date|date:"F d, Y" }}</span>
             </div>
             
-            <div class="card-body bg-black">
-                <h2 class="card-title fw-bold mb-4">
-                    {{ ep.title }}
-                    
-                    {% if ep.is_premium and not ep.user_has_access %}
-                        <span class="badge bg-warning fs-6 float-end"><i class="bi bi-unlock-fill"></i> Ad-Free Available</span>
-                    {% elif ep.is_premium and ep.user_has_access %}
-                        <span class="badge bg-success fs-6 float-end"><i class="bi bi-star-fill"></i> Premium Enabled</span>
-                    {% endif %}
-                </h2>
+            <div class="card-body bg-black p-4">
+                <div class="row align-items-center mb-4">
+                    <div class="col-md-3 text-center mb-3 mb-md-0">
+                        {% if ep.podcast.image_url %}
+                            <img src="{{ ep.podcast.image_url }}" class="img-fluid rounded shadow-lg border border-secondary" style="max-width: 200px;">
+                        {% elif ep.podcast.network.default_image_url %}
+                            <img src="{{ ep.podcast.network.default_image_url }}" class="img-fluid rounded shadow-lg border border-secondary" style="max-width: 200px;">
+                        {% else %}
+                            <div class="rounded bg-dark d-flex justify-content-center align-items-center border border-secondary shadow-lg mx-auto" style="width: 200px; height: 200px;">
+                                <i class="bi bi-mic text-warning" style="font-size: 4rem;"></i>
+                            </div>
+                        {% endif %}
+                    </div>
+
+                    <div class="col-md-9">
+                        <h1 class="card-title fw-bold mb-3">
+                            {{ ep.title }}
+                        </h1>
+                        <div class="d-flex flex-wrap gap-2 align-items-center">
+                            {% if ep.is_premium and not ep.user_has_access %}
+                                <span class="badge bg-warning fs-6"><i class="bi bi-unlock-fill"></i> Ad-Free Available</span>
+                            {% elif ep.is_premium and ep.user_has_access %}
+                                <span class="badge bg-success fs-6"><i class="bi bi-star-fill"></i> Premium Enabled</span>
+                            {% endif %}
+                            <span class="text-muted"><i class="bi bi-calendar3 me-1"></i> {{ ep.pub_date|date:"F d, Y" }}</span>
+                            {% if ep.duration %}
+                                <span class="text-muted ms-3"><i class="bi bi-clock me-1"></i> {{ ep.duration }}</span>
+                            {% endif %}
+                        </div>
+                    </div>
+                </div>
                 
-                <div class="mb-3">
+                <div class="mb-4">
                     <audio class="js-player" controls>
                         <source src="{% if ep.user_has_access %}{{ ep.audio_url_subscriber }}{% else %}{{ ep.audio_url_public }}{% endif %}" type="audio/mpeg">
                     </audio>

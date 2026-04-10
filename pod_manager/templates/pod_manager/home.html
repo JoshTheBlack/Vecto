@@ -23,26 +23,42 @@
                     <span class="text-muted small">{{ ep.pub_date|date:"M d, Y" }}</span>
                 </div>
                 <div class="card-body">
-                    <h4 class="card-title fw-bold mb-3">
-                        <a href="{% url 'episode_detail' ep.id %}" class="text-light text-decoration-none text-hover-warning">
-                            {{ ep.title }}
-                        </a>
-                        
-                        {% if ep.is_premium and not ep.user_has_access %}
-                            <span class="badge bg-warning fs-6 float-end"><i class="bi bi-unlock-fill"></i> Ad-Free Available</span>
-                        {% elif ep.is_premium and ep.user_has_access %}
-                            <span class="badge bg-success fs-6 float-end"><i class="bi bi-star-fill"></i> Premium Enabled</span>
-                        {% endif %}
-                    </h4>
-                    
-                    <div class="card-text mb-3 text-muted" style="max-height: 120px; overflow: hidden; position: relative;">
-                        {{ ep.clean_description|safe }}
-                        <div style="position: absolute; bottom: 0; left: 0; right: 0; height: 50px; background: linear-gradient(transparent, var(--vecto-surface-bg));"></div>
-                    </div>
+                    <div class="row g-4">
+                        <div class="col-auto">
+                            {% if ep.podcast.image_url %}
+                                <img src="{{ ep.podcast.image_url }}" class="rounded shadow-sm border border-secondary" style="width: 80px; height: 80px; object-fit: cover;">
+                            {% elif ep.podcast.network.default_image_url %}
+                                <img src="{{ ep.podcast.network.default_image_url }}" class="rounded shadow-sm border border-secondary" style="width: 80px; height: 80px; object-fit: cover;">
+                            {% else %}
+                                <div class="rounded bg-black d-flex justify-content-center align-items-center border border-secondary shadow-sm" style="width: 80px; height: 80px;">
+                                    <i class="bi bi-mic text-warning fs-3"></i>
+                                </div>
+                            {% endif %}
+                        </div>
 
-                    <a href="{% url 'episode_detail' ep.id %}" class="btn btn-outline-warning btn-sm mt-2">
-                        <i class="bi bi-play-circle"></i> Play Episode
-                    </a>
+                        <div class="col">
+                            <h4 class="card-title fw-bold mb-3">
+                                <a href="{% url 'episode_detail' ep.id %}" class="text-light text-decoration-none text-hover-warning">
+                                    {{ ep.title }}
+                                </a>
+                                
+                                {% if ep.is_premium and not ep.user_has_access %}
+                                    <span class="badge bg-warning fs-6 float-end ms-2"><i class="bi bi-unlock-fill"></i> Ad-Free Available</span>
+                                {% elif ep.is_premium and ep.user_has_access %}
+                                    <span class="badge bg-success fs-6 float-end ms-2"><i class="bi bi-star-fill"></i> Premium Enabled</span>
+                                {% endif %}
+                            </h4>
+                            
+                            <div class="card-text mb-3 text-muted" style="max-height: 80px; overflow: hidden; position: relative;">
+                                {{ ep.clean_description|safe }}
+                                <div style="position: absolute; bottom: 0; left: 0; right: 0; height: 40px; background: linear-gradient(transparent, var(--vecto-surface-bg));"></div>
+                            </div>
+
+                            <a href="{% url 'episode_detail' ep.id %}" class="btn btn-outline-warning btn-sm">
+                                <i class="bi bi-play-circle"></i> Play Episode
+                            </a>
+                        </div>
+                    </div>
                 </div>
             </div>
             {% empty %}
@@ -91,23 +107,48 @@
             <div class="card-body p-3">
                 <h6 class="text-muted fw-bold text-uppercase mb-2 small"><i class="bi bi-globe"></i> Active Network</h6>
                 <div class="dropdown d-grid">
-                    <button class="btn btn-outline-warning dropdown-toggle text-start d-flex justify-content-between align-items-center" type="button" data-bs-toggle="dropdown">
-                        <span class="text-light">
-                            {% if selected_network %}
+                    <button class="btn btn-outline-warning dropdown-toggle text-start d-flex justify-content-between align-items-center" type="button" data-bs-toggle="dropdown" data-bs-auto-close="outside">
+                        <span class="text-light text-truncate pe-2">
+                            {% if not selected_networks %}
+                                All My Networks (Blended)
+                            {% elif selected_networks|length == 1 %}
                                 {% for net in user_networks %}
-                                    {% if net.slug == selected_network %}{{ net.name }}{% endif %}
+                                    {% if net.slug in selected_networks %}{{ net.name }}{% endif %}
                                 {% endfor %}
                             {% else %}
-                                All My Networks (Blended)
+                                Multiple Networks ({{ selected_networks|length }})
                             {% endif %}
                         </span>
                     </button>
-                    <ul class="dropdown-menu dropdown-menu-dark w-100 border-secondary shadow">
-                        <li><a class="dropdown-item {% if not selected_network %}active bg-warning text-dark fw-bold{% endif %}" href="?network=">All My Networks (Blended)</a></li>
-                        <li><hr class="dropdown-divider border-secondary"></li>
-                        {% for net in user_networks %}
-                        <li><a class="dropdown-item {% if selected_network == net.slug %}active bg-warning text-dark fw-bold{% endif %}" href="?network={{ net.slug }}">{{ net.name }}</a></li>
-                        {% endfor %}
+                    
+                    <ul class="dropdown-menu dropdown-menu-dark w-100 border-warning shadow p-3" style="min-width: 250px;">
+                        <form method="GET" action="">
+                            {% if current_filter %}
+                                <input type="hidden" name="show" value="{{ current_filter }}">
+                            {% endif %}
+                            
+                            <li class="mb-2 pb-2 border-bottom border-secondary">
+                                <a class="text-warning text-decoration-none small fw-bold" href="?network=all{% if current_filter %}&show={{ current_filter }}{% endif %}">
+                                    <i class="bi bi-x-circle"></i> Blended View (All My Networks)
+                                </a>
+                            </li>
+
+                            {% for net in user_networks %}
+                            <li class="mb-2">
+                                <div class="form-check">
+                                    <input class="form-check-input" type="checkbox" name="network" value="{{ net.slug }}" id="check-{{ net.slug }}" 
+                                        {% if net.slug in selected_networks %}checked{% endif %}>
+                                    <label class="form-check-label text-light small" for="check-{{ net.slug }}">
+                                        {{ net.name }}
+                                    </label>
+                                </div>
+                            </li>
+                            {% endfor %}
+
+                            <li class="mt-3">
+                                <button type="submit" class="btn btn-warning btn-sm w-100 fw-bold">Update Filter</button>
+                            </li>
+                        </form>
                     </ul>
                 </div>
             </div>
@@ -120,16 +161,16 @@
             </div>
             <div class="list-group list-group-flush" style="max-height: 500px; overflow-y: auto;">
                 
-                <a href="?{% if selected_network %}network={{ selected_network }}{% endif %}" class="list-group-item list-group-item-action bg-black text-light border-secondary {% if not current_filter %}active text-warning fw-bold{% endif %}">
+                <a href="?{% for slug in selected_networks %}network={{ slug }}&{% endfor %}" class="list-group-item list-group-item-action bg-black text-light border-secondary {% if not current_filter %}active text-warning fw-bold{% endif %}">
                     <i class="bi bi-grid-fill me-2"></i> All Shows
                 </a>
-                
+
                 {% for podcast in podcasts %}
-                <a href="?show={{ podcast.slug }}{% if selected_network %}&network={{ selected_network }}{% endif %}" class="list-group-item list-group-item-action bg-black text-light border-secondary {% if current_filter == podcast.slug %}active text-warning fw-bold{% endif %}">
+                <a href="?show={{ podcast.slug }}{% for slug in selected_networks %}&network={{ slug }}{% endfor %}" class="list-group-item list-group-item-action bg-black text-light border-secondary {% if current_filter == podcast.slug %}active text-warning fw-bold{% endif %}">
                     {{ podcast.title }}
                 </a>
                 {% endfor %}
-                
+                                
             </div>
         </div>
     </div>

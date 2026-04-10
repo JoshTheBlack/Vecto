@@ -53,16 +53,16 @@
     }
 
     /* Podcast App Icon Paths */
-    .icon-apple { background-image: url("{% static 'pod_manager/img/icons/applepodcasts.png' %}"); }
-    .icon-castro { background-image: url("{% static 'pod_manager/img/icons/castro.png' %}"); }
-    .icon-downcast { background-image: url("{% static 'pod_manager/img/icons/downcast.png' %}"); }
-    .icon-overcast { background-image: url("{% static 'pod_manager/img/icons/overcast.png' %}"); }
-    .icon-pocketcasts { background-image: url("{% static 'pod_manager/img/icons/pocketcasts.png' %}"); }
-    .icon-podcastaddict { background-image: url("{% static 'pod_manager/img/icons/podcastaddict.png' %}"); }
-    .icon-podcastrepublic { background-image: url("{% static 'pod_manager/img/icons/podcastrepublic.png' %}"); }
-    .icon-podkicker { background-image: url("{% static 'pod_manager/img/icons/podkicker.png' %}"); }
-    .icon-rssradio { background-image: url("{% static 'pod_manager/img/icons/rssradio.png' %}"); }
-    .icon-youtubemusic { background-image: url("{% static 'pod_manager/img/icons/youtubemusic.png' %}"); }
+    .icon-apple { background-image: url("{% static 'pod_manager/img/icons/applepodcasts.svg' %}"); }
+    .icon-castro { background-image: url("{% static 'pod_manager/img/icons/castro.svg' %}"); }
+    .icon-downcast { background-image: url("{% static 'pod_manager/img/icons/downcast.svg' %}"); }
+    .icon-overcast { background-image: url("{% static 'pod_manager/img/icons/overcast.svg' %}"); }
+    .icon-pocketcasts { background-image: url("{% static 'pod_manager/img/icons/pocketcasts.svg' %}"); }
+    .icon-podcastaddict { background-image: url("{% static 'pod_manager/img/icons/podcastaddict.svg' %}"); }
+    .icon-podcastrepublic { background-image: url("{% static 'pod_manager/img/icons/podcastrepublic.svg' %}"); }
+    .icon-podkicker { background-image: url("{% static 'pod_manager/img/icons/podkicker.svg' %}"); }
+    .icon-rssradio { background-image: url("{% static 'pod_manager/img/icons/rssradio.svg' %}"); }
+    .icon-youtubemusic { background-image: url("{% static 'pod_manager/img/icons/youtubemusic.svg' %}"); }
     .icon-rss { background-image: url("{% static 'pod_manager/img/icons/rss.png' %}"); }
 </style>
 
@@ -185,7 +185,6 @@
             {% for item in mix_data %}
             <li class="list-group-item bg-transparent text-light py-3">
                 <div class="row align-items-center">
-                    
                     <div class="col-md-4 d-flex align-items-center">
                         {% if item.mix.display_image %}
                             <img src="{{ item.mix.display_image }}" class="rounded me-3 shadow-sm border border-secondary" style="width: 56px; height: 56px; object-fit: cover;">
@@ -206,7 +205,7 @@
                         </div>
                     </div>
                     
-                    <div class="col-md-6 mt-3 mt-md-0">
+                    <div class="col-md-8 mt-3 mt-md-0">
                         <div class="input-group">
                             <input type="text" class="form-control bg-black text-light border-secondary" id="mix-feed-{{ item.mix.id }}" value="{{ item.feed_url }}" readonly>
                             <button class="btn btn-outline-warning" type="button" onclick="copyFeed(this, 'mix-feed-{{ item.mix.id }}')">
@@ -232,42 +231,39 @@
                                 
                                 <li><hr class="dropdown-divider border-secondary"></li>
                                 <li class="px-3 py-1 small text-muted text-uppercase fw-bold" style="font-size: 0.65rem;">Specialty Clients</li>
-                                
-                                <li><a class="dropdown-item dropdown-item-podcast rounded" href="#" onclick="openPodcastApp('overcast', '{{ item.feed_url }}')">
-                                    <i class="icon-brand icon-overcast"></i> Overcast</a></li>
-                                <li><a class="dropdown-item dropdown-item-podcast rounded" href="#" onclick="openPodcastApp('castro', '{{ item.feed_url }}')">
-                                    <i class="icon-brand icon-castro"></i> Castro</a></li>
-                                <li><a class="dropdown-item dropdown-item-podcast rounded" href="#" onclick="openPodcastApp('podcastaddict', '{{ item.feed_url }}')">
-                                    <i class="icon-brand icon-podcastaddict"></i> Podcast Addict</a></li>
-                                <li><a class="dropdown-item dropdown-item-podcast rounded" href="#" onclick="openPodcastApp('downcast', '{{ item.feed_url }}')">
-                                    <i class="icon-brand icon-downcast"></i> Downcast</a></li>
-                                <li><a class="dropdown-item dropdown-item-podcast rounded" href="#" onclick="openPodcastApp('podcastrepublic', '{{ item.feed_url }}')">
-                                    <i class="icon-brand icon-podcastrepublic"></i> Podcast Republic</a></li>
-                                <li><a class="dropdown-item dropdown-item-podcast rounded" href="#" onclick="openPodcastApp('podkicker', '{{ item.feed_url }}')">
-                                    <i class="icon-brand icon-podkicker"></i> Podkicker</a></li>
-                                <li><a class="dropdown-item dropdown-item-podcast rounded" href="#" onclick="openPodcastApp('rssradio', '{{ item.feed_url }}')">
-                                    <i class="icon-brand icon-rssradio"></i> RSSRadio</a></li>
+                                <li><a class="dropdown-item dropdown-item-podcast rounded" href="#" onclick="openPodcastApp('overcast', '{{ item.feed_url }}')"><i class="icon-brand icon-overcast"></i> Overcast</a></li>
+                                <li><a class="dropdown-item dropdown-item-podcast rounded" href="#" onclick="openPodcastApp('castro', '{{ item.feed_url }}')"><i class="icon-brand icon-castro"></i> Castro</a></li>
+                                <li><a class="dropdown-item dropdown-item-podcast rounded" href="#" onclick="openPodcastApp('podcastaddict', '{{ item.feed_url }}')"><i class="icon-brand icon-podcastaddict"></i> Podcast Addict</a></li>
+                                <li><a class="dropdown-item dropdown-item-podcast rounded" href="#" onclick="openPodcastApp('downcast', '{{ item.feed_url }}')"><i class="icon-brand icon-downcast"></i> Downcast</a></li>
+                                <li><a class="dropdown-item dropdown-item-podcast rounded" href="#" onclick="openPodcastApp('podcastrepublic', '{{ item.feed_url }}')"><i class="icon-brand icon-podcastrepublic"></i> Podcast Republic</a></li>
+                                <li><a class="dropdown-item dropdown-item-podcast rounded" href="#" onclick="openPodcastApp('podkicker', '{{ item.feed_url }}')"><i class="icon-brand icon-podkicker"></i> Podkicker</a></li>
+                                <li><a class="dropdown-item dropdown-item-podcast rounded" href="#" onclick="openPodcastApp('rssradio', '{{ item.feed_url }}')"><i class="icon-brand icon-rssradio"></i> RSSRadio</a></li>
 
                                 <li><hr class="dropdown-divider border-secondary"></li>
-                                <li><a class="dropdown-item dropdown-item-podcast rounded fw-bold text-warning" href="#" onclick="openPodcastApp('rss', '{{ item.feed_url }}')">
+                                <li><a class="dropdown-item dropdown-item-podcast rounded fw-bold text-warning mb-2" href="#" onclick="openPodcastApp('rss', '{{ item.feed_url }}')">
                                     <i class="bi bi-rss-fill fs-5" style="margin-right: 12px;"></i> Raw RSS Feed</a></li>
+
+                                <li><hr class="dropdown-divider border-secondary"></li>
+                                <li class="px-3 py-1 small text-muted text-uppercase fw-bold" style="font-size: 0.65rem;">Manage Mix</li>
+                                <li>
+                                    <a class="dropdown-item rounded text-info" href="#" data-bs-toggle="modal" data-bs-target="#editMixModal-{{ item.mix.id }}">
+                                        <i class="bi bi-pencil-square me-2"></i> Edit Mix Settings
+                                    </a>
+                                </li>
+                                <li>
+                                    <a class="dropdown-item rounded text-danger" href="#" onclick="if(confirm('Are you sure you want to delete this mix?')) { document.getElementById('delete-mix-form-{{ item.mix.id }}').submit(); }">
+                                        <i class="bi bi-trash me-2"></i> Delete Mix
+                                    </a>
+                                    <form id="delete-mix-form-{{ item.mix.id }}" method="POST" action="{% url 'user_feeds' %}" class="d-none">
+                                        {% csrf_token %}
+                                        <input type="hidden" name="delete_mix" value="1">
+                                        <input type="hidden" name="mix_id" value="{{ item.mix.id }}">
+                                    </form>
+                                </li>
                             </ul>
                         </div>
+                        <small class="text-success mt-1 d-block"><i class="bi bi-magic"></i> Custom Mixed Feed</small>
                     </div>
-
-                    <div class="col-md-2 mt-3 mt-md-0 d-flex justify-content-md-end justify-content-start gap-2">
-                        <button class="btn btn-sm btn-outline-info border-0" data-bs-toggle="modal" data-bs-target="#editMixModal-{{ item.mix.id }}" title="Edit Mix">
-                            <i class="bi bi-pencil fs-5"></i>
-                        </button>
-                        
-                        <form method="POST" action="{% url 'user_feeds' %}" onsubmit="return confirm('Are you sure you want to delete this mix?');" class="d-inline m-0">
-                            {% csrf_token %}
-                            <input type="hidden" name="delete_mix" value="1">
-                            <input type="hidden" name="mix_id" value="{{ item.mix.id }}">
-                            <button type="submit" class="btn btn-sm btn-outline-danger border-0" title="Delete Mix"><i class="bi bi-trash fs-5"></i></button>
-                        </form>
-                    </div>
-
                 </div>
             </li>
 

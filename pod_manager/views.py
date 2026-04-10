@@ -79,10 +79,11 @@ def invalidate_show_cache(show_id: int):
 # ==========================================
 
 def patreon_login(request):
+    redirect_uri = request.build_absolute_uri(reverse('patreon_callback'))
     params = {
         'response_type': 'code',
         'client_id': settings.PATREON_CLIENT_ID,
-        'redirect_uri': settings.PATREON_REDIRECT_URI,
+        'redirect_uri': redirect_uri,
         'scope': 'identity identity[email]', 
     }
     url = f"https://www.patreon.com/oauth2/authorize?{urllib.parse.urlencode(params, quote_via=urllib.parse.quote)}"
@@ -92,6 +93,8 @@ def patreon_callback(request):
     code = request.GET.get('code')
     if not code:
         return JsonResponse({"error": "No code provided by Patreon."}, status=400)
+    
+    redirect_uri = request.build_absolute_uri(request.path)
 
     token_url = "https://www.patreon.com/api/oauth2/token"
     token_data = {
@@ -99,7 +102,7 @@ def patreon_callback(request):
         'grant_type': 'authorization_code',
         'client_id': settings.PATREON_CLIENT_ID,
         'client_secret': settings.PATREON_CLIENT_SECRET,
-        'redirect_uri': settings.PATREON_REDIRECT_URI,
+        'redirect_uri': redirect_uri,
     }
     
     token_res = requests.post(token_url, data=token_data)
@@ -281,8 +284,10 @@ def creator_settings(request):
 
 def home(request):
     show_slug = request.GET.get('show')
-    selected_network_slug = request.GET.get('network', None)
+    # Use getlist to handle multiple ?network=... parameters
+    selected_networks = request.GET.getlist('network')
     
+    # 1. Determine user's active pledged networks
     user_networks = Network.objects.none()
     if request.user.is_authenticated and hasattr(request.user, 'patron_profile'):
         pledges = request.user.patron_profile.active_pledges or {}
@@ -290,14 +295,42 @@ def home(request):
         active_campaign_ids = [cid for cid, amt in pledges.items() if amt > 0]
         user_networks = Network.objects.filter(patreon_campaign_id__in=active_campaign_ids).distinct()
 
-    if selected_network_slug:
-        current_view_network = get_object_or_404(Network, slug=selected_network_slug)
+    # 2. Base Queries
+    podcasts = Podcast.objects.all().order_by('title')
+    query = Episode.objects.select_related('podcast', 'podcast__network', 'podcast__required_tier')
+
+    # 3. Determine Scope and Theme
+    if selected_networks:
+        if 'all' in selected_networks:
+            # BLENDED MODE
+            if user_networks.exists():
+                query = query.filter(podcast__network__in=user_networks)
+                podcasts = podcasts.filter(network__in=user_networks)
+            selected_networks = []
+            # Fallback to domain theme
+            current_view_network = request.network
+        else:
+            # FILTERED MODE
+            query = query.filter(podcast__network__slug__in=selected_networks)
+            podcasts = podcasts.filter(network__slug__in=selected_networks)
+            
+            # THEME LOGIC:
+            if len(selected_networks) == 1:
+                # If exactly one is selected, use its specific theme
+                current_view_network = get_object_or_404(Network, slug=selected_networks[0])
+            else:
+                # If multiple are selected, use the domain's default theme
+                current_view_network = request.network
     else:
+        # DEFAULT: Current domain's network
+        query = query.filter(podcast__network=request.network)
+        podcasts = podcasts.filter(network=request.network)
+        selected_networks = [request.network.slug]
         current_view_network = request.network
 
-    podcasts = current_view_network.podcasts.all().order_by('title')
-    query = Episode.objects.select_related('podcast', 'podcast__network', 'podcast__required_tier')
-    query = query.filter(podcast__network=current_view_network)
+    # 4. Apply Show Filter
+    if show_slug:
+        query = query.filter(podcast__slug=show_slug)
         
     all_episodes = query.order_by('-pub_date')
     paginator = Paginator(all_episodes, 20)
@@ -309,25 +342,26 @@ def home(request):
         
     page_obj = paginator.get_page(page_number)
     
+    # 5. Check Patreon Access per episode
     user_active_pledges = {}
     if request.user.is_authenticated and hasattr(request.user, 'patron_profile'):
         user_active_pledges = request.user.patron_profile.active_pledges or {}
-        
+
     for ep in page_obj:
         req_cents = ep.podcast.required_tier.minimum_cents if ep.podcast.required_tier else 0
         camp_id = str(ep.podcast.network.patreon_campaign_id)
-        user_cents = request.user.patron_profile.active_pledges.get(camp_id, 0) if request.user.is_authenticated else 0
+        user_cents = user_active_pledges.get(camp_id, 0)
         ep.user_has_access = (user_cents >= req_cents)
 
     context = {
         'episodes': page_obj,          
         'page_obj': page_obj,          
-        'custom_page_range': range(max(1, page_obj.number - 5), min(paginator.num_pages, page_obj.number + 5) + 1),
+        'custom_page_range': range(max(1, page_obj.number - 5), min(paginator.num_pages, page_obj.number + 5) + 1), 
         'podcasts': podcasts,          
         'current_filter': show_slug,   
-        'current_network': current_view_network,
+        'current_network': current_view_network, 
         'user_networks': user_networks,
-        'selected_network': selected_network_slug,
+        'selected_networks': selected_networks, # Note the plural name for the template
     }
     return render(request, 'pod_manager/home.html', context)
 

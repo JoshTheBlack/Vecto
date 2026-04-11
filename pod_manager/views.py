@@ -25,7 +25,7 @@ from django.contrib.auth.models import User
 from django.core.cache import cache
 from django.core.management import call_command
 from django.core.paginator import Paginator
-from django.db.models import Max
+from django.db.models import Max, Q
 from django.http import JsonResponse, HttpResponse, HttpResponseForbidden, StreamingHttpResponse, Http404
 from django.shortcuts import redirect, get_object_or_404, render
 from django.urls import reverse
@@ -196,7 +196,7 @@ def patreon_callback(request):
     profile.save()
 
     login(request, user)
-    return redirect('user_feeds')
+    return redirect('home')
 
 # ==========================================
 # USER-FACING VIEWS
@@ -342,7 +342,7 @@ def creator_settings(request):
 
 def home(request):
     show_slug = request.GET.get('show')
-    # Use getlist to handle multiple ?network=... parameters
+    search_query = request.GET.get('q', '').strip()
     selected_networks = request.GET.getlist('network')
     
     # 1. Determine user's active pledged networks
@@ -389,6 +389,13 @@ def home(request):
     # 4. Apply Show Filter
     if show_slug:
         query = query.filter(podcast__slug=show_slug)
+
+    # 4.5 Apply Search Filter
+    if search_query:
+        query = query.filter(
+            Q(title__icontains=search_query) | 
+            Q(raw_description__icontains=search_query)
+        )
         
     all_episodes = query.order_by('-pub_date')
     paginator = Paginator(all_episodes, 20)
@@ -419,7 +426,8 @@ def home(request):
         'current_filter': show_slug,   
         'current_network': current_view_network, 
         'user_networks': user_networks,
-        'selected_networks': selected_networks, # Note the plural name for the template
+        'selected_networks': selected_networks,
+        'search_query': search_query,
     }
     return render(request, 'pod_manager/home.html', context)
 
@@ -541,7 +549,6 @@ def user_feeds(request):
         'current_network': request.network,
     }
     return render(request, 'pod_manager/user_feeds.html', context)
-
 
 def generate_custom_feed(request):
     feed_token = request.GET.get('auth')
@@ -722,29 +729,18 @@ def patreon_webhook(request):
     logger.info(f"Headers: {request.headers}")
     logger.info(f"Signature Provided: {signature}")
 
-    webhook_secret = settings.PATREON_WEBHOOK_SECRET
+    webhook_secret = settings.PATREON_WEBHOOK_SECRET.encode('utf-8')
     if not webhook_secret:
         logger.error("PATREON_WEBHOOK_SECRET is not set in environment variables!")
         return HttpResponse("Internal Setup Error", status=500)
     
-    # Calculate expected signature
-    expected_signature = hmac.new(
-        webhook_secret.encode('utf-8'),
-        body,
-        digestmod=hashlib.md5
-    ).hexdigest()
+    expected_signature = hmac.new(webhook_secret.encode('utf-8'), body, digestmod=hashlib.md5).hexdigest()
 
     logger.info(f"Expected Signature: {expected_signature}")
 
     if not signature or not hmac.compare_digest(signature, expected_signature):
         logger.warning("Invalid Webhook Signature detected.")
         return HttpResponseForbidden("Invalid Signature")
-
-    secret = settings.PATREON_WEBHOOK_SECRET.encode('utf-8')
-    expected_sig = hmac.new(secret, request.body, hashlib.md5).hexdigest()
-
-    if not hmac.compare_digest(expected_sig, signature):
-        return HttpResponseForbidden("Invalid signature")
 
     try:
         data = json.loads(request.body)
@@ -774,7 +770,7 @@ def patreon_webhook(request):
             active_pledges[campaign_id] = final_amount
             profile.active_pledges = active_pledges
             profile.save()
-            print(f"Webhook Success: Updated {profile.user.email} on Campaign {campaign_id} to {final_amount} cents.")
+            logger.info(f"Webhook Success: Updated {profile.user.email} on Campaign {campaign_id} to {final_amount} cents.")
         
         logger.info("Webhook processed successfully.")
         return HttpResponse("Success", status=200)

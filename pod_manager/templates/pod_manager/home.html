@@ -15,6 +15,26 @@
 
         <div id="next-page-data" data-next="{% if page_obj.has_next %}{{ page_obj.next_page_number }}{% endif %}"></div>
 
+        <form method="GET" action="{% url 'home' %}" class="mb-4">
+            {% for slug in selected_networks %}
+                <input type="hidden" name="network" value="{{ slug }}">
+            {% endfor %}
+            {% if current_filter %}
+                <input type="hidden" name="show" value="{{ current_filter }}">
+            {% endif %}
+            <div class="input-group">
+                <input type="text" name="q" class="form-control bg-black text-light border-secondary" placeholder="Search episodes..." value="{{ search_query }}">
+                <button class="btn btn-warning fw-bold" type="submit">
+                    <i class="bi bi-search"></i> Search
+                </button>
+                {% if search_query %}
+                    <a href="?{% for slug in selected_networks %}network={{ slug }}&{% endfor %}{% if current_filter %}show={{ current_filter }}{% endif %}" class="btn btn-outline-secondary">
+                        Clear
+                    </a>
+                {% endif %}
+            </div>
+        </form>
+
         <div id="episodes-container">
             {% for ep in episodes %}
             <div class="card mb-4 shadow-sm border-warning">
@@ -67,36 +87,61 @@
         </div>
 
         {% if page_obj.has_other_pages %}
-        <nav aria-label="Episode pagination" class="mt-4 mb-5" id="pagination-bar">
-            <ul class="pagination justify-content-center flex-wrap">
-                
-                {% if page_obj.number > 1 %}
-                    <li class="page-item"><a class="page-link bg-dark text-warning border-secondary" href="?page=1{% if selected_network %}&network={{ selected_network }}{% endif %}{% if current_filter %}&show={{ current_filter }}{% endif %}">&laquo; First</a></li>
-                {% endif %}
-
-                {% if page_obj.has_previous %}
-                    <li class="page-item"><a class="page-link bg-dark text-warning border-secondary" href="?page={{ page_obj.previous_page_number }}{% if selected_network %}&network={{ selected_network }}{% endif %}{% if current_filter %}&show={{ current_filter }}{% endif %}">&lsaquo; Prev</a></li>
-                {% endif %}
-
-                {% for i in custom_page_range %}
-                    {% if page_obj.number == i %}
-                        <li class="page-item active" aria-current="page"><span class="page-link bg-warning border-warning fw-bold">{{ i }}</span></li>
-                    {% else %}
-                        <li class="page-item"><a class="page-link bg-dark text-light border-secondary" href="?page={{ i }}{% if selected_network %}&network={{ selected_network }}{% endif %}{% if current_filter %}&show={{ current_filter }}{% endif %}">{{ i }}</a></li>
-                    {% endif %}
-                {% endfor %}
-
-                {% if page_obj.has_next %}
-                    <li class="page-item"><a class="page-link bg-dark text-warning border-secondary" href="?page={{ page_obj.next_page_number }}{% if selected_network %}&network={{ selected_network }}{% endif %}{% if current_filter %}&show={{ current_filter }}{% endif %}">Next &rsaquo;</a></li>
-                {% endif %}
-                
-                {% if page_obj.number < page_obj.paginator.num_pages %}
-                    <li class="page-item"><a class="page-link bg-dark text-warning border-secondary" href="?page={{ page_obj.paginator.num_pages }}{% if selected_network %}&network={{ selected_network }}{% endif %}{% if current_filter %}&show={{ current_filter }}{% endif %}">Last &raquo;</a></li>
-                {% endif %}
-                
-            </ul>
-        </nav>
+<nav aria-label="Episode pagination" class="mt-4 mb-5" id="pagination-bar">
+    <ul class="pagination justify-content-center flex-wrap">
+        
+        {% if page_obj.number > 1 %}
+            <li class="page-item">
+                <a class="page-link bg-dark text-warning border-secondary" 
+                   href="?page=1{% for slug in selected_networks %}&network={{ slug }}{% endfor %}{% if current_filter %}&show={{ current_filter }}{% endif %}{% if search_query %}&q={{ search_query }}{% endif %}">
+                   &laquo; First
+                </a>
+            </li>
         {% endif %}
+
+        {% if page_obj.has_previous %}
+            <li class="page-item">
+                <a class="page-link bg-dark text-warning border-secondary" 
+                   href="?page={{ page_obj.previous_page_number }}{% for slug in selected_networks %}&network={{ slug }}{% endfor %}{% if current_filter %}&show={{ current_filter }}{% endif %}{% if search_query %}&q={{ search_query }}{% endif %}">
+                   &lsaquo; Prev
+                </a>
+            </li>
+        {% endif %}
+
+        {% for i in custom_page_range %}
+            <li class="page-item {% if page_obj.number == i %}active{% endif %}">
+                {% if page_obj.number == i %}
+                    <span class="page-link bg-warning border-warning fw-bold">{{ i }}</span>
+                {% else %}
+                    <a class="page-link bg-dark text-light border-secondary" 
+                       href="?page={{ i }}{% for slug in selected_networks %}&network={{ slug }}{% endfor %}{% if current_filter %}&show={{ current_filter }}{% endif %}{% if search_query %}&q={{ search_query }}{% endif %}">
+                       {{ i }}
+                    </a>
+                {% endif %}
+            </li>
+        {% endfor %}
+
+        {% if page_obj.has_next %}
+            <li class="page-item">
+                <a class="page-link bg-dark text-warning border-secondary" 
+                   href="?page={{ page_obj.next_page_number }}{% for slug in selected_networks %}&network={{ slug }}{% endfor %}{% if current_filter %}&show={{ current_filter }}{% endif %}{% if search_query %}&q={{ search_query }}{% endif %}">
+                   Next &rsaquo;
+                </a>
+            </li>
+        {% endif %}
+        
+        {% if page_obj.number < page_obj.paginator.num_pages %}
+            <li class="page-item">
+                <a class="page-link bg-dark text-warning border-secondary" 
+                   href="?page={{ page_obj.paginator.num_pages }}{% for slug in selected_networks %}&network={{ slug }}{% endfor %}{% if current_filter %}&show={{ current_filter }}{% endif %}{% if search_query %}&q={{ search_query }}{% endif %}">
+                   Last &raquo;
+                </a>
+            </li>
+        {% endif %}
+        
+    </ul>
+</nav>
+{% endif %}
 
     </div>
     

@@ -93,21 +93,65 @@
     }
 </style>
 
-<div class="row mb-4">
-    <div class="col-md-8">
-        <h2 class="fw-bold">Listener Dashboard</h2>
-        <p class="text-muted">Welcome back, {{ request.user.first_name|default:"Listener" }}! Manage your podcast feeds below.</p>
+<div class="row mb-4 align-items-center">
+    <div class="{% if user_networks|length > 1 %}col-md-5{% else %}col-md-8{% endif %} mb-3 mb-md-0">
+        <h2 class="fw-bold mb-1">Listener Dashboard</h2>
+        <p class="text-muted mb-0">Welcome back, {{ request.user.first_name|default:"Listener" }}! Manage your podcast feeds below.</p>
     </div>
-    <div class="col-md-4 text-md-end">
-        <div class="card bg-warning text-white shadow-sm border-0">
-            <div class="card-body py-2">
-                {% if user.is_authenticated %}
-                    <span class="text-white-50 small text-uppercase fw-bold">Active Patreon Pledge</span>
-                    <h4 class="text-white mb-0 fw-bold">${{ dollars|floatformat:2 }} <span class="fs-6 text-white-50 fw-normal">/ month</span></h4>
-                {% else %}
-                    {% endif %}
+
+    {% if user.is_authenticated %}
+    <div class="{% if user_networks|length > 1 %}col-md-3{% else %}col-md-4 text-md-end{% endif %} mb-3 mb-md-0">
+        <div class="card bg-warning text-white border-0 shadow-sm h-100">
+            <div class="card-body py-2 text-start">
+                <span class="text-white-50 small text-uppercase fw-bold">Active Patreon Pledge</span>
+                <h4 class="text-white mb-0 fw-bold">${{ dollars|floatformat:2 }} <span class="fs-6 text-white-50 fw-normal">/ month</span></h4>
             </div>
         </div>
+    </div>
+    {% endif %}
+
+    {% if user_networks|length > 1 %}
+    <div class="col-md-4">
+        <div class="card border-secondary shadow-sm bg-dark h-100 text-start">
+            <div class="card-body p-2">
+                <h6 class="text-muted fw-bold text-uppercase mb-1 small"><i class="bi bi-globe"></i> Active Network</h6>
+                <div class="dropdown d-grid">
+                    <button class="btn btn-outline-warning btn-sm dropdown-toggle text-start d-flex justify-content-between align-items-center" type="button" data-bs-toggle="dropdown" data-bs-auto-close="outside">
+                        <span class="text-light text-truncate pe-2">
+                            {% if not selected_networks %} All My Networks (Blended)
+                            {% elif selected_networks|length == 1 %} {% for net in user_networks %}{% if net.slug in selected_networks %}{{ net.name }}{% endif %}{% endfor %}
+                            {% else %} Multiple Networks ({{ selected_networks|length }}) {% endif %}
+                        </span>
+                    </button>
+                    <ul class="dropdown-menu dropdown-menu-dark w-100 border-warning shadow p-3">
+                        <form method="GET" action="">
+                            <li class="mb-2 pb-2 border-bottom border-secondary">
+                                <a class="text-warning text-decoration-none small fw-bold" href="?network=all">
+                                    <i class="bi bi-x-circle"></i> Blended View (All My Networks)
+                                </a>
+                            </li>
+                            {% for net in user_networks %}
+                            <li class="mb-2">
+                                <div class="form-check">
+                                    <input class="form-check-input" type="checkbox" name="network" value="{{ net.slug }}" id="check-{{ net.slug }}" {% if net.slug in selected_networks %}checked{% endif %}>
+                                    <label class="form-check-label text-light small" for="check-{{ net.slug }}">{{ net.name }}</label>
+                                </div>
+                            </li>
+                            {% endfor %}
+                            <li class="mt-3"><button type="submit" class="btn btn-warning btn-sm w-100 fw-bold">Update Filter</button></li>
+                        </form>
+                    </ul>
+                </div>
+            </div>
+        </div>
+    </div>
+    {% endif %}
+</div>
+
+<div class="mb-3">
+    <div class="input-group">
+        <span class="input-group-text bg-black border-secondary text-muted"><i class="bi bi-funnel"></i></span>
+        <input type="text" id="feedSearch" class="form-control bg-black text-light border-secondary" placeholder="Type to filter feeds...">
     </div>
 </div>
 
@@ -117,7 +161,7 @@
     </div>
     <ul class="list-group list-group-flush bg-dark">
         {% for item in feed_data %}
-            <li class="list-group-item bg-transparent text-light py-3">
+            <li class="list-group-item bg-transparent text-light py-3 feed-item">
                 <div class="row align-items-center">
                     <div class="col-md-4 d-flex align-items-center">
                         {% if item.podcast.image_url %}
@@ -130,7 +174,7 @@
                             </div>
                         {% endif %}
                         <div>
-                            <h5 class="mb-1 fw-bold">{{ item.podcast.title }}</h5>
+                            <h5 class="mb-1 fw-bold feed-title">{{ item.podcast.title }}</h5>
                             <p class="mb-0 text-muted small">{{ item.podcast.network.name }} Network</p>
                         </div>
                     </div>
@@ -188,6 +232,7 @@
     </ul>
 </div>
 
+{% if user.is_authenticated %}
 <div class="card shadow-sm mb-5">
     <div class="card-header bg-dark border-bottom border-secondary d-flex justify-content-between align-items-center py-3">
         <h5 class="mb-0"><i class="bi bi-collection-play-fill text-warning"></i> Your Custom Mixes</h5>
@@ -206,7 +251,7 @@
     {% if mix_data %}
         <ul class="list-group list-group-flush bg-dark">
             {% for item in mix_data %}
-            <li class="list-group-item bg-transparent text-light py-3">
+            <li class="list-group-item bg-transparent text-light py-3 feed-item">
                 <div class="row align-items-center">
                     <div class="col-md-4 d-flex align-items-center">
                         {% if item.mix.display_image %}
@@ -217,7 +262,7 @@
                             </div>
                         {% endif %}
                         <div>
-                            <h5 class="fw-bold text-light mb-1">{{ item.mix.name }}</h5>
+                            <h5 class="fw-bold text-light mb-1 feed-title">{{ item.mix.name }}</h5>
                             <p class="text-muted small mb-0 text-truncate" style="max-width: 250px;" title="{% for show in item.mix.selected_podcasts.all %}{{ show.title }}{% if not forloop.last %}, {% endif %}{% endfor %}">
                                 {% for show in item.mix.selected_podcasts.all %}
                                     {{ show.title }}{% if not forloop.last %}, {% endif %}
@@ -352,6 +397,7 @@
         </div>
     {% endif %}
 </div>
+{% endif %}
 
 {% if user.is_authenticated %}
 <div class="modal fade" id="createMixModal" tabindex="-1">
@@ -457,5 +503,23 @@ function openPodcastApp(app, feedUrl) {
         window.location.href = appUrl;
     }
 }
+
+document.getElementById('feedSearch').addEventListener('keyup', function() {
+    const filter = this.value.toLowerCase();
+    const items = document.querySelectorAll('.feed-item');
+    
+    items.forEach(item => {
+        const titleElement = item.querySelector('.feed-title');
+        if (titleElement) {
+            const title = titleElement.innerText.toLowerCase();
+            // Use Bootstrap's d-none to immediately hide/show
+            if (title.includes(filter)) {
+                item.classList.remove('d-none');
+            } else {
+                item.classList.add('d-none');
+            }
+        }
+    });
+});
 </script>
 {% endblock %}

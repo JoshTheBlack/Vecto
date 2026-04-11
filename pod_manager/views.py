@@ -449,55 +449,51 @@ def episode_detail(request, episode_id):
 
     return render(request, 'pod_manager/episode_detail.html', {'ep': ep})
 
-def user_feeds(request):
-    network = request.network
-    active_pledges = {}
-    profile = None
-    total_dollars = 0
+# pod_manager/views.py
 
-    # Only fetch the profile and allow Mix manipulation if the user is logged in
+def user_feeds(request):
+    show_slug = request.GET.get('show')
+    selected_networks = request.GET.getlist('network') #
+    
+    profile = None
+    active_pledges = {}
+    total_dollars = 0
+    user_networks = Network.objects.none()
+
+    # 1. Gather authenticated data
     if request.user.is_authenticated and hasattr(request.user, 'patron_profile'):
         profile = request.user.patron_profile
         active_pledges = profile.active_pledges or {}
         total_dollars = sum(active_pledges.values()) / 100 if active_pledges else 0
+        
+        # Identify all networks this user supports
+        active_campaign_ids = [cid for cid, amt in active_pledges.items() if amt > 0]
+        user_networks = Network.objects.filter(patreon_campaign_id__in=active_campaign_ids).distinct()
 
-        # === HANDLE MIX CREATION / EDIT / DELETE (AUTHENTICATED ONLY) ===
+        # === RESTORED: HANDLE MIX POST ACTIONS ===
         if request.method == 'POST' and 'create_mix' in request.POST:
-            mix_name = request.POST.get('mix_name', '').strip()
-            if not mix_name:
-                mix_name = f"UserMix {UserMix.objects.filter(user=request.user).count() + 1}"
-                
+            mix_name = request.POST.get('mix_name', '').strip() or f"UserMix {UserMix.objects.filter(user=request.user).count() + 1}"
             selected_podcast_ids = request.POST.getlist('podcasts')
             if selected_podcast_ids:
                 user_mix = UserMix.objects.create(
-                    user=request.user, network=network, name=mix_name,
+                    user=request.user, network=request.network, name=mix_name,
                     image_url=request.POST.get('mix_image', '').strip(),
                     image_upload=request.FILES.get('mix_image_upload') 
                 )
                 user_mix.selected_podcasts.set(selected_podcast_ids)
-                messages.success(request, f"Mix '{mix_name}' created successfully!")
-            else:
-                messages.warning(request, "You must select at least one show to create a mix.")
+                messages.success(request, f"Mix '{mix_name}' created!")
             return redirect('user_feeds')
 
         if request.method == 'POST' and 'edit_mix' in request.POST:
             user_mix = UserMix.objects.filter(id=request.POST.get('mix_id'), user=request.user).first()
             if user_mix:
-                mix_name = request.POST.get('mix_name', '').strip()
-                user_mix.name = mix_name if mix_name else f"UserMix {UserMix.objects.filter(user=request.user).count() + 1}"
+                user_mix.name = request.POST.get('mix_name', '').strip() or user_mix.name
                 user_mix.image_url = request.POST.get('mix_image', '').strip()
-                
-                if 'mix_image_upload' in request.FILES:
-                    user_mix.image_upload = request.FILES['mix_image_upload']
-                
-                selected_podcast_ids = request.POST.getlist('podcasts')
-                if selected_podcast_ids:
-                    user_mix.selected_podcasts.set(selected_podcast_ids)
-                    user_mix.save()
-                    cache.delete(f"mix_feed_{user_mix.unique_id}")
-                    messages.success(request, "Mix updated successfully!")
-                else:
-                    messages.warning(request, "You must select at least one show. Changes were not saved.")
+                if 'mix_image_upload' in request.FILES: user_mix.image_upload = request.FILES['mix_image_upload']
+                selected_ids = request.POST.getlist('podcasts')
+                if selected_ids: user_mix.selected_podcasts.set(selected_ids)
+                user_mix.save()
+                cache.delete(f"mix_feed_{user_mix.unique_id}")
             return redirect('user_feeds')
 
         if request.method == 'POST' and 'delete_mix' in request.POST:
@@ -505,62 +501,44 @@ def user_feeds(request):
             if user_mix:
                 cache.delete(f"mix_feed_{user_mix.unique_id}")
                 user_mix.delete()
-                messages.success(request, "Custom mix deleted.")
             return redirect('user_feeds')
 
-    # === BUILD FEED DATA FOR ALL USERS ===
+    # 2. Determine target networks for display
+    if selected_networks:
+        target_networks = user_networks if 'all' in selected_networks else user_networks.filter(slug__in=selected_networks)
+    else:
+        target_networks = [request.network]
+
+    # 3. Build Feed Data (Shows public feeds for guests)
     feed_data = []
-    available_podcasts = []
-    
-    for podcast in Podcast.objects.select_related('network', 'required_tier').all():
+    for podcast in Podcast.objects.filter(network__in=target_networks).select_related('network', 'required_tier'):
         req_cents = podcast.required_tier.minimum_cents if podcast.required_tier else 0
         camp_id = str(podcast.network.patreon_campaign_id)
         user_cents = active_pledges.get(camp_id, 0)
+        has_access = (user_cents >= req_cents) and (req_cents > 0) and (profile is not None)
         
-        # They only get the private feed if they are logged in AND meet the threshold
-        has_premium_access = (user_cents >= req_cents) and (req_cents > 0) and (profile is not None)
-        
-        if has_premium_access:
-            base_feed_url = reverse('custom_feed')
-            raw_url = f"{base_feed_url}?auth={profile.feed_token}&show={podcast.slug}"
-            ui_has_access = True
-        elif req_cents == 0:
-            # It's a completely free show
+        # visibility logic: show if has access or if a public fallback exists
+        if has_access:
+            raw_url = reverse('custom_feed') + f"?auth={profile.feed_token}&show={podcast.slug}"
+            feed_data.append({'podcast': podcast, 'has_access': True, 'feed_url': request.build_absolute_uri(raw_url)})
+        elif req_cents == 0 or podcast.public_feed_url:
             raw_url = reverse('public_feed', args=[podcast.slug])
-            ui_has_access = True
-        else:
-            # They don't have access, give them the public unauthenticated feed
-            raw_url = reverse('public_feed', args=[podcast.slug])
-            ui_has_access = False
-            
-        feed_data.append({
-            'podcast': podcast,
-            'has_access': ui_has_access,
-            'req_dollars': req_cents / 100,
-            'feed_url': request.build_absolute_uri(raw_url)
-        })
-        
-        available_podcasts.append({
-            'podcast': podcast,
-            'has_access': ui_has_access
-        })
+            feed_data.append({'podcast': podcast, 'has_access': False, 'req_dollars': req_cents/100, 'feed_url': request.build_absolute_uri(raw_url)})
 
-    # === GET CUSTOM MIXES (ONLY IF LOGGED IN) ===
-    user_mixes = UserMix.objects.filter(user=request.user, network=network).prefetch_related('selected_podcasts') if request.user.is_authenticated else []
-    mix_data = []
-    for mix in user_mixes:
-        raw_mix_url = reverse('mix_feed', args=[mix.unique_id])
-        mix_data.append({
-            'mix': mix,
-            'feed_url': request.build_absolute_uri(raw_mix_url)
-        })
+    # Fix modal podcast list (include all supported networks)
+    available_podcasts = []
+    if request.user.is_authenticated:
+        for p in Podcast.objects.filter(network__in=user_networks).select_related('network', 'required_tier'):
+            available_podcasts.append({'podcast': p, 'has_access': (active_pledges.get(str(p.network.patreon_campaign_id), 0) >= (p.required_tier.minimum_cents if p.required_tier else 0))})
+
+    user_mixes = UserMix.objects.filter(user=request.user, network=request.network) if request.user.is_authenticated else []
+    mix_data = [{'mix': m, 'feed_url': request.build_absolute_uri(reverse('mix_feed', args=[m.unique_id]))} for m in user_mixes]
 
     context = {
-        'profile': profile,
-        'dollars': total_dollars,
-        'feed_data': feed_data,
-        'available_podcasts': available_podcasts,
-        'mix_data': mix_data,
+        'profile': profile, 'dollars': total_dollars, 'feed_data': feed_data,
+        'available_podcasts': available_podcasts, 'mix_data': mix_data,
+        'user_networks': user_networks, 'selected_networks': selected_networks or [request.network.slug],
+        'current_network': request.network,
     }
     return render(request, 'pod_manager/user_feeds.html', context)
 

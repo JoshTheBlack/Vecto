@@ -659,7 +659,7 @@ def generate_mix_feed(request, unique_id):
             camp_id = str(podcast.network.patreon_campaign_id)
             access_map[podcast.id] = (active_pledges.get(camp_id, 0) >= req_cents)
                 
-        episodes = Episode.objects.filter(podcast__in=selected_podcasts).select_related('podcast', 'podcast__network').order_by('-pub_date')[:100]
+        episodes = Episode.objects.filter(podcast__in=selected_podcasts).select_related('podcast', 'podcast__network').order_by('-pub_date')[:5000]
         
         if user_mix.display_image: image_url = request.build_absolute_uri(user_mix.display_image)
         else: image_url = request.build_absolute_uri(user_mix.network.default_image_url)

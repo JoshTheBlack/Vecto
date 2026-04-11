@@ -185,3 +185,17 @@ LOGIN_REDIRECT_URL = 'home'
 
 # Where to send users after they log out
 LOGOUT_REDIRECT_URL = 'home'
+
+LOGGING = {
+    'version': 1,
+    'disable_existing_loggers': False,
+    'handlers': {
+        'console': {
+            'class': 'logging.StreamHandler',
+        },
+    },
+    'root': {
+        'handlers': ['console'],
+        'level': 'INFO',
+    },
+}

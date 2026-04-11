@@ -59,8 +59,18 @@
                             <h5 class="fw-bold mb-3 border-bottom border-secondary pb-2 text-warning">Integrations & URLs</h5>
                             <div class="row mb-4">
                                 <div class="col-md-6 mb-3">
-                                    <label class="form-label text-muted small fw-bold">Patreon Campaign ID</label>
-                                    <input type="text" name="patreon_campaign_id" class="form-control bg-black text-light border-secondary" value="{{ current_network.patreon_campaign_id }}">
+                                    <label class="form-label text-muted small fw-bold d-block">Patreon Connection</label>
+                                    {% if current_network.patreon_sync_enabled %}
+                                        <div class="alert alert-success d-flex justify-content-between align-items-center py-1 px-3 mb-0" style="height: 38px;">
+                                            <span class="small fw-bold"><i class="bi bi-check-circle-fill"></i> Campaign Linked</span>
+                                            <a href="{% url 'patreon_login' %}?network_id={{ current_network.id }}" class="btn btn-sm btn-outline-success border-0 py-0"><i class="bi bi-arrow-repeat"></i> Re-link</a>
+                                        </div>
+                                        <input type="hidden" name="patreon_campaign_id" value="{{ current_network.patreon_campaign_id }}">
+                                    {% else %}
+                                        <a href="{% url 'patreon_login' %}?network_id={{ current_network.id }}" class="btn btn-primary btn-sm fw-bold w-100 d-flex align-items-center justify-content-center" style="height: 38px;">
+                                            <i class="bi bi-link-45deg fs-5 me-1"></i> Link Patreon Campaign
+                                        </a>
+                                    {% endif %}
                                 </div>
                                 <div class="col-md-6 mb-3">
                                     <label class="form-label text-muted small fw-bold">Website URL</label>
@@ -305,12 +315,18 @@
             </div>
 
             <div class="tab-pane fade" id="list-sync" role="tabpanel">
-                <div class="card shadow-sm border-secondary bg-dark text-center py-5">
-                    <i class="bi bi-arrow-repeat text-warning mb-3" style="font-size: 3rem;"></i>
-                    <h4 class="fw-bold">Global Patreon Sync</h4>
-                    <p class="text-muted w-75 mx-auto">This will trigger a background task to refresh the pledge amounts for all {{ total_patrons }} patrons against the Patreon API. This is usually handled automatically by webhooks.</p>
-                    <div>
-                        <button class="btn btn-outline-warning mt-3 disabled"><i class="bi bi-play-fill"></i> Run Manual Sync</button>
+                <div class="card bg-dark border-secondary mt-4">
+                    <div class="card-body">
+                        <h5 class="text-warning mb-3">Patreon Sync</h5>
+                        <p class="text-muted small">If webhooks are missed, you can manually force a full refresh of your patron list and their pledge levels.</p>
+                        <form method="POST">
+                            {% csrf_token %}
+                            <input type="hidden" name="action" value="run_manual_sync">
+                            <input type="hidden" name="network_id" value="{{ current_network.id }}">
+                            <button type="submit" class="btn btn-outline-warning fw-bold">
+                                <i class="bi bi-cloud-arrow-down"></i> Run Manual Sync
+                            </button>
+                        </form>
                     </div>
                 </div>
             </div>

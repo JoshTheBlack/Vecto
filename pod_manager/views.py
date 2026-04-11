@@ -4,6 +4,7 @@ It handles user authentication via Patreon, serves user-facing pages,
 generates dynamic RSS feeds, processes Patreon webhooks, and manages
 a background task queue for importing podcast feeds.
 """
+import logging
 import hashlib
 import hmac
 import io
@@ -33,6 +34,7 @@ from podgen import Podcast as PodgenPodcast, Episode as PodgenEpisode, Media
 
 from .models import PatronProfile, Podcast, Episode, Network, PatreonTier, UserMix
 
+logger = logging.getLogger(__name__)
 # ==========================================
 # HELPER FUNCTIONS
 # ==========================================
@@ -79,23 +81,35 @@ def invalidate_show_cache(show_id: int):
 # ==========================================
 
 def patreon_login(request):
+    network_id = request.GET.get('network_id')
     redirect_uri = request.build_absolute_uri(reverse('patreon_callback'))
+    
+    if network_id:
+        scopes = 'identity identity[email] campaigns campaigns.members'
+        state = f"network_{network_id}"
+    else:
+        scopes = 'identity identity[email]'
+        state = "listener"
+    
     params = {
         'response_type': 'code',
         'client_id': settings.PATREON_CLIENT_ID,
         'redirect_uri': redirect_uri,
-        'scope': 'identity identity[email]', 
+        'scope': scopes,
+        'state': state
     }
     url = f"https://www.patreon.com/oauth2/authorize?{urllib.parse.urlencode(params, quote_via=urllib.parse.quote)}"
+    
+    logger.info(f"[EVIDENCE] Generating Patreon Auth URL. State: {state} | Scopes: {scopes}")
     return redirect(url)
 
 def patreon_callback(request):
     code = request.GET.get('code')
+    state = request.GET.get('state', 'listener')
     if not code:
         return JsonResponse({"error": "No code provided by Patreon."}, status=400)
     
     redirect_uri = request.build_absolute_uri(request.path)
-
     token_url = "https://www.patreon.com/api/oauth2/token"
     token_data = {
         'code': code,
@@ -109,10 +123,45 @@ def patreon_callback(request):
     tokens = token_res.json()
 
     if 'access_token' not in tokens:
+        logger.error(f"[EVIDENCE] Token Exchange Failed: {tokens}")
         return JsonResponse({"error": "Failed to trade code for token.", "details": tokens}, status=400)
 
-    access_token = tokens['access_token']
+    # CRITICAL EVIDENCE: What scopes did we actually get?
+    granted_scopes = tokens.get('scope', 'No scope field returned')
+    logger.info(f"[EVIDENCE] Token Granted. Scopes: {granted_scopes}")
 
+    access_token = tokens['access_token']
+    refresh_token = tokens.get('refresh_token')
+
+    # --- HANDLE CREATOR NETWORK LINKING ---
+    if state.startswith("network_"):
+        try:
+            network_id = state.split("_")[1]
+            network = get_object_or_404(Network, id=network_id)
+            
+            # Fetch campaign info to set the Campaign ID and save tokens
+            camp_url = "https://www.patreon.com/api/oauth2/v2/campaigns"
+            headers = {'Authorization': f'Bearer {access_token}'}
+            camp_res = requests.get(camp_url, headers=headers).json()
+            logger.info(f"[EVIDENCE] Campaign Discovery Response: {json.dumps(camp_res)[:500]}")
+            
+            if 'data' in camp_res and len(camp_res['data']) > 0:
+                network.patreon_campaign_id = camp_res['data'][0]['id']
+                network.patreon_creator_access_token = access_token
+                network.patreon_creator_refresh_token = refresh_token
+                network.patreon_sync_enabled = True
+                network.save()
+                logger.info(f"[EVIDENCE] Network {network.name} saved with Campaign ID {network.patreon_campaign_id}")
+                messages.success(request, f"Successfully linked Patreon Campaign for {network.name}!")
+            else:
+                logger.warning("[EVIDENCE] No campaigns found in creator account.")
+                messages.error(request, "No Patreon campaigns found for this account.")
+                
+            return redirect(f"{reverse('creator_settings')}?network={network.slug}")
+        except Exception as e:
+            return JsonResponse({"error": f"Failed to link network: {str(e)}"}, status=500)
+
+    # --- REMAINING LISTENER LOGIN LOGIC ---
     user_url = (
         "https://www.patreon.com/api/oauth2/v2/identity"
         "?include=memberships,memberships.campaign"
@@ -120,36 +169,29 @@ def patreon_callback(request):
         "&fields[member]=patron_status,currently_entitled_amount_cents"
     )
     headers = {'Authorization': f'Bearer {access_token}'}
-    user_res = requests.get(user_url, headers=headers)
-    user_data = user_res.json()
+    user_data = requests.get(user_url, headers=headers).json()
 
     user_info = user_data.get('data', {})
     patreon_id = user_info.get('id')
-    if not patreon_id:
-        return JsonResponse({"error": "Could not retrieve Patreon user ID from API response."}, status=400)
-
+    
     attributes = user_info.get('attributes', {})
     raw_email = attributes.get('email')
     safe_username = raw_email if raw_email else patreon_id
     safe_email = raw_email if raw_email else ''
     full_name = attributes.get('full_name', '')
 
-    # MULTI-NETWORK PLEDGE EXTRACTION
-    active_pledges = {}
-    for net in Network.objects.all():
-        if net.patreon_campaign_id:
-            cents = get_active_pledge_amount(user_data, str(net.patreon_campaign_id))
-            active_pledges[str(net.patreon_campaign_id)] = cents
-
-    user, created = User.objects.get_or_create(
+    user, _ = User.objects.get_or_create(
         username=safe_username, 
         defaults={'email': safe_email, 'first_name': full_name}
     )
 
-    profile, p_created = PatronProfile.objects.get_or_create(
-        user=user, 
-        defaults={'patreon_id': patreon_id}
-    )
+    profile, _ = PatronProfile.objects.get_or_create(user=user, defaults={'patreon_id': patreon_id})
+    
+    active_pledges = {}
+    for net in Network.objects.exclude(patreon_campaign_id=''):
+        cents = get_active_pledge_amount(user_data, str(net.patreon_campaign_id))
+        active_pledges[str(net.patreon_campaign_id)] = cents
+    
     profile.active_pledges = active_pledges
     profile.save()
 
@@ -267,6 +309,22 @@ def creator_settings(request):
             except Exception as e:
                 messages.error(request, f"Error adding show: {str(e)}")
                 
+            return redirect(f"{reverse('creator_settings')}?network={network.slug}")
+
+        elif action == 'run_manual_sync':
+            network_id = request.POST.get('network_id')
+            logger.info(f"Manual Sync requested for Network ID: {network_id} by User: {request.user.email}")
+            
+            network = get_object_or_404(allowed_networks, id=network_id)
+            
+            count, error = sync_network_patrons(network)
+            if error:
+                logger.error(f"Manual sync failed: {error}")
+                messages.error(request, f"Sync Failed: {error}")
+            else:
+                logger.info(f"Manual sync success. {count} records updated.")
+                messages.success(request, f"Successfully synced {count} patrons for {network.name}.")
+            
             return redirect(f"{reverse('creator_settings')}?network={network.slug}")
 
     allowed_networks = allowed_networks.prefetch_related('podcasts', 'podcasts__required_tier')
@@ -676,9 +734,33 @@ def generate_mix_feed(request, unique_id):
 
 @csrf_exempt
 def patreon_webhook(request):
+    if request.method != 'POST':
+        return HttpResponse(status=405)
+
     signature = request.headers.get('X-Patreon-Signature')
-    if not signature:
-        return HttpResponseForbidden("Missing signature")
+    body = request.body
+
+    logger.info("--- Incoming Patreon Webhook ---")
+    logger.info(f"Headers: {request.headers}")
+    logger.info(f"Signature Provided: {signature}")
+
+    webhook_secret = settings.PATREON_WEBHOOK_SECRET
+    if not webhook_secret:
+        logger.error("PATREON_WEBHOOK_SECRET is not set in environment variables!")
+        return HttpResponse("Internal Setup Error", status=500)
+    
+    # Calculate expected signature
+    expected_signature = hmac.new(
+        webhook_secret.encode('utf-8'),
+        body,
+        digestmod=hashlib.md5
+    ).hexdigest()
+
+    logger.info(f"Expected Signature: {expected_signature}")
+
+    if not signature or not hmac.compare_digest(signature, expected_signature):
+        logger.warning("Invalid Webhook Signature detected.")
+        return HttpResponseForbidden("Invalid Signature")
 
     secret = settings.PATREON_WEBHOOK_SECRET.encode('utf-8')
     expected_sig = hmac.new(secret, request.body, hashlib.md5).hexdigest()
@@ -716,13 +798,106 @@ def patreon_webhook(request):
             profile.save()
             print(f"Webhook Success: Updated {profile.user.email} on Campaign {campaign_id} to {final_amount} cents.")
         
+        logger.info("Webhook processed successfully.")
         return HttpResponse("Success", status=200)
         
-    except PatronProfile.DoesNotExist:
+    except PatronProfile.DoesNotExist as e:
+        logger.error(f"Error processing webhook: {str(e)}")
         return HttpResponse("User has not logged in via OAuth yet.", status=200)
 
     except (ValueError, KeyError, AttributeError) as e:
+        logger.error(f"Error processing webhook: {str(e)}")
         return HttpResponse("Error processing webhook payload.", status=400)
+    
+    except Exception as e:
+        logger.error(f"Error processing webhook: {str(e)}")
+        return HttpResponse("Error", status=500)
+
+def sync_network_patrons(network):
+    """
+    Fetches all members for a campaign and updates local PatronProfiles.
+    Also revokes access for local patrons no longer present in the Patreon member list.
+    """
+    logger.info(f"--- Starting COMPLETE Sync for Network: {network.name} ---")
+
+    if not network.patreon_creator_access_token or not network.patreon_campaign_id:
+        return 0, "Network is not properly linked to Patreon."
+
+    campaign_id_str = str(network.patreon_campaign_id)
+    base_url = f"https://www.patreon.com/api/oauth2/v2/campaigns/{campaign_id_str}/members"
+    params = {
+        "include": "user",
+        "fields[member]": "patron_status,currently_entitled_amount_cents",
+        "fields[user]": "email",
+        "page[count]": 100
+    }
+    headers = {'Authorization': f'Bearer {network.patreon_creator_access_token}'}
+    
+    updated_count = 0
+    seen_patreon_ids = set() # Track everyone currently on Patreon for this campaign
+    url = f"{base_url}?{urllib.parse.urlencode(params)}"
+
+    # 1. Iterate through all active/historical members on Patreon
+    while url:
+        res = requests.get(url, headers=headers)
+        if res.status_code != 200:
+            return updated_count, f"Patreon API Error: {res.text}"
+        
+        data = res.json()
+        members = data.get('data', [])
+        included = {i['id']: i for i in data.get('included', []) if i['type'] == 'user'}
+
+        for member in members:
+            attrs = member.get('attributes', {})
+            rel_user = member.get('relationships', {}).get('user', {}).get('data', {})
+            
+            if not rel_user:
+                continue
+                
+            patreon_id = rel_user['id']
+            seen_patreon_ids.add(patreon_id) # Mark as present
+            
+            user_data = included.get(patreon_id, {})
+            email = user_data.get('attributes', {}).get('email')
+
+            # Match local profile
+            profile = PatronProfile.objects.filter(patreon_id=patreon_id).first()
+            if not profile and email:
+                profile = PatronProfile.objects.filter(user__email=email).first()
+
+            if profile:
+                status = attrs.get('patron_status')
+                cents = attrs.get('currently_entitled_amount_cents', 0)
+                final_amount = cents if status == 'active_patron' else 0
+                
+                active_pledges = profile.active_pledges or {}
+                active_pledges[campaign_id_str] = final_amount
+                profile.active_pledges = active_pledges
+                profile.save()
+                updated_count += 1
+
+        url = data.get('links', {}).get('next')
+
+    # 2. Cleanup: Revoke access for anyone NOT seen in the API response
+    # Find local profiles that currently have this campaign ID in their JSON data
+    stale_profiles = PatronProfile.objects.filter(
+        active_pledges__has_key=campaign_id_str
+    ).exclude(
+        patreon_id__in=seen_patreon_ids
+    )
+
+    revoked_count = 0
+    for profile in stale_profiles:
+        active_pledges = profile.active_pledges or {}
+        if active_pledges.get(campaign_id_str, 0) > 0:
+            logger.info(f"Revoking access for {profile.user.email}: Not found in Patreon member list.")
+            active_pledges[campaign_id_str] = 0
+            profile.active_pledges = active_pledges
+            profile.save()
+            revoked_count += 1
+
+    logger.info(f"--- Sync Complete. Updated: {updated_count} | Revoked: {revoked_count} ---")
+    return updated_count, None
 
 class CacheLogStream:
     def __init__(self, task_id):

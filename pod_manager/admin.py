@@ -1,4 +1,6 @@
 from django.contrib import admin
+from django.contrib.auth.admin import UserAdmin as BaseUserAdmin
+from django.contrib.auth.models import User
 from .models import Network, PatreonTier, Podcast, Episode, UserMix, PatronProfile
 
 @admin.register(Network)
@@ -18,11 +20,40 @@ class EpisodeAdmin(admin.ModelAdmin):
     has_premium_audio.boolean = True
     ordering = ('-pub_date',)
 
-# NEW: Register the PatronProfile with a custom layout
 @admin.register(PatronProfile)
 class PatronProfileAdmin(admin.ModelAdmin):
-    list_display = ('user', 'patreon_id', 'pledge_amount_cents', 'last_sync')
+    list_display = ('user', 'patreon_id', 'get_combined_pledge_cents', 'last_sync')
     search_fields = ('user__username', 'user__email', 'patreon_id')
+
+    def get_combined_pledge_cents(self, obj):
+        """Sums up all campaign pledges from the active_pledges JSON field."""
+        if not obj.active_pledges:
+            return 0
+        return sum(obj.active_pledges.values())
+    
+    get_combined_pledge_cents.short_description = 'Pledge Amount Cents'
+
+class PatronProfileInline(admin.StackedInline):
+    model = PatronProfile
+    can_delete = False
+    verbose_name_plural = 'Patron Profile'
+    fields = ('patreon_id', 'active_pledges', 'feed_token')
+    readonly_fields = ('feed_token',)
+
+admin.site.unregister(User)
+
+@admin.register(User)
+class UserAdmin(BaseUserAdmin):
+    inlines = (PatronProfileInline,)
+    list_display = BaseUserAdmin.list_display + ('get_total_pledge_display',)
+
+    def get_total_pledge_display(self, instance):
+        if hasattr(instance, 'patron_profile') and instance.patron_profile.active_pledges:
+            total_cents = sum(instance.patron_profile.active_pledges.values())
+            return f"${total_cents / 100:.2f}"
+        return "$0.00"
+    
+    get_total_pledge_display.short_description = 'Total Pledge'
 
 admin.site.register(PatreonTier)
 admin.site.register(Podcast)

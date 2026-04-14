@@ -461,8 +461,10 @@ def home(request):
     return render(request, 'pod_manager/home.html', context)
 
 def episode_detail(request, episode_id):
-    ep = get_object_or_404(Episode.objects.select_related('podcast', 'podcast__network', 'podcast__required_tier'), id=episode_id, podcast__network=request.network)
+    # 1. Fetch the episode without strictly filtering by request.network
+    ep = get_object_or_404(Episode.objects.select_related('podcast', 'podcast__network', 'podcast__required_tier'), id=episode_id)
 
+    # 2. Determine user's pledge status
     user_active_pledges = {}
     if request.user.is_authenticated and hasattr(request.user, 'patron_profile'):
         user_active_pledges = request.user.patron_profile.active_pledges or {}
@@ -472,6 +474,13 @@ def episode_detail(request, episode_id):
     user_cents = user_active_pledges.get(camp_id, 0)
     ep.user_has_access = (user_cents >= req_cents)
     
+    # 3. Cross-Network Security Check:
+    # If the episode is from a different network than the current domain, 
+    # ensure the user actually has access to it before rendering the page.
+    if ep.podcast.network != request.network and not ep.user_has_access:
+        raise Http404("No Episode matches the given query.")
+    
+    # 4. Build the footer and description
     footer_parts = []
     if ep.user_has_access:
         if ep.podcast.show_footer_private: footer_parts.append(ep.podcast.show_footer_private)
@@ -485,8 +494,6 @@ def episode_detail(request, episode_id):
         ep.display_description += "<br><br>" + "<br><br>".join(footer_parts)
 
     return render(request, 'pod_manager/episode_detail.html', {'ep': ep})
-
-# pod_manager/views.py
 
 def user_feeds(request):
     show_slug = request.GET.get('show')

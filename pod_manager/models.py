@@ -77,6 +77,12 @@ class Network(models.Model):
     
     global_footer_public = models.TextField(blank=True, help_text="Appended to all public feeds in this network.")
     global_footer_private = models.TextField(blank=True, help_text="Appended to all private feeds in this network.")
+    
+    ingester_module = models.CharField(
+        max_length=50, 
+        default='default', 
+        help_text="The script in pod_manager/ingesters/ to use. Default is 'default'."
+    )
 
     def __str__(self):
         return self.name
@@ -152,6 +158,10 @@ class Episode(models.Model):
     clean_description = models.TextField(blank=True)
 
     duration = models.CharField(max_length=20, blank=True)
+
+    link = models.URLField(max_length=1000, blank=True, null=True)
+
+    tags = models.JSONField(default=list, blank=True)
     
     class Meta:
         indexes = [

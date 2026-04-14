@@ -74,6 +74,16 @@
                                 <div style="position: absolute; bottom: 0; left: 0; right: 0; height: 40px; background: linear-gradient(transparent, var(--vecto-surface-bg));"></div>
                             </div>
 
+                            {% if ep.tags %}
+                            <div class="mb-3">
+                                {% for tag in ep.tags %}
+                                    <a href="{% url 'home' %}?q={{ tag|urlencode }}&network={{ ep.podcast.network.slug }}" class="badge bg-dark text-light border border-secondary text-decoration-none me-1 mb-1 p-2 shadow-sm" style="transition: all 0.2s;" onmouseover="this.classList.replace('text-light', 'text-warning'); this.classList.replace('border-secondary', 'border-warning');" onmouseout="this.classList.replace('text-warning', 'text-light'); this.classList.replace('border-warning', 'border-secondary');">
+                                        <i class="bi bi-tag-fill text-muted"></i> {{ tag }}
+                                    </a>
+                                {% endfor %}
+                            </div>
+                            {% endif %}
+
                             <a href="{% url 'episode_detail' ep.id %}" class="btn btn-outline-warning btn-sm">
                                 <i class="bi bi-play-circle"></i> Play Episode
                             </a>

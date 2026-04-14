@@ -118,7 +118,7 @@
                 <div class="dropdown d-grid">
                     <button class="btn btn-outline-warning btn-sm dropdown-toggle text-start d-flex justify-content-between align-items-center" type="button" data-bs-toggle="dropdown" data-bs-auto-close="outside">
                         <span class="text-light text-truncate pe-2">
-                            {% if not selected_networks %} All My Networks (Blended)
+                            {% if not selected_networks  or "all" in selected_networks%} All My Networks (Blended)
                             {% elif selected_networks|length == 1 %} {% for net in user_networks %}{% if net.slug in selected_networks %}{{ net.name }}{% endif %}{% endfor %}
                             {% else %} Multiple Networks ({{ selected_networks|length }}) {% endif %}
                         </span>

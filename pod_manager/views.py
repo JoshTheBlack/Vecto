@@ -31,6 +31,7 @@ from django.shortcuts import redirect, get_object_or_404, render
 from django.urls import reverse
 from django.views.decorators.csrf import csrf_exempt
 from podgen import Podcast as PodgenPodcast, Episode as PodgenEpisode, Media
+from lxml import etree
 
 from .models import PatronProfile, Podcast, Episode, Network, PatreonTier, UserMix
 
@@ -75,6 +76,33 @@ def invalidate_show_cache(show_id: int):
         cache.incr(version_key)
     except ValueError:
         cache.set(version_key, 1, timeout=None)
+
+def inject_rss_categories(rss_str, episodes):
+    """
+    Takes the podgen generated RSS string and injects standard <category> tags 
+    with CDATA blocks into the <item> elements for any episodes that have tags.
+    """
+    # Create a mapping of guid -> tags for fast lookup
+    tag_map = {str(ep.guid): ep.tags for ep in episodes if ep.tags}
+    
+    if not tag_map:
+        return rss_str
+
+    # Parse the XML string using lxml
+    root = etree.fromstring(rss_str.encode('utf-8'))
+    
+    # Iterate over all <item> elements
+    for item in root.findall('.//item'):
+        guid_elem = item.find('guid')
+        if guid_elem is not None and guid_elem.text in tag_map:
+            # Inject each tag as a standard <category> element with CDATA
+            for tag in tag_map[guid_elem.text]:
+                cat_elem = etree.SubElement(item, 'category')
+                # Wrap the tag string in a CDATA block
+                cat_elem.text = etree.CDATA(str(tag))
+                
+    # Return the modified XML as a string with the declaration intact
+    return etree.tostring(root, encoding='utf-8', xml_declaration=True).decode('utf-8')
 
 # ==========================================
 # OAUTH AUTHENTICATION
@@ -394,7 +422,8 @@ def home(request):
     if search_query:
         query = query.filter(
             Q(title__icontains=search_query) | 
-            Q(raw_description__icontains=search_query)
+            Q(raw_description__icontains=search_query) |
+            Q(tags__icontains=search_query)
         )
         
     all_episodes = query.order_by('-pub_date')
@@ -527,10 +556,10 @@ def user_feeds(request):
         
         # visibility logic: show if has access or if a public fallback exists
         if has_access:
-            raw_url = reverse('custom_feed') + f"?auth={profile.feed_token}&show={podcast.slug}"
+            raw_url = reverse('custom_feed') + f"?auth={profile.feed_token}&show={podcast.slug}&network={podcast.network.slug}"
             feed_data.append({'podcast': podcast, 'has_access': True, 'feed_url': request.build_absolute_uri(raw_url)})
         elif req_cents == 0 or podcast.public_feed_url:
-            raw_url = reverse('public_feed', args=[podcast.slug])
+            raw_url = reverse('public_feed', args=[podcast.slug]) + f"?network={podcast.network.slug}"
             feed_data.append({'podcast': podcast, 'has_access': False, 'req_dollars': req_cents/100, 'feed_url': request.build_absolute_uri(raw_url)})
 
     # Fix modal podcast list (include all supported networks)
@@ -553,11 +582,16 @@ def user_feeds(request):
 def generate_custom_feed(request):
     feed_token = request.GET.get('auth')
     podcast_slug = request.GET.get('show')
+    network_slug = request.GET.get('network')
 
     if not feed_token or not podcast_slug:
         return HttpResponseForbidden("Missing authentication or show parameters.")
 
-    podcast = get_object_or_404(Podcast, slug=podcast_slug, network=request.network)
+    # Use network__slug (double underscore) to lookup by the string parameter
+    if network_slug:
+        podcast = get_object_or_404(Podcast, slug=podcast_slug, network__slug=network_slug)
+    else:
+        podcast = get_object_or_404(Podcast, slug=podcast_slug, network=request.network)
 
     try:
         profile = get_object_or_404(PatronProfile, feed_token=feed_token)
@@ -588,6 +622,9 @@ def generate_custom_feed(request):
         )
 
         for ep in episodes:
+            if not ep.audio_url_subscriber:
+                continue
+
             assembled_desc = ep.clean_description
             if podcast.show_footer_private:
                 assembled_desc += f"<br><br>{podcast.show_footer_private}"
@@ -602,14 +639,20 @@ def generate_custom_feed(request):
                 summary=assembled_desc, 
             ))
             
-        xml_output = p.rss_str()
+        raw_xml = p.rss_str()
+        xml_output = inject_rss_categories(raw_xml, episodes)
         timeout_seconds = podcast.network.feed_cache_minutes * 60
         cache.set(cache_key, xml_output, timeout=timeout_seconds)
 
     return HttpResponse(xml_output, content_type='application/rss+xml')
 
 def generate_public_feed(request, podcast_slug):
-    podcast = get_object_or_404(Podcast, slug=podcast_slug, network=request.network)
+    network_slug = request.GET.get('network')
+    
+    if network_slug:
+        podcast = get_object_or_404(Podcast, slug=podcast_slug, network__slug=network_slug)
+    else:
+        podcast = get_object_or_404(Podcast, slug=podcast_slug, network=request.network)
 
     version = cache.get(f"podcast_cache_version_{podcast.id}", 1)
     cache_key = f"xml_feed_public_{version}_{podcast.slug}"
@@ -627,6 +670,9 @@ def generate_public_feed(request, podcast_slug):
         )
 
         for ep in episodes:
+            if not ep.audio_url_public:
+                continue
+                
             assembled_desc = ep.clean_description
             
             if podcast.show_footer_public:
@@ -642,7 +688,8 @@ def generate_public_feed(request, podcast_slug):
                 summary=assembled_desc, 
             ))
             
-        xml_output = p.rss_str()
+        raw_xml = p.rss_str()
+        xml_output = inject_rss_categories(raw_xml, episodes)
         timeout_seconds = podcast.network.feed_cache_minutes * 60
         cache.set(cache_key, xml_output, timeout=timeout_seconds)
 
@@ -653,7 +700,7 @@ def generate_mix_feed(request, unique_id):
     feed_xml = cache.get(cache_key)
 
     if not feed_xml:
-        user_mix = get_object_or_404(UserMix, unique_id=unique_id, network=request.network, is_active=True)
+        user_mix = get_object_or_404(UserMix, unique_id=unique_id, is_active=True)
         
         profile = user_mix.user.patron_profile
         active_pledges = profile.active_pledges or {}
@@ -712,10 +759,11 @@ def generate_mix_feed(request, unique_id):
                 media=Media(url=audio_url, size=0, type="audio/mpeg")
             ))
             
-        feed_xml = feed.rss_str()
-        cache.set(cache_key, feed_xml, 300)
+        raw_xml = feed.rss_str()
+        xml_output = inject_rss_categories(raw_xml, episodes)
+        cache.set(cache_key, xml_output, 300)
         
-    return HttpResponse(feed_xml, content_type='application/rss+xml')
+    return HttpResponse(xml_output, content_type='application/rss+xml')
 
 @csrf_exempt
 def patreon_webhook(request):

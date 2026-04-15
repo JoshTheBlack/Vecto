@@ -1,4 +1,5 @@
 from django.http import Http404
+from django.shortcuts import render
 from .models import Network
 
 class NetworkMiddleware:
@@ -10,14 +11,28 @@ class NetworkMiddleware:
         
         # 1. Attempt to find a network by custom domain
         network = Network.objects.filter(custom_domain=host).first()
-        
-        # 2. Fallback: For local dev or if no domain matches, 
-        # you might want to default to the first network or a 'system' network.
-        if not network:
-            network = Network.objects.first()
-
-        # Attach the network to the request object
         request.network = network
         
-        response = self.get_response(request)
-        return response
+        # 2. Strict Fallback Handling (Prevent Domain Bleed)
+        if not network:
+            path = request.path
+            
+            # Whitelist global access routes (Admin, Creator Settings, Auth, and Static assets)
+            if (path.startswith('/admin') or 
+                path.startswith('/creator') or 
+                path.startswith('/login') or 
+                path.startswith('/oauth') or 
+                path.startswith('/patreon') or 
+                path.startswith('/static') or 
+                path.startswith('/media')):
+                pass
+                
+            # Serve the fancy Vecto landing page on the root URL
+            elif path == '/':
+                return render(request, 'pod_manager/vecto_landing.html')
+                
+            # If an unknown domain tries to access anything else (like /feed/), hard 404.
+            else:
+                raise Http404("Tenant not found. No network is configured for this domain.")
+
+        return self.get_response(request)

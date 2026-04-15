@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Vecto | Intelligent Podcast Distribution</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.1/font/bootstrap-icons.css">
+    <style>
+        body { 
+            background-color: #0a0a0a; 
+            color: #f8f9fa; 
+            font-family: system-ui, -apple-system, sans-serif; 
+        }
+        /* Custom High-Contrast Text Classes for Dark Mode */
+        .text-dim { color: #ced4da !important; } /* Much brighter than default text-muted */
+        .text-dimmer { color: #adb5bd !important; }
+
+        .hero-icon { 
+            font-size: 4rem; 
+            color: #ffc107; 
+        }
+        .feature-box { 
+            background-color: #121212; 
+            border: 1px solid #343a40; 
+            border-radius: 12px; 
+            padding: 2rem; 
+            height: 100%; 
+            transition: transform 0.2s ease, border-color 0.2s ease;
+        }
+        .feature-box:hover {
+            transform: translateY(-5px);
+            border-color: #ffc107;
+        }
+        .feature-icon { 
+            font-size: 2rem; 
+            color: #ffc107; 
+            margin-bottom: 1rem; 
+        }
+    </style>
+</head>
+<body>
+    <div class="container py-5 mt-5">
+        
+        <div class="row justify-content-center text-center mb-5">
+            <div class="col-lg-8">
+                <i class="bi bi-soundwave hero-icon mb-3 d-block"></i>
+                <h1 class="display-3 fw-bold mb-3 text-white">Vecto</h1>
+                <p class="lead text-dim fw-medium mb-4">
+                    The intelligent, multi-tenant podcast distribution engine built for creators.
+                </p>
+                <p class="fs-5 text-dimmer" style="line-height: 1.6;">
+                    Vecto is a Patreon-integrated feed mixer. It seamlessly blends premium and public feeds on a listener-by-listener basis, validating subscriptions in real-time. When a subscription lapses, Vecto handles the feed downgrade automatically—no more juggling RSS links or asking listeners to resubscribe in their podcast apps.
+                </p>
+            </div>
+        </div>
+
+        <div class="row g-4 mt-2">
+            <div class="col-md-4">
+                <div class="feature-box text-center shadow-sm">
+                    <i class="bi bi-sliders feature-icon"></i>
+                    <h4 class="fw-bold text-white">Dynamic Blending</h4>
+                    <p class="text-dim mb-0">Subscribers get a single, personalized RSS feed containing all the premium shows they have access to, effortlessly mixed together.</p>
+                </div>
+            </div>
+            <div class="col-md-4">
+                <div class="feature-box text-center shadow-sm">
+                    <i class="bi bi-shield-check feature-icon"></i>
+                    <h4 class="fw-bold text-white">Auto-Downgrading</h4>
+                    <p class="text-dim mb-0">If a pledge fails or lapses, Vecto instantly downgrades that user's feed to the public, ad-supported versions without breaking their app.</p>
+                </div>
+            </div>
+            <div class="col-md-4">
+                <div class="feature-box text-center shadow-sm">
+                    <i class="bi bi-boxes feature-icon"></i>
+                    <h4 class="fw-bold text-white">Multi-Tenant Routing</h4>
+                    <p class="text-dim mb-0">Host dozens of independent podcast networks on a single Vecto instance, each with their own white-labeled custom domain and Patreon logic.</p>
+                </div>
+            </div>
+        </div>
+
+        <div class="row justify-content-center mt-5 pt-4">
+            <div class="col-auto text-center">
+                <a href="/admin/" class="btn btn-outline-secondary text-white border-secondary me-3 px-4 py-2">
+                    <i class="bi bi-database me-2"></i> System Admin
+                </a>
+                <a href="/creator/" class="btn btn-warning text-dark fw-bold px-4 py-2">
+                    <i class="bi bi-gear-fill me-2"></i> Creator Dashboard
+                </a>
+            </div>
+        </div>
+        
+    </div>
+</body>
+</html>

@@ -186,16 +186,42 @@ LOGIN_REDIRECT_URL = 'home'
 # Where to send users after they log out
 LOGOUT_REDIRECT_URL = 'home'
 
+# ==========================================
+# LOGGING CONFIGURATION
+# ==========================================
+# Use LOG_LEVEL=DEBUG in your .env for verbose output, default to INFO for production
+LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
+
 LOGGING = {
     'version': 1,
     'disable_existing_loggers': False,
+    'formatters': {
+        'verbose': {
+            'format': '[{asctime}] {levelname} [{module}.{funcName}:{lineno}] - {message}',
+            'style': '{',
+            'datefmt': '%Y-%m-%d %H:%M:%S',
+        },
+    },
     'handlers': {
         'console': {
             'class': 'logging.StreamHandler',
+            'formatter': 'verbose',
         },
     },
     'root': {
         'handlers': ['console'],
-        'level': 'INFO',
+        'level': LOG_LEVEL,
+    },
+    'loggers': {
+        'django': {
+            'handlers': ['console'],
+            'level': os.getenv('DJANGO_LOG_LEVEL', 'INFO'), # Keep Django internal logs quieter
+            'propagate': False,
+        },
+        'pod_manager': {
+            'handlers': ['console'],
+            'level': LOG_LEVEL,
+            'propagate': False,
+        },
     },
 }

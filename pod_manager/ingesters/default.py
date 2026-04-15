@@ -1,16 +1,19 @@
 import feedparser
 import time
 import re
+import os
+import requests
+import hashlib
+import logging
 from datetime import datetime
 from urllib.parse import urlparse
 from django.utils.timezone import make_aware
 from django.conf import settings
 from pod_manager.models import Podcast, Episode
-import os
-import requests
-import hashlib
 from difflib import SequenceMatcher
 from bs4 import BeautifulSoup
+
+logger = logging.getLogger(__name__)
 
 def get_slug(url):
     if not url or "?" in url:
@@ -105,9 +108,14 @@ def get_cached_feed(url, feed_type, stdout):
 
     def fetch_live():
         stdout.write(f"  [LIVE FETCH] Downloading {feed_type} feed...")
-        response = requests.get(clean_url, auth=auth, timeout=30, headers={'User-Agent': 'Vecto/1.0'})
-        response.raise_for_status()
-        return response.content
+        logger.debug(f"Fetching live {feed_type} feed from {clean_url}")
+        try:
+            response = requests.get(clean_url, auth=auth, timeout=30, headers={'User-Agent': 'Vecto/1.0'})
+            response.raise_for_status()
+            return response.content
+        except requests.exceptions.RequestException as e:
+            logger.error(f"HTTP Error fetching {feed_type} feed from {clean_url}: {e}", exc_info=True)
+            raise
 
     if not use_cache:
         return feedparser.parse(fetch_live())
@@ -119,18 +127,22 @@ def get_cached_feed(url, feed_type, stdout):
 
     if os.path.exists(cache_file):
         stdout.write(f"  [CACHE HIT] Loading {feed_type} from disk...")
+        logger.debug(f"Loaded {feed_type} feed from local disk cache: {cache_file}")
         return feedparser.parse(cache_file)
 
     content = fetch_live()
     with open(cache_file, 'wb') as f:
         f.write(content)
+    logger.debug(f"Saved {feed_type} feed to local disk cache: {cache_file}")
     return feedparser.parse(content)
 
 def run_ingest(podcast, stdout):
+    logger.info(f"Starting Default Ingest Strategy for podcast: {podcast.title} (ID: {podcast.id})")
     stdout.write(f"--- Harvesting: {podcast.title} ---")
 
     sub_data = get_cached_feed(podcast.subscriber_feed_url, "PRIVATE", stdout)
     if hasattr(sub_data, 'status') and sub_data.status == 401:
+        logger.error(f"Auth Failed on Private Feed for podcast: {podcast.title}")
         stdout.write("[ERROR] Auth Failed on Private Feed.")
         return
 
@@ -140,6 +152,7 @@ def run_ingest(podcast, stdout):
     if 'image' in public_data.feed:
         feed_image = public_data.feed.image.get('href') or public_data.feed.image.get('url', '')
     if feed_image and podcast.image_url != feed_image:
+        logger.info(f"Updating podcast artwork for {podcast.title} to {feed_image}")
         podcast.image_url = feed_image
         podcast.save()
         stdout.write(f"  [Artwork Captured]: {feed_image}")
@@ -224,7 +237,6 @@ def run_ingest(podcast, stdout):
         raw_desc = getattr(entry, 'description', '')
         duration_val = entry.get('itunes_duration', '')
         
-        # Grab the public link initially
         pub_link = getattr(entry, 'link', '')
         
         entry_guid = getattr(entry, 'id', None)
@@ -237,17 +249,16 @@ def run_ingest(podcast, stdout):
             sub_audio, reason = match_data
             matches += 1
             stdout.write(f"  [Matched: {reason}] {entry_title}")
+            logger.debug(f"Episode Match: '{entry_title}' -> {reason}")
             
-            # Retrieve the matched private entry and grab its link
             priv_entry = private_pool[sub_audio]
             priv_link = getattr(priv_entry, 'link', '')
-            
-            # Use the private link if it exists, otherwise fallback to public
             final_link = priv_link if priv_link else pub_link
         else:
             sub_audio = None
             reason = "Public Only (No Match)"
             stdout.write(f"  [Public Only] {entry_title}")
+            logger.debug(f"Episode Unmatched (Public Only): '{entry_title}'")
             final_link = pub_link
 
         final_sub_audio = sub_audio if sub_audio else public_audio
@@ -303,5 +314,8 @@ def run_ingest(podcast, stdout):
         count += 1
         exclusive_count += 1
         stdout.write(f"  [Private Exclusive Captured] {entry_title}")
+        logger.debug(f"Episode Unmatched (Private Exclusive): '{entry_title}'")
 
-    stdout.write(f"Finished. Total: {count} | Matches: {matches} | Premium Exclusives: {exclusive_count}")
+    summary = f"Finished. Total: {count} | Matches: {matches} | Premium Exclusives: {exclusive_count}"
+    stdout.write(summary)
+    logger.info(f"Ingestion complete for {podcast.title}. Total: {count}, Matches: {matches}, Exclusives: {exclusive_count}")

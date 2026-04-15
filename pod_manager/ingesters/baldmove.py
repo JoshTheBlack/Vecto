@@ -1,6 +1,7 @@
 import time
 import hashlib
 import requests
+import logging
 from datetime import datetime
 from bs4 import BeautifulSoup
 from django.utils.timezone import make_aware
@@ -15,12 +16,15 @@ from .default import (
     get_cached_feed
 )
 
+logger = logging.getLogger(__name__)
+
 def scrape_tags_from_wp(url, stdout):
     """Fetches the WP page and scrapes tags using a robust global search with heavy debugging."""
     if not url or "baldmove.com" not in url:
         return []
 
     def _fetch_and_extract(target_url):
+        logger.debug(f"Scraping Bald Move WP tags from URL: {target_url}")
         try:
             headers = {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
@@ -33,6 +37,7 @@ def scrape_tags_from_wp(url, stdout):
                 
                 title = soup.title.string if soup.title else "No Title"
                 if "Just a moment" in title or "Cloudflare" in title:
+                    logger.warning(f"Cloudflare blocked scrape attempt on {target_url}")
                     stdout.write(f"  [WARN] Blocked by Cloudflare on {target_url}")
                     return None
                 
@@ -50,8 +55,14 @@ def scrape_tags_from_wp(url, stdout):
                             tags.append(tag_text)
                 
                 if tags:
-                    return list(dict.fromkeys(tags))
+                    unique_tags = list(dict.fromkeys(tags))
+                    logger.debug(f"Successfully scraped tags: {unique_tags}")
+                    return unique_tags
+            else:
+                logger.warning(f"Scrape returned HTTP {resp.status_code} for {target_url}")
+                
         except Exception as e:
+            logger.error(f"Scrape request failed for {target_url}: {str(e)}", exc_info=True)
             stdout.write(f"  [WARN] Request failed for {target_url}: {str(e)}")
         return None
 
@@ -67,24 +78,27 @@ def scrape_tags_from_wp(url, stdout):
         rewritten_url = url.replace("https://baldmove.com", "https://patreon.baldmove.com")
         
     if rewritten_url:
+        logger.info(f"Retrying web scrape with rewritten URL: {rewritten_url}")
         stdout.write(f"  [INFO] Retrying with rewritten URL: {rewritten_url}")
         tags = _fetch_and_extract(rewritten_url)
         if tags: return tags
 
+    logger.debug(f"No tags found on web page for {url}")
     return []
 
 def get_feed_tags(entry):
     """Extracts category tags directly from the RSS feedparser entry."""
     if hasattr(entry, 'tags'):
-        # feedparser puts <category> data inside entry.tags as a list of dicts with a 'term' key
         return [t.get('term').strip() for t in entry.tags if t.get('term')]
     return []
 
 def run_ingest(podcast, stdout):
+    logger.info(f"Starting Bald Move Ingest Strategy for podcast: {podcast.title} (ID: {podcast.id})")
     stdout.write(f"--- Harvesting (Bald Move Strategy): {podcast.title} ---")
 
     sub_data = get_cached_feed(podcast.subscriber_feed_url, "PRIVATE", stdout)
     if hasattr(sub_data, 'status') and sub_data.status == 401:
+        logger.error(f"Auth Failed on Private Feed for podcast: {podcast.title}")
         stdout.write("[ERROR] Auth Failed on Private Feed.")
         return
 
@@ -94,6 +108,7 @@ def run_ingest(podcast, stdout):
     if 'image' in public_data.feed:
         feed_image = public_data.feed.image.get('href') or public_data.feed.image.get('url', '')
     if feed_image and podcast.image_url != feed_image:
+        logger.info(f"Updating podcast artwork for {podcast.title} to {feed_image}")
         podcast.image_url = feed_image
         podcast.save()
         stdout.write(f"  [Artwork Captured]: {feed_image}")
@@ -174,7 +189,6 @@ def run_ingest(podcast, stdout):
         duration_val = entry.get('itunes_duration', '')
         pub_link = getattr(entry, 'link', '')
         
-        # Grab public tags from the RSS feed
         pub_tags = get_feed_tags(entry)
         priv_tags = []
         
@@ -188,28 +202,27 @@ def run_ingest(podcast, stdout):
             sub_audio, reason = match_data
             matches += 1
             stdout.write(f"  [Matched: {reason}] {entry_title}")
+            logger.debug(f"Episode Match: '{entry_title}' -> {reason}")
             
             priv_entry = private_pool[sub_audio]
             priv_link = getattr(priv_entry, 'link', '')
             final_link = priv_link if priv_link else pub_link
             
-            # Grab private tags from the matched RSS feed
             priv_tags = get_feed_tags(priv_entry)
         else:
             sub_audio = None
             reason = "Public Only (No Match)"
             stdout.write(f"  [Public Only] {entry_title}")
+            logger.debug(f"Episode Unmatched (Public Only): '{entry_title}'")
             final_link = pub_link
 
         final_sub_audio = sub_audio if sub_audio else public_audio
         
-        # Merge public and private tags, deduplicating case-insensitively
         combined_tags = pub_tags + priv_tags
         merged_tags = list({t.lower(): t for t in combined_tags}.values())
         
         episode_exists = Episode.objects.filter(guid=entry_guid).exists()
         
-        # Only fallback to the web scraper if NO tags were found in the RSS feeds
         if not episode_exists and not merged_tags and final_link:
             merged_tags = scrape_tags_from_wp(final_link, stdout)
             if merged_tags:
@@ -248,7 +261,6 @@ def run_ingest(podcast, stdout):
         duration_val = entry.get('itunes_duration', '')
         link = getattr(entry, 'link', '')
         
-        # Grab private tags from the RSS feed
         priv_tags = get_feed_tags(entry)
         merged_tags = list({t.lower(): t for t in priv_tags}.values())
         
@@ -259,7 +271,6 @@ def run_ingest(podcast, stdout):
 
         episode_exists = Episode.objects.filter(guid=entry_guid).exists()
         
-        # Fallback to web scraper if no RSS tags found
         if not episode_exists and not merged_tags and link:
             merged_tags = scrape_tags_from_wp(link, stdout)
             if merged_tags:
@@ -286,5 +297,8 @@ def run_ingest(podcast, stdout):
         count += 1
         exclusive_count += 1
         stdout.write(f"  [Private Exclusive Captured] {entry_title}")
+        logger.debug(f"Episode Unmatched (Private Exclusive): '{entry_title}'")
 
-    stdout.write(f"Finished. Total: {count} | Matches: {matches} | Premium Exclusives: {exclusive_count}")
+    summary = f"Finished. Total: {count} | Matches: {matches} | Premium Exclusives: {exclusive_count}"
+    stdout.write(summary)
+    logger.info(f"Ingestion complete for {podcast.title}. Total: {count}, Matches: {matches}, Exclusives: {exclusive_count}")

@@ -13,6 +13,7 @@ import queue
 import threading
 import time
 import urllib.parse
+import warnings
 from datetime import timedelta
 
 import requests
@@ -35,6 +36,9 @@ from podgen import Podcast as PodgenPodcast, Episode as PodgenEpisode, Media
 from lxml import etree
 
 from .models import PatronProfile, Podcast, Episode, Network, PatreonTier, UserMix
+
+warnings.filterwarnings("ignore", message=".*Image URL must end with.*")
+warnings.filterwarnings("ignore", message=".*Size is set to 0.*")
 
 logger = logging.getLogger(__name__)
 # ==========================================
@@ -175,120 +179,142 @@ def refresh_patreon_token(network):
 
 def patreon_login(request):
     network_id = request.GET.get('network_id')
-    redirect_uri = request.build_absolute_uri(reverse('patreon_callback'))
+    logger.info(f"Initiating Patreon OAuth login. Target network ID: {network_id}")
+    
+    # Dynamically build the redirect URI based on the current tenant's domain
+    dynamic_redirect_uri = request.build_absolute_uri('/oauth/patreon/callback')
+    
+    base_url = "https://www.patreon.com/oauth2/authorize"
+    params = {
+        "response_type": "code",
+        "client_id": settings.PATREON_CLIENT_ID,
+        "redirect_uri": dynamic_redirect_uri,  # <--- Use Dynamic URI
+        "scope": "identity identity[email] identity.memberships campaigns campaigns.members campaigns.members[email]",
+    }
     
     if network_id:
-        scopes = 'identity identity[email] campaigns campaigns.members'
-        state = f"network_{network_id}"
-    else:
-        scopes = 'identity identity[email]'
-        state = "listener"
-    
-    params = {
-        'response_type': 'code',
-        'client_id': settings.PATREON_CLIENT_ID,
-        'redirect_uri': redirect_uri,
-        'scope': scopes,
-        'state': state
-    }
-    url = f"https://www.patreon.com/oauth2/authorize?{urllib.parse.urlencode(params, quote_via=urllib.parse.quote)}"
-    
-    logger.info(f"[EVIDENCE] Generating Patreon Auth URL. State: {state} | Scopes: {scopes}")
+        params["state"] = network_id
+        
+    url = f"{base_url}?{urllib.parse.urlencode(params)}"
+    logger.debug(f"Redirecting user to Patreon OAuth URL: {url}")
     return redirect(url)
 
 def patreon_callback(request):
     code = request.GET.get('code')
-    state = request.GET.get('state', 'listener')
+    state_network_id = request.GET.get('state')
+    logger.info(f"Received Patreon OAuth callback. Code present: {bool(code)}, State: {state_network_id}")
+
     if not code:
-        return JsonResponse({"error": "No code provided by Patreon."}, status=400)
-    
-    redirect_uri = request.build_absolute_uri(request.path)
+        logger.warning("Patreon callback failed: No authorization code provided.")
+        return HttpResponse("No code provided by Patreon", status=400)
+
+    dynamic_redirect_uri = request.build_absolute_uri('/oauth/patreon/callback')
+
     token_url = "https://www.patreon.com/api/oauth2/token"
-    token_data = {
-        'code': code,
-        'grant_type': 'authorization_code',
-        'client_id': settings.PATREON_CLIENT_ID,
-        'client_secret': settings.PATREON_CLIENT_SECRET,
-        'redirect_uri': redirect_uri,
+    data = {
+        "code": code,
+        "grant_type": "authorization_code",
+        "client_id": settings.PATREON_CLIENT_ID,
+        "client_secret": settings.PATREON_CLIENT_SECRET,
+        "redirect_uri": dynamic_redirect_uri,
     }
-    
-    token_res = requests.post(token_url, data=token_data)
-    tokens = token_res.json()
 
-    if 'access_token' not in tokens:
-        logger.error(f"[EVIDENCE] Token Exchange Failed: {tokens}")
-        return JsonResponse({"error": "Failed to trade code for token.", "details": tokens}, status=400)
-
-    # CRITICAL EVIDENCE: What scopes did we actually get?
-    granted_scopes = tokens.get('scope', 'No scope field returned')
-    logger.info(f"[EVIDENCE] Token Granted. Scopes: {granted_scopes}")
-
-    access_token = tokens['access_token']
-    refresh_token = tokens.get('refresh_token')
-
-    # --- HANDLE CREATOR NETWORK LINKING ---
-    if state.startswith("network_"):
-        try:
-            network_id = state.split("_")[1]
-            network = get_object_or_404(Network, id=network_id)
+    try:
+        logger.debug("Attempting to exchange authorization code for access token...")
+        res = requests.post(token_url, data=data, timeout=10)
+        if res.status_code != 200:
+            logger.error(f"Patreon token exchange failed: {res.text}")
+            return HttpResponse(f"Failed to get token: {res.text}", status=400)
             
-            # Fetch campaign info to set the Campaign ID and save tokens
-            camp_url = "https://www.patreon.com/api/oauth2/v2/campaigns"
-            headers = {'Authorization': f'Bearer {access_token}'}
-            camp_res = requests.get(camp_url, headers=headers).json()
-            logger.info(f"[EVIDENCE] Campaign Discovery Response: {json.dumps(camp_res)[:500]}")
+        token_data = res.json()
+        access_token = token_data['access_token']
+        refresh_token = token_data['refresh_token']
+        logger.debug("Token exchange successful.")
+        
+        # If this was initiated from the Creator Settings page to link a campaign
+        if state_network_id and request.user.is_authenticated:
+            logger.info(f"Linking Patreon Campaign to Network ID {state_network_id} for user {request.user.username}")
+            network = get_object_or_404(Network, id=state_network_id)
             
-            if 'data' in camp_res and len(camp_res['data']) > 0:
-                network.patreon_campaign_id = camp_res['data'][0]['id']
-                network.patreon_creator_access_token = access_token
-                network.patreon_creator_refresh_token = refresh_token
-                network.patreon_sync_enabled = True
-                network.save()
-                logger.info(f"[EVIDENCE] Network {network.name} saved with Campaign ID {network.patreon_campaign_id}")
-                messages.success(request, f"Successfully linked Patreon Campaign for {network.name}!")
+            headers = {"Authorization": f"Bearer {access_token}"}
+            camp_res = requests.get("https://www.patreon.com/api/oauth2/v2/campaigns", headers=headers, timeout=10)
+            
+            if camp_res.status_code == 200:
+                camp_data = camp_res.json().get('data', [])
+                if camp_data:
+                    campaign_id = camp_data[0]['id']
+                    network.patreon_campaign_id = campaign_id
+                    network.patreon_sync_enabled = True
+                    network.patreon_creator_access_token = access_token
+                    network.patreon_creator_refresh_token = refresh_token
+                    network.save()
+                    
+                    messages.success(request, f"Successfully linked Patreon Campaign {campaign_id}!")
+                    logger.info(f"Successfully linked Campaign ID {campaign_id} to Network {network.name}")
+                    
+                    # Fire off an initial sync
+                    threading.Thread(target=sync_network_patrons, args=(network,), daemon=True).start()
+                else:
+                    logger.warning("Patreon linked, but no campaigns were found for this creator.")
+                    messages.warning(request, "Linked, but no campaigns found on your Patreon account.")
             else:
-                logger.warning("[EVIDENCE] No campaigns found in creator account.")
-                messages.error(request, "No Patreon campaigns found for this account.")
+                logger.error(f"Failed to fetch campaigns during linking: {camp_res.text}")
+                messages.error(request, "Failed to fetch your campaigns from Patreon.")
                 
-            return redirect(f"{reverse('creator_settings')}?network={network.slug}")
-        except Exception as e:
-            return JsonResponse({"error": f"Failed to link network: {str(e)}"}, status=500)
+            return redirect('creator_settings')
 
-    # --- REMAINING LISTENER LOGIN LOGIC ---
-    user_url = (
-        "https://www.patreon.com/api/oauth2/v2/identity"
-        "?include=memberships,memberships.campaign"
-        "&fields[user]=full_name,email"
-        "&fields[member]=patron_status,currently_entitled_amount_cents"
-    )
-    headers = {'Authorization': f'Bearer {access_token}'}
-    user_data = requests.get(user_url, headers=headers).json()
+        # Normal User Login Flow
+        logger.debug("Fetching user identity from Patreon...")
+        headers = {"Authorization": f"Bearer {access_token}"}
+        user_res = requests.get("https://www.patreon.com/api/oauth2/v2/identity?fields[user]=email,first_name,last_name", headers=headers, timeout=10)
+        
+        if user_res.status_code != 200:
+            logger.error(f"Failed to fetch user identity: {user_res.text}")
+            return HttpResponse("Failed to fetch user info", status=400)
+            
+        user_data = user_res.json()['data']
+        patreon_id = user_data['id']
+        email = user_data['attributes'].get('email')
+        first_name = user_data['attributes'].get('first_name', '')
+        last_name = user_data['attributes'].get('last_name', '')
 
-    user_info = user_data.get('data', {})
-    patreon_id = user_info.get('id')
-    
-    attributes = user_info.get('attributes', {})
-    raw_email = attributes.get('email')
-    safe_username = raw_email if raw_email else patreon_id
-    safe_email = raw_email if raw_email else ''
-    full_name = attributes.get('full_name', '')
+        if not email:
+            logger.error("Patreon identity response did not include an email address.")
+            return HttpResponse("Patreon did not provide an email address.", status=400)
 
-    user, _ = User.objects.get_or_create(
-        username=safe_username, 
-        defaults={'email': safe_email, 'first_name': full_name}
-    )
+        # Get or Create User
+        user, created = User.objects.get_or_create(username=email, defaults={
+            'email': email,
+            'first_name': first_name,
+            'last_name': last_name
+        })
+        
+        if created:
+            logger.info(f"Created new local User account for {email}")
 
-    profile, _ = PatronProfile.objects.get_or_create(user=user, defaults={'patreon_id': patreon_id})
-    
-    active_pledges = {}
-    for net in Network.objects.exclude(patreon_campaign_id=''):
-        cents = get_active_pledge_amount(user_data, str(net.patreon_campaign_id))
-        active_pledges[str(net.patreon_campaign_id)] = cents
-    
-    profile.active_pledges = active_pledges
-    profile.save()
+        # Get or Create Patron Profile
+        profile, p_created = PatronProfile.objects.get_or_create(user=user, defaults={
+            'patreon_id': patreon_id
+        })
+        
+        if not p_created and profile.patreon_id != patreon_id:
+            logger.warning(f"Updating existing Patreon ID for {email} from {profile.patreon_id} to {patreon_id}")
+            profile.patreon_id = patreon_id
+            profile.save()
 
-    login(request, user)
+        login(request, user)
+        logger.info(f"User {email} successfully logged in via Patreon.")
+        
+        return redirect('home')
+
+    except Exception as e:
+        logger.error(f"Critical error during Patreon callback: {str(e)}", exc_info=True)
+        return HttpResponse(f"Error: {str(e)}", status=500)
+
+def logout_view(request):
+    logger.info(f"User {request.user.username if request.user.is_authenticated else 'Anonymous'} logged out.")
+    from django.contrib.auth import logout
+    logout(request)
     return redirect('home')
 
 # ==========================================
@@ -536,10 +562,9 @@ def home(request):
     return render(request, 'pod_manager/home.html', context)
 
 def episode_detail(request, episode_id):
-    # 1. Fetch the episode without strictly filtering by request.network
+    logger.debug(f"Episode detail requested: ID {episode_id}")
     ep = get_object_or_404(Episode.objects.select_related('podcast', 'podcast__network', 'podcast__required_tier'), id=episode_id)
 
-    # 2. Determine user's pledge status
     user_active_pledges = {}
     if request.user.is_authenticated and hasattr(request.user, 'patron_profile'):
         user_active_pledges = request.user.patron_profile.active_pledges or {}
@@ -549,13 +574,10 @@ def episode_detail(request, episode_id):
     user_cents = user_active_pledges.get(camp_id, 0)
     ep.user_has_access = (user_cents >= req_cents)
     
-    # 3. Cross-Network Security Check:
-    # If the episode is from a different network than the current domain, 
-    # ensure the user actually has access to it before rendering the page.
     if ep.podcast.network != request.network and not ep.user_has_access:
+        logger.warning(f"Cross-network block: User {request.user.username} attempted to view episode {episode_id} from a different network without access.")
         raise Http404("No Episode matches the given query.")
     
-    # 4. Build the footer and description
     footer_parts = []
     if ep.user_has_access:
         if ep.podcast.show_footer_private: footer_parts.append(ep.podcast.show_footer_private)
@@ -592,6 +614,7 @@ def user_feeds(request):
         # === HANDLE MIX POST ACTIONS ===
         if request.method == 'POST' and 'create_mix' in request.POST:
             mix_name = request.POST.get('mix_name', '').strip() or f"UserMix {UserMix.objects.filter(user=request.user).count() + 1}"
+            logger.info(f"User {request.user.username} is creating a new mix: '{mix_name}'")
             selected_podcast_ids = request.POST.getlist('podcasts')
             image_url_input = request.POST.get('mix_image', '').strip()
             
@@ -617,6 +640,8 @@ def user_feeds(request):
             return redirect('user_feeds')
 
         if request.method == 'POST' and 'edit_mix' in request.POST:
+            mix_id = request.POST.get('mix_id')
+            logger.info(f"User {request.user.username} is editing mix ID: {mix_id}")
             user_mix = UserMix.objects.filter(id=request.POST.get('mix_id'), user=request.user).first()
             if user_mix:
                 user_mix.name = request.POST.get('mix_name', '').strip() or user_mix.name
@@ -640,10 +665,14 @@ def user_feeds(request):
             return redirect('user_feeds')
 
         if request.method == 'POST' and 'delete_mix' in request.POST:
-            user_mix = UserMix.objects.filter(id=request.POST.get('mix_id'), user=request.user).first()
+            mix_id = request.POST.get('mix_id')
+            logger.info(f"User {request.user.username} is deleting mix ID: {mix_id}")
+            user_mix = UserMix.objects.filter(id=mix_id, user=request.user).first()
             if user_mix:
                 cache.delete(f"mix_feed_{user_mix.unique_id}")
                 user_mix.delete()
+                logger.debug(f"Mix ID {mix_id} successfully deleted.")
+                messages.success(request, "Mix deleted successfully.")
             return redirect('user_feeds')
 
     # 2. Determine target networks for display
@@ -690,10 +719,12 @@ def generate_custom_feed(request):
     podcast_slug = request.GET.get('show')
     network_slug = request.GET.get('network')
 
+    logger.info(f"Custom feed requested: show='{podcast_slug}', network='{network_slug}'")
+
     if not feed_token or not podcast_slug:
+        logger.warning("Custom feed request rejected: Missing auth or show parameters.")
         return HttpResponseForbidden("Missing authentication or show parameters.")
 
-    # Use network__slug (double underscore) to lookup by the string parameter
     if network_slug:
         podcast = get_object_or_404(Podcast, slug=podcast_slug, network__slug=network_slug)
     else:
@@ -702,6 +733,7 @@ def generate_custom_feed(request):
     try:
         profile = get_object_or_404(PatronProfile, feed_token=feed_token)
     except ValueError:
+        logger.warning(f"Invalid token format received: {feed_token}")
         return HttpResponseForbidden("Invalid authentication token format.")
 
     active_pledges = profile.active_pledges or {}
@@ -710,14 +742,18 @@ def generate_custom_feed(request):
     user_cents = active_pledges.get(camp_id, 0)
     
     if user_cents < required_cents:
+        logger.warning(f"Access denied for user {profile.user.email} to '{podcast.title}'. Has ${user_cents/100:.2f}, Needs ${required_cents/100:.2f}")
         return HttpResponseForbidden("Your current Patreon pledge does not grant access to this feed.")
 
     version = cache.get(f"podcast_cache_version_{podcast.id}", 1)
     cache_key = f"xml_feed_{version}_{profile.feed_token}_{podcast.slug}"
     xml_output = cache.get(cache_key)
 
-    if not xml_output:
-        episodes = podcast.episodes.all().order_by('-pub_date')
+    if xml_output:
+        logger.debug(f"Cache HIT for custom feed: {cache_key}")
+    else:
+        logger.debug(f"Cache MISS for custom feed: {cache_key}. Generating XML...")
+        episodes = podcast.episodes.all().order_by('-pub_date')[:500]
         
         p = PodgenPodcast(
             name=f"{podcast.title} (Custom Feed)",
@@ -739,7 +775,7 @@ def generate_custom_feed(request):
 
             p.episodes.append(PodgenEpisode(
                 title=ep.title,
-                media=Media(ep.audio_url_subscriber,duration=parse_duration(ep.duration)),
+                media=Media(url=ep.audio_url_subscriber, size=0, type="audio/mpeg", duration=parse_duration(ep.duration)),
                 id=ep.guid,
                 publication_date=ep.pub_date,
                 summary=assembled_desc, 
@@ -749,11 +785,13 @@ def generate_custom_feed(request):
         xml_output = inject_rss_categories(raw_xml, episodes)
         timeout_seconds = podcast.network.feed_cache_minutes * 60
         cache.set(cache_key, xml_output, timeout=timeout_seconds)
+        logger.debug(f"Successfully generated and cached custom feed: {cache_key}")
 
     return HttpResponse(xml_output, content_type='application/rss+xml')
 
 def generate_public_feed(request, podcast_slug):
     network_slug = request.GET.get('network')
+    logger.info(f"Public feed requested: show='{podcast_slug}', network='{network_slug}'")
     
     if network_slug:
         podcast = get_object_or_404(Podcast, slug=podcast_slug, network__slug=network_slug)
@@ -764,8 +802,11 @@ def generate_public_feed(request, podcast_slug):
     cache_key = f"xml_feed_public_{version}_{podcast.slug}"
     xml_output = cache.get(cache_key)
 
-    if not xml_output:
-        episodes = podcast.episodes.all().order_by('-pub_date')
+    if xml_output:
+        logger.debug(f"Cache HIT for public feed: {cache_key}")
+    else:
+        logger.debug(f"Cache MISS for public feed: {cache_key}. Generating XML...")
+        episodes = podcast.episodes.all().order_by('-pub_date')[:500]
         
         p = PodgenPodcast(
             name=podcast.title,
@@ -780,7 +821,6 @@ def generate_public_feed(request, podcast_slug):
                 continue
                 
             assembled_desc = ep.clean_description
-            
             if podcast.show_footer_public:
                 assembled_desc += f"<br><br>{podcast.show_footer_public}"
             if podcast.network.global_footer_public:
@@ -788,7 +828,7 @@ def generate_public_feed(request, podcast_slug):
 
             p.episodes.append(PodgenEpisode(
                 title=ep.title,
-                media=Media(ep.audio_url_public,duration=parse_duration(ep.duration)),
+                media=Media(url=ep.audio_url_public, size=0, type="audio/mpeg", duration=parse_duration(ep.duration)),
                 id=ep.guid,
                 publication_date=ep.pub_date,
                 summary=assembled_desc, 
@@ -798,14 +838,19 @@ def generate_public_feed(request, podcast_slug):
         xml_output = inject_rss_categories(raw_xml, episodes)
         timeout_seconds = podcast.network.feed_cache_minutes * 60
         cache.set(cache_key, xml_output, timeout=timeout_seconds)
+        logger.debug(f"Successfully generated and cached public feed: {cache_key}")
 
     return HttpResponse(xml_output, content_type='application/rss+xml')
 
 def generate_mix_feed(request, unique_id):
+    logger.info(f"Custom Mix feed requested: unique_id='{unique_id}'")
     cache_key = f"mix_feed_{unique_id}"
     feed_xml = cache.get(cache_key)
 
-    if not feed_xml:
+    if feed_xml:
+        logger.debug(f"Cache HIT for mix feed: {cache_key}")
+    else:
+        logger.debug(f"Cache MISS for mix feed: {cache_key}. Generating XML...")
         user_mix = get_object_or_404(UserMix, unique_id=unique_id, is_active=True)
         
         profile = user_mix.user.patron_profile
@@ -817,9 +862,11 @@ def generate_mix_feed(request, unique_id):
         for podcast in selected_podcasts:
             req_cents = podcast.required_tier.minimum_cents if podcast.required_tier else 0
             camp_id = str(podcast.network.patreon_campaign_id)
-            access_map[podcast.id] = (active_pledges.get(camp_id, 0) >= req_cents)
+            has_access = (active_pledges.get(camp_id, 0) >= req_cents)
+            access_map[podcast.id] = has_access
+            logger.debug(f"Mix Feed Access Check: {profile.user.username} -> {podcast.title}: {has_access}")
                 
-        episodes = Episode.objects.filter(podcast__in=selected_podcasts).select_related('podcast', 'podcast__network').order_by('-pub_date')[:5000]
+        episodes = Episode.objects.filter(podcast__in=selected_podcasts).select_related('podcast', 'podcast__network').order_by('-pub_date')[:500]
         
         if user_mix.display_image: image_url = request.build_absolute_uri(user_mix.display_image)
         else: image_url = request.build_absolute_uri(user_mix.network.default_image_url)
@@ -866,35 +913,32 @@ def generate_mix_feed(request, unique_id):
             ))
             
         raw_xml = feed.rss_str()
-        xml_output = inject_rss_categories(raw_xml, episodes)
-        cache.set(cache_key, xml_output, 300)
+        feed_xml = inject_rss_categories(raw_xml, episodes) 
+        cache.set(cache_key, feed_xml, 300)
+        logger.debug(f"Successfully generated and cached mix feed: {cache_key}")
         
-    return HttpResponse(xml_output, content_type='application/rss+xml')
+    return HttpResponse(feed_xml, content_type='application/rss+xml')
 
 @csrf_exempt
 def patreon_webhook(request):
+    logger.debug("Received incoming Patreon webhook request.")
     if request.method != 'POST':
-        return HttpResponse(status=405)
+        logger.warning(f"Webhook rejected: Invalid HTTP method {request.method}")
+        return HttpResponse("Method not allowed", status=405)
 
     signature = request.headers.get('X-Patreon-Signature')
-    body = request.body
-
-    logger.info("--- Incoming Patreon Webhook ---")
-    logger.info(f"Headers: {request.headers}")
-    logger.info(f"Signature Provided: {signature}")
-
-    webhook_secret = settings.PATREON_WEBHOOK_SECRET.encode('utf-8')
-    if not webhook_secret:
-        logger.error("PATREON_WEBHOOK_SECRET is not set in environment variables!")
-        return HttpResponse("Internal Setup Error", status=500)
+    if not signature:
+        logger.warning("Webhook rejected: Missing X-Patreon-Signature header.")
+        return HttpResponseForbidden("Missing signature")
+        
+    secret = settings.PATREON_WEBHOOK_SECRET.encode('utf-8')
+    expected_signature = hmac.new(secret, request.body, hashlib.md5).hexdigest()
     
-    expected_signature = hmac.new(webhook_secret.encode('utf-8'), body, digestmod=hashlib.md5).hexdigest()
+    if not hmac.compare_digest(expected_signature, signature):
+        logger.warning(f"Webhook rejected: Invalid signature. Expected {expected_signature}, got {signature}")
+        return HttpResponseForbidden("Invalid signature")
 
-    logger.info(f"Expected Signature: {expected_signature}")
-
-    if not signature or not hmac.compare_digest(signature, expected_signature):
-        logger.warning("Invalid Webhook Signature detected.")
-        return HttpResponseForbidden("Invalid Signature")
+    logger.debug("Webhook signature verified successfully.")
 
     try:
         data = json.loads(request.body)
@@ -902,13 +946,16 @@ def patreon_webhook(request):
         
         user_relationship = member_data.get('relationships', {}).get('user', {}).get('data', {})
         if not user_relationship or user_relationship.get('type') != 'user':
+            logger.error("Webhook payload missing user relationship data.")
             return HttpResponse("Could not find user relationship in webhook.", status=400)
             
         patreon_user_id = user_relationship.get('id')
         if not patreon_user_id:
+            logger.error("Webhook payload missing Patreon User ID.")
             return HttpResponse("Missing user ID in webhook.", status=400)
 
-        # --- Atomic Transaction & Row Locking ---
+        logger.info(f"Processing webhook for Patreon User ID: {patreon_user_id}")
+
         with transaction.atomic():
             profile = PatronProfile.objects.select_for_update().get(patreon_id=patreon_user_id)
 
@@ -917,6 +964,7 @@ def patreon_webhook(request):
             status = attributes.get('patron_status') 
 
             final_amount = new_cents if status == 'active_patron' else 0
+            logger.debug(f"Parsed Webhook Data - Status: {status}, Cents: {new_cents}, Final Amount: {final_amount}")
             
             campaign_relationship = member_data.get('relationships', {}).get('campaign', {}).get('data', {})
             campaign_id = str(campaign_relationship.get('id', ''))
@@ -927,20 +975,21 @@ def patreon_webhook(request):
                 profile.active_pledges = active_pledges
                 profile.save()
                 logger.info(f"Webhook Success: Updated {profile.user.email} on Campaign {campaign_id} to {final_amount} cents.")
-        
-        logger.info("Webhook processed successfully.")
+            else:
+                logger.warning(f"Webhook processed for {patreon_user_id}, but no campaign ID was found in the payload.")
+                
         return HttpResponse("Success", status=200)
         
     except PatronProfile.DoesNotExist:
-        logger.error(f"Error processing webhook: User {patreon_user_id} not found locally.")
+        logger.warning(f"Webhook skipped: Patreon User ID {patreon_user_id} does not exist in local database.")
         return HttpResponse("User has not logged in via OAuth yet.", status=200)
 
     except (ValueError, KeyError, AttributeError) as e:
-        logger.error(f"Error processing webhook: {str(e)}")
+        logger.error(f"Error parsing webhook JSON payload: {str(e)}", exc_info=True)
         return HttpResponse("Error processing webhook payload.", status=400)
     
     except Exception as e:
-        logger.error(f"Error processing webhook: {str(e)}")
+        logger.error(f"Critical error processing webhook: {str(e)}", exc_info=True)
         return HttpResponse("Error", status=500)
 
 def sync_network_patrons(network):
@@ -1063,37 +1112,75 @@ def sync_network_patrons(network):
     logger.info(f"--- Sync Complete. Updated: {updated_count} | Revoked: {revoked_count} ---")
     return updated_count, None
 
-class CacheLogStream:
-    def __init__(self, task_id):
-        self.task_id = task_id
-        cache.set(self.task_id, "data: Initiating Background Import...\n\n", timeout=3600)
-        
-    def write(self, text):
-        if not text.strip(): return 
-        current_log = cache.get(self.task_id, "")
-        clean_line = text.replace('\n', '')
-        cache.set(self.task_id, current_log + f"data: {clean_line}\n\n", timeout=3600)
-        
-    def flush(self):
-        pass
-
+# ==========================================
+# BACKGROUND QUEUE & IMPORT STREAMING
+# ==========================================
 feed_import_queue = queue.Queue()
 
+class CacheLogStream(io.StringIO):
+    def __init__(self, task_id):
+        super().__init__()
+        self.task_id = task_id
+        self.buffer = ""
+
+    def write(self, s):
+        super().write(s)
+        self.buffer += s
+        formatted_chunk = "".join([f"data: {line}\n\n" for line in s.splitlines() if line])
+        
+        current_logs = cache.get(self.task_id, "")
+        cache.set(self.task_id, current_logs + formatted_chunk, timeout=3600)
+        
 def feed_import_worker():
+    logger.info("[WORKER] Background feed_import_worker thread started.")
     while True:
         show_id, task_id = feed_import_queue.get()
         stream = CacheLogStream(task_id)
         
         try:
+            logger.info(f"[WORKER] Acquired task: Ingesting show_id={show_id}")
             stream.write("\n[SYSTEM] Worker acquired task. Starting ingestion...\n")
             call_command('ingest_feed', show_id, stdout=stream, stderr=stream, no_color=True)
             invalidate_show_cache(show_id) 
+            logger.info(f"[WORKER] Successfully completed task for show_id={show_id}")
         except Exception as e:
+            logger.error(f"[WORKER] Task failed for show_id={show_id}: {str(e)}", exc_info=True)
             stream.write(f"\n[ERROR] {str(e)}\n")
         finally:
             stream.write("[DONE]")
             feed_import_queue.task_done()
 
+# Start the thread
+threading.Thread(target=feed_import_worker, daemon=True).start()
+
+@login_required(login_url='/login/')
+def stream_feed_import(request, show_id):
+    task_id = f"import_logs_{show_id}"
+    logger.debug(f"User {request.user.username} initiated log stream for show_id={show_id}")
+    
+    if not cache.get(task_id):
+        logger.info(f"Queuing new import task for show_id={show_id}")
+        cache.set(task_id, "data: [QUEUED] Waiting for database availability...\n\n", timeout=3600)
+        feed_import_queue.put((show_id, task_id))
+
+    def event_stream():
+        last_length = 0
+        while True:
+            logs = cache.get(task_id, "")
+            
+            if len(logs) > last_length:
+                new_logs = logs[last_length:]
+                yield new_logs
+                last_length = len(logs)
+                
+                if "[DONE]" in new_logs:
+                    logger.debug(f"Stream complete for task {task_id}. Closing connection.")
+                    cache.delete(task_id)
+                    break
+                    
+            time.sleep(0.5)
+
+    return StreamingHttpResponse(event_stream(), content_type='text/event-stream')
 threading.Thread(target=feed_import_worker, daemon=True).start()
 
 @login_required(login_url='/login/')

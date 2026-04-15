@@ -1,4 +1,4 @@
-import uuid, os, requests, base64
+import uuid, os, base64, logging
 from django.db import models
 from django.contrib.auth.models import User
 from django.core.files.base import ContentFile
@@ -11,6 +11,8 @@ from PIL import Image
 from io import BytesIO
 
 from django.conf import settings
+
+logger = logging.getLogger(__name__)
 
 def default_theme_config():
     return {
@@ -234,35 +236,47 @@ class UserMix(models.Model):
         return self.image_url
 
     def save(self, *args, **kwargs):
-        # 1. Save the record (triggers OverwriteStorage via mix_cover_path)
+        logger.debug(f"Saving UserMix: '{self.name}' for user {self.user.username}")
         super().save(*args, **kwargs)
 
-        # 2. Post-process (Crop & Resize)
+        # Post-process (Crop & Resize)
         if self.image_upload:
             try:
-                # Pass the Django file object directly to Pillow, avoid .path
-                img = Image.open(self.image_upload)
+                logger.debug(f"Processing image upload for mix: {self.unique_id}")
                 
-                width, height = img.size
-                if width != height:
-                    new_size = min(width, height)
-                    left = (width - new_size) / 2
-                    top = (height - new_size) / 2
-                    right = (width + new_size) / 2
-                    bottom = (height + new_size) / 2
-                    img = img.crop((left, top, right, bottom))
+                with Image.open(self.image_upload) as img:
+                    original_format = img.format or 'JPEG'
+                    
+                    width, height = img.size
+                    if width != height:
+                        logger.debug("Image is not square. Cropping...")
+                        new_size = min(width, height)
+                        left = (width - new_size) / 2
+                        top = (height - new_size) / 2
+                        right = (width + new_size) / 2
+                        bottom = (height + new_size) / 2
+                        img = img.crop((left, top, right, bottom))
+                    
+                    if img.height > 500 or img.width > 500:
+                        logger.debug("Image exceeds 500x500. Resizing...")
+                        img.thumbnail((500, 500), Image.Resampling.LANCZOS)
+                    
+                    if original_format == 'JPEG' and img.mode in ('RGBA', 'LA', 'P'):
+                        logger.debug("Converting image to RGB to safely save as JPEG.")
+                        img = img.convert('RGB')
+                        
+                    from io import BytesIO
+                    temp_handle = BytesIO()
+                    img.save(temp_handle, format=original_format)
+                    temp_handle.seek(0)
+                    
+                self.image_upload.close()
                 
-                if img.height > 500 or img.width > 500:
-                    img.thumbnail((500, 500), Image.Resampling.LANCZOS)
-                
-                # Save it back to the same file object
-                temp_handle = BytesIO()
-                img.save(temp_handle, format=img.format or 'JPEG')
-                temp_handle.seek(0)
                 self.image_upload.save(self.image_upload.name, ContentFile(temp_handle.read()), save=False)
+                logger.debug(f"Image processing complete for mix: {self.unique_id}")
                 
             except Exception as e:
-                print(f"Image processing failed: {e}")
+                logger.error(f"Image processing failed for mix {self.unique_id}: {e}", exc_info=True)
     
 class PatronProfile(models.Model):
     user = models.OneToOneField(User, on_delete=models.CASCADE, related_name='patron_profile')
@@ -283,5 +297,8 @@ def auto_delete_file_on_delete(sender, instance, **kwargs):
     whenever a UserMix object is deleted from the database.
     """
     if instance.image_upload:
-        if os.path.isfile(instance.image_upload.path):
-            os.remove(instance.image_upload.path)
+        try:
+            instance.image_upload.storage.delete(instance.image_upload.name)
+            logger.debug(f"Deleted physical file for UserMix: {instance.image_upload.name}")
+        except Exception as e:
+            logger.error(f"Failed to delete physical file {instance.image_upload.name}: {e}", exc_info=True)

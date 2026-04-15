@@ -122,6 +122,51 @@ def process_mix_image_url(image_url, user_mix_instance):
             return f"Could not download image. Server returned status {response.status_code}."
     except requests.exceptions.RequestException as e:
         return "Could not download image. The URL might be invalid or unreachable."
+
+def refresh_patreon_token(network):
+    """
+    Trades a saved refresh_token for a new access_token.
+    Returns True if successful, False if the refresh token is also invalid/expired.
+    """
+    logger.debug(f"--- [AUTO-HEAL] Triggering Token Refresh for {network.name} ---")
+    
+    if not network.patreon_creator_refresh_token:
+        logger.error("[AUTO-HEAL] FAILED: No refresh token found in the database!")
+        return False
+
+    token_url = "https://www.patreon.com/api/oauth2/token"
+    data = {
+        'grant_type': 'refresh_token',
+        'refresh_token': network.patreon_creator_refresh_token,
+        'client_id': settings.PATREON_CLIENT_ID,
+        'client_secret': settings.PATREON_CLIENT_SECRET,
+    }
+    
+    try:
+        logger.debug("[AUTO-HEAL] Sending POST request to Patreon /api/oauth2/token...")
+        res = requests.post(token_url, data=data, timeout=10)
+        logger.debug(f"[AUTO-HEAL] Patreon Refresh Response Status: {res.status_code}")
+        
+        if res.status_code == 200:
+            tokens = res.json()
+            network.patreon_creator_access_token = tokens['access_token']
+            
+            if 'refresh_token' in tokens:
+                network.patreon_creator_refresh_token = tokens['refresh_token']
+                logger.debug("[AUTO-HEAL] Received both new access AND refresh tokens.")
+            else:
+                logger.warning("[AUTO-HEAL] Received new access token, but NO new refresh token.")
+                
+            network.save()
+            logger.debug("[AUTO-HEAL] SUCCESS. Tokens saved to database.")
+            return True
+        else:
+            logger.error(f"[AUTO-HEAL] FAILED. Patreon rejected the refresh request: {res.text}")
+            return False
+            
+    except Exception as e:
+        logger.error(f"[AUTO-HEAL] CRITICAL ERROR during refresh request: {str(e)}")
+        return False
     
 # ==========================================
 # OAUTH AUTHENTICATION
@@ -889,7 +934,7 @@ def sync_network_patrons(network):
     Fetches all members for a campaign and updates local PatronProfiles.
     Also revokes access for local patrons no longer present in the Patreon member list.
     """
-    logger.info(f"--- Starting COMPLETE Sync for Network: {network.name} ---")
+    logger.debug(f"--- Starting COMPLETE Sync for Network: {network.name} ---")
 
     if not network.patreon_creator_access_token or not network.patreon_campaign_id:
         return 0, "Network is not properly linked to Patreon."
@@ -910,17 +955,39 @@ def sync_network_patrons(network):
 
     # 1. Iterate through all active/historical members on Patreon
     while url:
+        logger.debug(f"[SYNC] Fetching Patreon URL: {url}")
         res = requests.get(url, headers=headers)
+        
+        # --- THE DIAGNOSTIC LOG ---
+        logger.debug(f"[SYNC] Raw HTTP Status Code received: {res.status_code}")
+        
+        # --- Handle 401 Unauthorized (Expired Token) ---
+        # We also check if the text '401' is in the response just in case Patreon sends a 403
+        if res.status_code == 401 or "Unauthorized" in res.text:
+            logger.warning(f"[SYNC] Access Token rejected! Attempting auto-refresh...")
+            
+            refresh_success = refresh_patreon_token(network)
+            logger.debug(f"[SYNC] Auto-refresh returned: {refresh_success}")
+            
+            if refresh_success:
+                logger.debug("[SYNC] Applying new access token to headers and retrying the same URL...")
+                headers['Authorization'] = f'Bearer {network.patreon_creator_access_token}'
+                continue 
+            else:
+                logger.error("[SYNC] Refresh failed. Aborting sync.")
+                network.patreon_sync_enabled = False
+                network.save()
+                return updated_count, "Patreon authorization permanently expired. Please re-link your Patreon campaign in settings."
         
         # --- Handle 429 Rate Limits Gracefully ---
         if res.status_code == 429:
-            # Patreon sends a 'Retry-After' header indicating how many seconds to wait
             retry_after = int(res.headers.get('Retry-After', 5))
-            logger.warning(f"Patreon Rate Limit hit for {network.name}. Pausing for {retry_after}s.")
+            logger.warning(f"[SYNC] Rate Limit hit. Pausing for {retry_after}s.")
             time.sleep(retry_after)
-            continue # Loop back and retry the exact same URL
+            continue 
             
         if res.status_code != 200:
+            logger.error(f"[SYNC] Unhandled Patreon API Error ({res.status_code}): {res.text}")
             return updated_count, f"Patreon API Error: {res.text}"
         
         data = res.json()
@@ -959,7 +1026,7 @@ def sync_network_patrons(network):
         url = data.get('links', {}).get('next')
         
         if url:
-            time.sleep(0.5) # Wait half a second before asking for the next page of 100 patrons
+            time.sleep(0.5)
 
     # 2. Cleanup: Revoke access for anyone NOT seen in the API response
     # Find local profiles that currently have this campaign ID in their JSON data

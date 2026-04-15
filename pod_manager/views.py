@@ -26,6 +26,7 @@ from django.core.cache import cache
 from django.core.files.base import ContentFile
 from django.core.management import call_command
 from django.core.paginator import Paginator
+from django.db import transaction
 from django.db.models import Max, Q
 from django.http import JsonResponse, HttpResponse, HttpResponseForbidden, StreamingHttpResponse, Http404
 from django.shortcuts import redirect, get_object_or_404, render
@@ -896,29 +897,31 @@ def patreon_webhook(request):
         if not patreon_user_id:
             return HttpResponse("Missing user ID in webhook.", status=400)
 
-        profile = PatronProfile.objects.get(patreon_id=patreon_user_id)
+        # --- Atomic Transaction & Row Locking ---
+        with transaction.atomic():
+            profile = PatronProfile.objects.select_for_update().get(patreon_id=patreon_user_id)
 
-        attributes = member_data.get('attributes', {})
-        new_cents = attributes.get('currently_entitled_amount_cents', 0)
-        status = attributes.get('patron_status') 
+            attributes = member_data.get('attributes', {})
+            new_cents = attributes.get('currently_entitled_amount_cents', 0)
+            status = attributes.get('patron_status') 
 
-        final_amount = new_cents if status == 'active_patron' else 0
-        
-        campaign_relationship = member_data.get('relationships', {}).get('campaign', {}).get('data', {})
-        campaign_id = str(campaign_relationship.get('id', ''))
-        
-        if campaign_id:
-            active_pledges = profile.active_pledges or {}
-            active_pledges[campaign_id] = final_amount
-            profile.active_pledges = active_pledges
-            profile.save()
-            logger.info(f"Webhook Success: Updated {profile.user.email} on Campaign {campaign_id} to {final_amount} cents.")
+            final_amount = new_cents if status == 'active_patron' else 0
+            
+            campaign_relationship = member_data.get('relationships', {}).get('campaign', {}).get('data', {})
+            campaign_id = str(campaign_relationship.get('id', ''))
+            
+            if campaign_id:
+                active_pledges = profile.active_pledges or {}
+                active_pledges[campaign_id] = final_amount
+                profile.active_pledges = active_pledges
+                profile.save()
+                logger.info(f"Webhook Success: Updated {profile.user.email} on Campaign {campaign_id} to {final_amount} cents.")
         
         logger.info("Webhook processed successfully.")
         return HttpResponse("Success", status=200)
         
-    except PatronProfile.DoesNotExist as e:
-        logger.error(f"Error processing webhook: {str(e)}")
+    except PatronProfile.DoesNotExist:
+        logger.error(f"Error processing webhook: User {patreon_user_id} not found locally.")
         return HttpResponse("User has not logged in via OAuth yet.", status=200)
 
     except (ValueError, KeyError, AttributeError) as e:

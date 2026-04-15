@@ -1,7 +1,8 @@
 {% extends 'pod_manager/base.html' %}
+{% load static %}
 
 {% block content %}
-<link rel="stylesheet" href="https://cdn.plyr.io/3.7.8/plyr.css" />
+<link rel="stylesheet" href="{% static 'pod_manager/css/plyr.css' %}" />
 <style>
     /* Constrain the height of the settings menu and make it scrollable */
     .plyr__menu__container {
@@ -131,7 +132,7 @@
     </div>
 </div>
 
-<script src="https://cdn.plyr.io/3.7.8/plyr.polyfilled.js"></script>
+<script src="{% static 'pod_manager/js/plyr.js' %}"></script>
 <script>
     document.addEventListener('DOMContentLoaded', () => {
         // Initialize all elements with the 'js-player' class
@@ -147,7 +148,7 @@
             ],
             settings: ['speed'],
             speed: { selected: 1, options: [0.5, 0.75, 0.8, 0.9, 1, 1.1, 1.2, 1.25, 1.5, 1.75, 2, 2.5] },
-            iconUrl: 'https://cdn.plyr.io/3.7.8/plyr.svg'
+            iconUrl: "{% static 'pod_manager/img/plyr.svg' %}"
         });
     });
 </script>

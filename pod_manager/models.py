@@ -205,7 +205,7 @@ class OverwriteStorage(FileSystemStorage):
     def get_available_name(self, name, max_length=None):
         """Returns the same name even if it already exists on the system."""
         if self.exists(name):
-            os.remove(os.path.join(settings.MEDIA_ROOT, name))
+            self.delete(name) # Use Django's backend-agnostic delete
         return name
     
 mix_storage = OverwriteStorage()
@@ -239,28 +239,30 @@ class UserMix(models.Model):
 
         # 2. Post-process (Crop & Resize)
         if self.image_upload:
-            img_path = self.image_upload.path
-            if os.path.exists(img_path):
-                try:
-                    img = Image.open(img_path)
-                    
-                    # Square Crop
-                    width, height = img.size
-                    if width != height:
-                        new_size = min(width, height)
-                        left = (width - new_size) / 2
-                        top = (height - new_size) / 2
-                        right = (width + new_size) / 2
-                        bottom = (height + new_size) / 2
-                        img = img.crop((left, top, right, bottom))
-                    
-                    # Resize to 500x500
-                    if img.height > 500 or img.width > 500:
-                        img.thumbnail((500, 500), Image.Resampling.LANCZOS)
-                    
-                    img.save(img_path)
-                except Exception as e:
-                    print(f"Image processing failed: {e}")
+            try:
+                # Pass the Django file object directly to Pillow, avoid .path
+                img = Image.open(self.image_upload)
+                
+                width, height = img.size
+                if width != height:
+                    new_size = min(width, height)
+                    left = (width - new_size) / 2
+                    top = (height - new_size) / 2
+                    right = (width + new_size) / 2
+                    bottom = (height + new_size) / 2
+                    img = img.crop((left, top, right, bottom))
+                
+                if img.height > 500 or img.width > 500:
+                    img.thumbnail((500, 500), Image.Resampling.LANCZOS)
+                
+                # Save it back to the same file object
+                temp_handle = BytesIO()
+                img.save(temp_handle, format=img.format or 'JPEG')
+                temp_handle.seek(0)
+                self.image_upload.save(self.image_upload.name, ContentFile(temp_handle.read()), save=False)
+                
+            except Exception as e:
+                print(f"Image processing failed: {e}")
     
 class PatronProfile(models.Model):
     user = models.OneToOneField(User, on_delete=models.CASCADE, related_name='patron_profile')

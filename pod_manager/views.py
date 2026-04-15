@@ -18,7 +18,6 @@ from datetime import timedelta
 import requests
 from django.conf import settings
 from django.contrib import messages
-from django.contrib.admin.views.decorators import staff_member_required
 from django.contrib.auth import login
 from django.contrib.auth.decorators import login_required
 from django.contrib.auth.models import User
@@ -27,7 +26,7 @@ from django.core.files.base import ContentFile
 from django.core.management import call_command
 from django.core.paginator import Paginator
 from django.db import transaction
-from django.db.models import Max, Q
+from django.db.models import Q
 from django.http import JsonResponse, HttpResponse, HttpResponseForbidden, StreamingHttpResponse, Http404
 from django.shortcuts import redirect, get_object_or_404, render
 from django.urls import reverse
@@ -48,12 +47,13 @@ def parse_duration(duration_str: str) -> timedelta | None:
     try:
         if ':' in duration_str:
             parts = duration_str.split(':')
+            sec = int(float(parts[-1])) # Safely handle float seconds
             if len(parts) == 3:
-                return timedelta(hours=int(parts[0]), minutes=int(parts[1]), seconds=int(parts[2]))
+                return timedelta(hours=int(parts[0]), minutes=int(parts[1]), seconds=sec)
             elif len(parts) == 2:
-                return timedelta(minutes=int(parts[0]), seconds=int(parts[1]))
+                return timedelta(minutes=int(parts[0]), seconds=sec)
         else:
-            return timedelta(seconds=int(duration_str))
+            return timedelta(seconds=int(float(duration_str)))
     except ValueError:
         return None
     
@@ -359,6 +359,12 @@ def creator_settings(request):
             show.subscriber_feed_url = request.POST.get('subscriber_feed_url', show.subscriber_feed_url)
             
             tier_id = request.POST.get('tier_id')
+            if tier_id:
+                # Force a check to ensure this tier belongs to THIS network
+                valid_tier = get_object_or_404(PatreonTier, id=tier_id, network=network)
+                show.required_tier = valid_tier
+            else:
+                show.required_tier = None
             show.show_footer_public = request.POST.get('show_footer_public', '')
             show.show_footer_private = request.POST.get('show_footer_private', '')
 
@@ -380,6 +386,11 @@ def creator_settings(request):
             public_feed_url = request.POST.get('public_feed_url')
             subscriber_feed_url = request.POST.get('subscriber_feed_url')
             tier_id = request.POST.get('tier_id')
+            if tier_id:
+                valid_tier = get_object_or_404(PatreonTier, id=tier_id, network=network)
+                show.required_tier = valid_tier
+            else:
+                show.required_tier = None
 
             try:
                 new_show = Podcast(

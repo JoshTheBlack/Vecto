@@ -694,7 +694,7 @@ def user_feeds(request):
             raw_url = reverse('custom_feed') + f"?auth={profile.feed_token}&show={podcast.slug}&network={podcast.network.slug}"
             feed_data.append({'podcast': podcast, 'has_access': True, 'feed_url': request.build_absolute_uri(raw_url)})
         elif req_cents == 0 or podcast.public_feed_url:
-            raw_url = reverse('public_feed', args=[podcast.slug]) + f"?network={podcast.network.slug}"
+            raw_url = reverse('public_feed', args=[podcast.slug]) 
             feed_data.append({'podcast': podcast, 'has_access': False, 'req_dollars': req_cents/100, 'feed_url': request.build_absolute_uri(raw_url)})
 
     # Fix modal podcast list (include all supported networks)

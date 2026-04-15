@@ -458,8 +458,19 @@
 function copyFeed(btn, elementId) {
     var copyText = document.getElementById(elementId);
     copyText.select();
-    copyText.setSelectionRange(0, 99999);
-    navigator.clipboard.writeText(copyText.value);
+    copyText.setSelectionRange(0, 99999); // For mobile devices
+    
+    // 1. Try modern Clipboard API first (HTTPS or localhost)
+    if (navigator.clipboard && window.isSecureContext) {
+        navigator.clipboard.writeText(copyText.value);
+    } else {
+        // 2. Fallback for insecure local development (e.g., http://bm.local)
+        try {
+            document.execCommand('copy');
+        } catch (err) {
+            console.error('Fallback copy failed', err);
+        }
+    }
     
     // Save the original HTML and exact CSS classes
     var originalHTML = btn.innerHTML;
@@ -467,7 +478,7 @@ function copyFeed(btn, elementId) {
     
     // Swap to the success state
     btn.innerHTML = '<i class="bi bi-check2"></i> Copied!';
-    btn.className = 'btn btn-success fw-bold border-success text-white';
+    btn.className = 'btn btn-success fw-bold border-success text-white shadow-sm';
     
     // Restore back to original after 2 seconds
     setTimeout(function() {

@@ -218,24 +218,10 @@ class UserMix(models.Model):
         return self.image_url
 
     def save(self, *args, **kwargs):
-        # 1. Handle URL downloads first
-        # If image_url is populated, we fetch it and move it to image_upload
-        if self.image_url:
-            try:
-                response = requests.get(self.image_url, timeout=10)
-                if response.status_code == 200:
-                    temp_name = os.path.basename(self.image_url).split('?')[0] or "cover.jpg"
-                    # We use save=False to prevent a recursion loop
-                    self.image_upload.save(temp_name, ContentFile(response.content), save=False)
-                    # Clear the URL so we don't re-download it every single save
-                    self.image_url = "" 
-            except Exception as e:
-                print(f"URL Download failed: {e}")
-
-        # 2. Save the record (triggers OverwriteStorage via mix_cover_path)
+        # 1. Save the record (triggers OverwriteStorage via mix_cover_path)
         super().save(*args, **kwargs)
 
-        # 3. Post-process (Crop & Resize)
+        # 2. Post-process (Crop & Resize)
         if self.image_upload:
             img_path = self.image_upload.path
             if os.path.exists(img_path):

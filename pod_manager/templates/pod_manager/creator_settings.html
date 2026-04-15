@@ -51,7 +51,7 @@
                         <h4 class="mb-0 fw-bold">{{ current_network.name }} Settings</h4>
                     </div>
                     <div class="card-body">
-                        <form method="POST" action="{% url 'creator_settings' %}">
+                        <form id="networkSettingsForm" method="POST" action="{% url 'creator_settings' %}">
                             {% csrf_token %}
                             <input type="hidden" name="action" value="update_network">
                             <input type="hidden" name="network_id" value="{{ current_network.id }}">
@@ -336,6 +336,26 @@
 </div>
 
 <script>
+document.addEventListener('DOMContentLoaded', function() {
+    const networkForm = document.getElementById('networkSettingsForm');
+    if (networkForm) {
+        networkForm.addEventListener('submit', function(e) {
+            const jsonTextarea = document.querySelector('textarea[name="theme_config"]');
+            if (jsonTextarea && jsonTextarea.value.trim() !== '') {
+                try {
+                    // Try to natively parse it
+                    JSON.parse(jsonTextarea.value);
+                } catch (error) {
+                    // If it fails, stop the form from submitting and warn the user
+                    e.preventDefault();
+                    alert("Invalid JSON in Theme Config:\n\n" + error.message + "\n\nPlease fix any formatting errors before saving.");
+                    jsonTextarea.focus();
+                }
+            }
+        });
+    }
+});
+
 function startLiveImport(showId) {
     const btn = document.getElementById(`btn-import-${showId}`);
     const terminalContainer = document.getElementById(`terminal-container-${showId}`);

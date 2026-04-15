@@ -23,6 +23,7 @@ from django.contrib.auth import login
 from django.contrib.auth.decorators import login_required
 from django.contrib.auth.models import User
 from django.core.cache import cache
+from django.core.files.base import ContentFile
 from django.core.management import call_command
 from django.core.paginator import Paginator
 from django.db.models import Max, Q
@@ -104,6 +105,24 @@ def inject_rss_categories(rss_str, episodes):
     # Return the modified XML as a string with the declaration intact
     return etree.tostring(root, encoding='utf-8', xml_declaration=True).decode('utf-8')
 
+def process_mix_image_url(image_url, user_mix_instance):
+    """Safely attempts to download an image from a URL and attach it to the model."""
+    if not image_url:
+        return None
+    try:
+        # 5 second timeout so the user isn't left hanging forever
+        response = requests.get(image_url, timeout=5) 
+        if response.status_code == 200:
+            import os
+            temp_name = os.path.basename(image_url).split('?')[0] or "cover.jpg"
+            user_mix_instance.image_upload.save(temp_name, ContentFile(response.content), save=False)
+            user_mix_instance.image_url = "" # Clear the URL so we rely on the uploaded file
+            return None # None means no errors!
+        else:
+            return f"Could not download image. Server returned status {response.status_code}."
+    except requests.exceptions.RequestException as e:
+        return "Could not download image. The URL might be invalid or unreachable."
+    
 # ==========================================
 # OAUTH AUTHENTICATION
 # ==========================================
@@ -258,8 +277,7 @@ def creator_settings(request):
             footer_private = request.POST.get('footer_private', '')
 
             try:
-                clean_json_str = theme_config_str.replace("'", '"')
-                network.theme_config = json.loads(clean_json_str)
+                network.theme_config = json.loads(theme_config_str)
             except json.JSONDecodeError:
                 messages.error(request, f"Invalid JSON format for {network.name}. Settings not saved.")
                 return redirect(f"{reverse('creator_settings')}?network={network.slug}")
@@ -514,30 +532,54 @@ def user_feeds(request):
         active_campaign_ids = [cid for cid, amt in active_pledges.items() if amt > 0]
         user_networks = Network.objects.filter(patreon_campaign_id__in=active_campaign_ids).distinct()
 
-        # === RESTORED: HANDLE MIX POST ACTIONS ===
+        # === HANDLE MIX POST ACTIONS ===
         if request.method == 'POST' and 'create_mix' in request.POST:
             mix_name = request.POST.get('mix_name', '').strip() or f"UserMix {UserMix.objects.filter(user=request.user).count() + 1}"
             selected_podcast_ids = request.POST.getlist('podcasts')
+            image_url_input = request.POST.get('mix_image', '').strip()
+            
             if selected_podcast_ids:
-                user_mix = UserMix.objects.create(
-                    user=request.user, network=request.network, name=mix_name,
-                    image_url=request.POST.get('mix_image', '').strip(),
-                    image_upload=request.FILES.get('mix_image_upload') 
-                )
+                # Create the instance in memory (don't save to DB yet)
+                user_mix = UserMix(user=request.user, network=request.network, name=mix_name)
+                
+                # Prioritize file upload, fallback to URL
+                if 'mix_image_upload' in request.FILES:
+                    user_mix.image_upload = request.FILES['mix_image_upload']
+                elif image_url_input:
+                    error_msg = process_mix_image_url(image_url_input, user_mix)
+                    if error_msg:
+                        messages.warning(request, f"Mix created, but artwork failed: {error_msg}")
+                
+                # Save to DB and attach ManyToMany relationships
+                user_mix.save()
                 user_mix.selected_podcasts.set(selected_podcast_ids)
-                messages.success(request, f"Mix '{mix_name}' created!")
+                if 'mix_image_upload' in request.FILES or (image_url_input and not user_mix.image_url):
+                    messages.success(request, f"Mix '{mix_name}' created with custom artwork!")
+                else:
+                    messages.success(request, f"Mix '{mix_name}' created!")
             return redirect('user_feeds')
 
         if request.method == 'POST' and 'edit_mix' in request.POST:
             user_mix = UserMix.objects.filter(id=request.POST.get('mix_id'), user=request.user).first()
             if user_mix:
                 user_mix.name = request.POST.get('mix_name', '').strip() or user_mix.name
-                user_mix.image_url = request.POST.get('mix_image', '').strip()
-                if 'mix_image_upload' in request.FILES: user_mix.image_upload = request.FILES['mix_image_upload']
+                image_url_input = request.POST.get('mix_image', '').strip()
+                
+                # Prioritize file upload, fallback to URL
+                if 'mix_image_upload' in request.FILES:
+                    user_mix.image_upload = request.FILES['mix_image_upload']
+                elif image_url_input and image_url_input != user_mix.image_url:
+                    error_msg = process_mix_image_url(image_url_input, user_mix)
+                    if error_msg:
+                        messages.warning(request, f"Mix updated, but new artwork failed: {error_msg}")
+
                 selected_ids = request.POST.getlist('podcasts')
-                if selected_ids: user_mix.selected_podcasts.set(selected_ids)
+                if selected_ids: 
+                    user_mix.selected_podcasts.set(selected_ids)
+                    
                 user_mix.save()
                 cache.delete(f"mix_feed_{user_mix.unique_id}")
+                messages.success(request, f"Mix '{user_mix.name}' updated successfully!")
             return redirect('user_feeds')
 
         if request.method == 'POST' and 'delete_mix' in request.POST:
@@ -869,6 +911,15 @@ def sync_network_patrons(network):
     # 1. Iterate through all active/historical members on Patreon
     while url:
         res = requests.get(url, headers=headers)
+        
+        # --- Handle 429 Rate Limits Gracefully ---
+        if res.status_code == 429:
+            # Patreon sends a 'Retry-After' header indicating how many seconds to wait
+            retry_after = int(res.headers.get('Retry-After', 5))
+            logger.warning(f"Patreon Rate Limit hit for {network.name}. Pausing for {retry_after}s.")
+            time.sleep(retry_after)
+            continue # Loop back and retry the exact same URL
+            
         if res.status_code != 200:
             return updated_count, f"Patreon API Error: {res.text}"
         
@@ -906,6 +957,9 @@ def sync_network_patrons(network):
                 updated_count += 1
 
         url = data.get('links', {}).get('next')
+        
+        if url:
+            time.sleep(0.5) # Wait half a second before asking for the next page of 100 patrons
 
     # 2. Cleanup: Revoke access for anyone NOT seen in the API response
     # Find local profiles that currently have this campaign ID in their JSON data

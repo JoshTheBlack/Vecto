@@ -5,7 +5,8 @@ from django.core.files.base import ContentFile
 from django.core.files.storage import FileSystemStorage
 from django.db.models.signals import post_delete
 from django.dispatch import receiver
-from cryptography.fernet import Fernet
+from cryptography.fernet import Fernet, InvalidToken
+import hashlib
 from PIL import Image
 from io import BytesIO
 
@@ -34,21 +35,36 @@ def default_theme_config():
         "logo_url": ""
     }
 
+import hashlib
+
 class EncryptedCharField(models.CharField):
-    """A custom field that encrypts data at rest using settings.SECRET_KEY."""
+    """A custom field that encrypts data at rest using settings.CRYPTOGRAPHY_KEY."""
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        # Use your Django Secret Key to derive a 32-byte Fernet key
-        key = base64.urlsafe_b64encode(settings.SECRET_KEY[:32].encode().ljust(32, b'0'))
-        self.fernet = Fernet(key)
+        
+        # Hash the environment variable to guarantee exactly 32 bytes, 
+        # then encode it to the URL-safe base64 format Fernet requires.
+        raw_key = settings.CRYPTOGRAPHY_KEY.encode()
+        hashed_key = hashlib.sha256(raw_key).digest()
+        fernet_key = base64.urlsafe_b64encode(hashed_key)
+        
+        self.fernet = Fernet(fernet_key)
 
     def get_prep_value(self, value):
-        if value is None: return None
+        if value is None or value == "": 
+            return None
         return self.fernet.encrypt(value.encode()).decode()
 
     def from_db_value(self, value, expression, connection):
-        if value is None: return None
-        return self.fernet.decrypt(value.encode()).decode()
+        if value is None or value == "": 
+            return None
+        try:
+            return self.fernet.decrypt(value.encode()).decode()
+        except InvalidToken:
+            # If the decryption key changes, old data will fail signature verification.
+            # Catching this prevents the entire app from crashing, effectively "clearing"
+            # the corrupted token so the user can re-authenticate.
+            return None
     
 class Network(models.Model):
     name = models.TextField()

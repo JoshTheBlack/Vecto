@@ -180,6 +180,10 @@ class Episode(models.Model):
     link = models.URLField(max_length=1000, blank=True, null=True)
 
     tags = models.JSONField(default=list, blank=True)
+
+    # Podcast Chapters (JSON)
+    chapters_public = models.JSONField(blank=True, null=True, help_text="Podcast Index Namespace Chapters for public feed")
+    chapters_private = models.JSONField(blank=True, null=True, help_text="Podcast Index Namespace Chapters for private feed")
     
     class Meta:
         indexes = [

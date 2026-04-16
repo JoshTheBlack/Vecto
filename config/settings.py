@@ -111,6 +111,19 @@ DATABASES = {
     }
 }
 
+#DATABASES = {
+#    'default': {
+#        'ENGINE': 'django.db.backends.postgresql',
+#        'NAME': os.getenv('POSTGRES_DB', 'vecto'),
+#        'USER': os.getenv('POSTGRES_USER', 'vecto_user'),
+#        'PASSWORD': os.getenv('POSTGRES_PASSWORD', 'vecto_pass'),
+#        'HOST': os.getenv('POSTGRES_HOST', 'db'),
+#        'PORT': os.getenv('POSTGRES_PORT', '5432'),
+#    }
+#}
+
+
+
 # settings.py
 REDIS_URL = os.getenv("REDIS_URL")
 
@@ -222,3 +235,15 @@ LOGGING = {
         },
     },
 }
+
+"""
+# Celery Configuration
+CELERY_BROKER_URL = os.getenv("REDIS_URL", "redis://redis:6379/0")
+CELERY_RESULT_BACKEND = os.getenv("REDIS_URL", "redis://redis:6379/0")
+CELERY_ACCEPT_CONTENT = ['json']
+CELERY_TASK_SERIALIZER = 'json'
+CELERY_TIMEZONE = TIME_ZONE
+
+# Django Celery Beat for Scheduled Tasks
+INSTALLED_APPS += ['django_celery_beat']
+"""

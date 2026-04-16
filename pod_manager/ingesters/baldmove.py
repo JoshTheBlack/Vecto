@@ -1,4 +1,5 @@
 import time
+import re
 import hashlib
 import requests
 import logging
@@ -13,7 +14,8 @@ from .default import (
     is_robust_title_match,
     get_enclosure,
     clean_html_description,
-    get_cached_feed
+    get_cached_feed,
+    extract_rss_chapters
 )
 
 logger = logging.getLogger(__name__)
@@ -66,11 +68,9 @@ def scrape_tags_from_wp(url, stdout):
             stdout.write(f"  [WARN] Request failed for {target_url}: {str(e)}")
         return None
 
-    # Attempt 1: The original URL
     tags = _fetch_and_extract(url)
     if tags: return tags
 
-    # Attempt 2: URL Rewrite Fallback
     rewritten_url = None
     if "patreon.baldmove.com" in url:
         rewritten_url = url.replace("patreon.baldmove.com", "baldmove.com")
@@ -91,6 +91,48 @@ def get_feed_tags(entry):
     if hasattr(entry, 'tags'):
         return [t.get('term').strip() for t in entry.tags if t.get('term')]
     return []
+
+def parse_html_chapters(html_description):
+    """Scrapes Bald Move's specific <ul><li>HH:MM:SS format."""
+    if not html_description:
+        return None
+        
+    soup = BeautifulSoup(html_description, 'html.parser')
+    for ul in soup.find_all('ul'):
+        chapters = []
+        li_tags = ul.find_all('li')
+        
+        # A true chapter list usually has multiple entries
+        if len(li_tags) < 2:
+            continue
+            
+        is_valid_chapter_list = True
+        for li in li_tags:
+            text = li.get_text().strip()
+            # Match formats like "00:00:30 - Title" or "01:20 — Title"
+            match = re.match(r'^(\d{1,2}:\d{2}(?::\d{2})?)\s*[-—–]+\s*(.+)$', text)
+            
+            if match:
+                time_str = match.group(1)
+                title = match.group(2).strip()
+                
+                parts = time_str.split(':')
+                seconds = 0
+                if len(parts) == 3:
+                    seconds = int(parts[0])*3600 + int(parts[1])*60 + int(parts[2])
+                elif len(parts) == 2:
+                    seconds = int(parts[0])*60 + int(parts[1])
+                    
+                chapters.append({"startTime": seconds, "title": title})
+            else:
+                # If any item in the UL fails the regex, it's probably just a normal list
+                is_valid_chapter_list = False
+                break 
+
+        if is_valid_chapter_list and chapters:
+            return {"version": "1.2.0", "chapters": chapters}
+            
+    return None
 
 def run_ingest(podcast, stdout):
     logger.info(f"Starting Bald Move Ingest Strategy for podcast: {podcast.title} (ID: {podcast.id})")
@@ -197,8 +239,13 @@ def run_ingest(podcast, stdout):
             fallback_string = f"{entry_title}-{dt.timestamp()}-{public_audio}"
             entry_guid = hashlib.md5(fallback_string.encode('utf-8')).hexdigest()
 
-        match_data = matched_pairs.get(i)
-        if match_data:
+        # --- EXTRACT PUBLIC CHAPTERS ---
+        pub_chapters = extract_rss_chapters(entry)
+        if not pub_chapters:
+            pub_chapters = parse_html_chapters(raw_desc)
+            if pub_chapters: stdout.write("  -> Scraped HTML Chapters (Public)")
+
+        if match_data := matched_pairs.get(i):
             sub_audio, reason = match_data
             matches += 1
             stdout.write(f"  [Matched: {reason}] {entry_title}")
@@ -209,12 +256,21 @@ def run_ingest(podcast, stdout):
             final_link = priv_link if priv_link else pub_link
             
             priv_tags = get_feed_tags(priv_entry)
+
+            # --- EXTRACT PRIVATE CHAPTERS ---
+            priv_raw_desc = getattr(priv_entry, 'description', '')
+            priv_chapters = extract_rss_chapters(priv_entry)
+            if not priv_chapters:
+                priv_chapters = parse_html_chapters(priv_raw_desc)
+                if priv_chapters: stdout.write("  -> Scraped HTML Chapters (Private)")
+
         else:
             sub_audio = None
             reason = "Public Only (No Match)"
             stdout.write(f"  [Public Only] {entry_title}")
             logger.debug(f"Episode Unmatched (Public Only): '{entry_title}'")
             final_link = pub_link
+            priv_chapters = None
 
         final_sub_audio = sub_audio if sub_audio else public_audio
         
@@ -244,6 +300,8 @@ def run_ingest(podcast, stdout):
                 'duration': duration_val,
                 'match_reason': reason,
                 'tags': merged_tags,
+                'chapters_public': pub_chapters,
+                'chapters_private': priv_chapters,
             }
         )
         count += 1
@@ -279,6 +337,12 @@ def run_ingest(podcast, stdout):
         elif not episode_exists and merged_tags:
             stdout.write(f"  -> RSS Tags Extracted: {merged_tags}")
 
+        # --- EXTRACT PRIVATE EXCLUSIVE CHAPTERS ---
+        priv_chapters = extract_rss_chapters(entry)
+        if not priv_chapters:
+            priv_chapters = parse_html_chapters(raw_desc)
+            if priv_chapters: stdout.write("  -> Scraped HTML Chapters (Private Exclusive)")
+
         Episode.objects.update_or_create(
             podcast=podcast, guid=entry_guid,
             defaults={
@@ -292,6 +356,8 @@ def run_ingest(podcast, stdout):
                 'duration': duration_val,
                 'match_reason': 'Private Exclusive',
                 'tags': merged_tags,
+                'chapters_public': None,
+                'chapters_private': priv_chapters,
             }
         )
         count += 1

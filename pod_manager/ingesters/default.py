@@ -15,6 +15,47 @@ from bs4 import BeautifulSoup
 
 logger = logging.getLogger(__name__)
 
+def extract_rss_chapters(entry):
+    """Attempts to extract chapters from Podcast Index namespace or Podlove Simple Chapters."""
+    
+    # 1. Check for Podcast Index <podcast:chapters> tag
+    if hasattr(entry, 'podcast_chapters') and isinstance(entry.podcast_chapters, dict):
+        url = entry.podcast_chapters.get('url')
+        if url:
+            try:
+                resp = requests.get(url, timeout=5)
+                if resp.status_code == 200:
+                    return resp.json()
+            except Exception:
+                pass
+
+    # 2. Check for Podlove <psc:chapters>
+    if hasattr(entry, 'psc_chapters') and hasattr(entry.psc_chapters, 'chapters'):
+        chapters = []
+        for ch in entry.psc_chapters.chapters:
+            start_str = ch.get('start', '0')
+            title = ch.get('title', '')
+            
+            seconds = 0
+            if ':' in start_str:
+                parts = start_str.split(':')
+                if len(parts) == 3:
+                    seconds = int(parts[0])*3600 + int(parts[1])*60 + float(parts[2])
+                elif len(parts) == 2:
+                    seconds = int(parts[0])*60 + float(parts[1])
+            else:
+                try: seconds = float(start_str)
+                except: pass
+                    
+            chapters.append({
+                "startTime": int(seconds),
+                "title": title
+            })
+        if chapters:
+            return {"version": "1.2.0", "chapters": chapters}
+            
+    return None
+
 def get_slug(url):
     if not url or "?" in url:
         return None
@@ -263,6 +304,17 @@ def run_ingest(podcast, stdout):
 
         final_sub_audio = sub_audio if sub_audio else public_audio
 
+        pub_chapters = extract_rss_chapters(entry)
+        
+        if match_data:
+            sub_audio, reason = match_data
+            priv_entry = private_pool[sub_audio]
+            priv_chapters = extract_rss_chapters(priv_entry)
+        else:
+            priv_chapters = None
+            
+        final_priv_chapters = priv_chapters if priv_chapters else pub_chapters
+
         Episode.objects.update_or_create(
             podcast=podcast, guid=entry_guid,
             defaults={
@@ -275,6 +327,8 @@ def run_ingest(podcast, stdout):
                 'clean_description': clean_html_description(raw_desc, podcast.network), 
                 'duration': duration_val,
                 'match_reason': reason,
+                'chapters_public': pub_chapters,
+                'chapters_private': final_priv_chapters,
             }
         )
         count += 1
@@ -297,6 +351,17 @@ def run_ingest(podcast, stdout):
             fallback_string = f"{entry_title}-{dt.timestamp()}-{priv_audio}"
             entry_guid = hashlib.md5(fallback_string.encode('utf-8')).hexdigest()
 
+        pub_chapters = extract_rss_chapters(entry)
+        
+        if match_data:
+            sub_audio, reason = match_data
+            priv_entry = private_pool[sub_audio]
+            priv_chapters = extract_rss_chapters(priv_entry)
+        else:
+            priv_chapters = None
+            
+        final_priv_chapters = priv_chapters if priv_chapters else pub_chapters
+
         Episode.objects.update_or_create(
             podcast=podcast, guid=entry_guid,
             defaults={
@@ -309,6 +374,8 @@ def run_ingest(podcast, stdout):
                 'clean_description': clean_html_description(raw_desc, podcast.network), 
                 'duration': duration_val,
                 'match_reason': 'Private Exclusive',
+                'chapters_public': None,
+                'chapters_private': final_priv_chapters,
             }
         )
         count += 1

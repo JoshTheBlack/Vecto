@@ -8,8 +8,9 @@ from pod_manager import views
 urlpatterns = [
     path('', views.home, name='home'),
     path('episode/<int:episode_id>/', views.episode_detail, name='episode_detail'),
+    path('episode/<int:episode_id>/chapters/<str:feed_type>.json', views.episode_chapters, name='episode_chapters'),
     
-    # NEW & RENAMED: Listener Routes
+    # Listener Routes
     path('feeds/', views.user_feeds, name='user_feeds'),
     
     # Creator Route
@@ -27,6 +28,7 @@ urlpatterns = [
     path('public/feed/<slug:podcast_slug>/', views.generate_public_feed, name='public_feed'),
     path('feed/mix/<uuid:unique_id>', views.generate_mix_feed, name='mix_feed'),
     path('import/stream/<int:show_id>/', views.stream_feed_import, name='stream_feed_import'),
+    path('play/<int:episode_id>.mp3', views.play_episode, name='play_episode'),
 ]
 
 if settings.DEBUG:

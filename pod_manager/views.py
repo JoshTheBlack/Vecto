@@ -31,6 +31,8 @@ from django.db.models import Q
 from django.http import JsonResponse, HttpResponse, HttpResponseForbidden, StreamingHttpResponse, Http404, HttpResponseRedirect
 from django.shortcuts import redirect, get_object_or_404, render
 from django.urls import reverse
+from django.utils import timezone
+from datetime import timedelta
 from django.views.decorators.csrf import csrf_exempt
 from podgen import Podcast as PodgenPodcast, Episode as PodgenEpisode, Media, Person, Category
 from lxml import etree
@@ -349,6 +351,7 @@ def patreon_callback(request):
                     active_pledges[campaign_id] = cents if status == 'active_patron' else 0
 
         profile.active_pledges = active_pledges
+        profile.last_active = timezone.now()
         profile.save()
         # ---------------------------------
 
@@ -507,7 +510,14 @@ def creator_settings(request):
             return redirect(f"{reverse('creator_settings')}?network={network.slug}")
 
     allowed_networks = allowed_networks.prefetch_related('podcasts', 'podcasts__required_tier')
-    total_patrons = PatronProfile.objects.filter(pledge_amount_cents__gt=0).count()
+    total_patrons = 0
+    if current_network and current_network.patreon_campaign_id:
+        thirty_days_ago = timezone.now() - timedelta(days=30)
+        kwargs = {
+            "active_pledges__has_key": str(current_network.patreon_campaign_id),
+            "last_active__gte": thirty_days_ago
+        }
+        total_patrons = PatronProfile.objects.filter(**kwargs).count()
     tiers = PatreonTier.objects.filter(network__in=allowed_networks).order_by('minimum_cents')
     
     context = {
@@ -669,6 +679,11 @@ def user_feeds(request):
     # 1. Gather authenticated data
     if request.user.is_authenticated and hasattr(request.user, 'patron_profile'):
         profile = request.user.patron_profile
+
+        if not profile.last_active or profile.last_active < timezone.now() - timedelta(hours=24):
+            profile.last_active = timezone.now()
+            profile.save(update_fields=['last_active'])
+
         active_pledges = profile.active_pledges or {}
         total_dollars = sum(active_pledges.values()) / 100 if active_pledges else 0
         
@@ -802,6 +817,10 @@ def generate_custom_feed(request):
         logger.warning(f"Invalid token format received: {feed_token}")
         return HttpResponseForbidden("Invalid authentication token format.")
 
+    if not profile.last_active or profile.last_active < timezone.now() - timedelta(hours=24):
+        profile.last_active = timezone.now()
+        profile.save(update_fields=['last_active'])
+
     active_pledges = profile.active_pledges or {}
     required_cents = podcast.required_tier.minimum_cents if podcast.required_tier else 0
     camp_id = str(podcast.network.patreon_campaign_id)
@@ -933,6 +952,11 @@ def generate_mix_feed(request, unique_id):
         user_mix = get_object_or_404(UserMix, unique_id=unique_id, is_active=True)
         
         profile = user_mix.user.patron_profile
+
+        if not profile.last_active or profile.last_active < timezone.now() - timedelta(hours=24):
+            profile.last_active = timezone.now()
+            profile.save(update_fields=['last_active'])
+
         active_pledges = profile.active_pledges or {}
         
         selected_podcasts = user_mix.selected_podcasts.select_related('required_tier', 'network').all()
@@ -1203,6 +1227,10 @@ def play_episode(request, episode_id):
     if feed_token:
         profile = PatronProfile.objects.filter(feed_token=feed_token).first()
         if profile:
+            if not profile.last_active or profile.last_active < timezone.now() - timedelta(hours=24):
+                profile.last_active = timezone.now()
+                profile.save(update_fields=['last_active'])
+
             req_cents = ep.podcast.required_tier.minimum_cents if ep.podcast.required_tier else 0
             camp_id = str(ep.podcast.network.patreon_campaign_id)
             user_cents = profile.active_pledges.get(camp_id, 0) if profile.active_pledges else 0

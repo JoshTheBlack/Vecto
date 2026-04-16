@@ -1,4 +1,5 @@
 import uuid, os, base64, logging
+from decimal import Decimal
 from django.db import models
 from django.contrib.auth.models import User
 from django.core.files.base import ContentFile
@@ -101,6 +102,10 @@ class Network(models.Model):
         default='default', 
         help_text="The script in pod_manager/ingesters/ to use. Default is 'default'."
     )
+
+    # Billing Configuration
+    base_cost = models.DecimalField(max_digits=10, decimal_places=2, default=Decimal('0.00'), help_text="Flat monthly platform fee")
+    per_user_cost = models.DecimalField(max_digits=10, decimal_places=2, default=Decimal('0.00'), help_text="Cost per active 30-day patron")
 
     def __str__(self):
         return self.name
@@ -290,6 +295,7 @@ class PatronProfile(models.Model):
     
     last_sync = models.DateTimeField(auto_now=True)
     feed_token = models.UUIDField(default=uuid.uuid4, editable=False, unique=True)
+    last_active = models.DateTimeField(auto_now_add=True)
 
     def __str__(self):
         return f"{self.user.email} - Profile"
@@ -306,3 +312,13 @@ def auto_delete_file_on_delete(sender, instance, **kwargs):
             logger.debug(f"Deleted physical file for UserMix: {instance.image_upload.name}")
         except Exception as e:
             logger.error(f"Failed to delete physical file {instance.image_upload.name}: {e}", exc_info=True)
+
+class Invoice(models.Model):
+    network = models.ForeignKey(Network, on_delete=models.CASCADE, related_name='invoices')
+    created_at = models.DateTimeField(auto_now_add=True)
+    active_user_count = models.IntegerField(default=0)
+    amount_due = models.DecimalField(max_digits=10, decimal_places=2)
+    pdf_file = models.FileField(upload_to='invoices/')
+    
+    def __str__(self):
+        return f"{self.network.name} - {self.created_at.strftime('%Y-%m')}"

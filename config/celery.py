@@ -18,4 +18,8 @@ app.conf.beat_schedule = {
         'task': 'pod_manager.tasks.task_clean_mix_images',
         'schedule': crontab(hour=3, minute=0), # Run at 3:00 AM
     },
+    'generate-invoices-first-of-month': {
+        'task': 'pod_manager.tasks.task_generate_monthly_invoices',
+        'schedule': crontab(day_of_month='1', hour=0, minute=0), 
+    },
 }

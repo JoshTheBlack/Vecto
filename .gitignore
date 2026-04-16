@@ -16,6 +16,7 @@ db.sqlite3-shm
 # Local Dev Hacks
 .feed_cache/
 mix_covers/
+invoices/
 
 # IDE settings
 .vscode/

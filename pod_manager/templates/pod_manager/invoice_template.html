@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <style>
+        body { font-family: 'Helvetica', sans-serif; color: #333; margin: 40px; }
+        .header { display: flex; justify-content: space-between; border-bottom: 2px solid #ccc; padding-bottom: 20px; }
+        .invoice-details { margin-top: 40px; }
+        table { width: 100%; border-collapse: collapse; margin-top: 20px; }
+        th, td { padding: 12px; text-align: left; border-bottom: 1px solid #ddd; }
+        .total-row { font-weight: bold; font-size: 1.2em; border-top: 2px solid #333; }
+        .no-tax { color: #666; font-size: 0.9em; margin-top: 30px; font-style: italic; }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>Vecto Platform Invoice</h1>
+        <div>
+            <p><strong>Date:</strong> {{ date|date:"F d, Y" }}</p>
+            <p><strong>Billed To:</strong> {{ network.name }}</p>
+        </div>
+    </div>
+
+    <div class="invoice-details">
+        <table>
+            <thead>
+                <tr>
+                    <th>Description</th>
+                    <th>Quantity</th>
+                    <th>Rate</th>
+                    <th>Amount</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td>Platform Base Fee</td>
+                    <td>1</td>
+                    <td>${{ network.base_cost }}</td>
+                    <td>${{ network.base_cost }}</td>
+                </tr>
+                <tr>
+                    <td>Active Listeners (30-Day Active)</td>
+                    <td>{{ active_count }}</td>
+                    <td>${{ network.per_user_cost }}</td>
+                    <td>${{ active_user_cost }}</td>
+                </tr>
+                <tr class="total-row">
+                    <td colspan="3" style="text-align: right;">Total Due:</td>
+                    <td>${{ total_due }}</td>
+                </tr>
+            </tbody>
+        </table>
+    </div>
+
+    <p class="no-tax">* Vecto is a SaaS platform providing software hosting. Pursuant to Georgia state tax codes, this service is tax-exempt.</p>
+</body>
+</html>

@@ -466,18 +466,20 @@ def creator_settings(request):
             public_feed_url = request.POST.get('public_feed_url')
             subscriber_feed_url = request.POST.get('subscriber_feed_url')
             tier_id = request.POST.get('tier_id')
-            if tier_id:
-                valid_tier = get_object_or_404(PatreonTier, id=tier_id, network=network)
-                show.required_tier = valid_tier
-            else:
-                show.required_tier = None
 
             try:
                 new_show = Podcast(
                     network=network, title=title, slug=slug,
                     public_feed_url=public_feed_url, subscriber_feed_url=subscriber_feed_url,
                 )
-                if tier_id: new_show.required_tier_id = tier_id
+                
+                # Check tier logic AFTER creating the object
+                if tier_id:
+                    valid_tier = get_object_or_404(PatreonTier, id=tier_id, network=network)
+                    new_show.required_tier = valid_tier
+                else:
+                    new_show.required_tier = None
+                    
                 new_show.save()
                 
                 out = io.StringIO()

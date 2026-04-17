@@ -3,7 +3,6 @@ from celery import shared_task
 from django.core.cache import cache
 from django.core.management import call_command
 from pod_manager.models import Network
-from pod_manager.views import sync_network_patrons, invalidate_show_cache
 from django.utils import timezone
 from datetime import timedelta
 from django.core.files.base import ContentFile
@@ -52,6 +51,7 @@ def task_smart_poll_feeds():
 
 @shared_task
 def task_ingest_feed(show_id):
+    from pod_manager.views import invalidate_show_cache
     task_id = f"import_logs_{show_id}"
     stream = CacheLogStream(task_id)
     try:
@@ -106,6 +106,7 @@ def task_generate_monthly_invoices():
 
 @shared_task
 def task_sync_network_patrons(network_id):
+    from pod_manager.views import sync_network_patrons
     try:
         network = Network.objects.get(id=network_id)
         count, error = sync_network_patrons(network)

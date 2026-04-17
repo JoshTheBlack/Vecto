@@ -38,6 +38,7 @@ from podgen import Podcast as PodgenPodcast, Episode as PodgenEpisode, Media, Pe
 from lxml import etree
 
 from .models import PatronProfile, Podcast, Episode, Network, PatreonTier, UserMix
+from .tasks import task_ingest_feed
 
 warnings.filterwarnings("ignore", message=".*Image URL must end with.*")
 warnings.filterwarnings("ignore", message=".*Size is set to 0.*")
@@ -1258,53 +1259,14 @@ def play_episode(request, episode_id):
 # ==========================================
 # BACKGROUND QUEUE & IMPORT STREAMING
 # ==========================================
-feed_import_queue = queue.Queue()
-
-class CacheLogStream(io.StringIO):
-    def __init__(self, task_id):
-        super().__init__()
-        self.task_id = task_id
-        self.buffer = ""
-
-    def write(self, s):
-        super().write(s)
-        self.buffer += s
-        formatted_chunk = "".join([f"data: {line}\n\n" for line in s.splitlines() if line])
-        
-        current_logs = cache.get(self.task_id, "")
-        cache.set(self.task_id, current_logs + formatted_chunk, timeout=3600)
-        
-def feed_import_worker():
-    logger.info("[WORKER] Background feed_import_worker thread started.")
-    while True:
-        show_id, task_id = feed_import_queue.get()
-        stream = CacheLogStream(task_id)
-        
-        try:
-            logger.info(f"[WORKER] Acquired task: Ingesting show_id={show_id}")
-            stream.write("\n[SYSTEM] Worker acquired task. Starting ingestion...\n")
-            call_command('ingest_feed', show_id, stdout=stream, stderr=stream, no_color=True)
-            invalidate_show_cache(show_id) 
-            logger.info(f"[WORKER] Successfully completed task for show_id={show_id}")
-        except Exception as e:
-            logger.error(f"[WORKER] Task failed for show_id={show_id}: {str(e)}", exc_info=True)
-            stream.write(f"\n[ERROR] {str(e)}\n")
-        finally:
-            stream.write("[DONE]")
-            feed_import_queue.task_done()
-
-
-threading.Thread(target=feed_import_worker, daemon=True).start()
 
 @login_required(login_url='/login/')
 def stream_feed_import(request, show_id):
     task_id = f"import_logs_{show_id}"
-    logger.debug(f"User {request.user.username} initiated log stream for show_id={show_id}")
     
     if not cache.get(task_id):
-        logger.info(f"Queuing new import task for show_id={show_id}")
-        cache.set(task_id, "data: [QUEUED] Waiting for database availability...\n\n", timeout=3600)
-        feed_import_queue.put((show_id, task_id))
+        cache.set(task_id, "data: [QUEUED] Waiting for Celery worker...\n\n", timeout=3600)
+        task_ingest_feed.delay(show_id)
 
     def event_stream():
         last_length = 0

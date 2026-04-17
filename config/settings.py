@@ -35,19 +35,15 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 SECRET_KEY = os.getenv("DJANGO_SECRET_KEY")
 
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = True
+DEBUG = os.getenv('DEBUG', 'False') == 'True'
 
-ALLOWED_HOSTS = ['localhost',
-    '127.0.0.1',
-    '.ngrok-free.dev', # Allows any subdomain from ngrok-free.dev
-    '.ngrok.app',
-    '.local',]
+ALLOWED_HOSTS = ['.joshtheblack.com', 'localhost', '127.0.0.1', '.baldmove.com']
 
 SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
 
 CSRF_TRUSTED_ORIGINS = [
-    'https://*.ngrok-free.dev',
-    'https://*.ngrok.app',
+    'https://*.joshtheblack.com',
+    'https://*.baldmove.com',
 ]
 
 # Application definition
@@ -67,6 +63,7 @@ CRYPTOGRAPHY_KEY = os.environ.get('DJANGO_CRYPTOGRAPHY_KEY', 'generate-a-secure-
 
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
+    'whitenoise.middleware.WhiteNoiseMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
@@ -98,7 +95,7 @@ WSGI_APPLICATION = 'config.wsgi.application'
 
 
 # Database
-
+"""
 DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.sqlite3',
@@ -110,19 +107,17 @@ DATABASES = {
         }
     }
 }
-
-#DATABASES = {
-#    'default': {
-#        'ENGINE': 'django.db.backends.postgresql',
-#        'NAME': os.getenv('POSTGRES_DB', 'vecto'),
-#        'USER': os.getenv('POSTGRES_USER', 'vecto_user'),
-#        'PASSWORD': os.getenv('POSTGRES_PASSWORD', 'vecto_pass'),
-#        'HOST': os.getenv('POSTGRES_HOST', 'db'),
-#        'PORT': os.getenv('POSTGRES_PORT', '5432'),
-#    }
-#}
-
-
+"""
+DATABASES = {
+    'default': {
+        'ENGINE': 'django.db.backends.postgresql',
+        'NAME': os.getenv('POSTGRES_DB', 'vecto'),
+        'USER': os.getenv('POSTGRES_USER', 'vecto_user'),
+        'PASSWORD': os.getenv('POSTGRES_PASSWORD', 'vecto_pass'),
+        'HOST': os.getenv('POSTGRES_HOST', 'db'),
+        'PORT': os.getenv('POSTGRES_PORT', '5432'),
+    }
+}
 
 # settings.py
 REDIS_URL = os.getenv("REDIS_URL")
@@ -178,6 +173,7 @@ STATIC_ROOT = BASE_DIR / 'staticfiles'
 STATICFILES_DIRS = [
     BASE_DIR / "pod_manager" / "static",
 ]
+STATICFILES_STORAGE = 'whitenoise.storage.CompressedManifestStaticFilesStorage'
 # ==========================================
 # MEDIA SETTINGS (For User Uploads)
 # ==========================================
@@ -236,7 +232,7 @@ LOGGING = {
     },
 }
 
-"""
+
 # Celery Configuration
 CELERY_BROKER_URL = os.getenv("REDIS_URL", "redis://redis:6379/0")
 CELERY_RESULT_BACKEND = os.getenv("REDIS_URL", "redis://redis:6379/0")
@@ -246,4 +242,3 @@ CELERY_TIMEZONE = TIME_ZONE
 
 # Django Celery Beat for Scheduled Tasks
 INSTALLED_APPS += ['django_celery_beat']
-"""

@@ -1,5 +1,6 @@
 import logging
 from celery import shared_task
+from django.core.cache import cache
 from django.core.management import call_command
 from pod_manager.models import Network
 from pod_manager.views import sync_network_patrons, invalidate_show_cache
@@ -8,22 +9,64 @@ from datetime import timedelta
 from django.core.files.base import ContentFile
 from django.template.loader import render_to_string
 import pdfkit
+import platform
+from .models import Network, PatronProfile, Invoice, Podcast
+import io
+from datetime import timedelta
 
-from .models import Network, PatronProfile, Invoice
 
 logger = logging.getLogger(__name__)
+
+class CacheLogStream(io.StringIO):
+    def __init__(self, task_id):
+        super().__init__()
+        self.task_id = task_id
+        self.buffer = ""
+
+    def write(self, s):
+        super().write(s)
+        self.buffer += s
+        formatted_chunk = "".join([f"data: {line}\n\n" for line in s.splitlines() if line])
+        current_logs = cache.get(self.task_id, "")
+        cache.set(self.task_id, current_logs + formatted_chunk, timeout=3600)
+
+@shared_task
+def task_smart_poll_feeds():
+    logger.info("Starting smart feed poll...")
+    podcasts = Podcast.objects.all()
+    now = timezone.now()
+    
+    for podcast in podcasts:
+        latest_ep = podcast.episodes.order_by('-pub_date').first()
+        is_active = False
+        
+        # If the newest episode is less than 14 days old, it is "Active"
+        if latest_ep and latest_ep.pub_date >= now - timedelta(days=14):
+            is_active = True
+            
+        # If Active: queue it every time this runs (every 15 mins).
+        # If Inactive: only queue it if we are in the first 15 mins of the hour (once an hour).
+        if is_active or now.minute < 15:
+            logger.info(f"Queuing update for {podcast.title} (Active: {is_active})")
+            task_ingest_feed.delay(podcast.id)
+
+@shared_task
+def task_ingest_feed(show_id):
+    task_id = f"import_logs_{show_id}"
+    stream = CacheLogStream(task_id)
+    try:
+        stream.write("\n[SYSTEM] Celery worker acquired task. Starting ingestion...\n")
+        call_command('ingest_feed', show_id, stdout=stream, stderr=stream, no_color=True)
+    except Exception as e:
+        stream.write(f"\n[ERROR] {str(e)}\n")
+    finally:
+        stream.write("[DONE]")
 
 @shared_task
 def task_generate_monthly_invoices():
     logger.info("Starting monthly invoice generation...")
     networks = Network.objects.filter(patreon_sync_enabled=True)
     thirty_days_ago = timezone.now() - timedelta(days=30)
-
-    # --- Windows Configuration for pdfkit ---
-    # Update this path if you installed it somewhere else!
-    path_wkhtmltopdf = r'C:\Program Files\wkhtmltopdf\bin\wkhtmltopdf.exe'
-    config = pdfkit.configuration(wkhtmltopdf=path_wkhtmltopdf)
-    # ----------------------------------------
 
     for network in networks:
         # Dynamically count users (Active + Lapsed bandwidth users)
@@ -48,8 +91,12 @@ def task_generate_monthly_invoices():
             'date': timezone.now()
         })
 
-        # Generate PDF using pdfkit
-        pdf_bytes = pdfkit.from_string(html_string, False, configuration=config)
+        if platform.system() == 'Windows':
+            path_wkhtmltopdf = r'C:\Program Files\wkhtmltopdf\bin\wkhtmltopdf.exe'
+            config = pdfkit.configuration(wkhtmltopdf=path_wkhtmltopdf)
+            pdf_bytes = pdfkit.from_string(html_string, False, configuration=config)
+        else:
+            pdf_bytes = pdfkit.from_string(html_string, False)
 
         invoice = Invoice(network=network, amount_due=total_due, active_user_count=active_count)
         filename = f"{network.slug}_invoice_{timezone.now().strftime('%Y_%m')}.pdf"
@@ -75,16 +122,6 @@ def task_sync_all_networks():
     networks = Network.objects.filter(patreon_sync_enabled=True)
     for network in networks:
         task_sync_network_patrons.delay(network.id)
-
-@shared_task
-def task_ingest_feed(show_id):
-    logger.info(f"Starting background ingestion for show_id={show_id}")
-    try:
-        call_command('ingest_feed', show_id, no_color=True)
-        invalidate_show_cache(show_id)
-        logger.info(f"Successfully ingested show_id={show_id}")
-    except Exception as e:
-        logger.error(f"Ingestion failed for show_id={show_id}: {str(e)}", exc_info=True)
 
 @shared_task
 def task_clean_mix_images():

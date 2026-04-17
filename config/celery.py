@@ -10,16 +10,16 @@ app.autodiscover_tasks()
 
 # Celery Beat Schedule
 app.conf.beat_schedule = {
-    'sync-all-patrons-hourly': {
-        'task': 'pod_manager.tasks.task_sync_all_networks',
-        'schedule': crontab(minute=0), # Run every hour at minute 0
+    'smart-feed-polling': {
+        'task': 'pod_manager.tasks.task_smart_poll_feeds',
+        'schedule': crontab(minute='*/15'),
     },
-    'clean-mix-images-nightly': {
-        'task': 'pod_manager.tasks.task_clean_mix_images',
-        'schedule': crontab(hour=3, minute=0), # Run at 3:00 AM
+    'sync-patreon-daily': {
+        'task': 'pod_manager.tasks.task_sync_all_networks',
+        'schedule': crontab(hour=2, minute=0),
     },
     'generate-invoices-first-of-month': {
         'task': 'pod_manager.tasks.task_generate_monthly_invoices',
-        'schedule': crontab(day_of_month='1', hour=0, minute=0), 
+        'schedule': crontab(day_of_month='1', hour=0, minute=0),
     },
 }

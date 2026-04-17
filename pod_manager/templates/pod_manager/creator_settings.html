@@ -399,6 +399,25 @@ function startLiveImport(showId) {
     };
 }
 
+document.addEventListener('DOMContentLoaded', function() {
+    const urlParams = new URLSearchParams(window.location.search);
+    const autoImportId = urlParams.get('auto_import');
+    
+    if (autoImportId) {
+        setTimeout(() => {
+            const collapseElement = document.getElementById(`collapse-${autoImportId}`);
+            if (collapseElement) {
+                const bsCollapse = new bootstrap.Collapse(collapseElement, {toggle: false});
+                bsCollapse.show();
+                
+                startLiveImport(autoImportId);
+                
+                window.history.replaceState({}, document.title, window.location.pathname + "?network=" + urlParams.get('network'));
+            }
+        }, 500);
+    }
+});
+
 function startAllLiveImports() {
     const importButtons = document.querySelectorAll('[id^="btn-import-"]');
     importButtons.forEach(btn => {

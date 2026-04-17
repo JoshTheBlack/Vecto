@@ -472,7 +472,6 @@ def creator_settings(request):
                     public_feed_url=public_feed_url, subscriber_feed_url=subscriber_feed_url,
                 )
                 
-                # Check tier logic AFTER creating the object
                 if tier_id:
                     valid_tier = get_object_or_404(PatreonTier, id=tier_id, network=network)
                     new_show.required_tier = valid_tier
@@ -481,14 +480,13 @@ def creator_settings(request):
                     
                 new_show.save()
                 
-                # Trigger Celery in the background instantly!
-                task_ingest_feed.delay(new_show.id)
-                messages.success(request, f"Show '{title}' added! The feed is now importing in the background.")
+                # Redirect with an 'auto_import' flag in the URL!
+                messages.success(request, f"Show '{title}' added! Starting live ingestion...")
+                return redirect(f"{reverse('creator_settings')}?network={network.slug}&auto_import={new_show.id}")
                 
             except Exception as e:
                 messages.error(request, f"Error adding show: {str(e)}")
-                
-            return redirect(f"{reverse('creator_settings')}?network={network.slug}")
+                return redirect(f"{reverse('creator_settings')}?network={network.slug}")
 
         elif action == 'run_manual_sync':
             network_id = request.POST.get('network_id')

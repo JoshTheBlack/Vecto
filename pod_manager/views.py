@@ -7,9 +7,8 @@ a background task queue for importing podcast feeds.
 import logging
 import hashlib
 import hmac
-import io
 import json
-import queue
+import asyncio
 import threading
 import time
 import urllib.parse
@@ -482,15 +481,10 @@ def creator_settings(request):
                     
                 new_show.save()
                 
-                out = io.StringIO()
-                try:
-                    call_command('ingest_feed', new_show.id, stdout=out, stderr=out)
-                    messages.success(request, f"Show '{title}' added and feed successfully imported!")
-                    messages.info(request, out.getvalue(), extra_tags="log")
-                except Exception as e:
-                    messages.warning(request, f"Show '{title}' added, but automatic import failed: {str(e)}")
-                    if out.getvalue():
-                        messages.error(request, out.getvalue(), extra_tags="log")
+                # Trigger Celery in the background instantly!
+                task_ingest_feed.delay(new_show.id)
+                messages.success(request, f"Show '{title}' added! The feed is now importing in the background.")
+                
             except Exception as e:
                 messages.error(request, f"Error adding show: {str(e)}")
                 
@@ -1270,10 +1264,12 @@ def stream_feed_import(request, show_id):
         cache.set(task_id, "data: [QUEUED] Waiting for Celery worker...\n\n", timeout=3600)
         task_ingest_feed.delay(show_id)
 
-    def event_stream():
+    # By making this async, Hypercorn can stream it instantly without buffering!
+    async def event_stream():
         last_length = 0
         while True:
-            logs = cache.get(task_id, "")
+            # We use Django's native async .aget() instead of .get()
+            logs = await cache.aget(task_id, "")
             
             if len(logs) > last_length:
                 new_logs = logs[last_length:]
@@ -1282,9 +1278,10 @@ def stream_feed_import(request, show_id):
                 
                 if "[DONE]" in new_logs:
                     logger.debug(f"Stream complete for task {task_id}. Closing connection.")
-                    cache.delete(task_id)
+                    await cache.adelete(task_id) # async delete
                     break
                     
-            time.sleep(0.5)
+            # Awaitable sleep gives control back to the server so it doesn't freeze
+            await asyncio.sleep(0.5)
 
     return StreamingHttpResponse(event_stream(), content_type='text/event-stream')

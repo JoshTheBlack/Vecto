@@ -120,7 +120,8 @@ DATABASES = {
 }
 
 # settings.py
-REDIS_URL = os.getenv("REDIS_URL")
+RAW_REDIS_URL = os.getenv("REDIS_URL")
+REDIS_URL = RAW_REDIS_URL if RAW_REDIS_URL else "redis://redis:6379/0"
 
 if REDIS_URL:
     CACHES = {

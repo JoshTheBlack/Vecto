@@ -7,10 +7,18 @@ ENV PYTHONUNBUFFERED=1
 WORKDIR /app
 
 # Install system dependencies (wkhtmltopdf for invoices, libpq-dev for postgres)
+# wkhtmltopdf was removed from Debian bookworm repos — install from official release
 RUN apt-get update && apt-get install -y \
     gcc \
     libpq-dev \
-    wkhtmltopdf \
+    wget \
+    fontconfig \
+    libxrender1 \
+    xfonts-75dpi \
+    xfonts-base \
+    && wget -q https://github.com/wkhtmltopdf/packaging/releases/download/0.12.6.1-3/wkhtmltox_0.12.6.1-3.bookworm_amd64.deb \
+    && apt-get install -y ./wkhtmltox_0.12.6.1-3.bookworm_amd64.deb \
+    && rm wkhtmltox_0.12.6.1-3.bookworm_amd64.deb \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt /app/

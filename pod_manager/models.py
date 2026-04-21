@@ -167,7 +167,10 @@ class Podcast(models.Model):
 class Episode(models.Model):
     """An individual episode harvested from a feed."""
     podcast = models.ForeignKey(Podcast, on_delete=models.CASCADE, related_name='episodes')
-    guid = models.TextField() # Unique ID from the RSS feed
+    guid_public = models.TextField(blank=True, null=True, db_index=True)
+    guid_private = models.TextField(blank=True, null=True, db_index=True)
+    is_metadata_locked = models.BooleanField(default=False, help_text="If checked, future feed ingests will ONLY update the audio URLs. Title, Description, and Dates will not be overwritten.")
+    
     title = models.TextField()
     pub_date = models.DateTimeField()
     
@@ -193,8 +196,10 @@ class Episode(models.Model):
     class Meta:
         indexes = [
             models.Index(fields=['podcast', '-pub_date']),
+            models.Index(fields=['podcast', 'guid_public']),
+            models.Index(fields=['podcast', 'guid_private']),
         ]
-        unique_together = ('podcast', 'guid')
+        ordering = ['-pub_date']
     
     def __str__(self):
         # This will show "Podcast Title | Episode Title"

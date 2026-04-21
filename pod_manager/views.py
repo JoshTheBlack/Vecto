@@ -1022,7 +1022,7 @@ def generate_public_feed(request, podcast_slug):
                 title=ep.title,
                 # Use the new router URL
                 media=Media(url=audio_url, size=0, type="audio/mpeg", duration=parse_duration(ep.duration)),
-                id=ep.guid,
+                id=ep.guid_public or ep.guid_private or str(ep.id),
                 publication_date=ep.pub_date,
                 summary=assembled_desc, 
             ))
@@ -1104,7 +1104,7 @@ def generate_mix_feed(request, unique_id):
                 assembled_desc += "<br><br>" + "<br><br>".join(footer_parts)
 
             feed.episodes.append(PodgenEpisode(
-                id=ep.guid,
+                id=ep.guid_public or ep.guid_private or str(ep.id),
                 title=display_title,
                 summary=assembled_desc, 
                 publication_date=ep.pub_date,
@@ -1211,7 +1211,7 @@ def generate_network_mix_feed(request, network_slug, mix_slug):
             ep_duration = parse_duration(ep.duration) if ep.duration else None
 
             feed.episodes.append(PodgenEpisode(
-                id=ep.guid,
+                id=ep.guid_public or ep.guid_private or str(ep.id),
                 title=display_title,
                 summary=assembled_desc, 
                 publication_date=ep.pub_date,

@@ -1,22 +1,10 @@
 import time
 import re
-import hashlib
 import requests
 import logging
-from datetime import datetime
 from bs4 import BeautifulSoup
-from django.utils.timezone import make_aware
-from pod_manager.models import Episode
 
-from .default import (
-    get_slug,
-    get_fingerprint,
-    is_robust_title_match,
-    get_enclosure,
-    clean_html_description,
-    get_cached_feed,
-    extract_rss_chapters
-)
+from .default import run_ingest as default_run_ingest
 
 logger = logging.getLogger(__name__)
 
@@ -134,282 +122,43 @@ def parse_html_chapters(html_description):
             
     return None
 
-def run_ingest(podcast, stdout):
-    logger.info(f"Starting Ingest Strategy for podcast: {podcast.title} (ID: {podcast.id})")
-    stdout.write(f"--- Harvesting: {podcast.title} ---")
-
-    sub_data = None
-    if podcast.subscriber_feed_url:
-        sub_data = get_cached_feed(podcast.subscriber_feed_url, "PRIVATE", stdout)
-        if hasattr(sub_data, 'status') and sub_data.status == 401:
-            logger.error(f"Auth Failed on Private Feed for podcast: {podcast.title}")
-            stdout.write("[ERROR] Auth Failed on Private Feed.")
-            return
-
-    public_data = None
-    if podcast.public_feed_url:
-        public_data = get_cached_feed(podcast.public_feed_url, "PUBLIC", stdout)
-
-    # 3. Dynamic Title & Artwork Extraction
-    feed_image = ""
-    feed_title = ""
-    source_data = public_data if public_data else sub_data
+def baldmove_enhancer(episode, pub_entry, sub_entry, is_new, stdout):
+    """
+    Custom network logic executed during commit_episode, just before saving to the DB.
+    """
+    # 1. Chapters fallback to HTML scraping
+    if pub_entry and not episode.chapters_public:
+        html_chaps = parse_html_chapters(getattr(pub_entry, 'description', ''))
+        if html_chaps:
+            episode.chapters_public = html_chaps
+            stdout.write("  -> Scraped HTML Chapters (Public)")
+            
+    if sub_entry and not episode.chapters_private:
+        html_chaps = parse_html_chapters(getattr(sub_entry, 'description', ''))
+        if html_chaps:
+            episode.chapters_private = html_chaps
+            stdout.write("  -> Scraped HTML Chapters (Private)")
+            
+    # 2. Tags extraction
+    pub_tags = get_feed_tags(pub_entry) if pub_entry else []
+    priv_tags = get_feed_tags(sub_entry) if sub_entry else []
     
-    if source_data and hasattr(source_data, 'feed'):
-        # Image extraction
-        if 'image' in source_data.feed:
-            feed_image = source_data.feed.image.get('href') or source_data.feed.image.get('url', '')
-        if not feed_image and 'itunes_image' in source_data.feed:
-            feed_image = source_data.feed.itunes_image.get('href', '')
-            
-        # Title extraction
-        feed_title = source_data.feed.get('title', '')
-
-    needs_save = False
-
-    # Process and Update Title
-    if feed_title:
-        cleaned_title = feed_title
-        if podcast.network.ignored_title_tags:
-            tags = [t.strip() for t in podcast.network.ignored_title_tags.split(',') if t.strip()]
-            for tag in tags:
-                # Case-insensitive removal of the ignored tag
-                pattern = re.compile(re.escape(tag), re.IGNORECASE)
-                cleaned_title = pattern.sub('', cleaned_title)
+    combined_tags = pub_tags + priv_tags
+    merged_tags = list({t.lower(): t for t in combined_tags}.values())
+    
+    # Only scrape tags from web if we don't have them, AND it's a brand new episode
+    if is_new and not merged_tags and episode.link:
+        scraped = scrape_tags_from_wp(episode.link, stdout)
+        if scraped:
+            merged_tags = scraped
+            stdout.write(f"  -> Web Scraped Tags: {merged_tags}")
+        time.sleep(0.2)
+    elif is_new and merged_tags:
+        stdout.write(f"  -> RSS Tags Extracted: {merged_tags}")
         
-        # Clean up any leftover double-spaces or trailing spaces
-        cleaned_title = " ".join(cleaned_title.split())
-        
-        if cleaned_title and podcast.title != cleaned_title:
-            logger.info(f"Updating podcast title from '{podcast.title}' to '{cleaned_title}'")
-            podcast.title = cleaned_title
-            stdout.write(f"  [Title Updated]: {cleaned_title}")
-            needs_save = True
+    if merged_tags:
+        episode.tags = merged_tags
 
-    # Process and Update Artwork
-    if feed_image and podcast.image_url != feed_image:
-        logger.info(f"Updating podcast artwork for {podcast.title} to {feed_image}")
-        podcast.image_url = feed_image
-        stdout.write(f"  [Artwork Captured]: {feed_image}")
-        needs_save = True
-
-    # Save the database record only once if anything changed
-    if needs_save:
-        podcast.save()
-
-    private_pool = {}
-    unmatched_private_audios = set()
-    if sub_data:
-        for entry in sub_data.entries:
-            audio_url = get_enclosure(entry)
-            if audio_url: 
-                private_pool[audio_url] = entry
-        unmatched_private_audios = set(private_pool.keys())
-            
-    public_entries_list = list(public_data.entries) if public_data else []
-    unmatched_public_indices = set(range(len(public_entries_list)))
-    matched_pairs = {} 
-
-    for i in list(unmatched_public_indices):
-        pub_entry = public_entries_list[i]
-        p_slug = get_slug(getattr(pub_entry, 'link', None))
-        p_id = getattr(pub_entry, 'id', None)
-        
-        for priv_audio in list(unmatched_private_audios):
-            priv_entry = private_pool[priv_audio]
-            s_slug = get_slug(getattr(priv_entry, 'link', None))
-            s_id = getattr(priv_entry, 'id', None)
-            
-            if p_slug and s_slug and p_slug == s_slug:
-                matched_pairs[i] = (priv_audio, "Link Match")
-                unmatched_public_indices.remove(i)
-                unmatched_private_audios.remove(priv_audio)
-                break
-            elif p_id and s_id and p_id == s_id:
-                matched_pairs[i] = (priv_audio, "GUID Match")
-                unmatched_public_indices.remove(i)
-                unmatched_private_audios.remove(priv_audio)
-                break
-
-    for i in list(unmatched_public_indices):
-        pub_entry = public_entries_list[i]
-        p_fp = get_fingerprint(getattr(pub_entry, 'title', ''), podcast.network)
-        
-        for priv_audio in list(unmatched_private_audios):
-            priv_entry = private_pool[priv_audio]
-            s_fp = get_fingerprint(getattr(priv_entry, 'title', ''), podcast.network)
-            
-            if p_fp and s_fp and p_fp == s_fp:
-                matched_pairs[i] = (priv_audio, "Exact Title Match")
-                unmatched_public_indices.remove(i)
-                unmatched_private_audios.remove(priv_audio)
-                break
-
-    for i in list(unmatched_public_indices):
-        pub_entry = public_entries_list[i]
-        p_title = getattr(pub_entry, 'title', '')
-        
-        for priv_audio in list(unmatched_private_audios):
-            priv_entry = private_pool[priv_audio]
-            s_title = getattr(priv_entry, 'title', '')
-            
-            is_match, reason = is_robust_title_match(p_title, s_title, podcast.network)
-            if is_match:
-                matched_pairs[i] = (priv_audio, reason)
-                unmatched_public_indices.remove(i)
-                unmatched_private_audios.remove(priv_audio)
-                break
-
-    count = 0
-    matches = 0
-    exclusive_count = 0
-
-    for i, entry in enumerate(public_entries_list):
-        if hasattr(entry, 'published_parsed') and entry.published_parsed:
-            dt = make_aware(datetime.fromtimestamp(time.mktime(entry.published_parsed)))
-        else:
-            dt = make_aware(datetime.now())
-
-        public_audio = get_enclosure(entry)
-        entry_title = getattr(entry, 'title', 'Untitled Episode')
-        raw_desc = getattr(entry, 'description', '')
-        duration_val = entry.get('itunes_duration', '')
-        pub_link = getattr(entry, 'link', '')
-        
-        pub_tags = get_feed_tags(entry)
-        priv_tags = []
-        
-        entry_guid = getattr(entry, 'id', None)
-        if not entry_guid:
-            fallback_string = f"{entry_title}-{dt.timestamp()}-{public_audio}"
-            entry_guid = hashlib.md5(fallback_string.encode('utf-8')).hexdigest()
-
-        # --- EXTRACT PUBLIC CHAPTERS ---
-        pub_chapters = extract_rss_chapters(entry)
-        if not pub_chapters:
-            pub_chapters = parse_html_chapters(raw_desc)
-            if pub_chapters: stdout.write("  -> Scraped HTML Chapters (Public)")
-
-        if match_data := matched_pairs.get(i):
-            sub_audio, reason = match_data
-            matches += 1
-            stdout.write(f"  [Matched: {reason}] {entry_title}")
-            logger.debug(f"Episode Match: '{entry_title}' -> {reason}")
-            
-            priv_entry = private_pool[sub_audio]
-            priv_link = getattr(priv_entry, 'link', '')
-            final_link = priv_link if priv_link else pub_link
-            
-            priv_tags = get_feed_tags(priv_entry)
-
-            # --- EXTRACT PRIVATE CHAPTERS ---
-            priv_raw_desc = getattr(priv_entry, 'description', '')
-            priv_chapters = extract_rss_chapters(priv_entry)
-            if not priv_chapters:
-                priv_chapters = parse_html_chapters(priv_raw_desc)
-                if priv_chapters: stdout.write("  -> Scraped HTML Chapters (Private)")
-
-        else:
-            sub_audio = None
-            reason = "Public Only (No Match)"
-            stdout.write(f"  [Public Only] {entry_title}")
-            logger.debug(f"Episode Unmatched (Public Only): '{entry_title}'")
-            final_link = pub_link
-            priv_chapters = None
-
-        final_sub_audio = sub_audio if sub_audio else public_audio
-        
-        combined_tags = pub_tags + priv_tags
-        merged_tags = list({t.lower(): t for t in combined_tags}.values())
-        
-        episode_exists = Episode.objects.filter(guid=entry_guid).exists()
-        
-        if not episode_exists and not merged_tags and final_link:
-            merged_tags = scrape_tags_from_wp(final_link, stdout)
-            if merged_tags:
-                stdout.write(f"  -> Web Scraped Tags: {merged_tags}")
-            time.sleep(0.2) 
-        elif not episode_exists and merged_tags:
-            stdout.write(f"  -> RSS Tags Extracted: {merged_tags}")
-
-        Episode.objects.update_or_create(
-            podcast=podcast, guid=entry_guid,
-            defaults={
-                'title': entry_title,
-                'pub_date': dt,
-                'link': final_link,
-                'audio_url_public': public_audio,
-                'audio_url_subscriber': final_sub_audio,
-                'raw_description': raw_desc,
-                'clean_description': clean_html_description(raw_desc, podcast.network), 
-                'duration': duration_val,
-                'match_reason': reason,
-                'tags': merged_tags,
-                'chapters_public': pub_chapters,
-                'chapters_private': priv_chapters,
-            }
-        )
-        count += 1
-
-    for priv_audio in unmatched_private_audios:
-        entry = private_pool[priv_audio]
-        
-        if hasattr(entry, 'published_parsed') and entry.published_parsed:
-            dt = make_aware(datetime.fromtimestamp(time.mktime(entry.published_parsed)))
-        else:
-            dt = make_aware(datetime.now())
-
-        entry_title = getattr(entry, 'title', 'Untitled Episode')
-        raw_desc = getattr(entry, 'description', '')
-        duration_val = entry.get('itunes_duration', '')
-        link = getattr(entry, 'link', '')
-        
-        priv_tags = get_feed_tags(entry)
-        merged_tags = list({t.lower(): t for t in priv_tags}.values())
-        
-        entry_guid = getattr(entry, 'id', None)
-        if not entry_guid:
-            fallback_string = f"{entry_title}-{dt.timestamp()}-{priv_audio}"
-            entry_guid = hashlib.md5(fallback_string.encode('utf-8')).hexdigest()
-
-        episode_exists = Episode.objects.filter(guid=entry_guid).exists()
-        
-        if not episode_exists and not merged_tags and link:
-            merged_tags = scrape_tags_from_wp(link, stdout)
-            if merged_tags:
-                stdout.write(f"  -> Web Scraped Tags: {merged_tags}")
-            time.sleep(0.2)
-        elif not episode_exists and merged_tags:
-            stdout.write(f"  -> RSS Tags Extracted: {merged_tags}")
-
-        # --- EXTRACT PRIVATE EXCLUSIVE CHAPTERS ---
-        priv_chapters = extract_rss_chapters(entry)
-        if not priv_chapters:
-            priv_chapters = parse_html_chapters(raw_desc)
-            if priv_chapters: stdout.write("  -> Scraped HTML Chapters (Private Exclusive)")
-
-        Episode.objects.update_or_create(
-            podcast=podcast, guid=entry_guid,
-            defaults={
-                'title': entry_title,
-                'pub_date': dt,
-                'link': link,
-                'audio_url_public': '', 
-                'audio_url_subscriber': priv_audio,
-                'raw_description': raw_desc,
-                'clean_description': clean_html_description(raw_desc, podcast.network), 
-                'duration': duration_val,
-                'match_reason': 'Private Exclusive',
-                'tags': merged_tags,
-                'chapters_public': None,
-                'chapters_private': priv_chapters,
-            }
-        )
-        count += 1
-        exclusive_count += 1
-        stdout.write(f"  [Private Exclusive Captured] {entry_title}")
-        logger.debug(f"Episode Unmatched (Private Exclusive): '{entry_title}'")
-
-    summary = f"Finished. Total: {count} | Matches: {matches} | Premium Exclusives: {exclusive_count}"
-    stdout.write(summary)
-    logger.info(f"Ingestion complete for {podcast.title}. Total: {count}, Matches: {matches}, Exclusives: {exclusive_count}")
+def run_ingest(podcast, stdout):
+    """Delegate entirely to the default engine, passing our custom enhancer."""
+    default_run_ingest(podcast, stdout, enhancer=baldmove_enhancer)

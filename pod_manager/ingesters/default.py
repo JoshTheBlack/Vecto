@@ -7,8 +7,10 @@ import hashlib
 import logging
 from datetime import datetime
 from urllib.parse import urlparse
+from django.utils.dateparse import parse_datetime
 from django.utils.timezone import make_aware
 from django.conf import settings
+from email.utils import parsedate_to_datetime
 from pod_manager.models import Podcast, Episode
 from difflib import SequenceMatcher
 from bs4 import BeautifulSoup
@@ -177,7 +179,75 @@ def get_cached_feed(url, feed_type, stdout):
     logger.debug(f"Saved {feed_type} feed to local disk cache: {cache_file}")
     return feedparser.parse(content)
 
-def run_ingest(podcast, stdout):
+def commit_episode(podcast, pub_entry, sub_entry, match_reason, stdout, enhancer=None):
+    """
+    Intelligently creates or updates an episode.
+    - Prevents duplicates by checking BOTH guid_public and guid_private.
+    - Prevents overwriting manual edits if is_metadata_locked is True.
+    """
+    pub_guid = getattr(pub_entry, 'id', None) if pub_entry else None
+    sub_guid = getattr(sub_entry, 'id', None) if sub_entry else None
+    
+    # 1. Anti-Zombie Lookup: Find the episode if it exists under EITHER guid
+    episode = None
+    if pub_guid:
+        episode = Episode.objects.filter(podcast=podcast, guid_public=pub_guid).first()
+    if not episode and sub_guid:
+        episode = Episode.objects.filter(podcast=podcast, guid_private=sub_guid).first()
+        
+    is_new = False
+    if not episode:
+        episode = Episode(podcast=podcast)
+        is_new = True
+        
+    # 2. Always update the routing identifiers
+    if pub_guid: episode.guid_public = pub_guid
+    if sub_guid: episode.guid_private = sub_guid
+    episode.match_reason = match_reason
+    
+    # 3. Always update audio URLs
+    if pub_entry:
+        episode.audio_url_public = get_enclosure(pub_entry) 
+    if sub_entry:
+        episode.audio_url_subscriber = get_enclosure(sub_entry)
+
+    # 4. THE METADATA LOCK
+    if not episode.is_metadata_locked:
+        source_entry = pub_entry if pub_entry else sub_entry
+        
+        episode.title = getattr(source_entry, 'title', 'Untitled Episode')
+        raw_desc = getattr(source_entry, 'description', '')
+        episode.raw_description = raw_desc
+        episode.clean_description = clean_html_description(raw_desc, podcast.network)
+        
+        # Prefer private link, fallback to public
+        priv_link = getattr(sub_entry, 'link', '') if sub_entry else ''
+        pub_link = getattr(pub_entry, 'link', '') if pub_entry else ''
+        episode.link = priv_link if priv_link else pub_link
+        
+        episode.duration = source_entry.get('itunes_duration', '') if hasattr(source_entry, 'get') else getattr(source_entry, 'itunes_duration', '')
+        
+        if hasattr(source_entry, 'published_parsed') and source_entry.published_parsed:
+            episode.pub_date = make_aware(datetime.fromtimestamp(time.mktime(source_entry.published_parsed)))
+        elif is_new:
+            episode.pub_date = make_aware(datetime.now())
+        
+        if pub_entry:
+            episode.chapters_public = extract_rss_chapters(pub_entry)
+        if sub_entry:
+            episode.chapters_private = extract_rss_chapters(sub_entry)
+
+        # 5. Execute custom network enhancements (like HTML chapters or WP scraping)
+        if enhancer:
+            enhancer(episode, pub_entry, sub_entry, is_new, stdout)
+
+    episode.save()
+    
+    status = "Created" if is_new else ("Updated [LOCKED]" if episode.is_metadata_locked else "Updated")
+    stdout.write(f"  -> [{status}] {episode.title}")
+    return episode
+
+def run_ingest(podcast, stdout, enhancer=None):
     logger.info(f"Starting Ingest Strategy for podcast: {podcast.title} (ID: {podcast.id})")
     stdout.write(f"--- Harvesting: {podcast.title} ---")
 
@@ -311,121 +381,33 @@ def run_ingest(podcast, stdout):
     matches = 0
     exclusive_count = 0
 
-    for i, entry in enumerate(public_entries_list):
-        if hasattr(entry, 'published_parsed') and entry.published_parsed:
-            dt = make_aware(datetime.fromtimestamp(time.mktime(entry.published_parsed)))
-        else:
-            dt = make_aware(datetime.now())
-
-        public_audio = get_enclosure(entry)
-        entry_title = getattr(entry, 'title', 'Untitled Episode')
-        raw_desc = getattr(entry, 'description', '')
-        duration_val = entry.get('itunes_duration', '')
+    # 1. Process all Public Entries (Matched and Unmatched)
+    for i, pub_entry in enumerate(public_entries_list):
+        sub_entry = None
+        reason = "Public Only (No Match)"
         
-        pub_link = getattr(entry, 'link', '')
-        
-        entry_guid = getattr(entry, 'id', None)
-        if not entry_guid:
-            fallback_string = f"{entry_title}-{dt.timestamp()}-{public_audio}"
-            entry_guid = hashlib.md5(fallback_string.encode('utf-8')).hexdigest()
-
-        match_data = matched_pairs.get(i)
-        if match_data:
+        if match_data := matched_pairs.get(i):
             sub_audio, reason = match_data
+            sub_entry = private_pool[sub_audio]
             matches += 1
-            stdout.write(f"  [Matched: {reason}] {entry_title}")
-            logger.debug(f"Episode Match: '{entry_title}' -> {reason}")
-            
-            priv_entry = private_pool[sub_audio]
-            priv_link = getattr(priv_entry, 'link', '')
-            final_link = priv_link if priv_link else pub_link
+            stdout.write(f"  [Matched: {reason}] {getattr(pub_entry, 'title', 'Untitled Episode')}")
+            logger.debug(f"Episode Match: '{getattr(pub_entry, 'title', '')}' -> {reason}")
         else:
-            sub_audio = None
-            reason = "Public Only (No Match)"
-            stdout.write(f"  [Public Only] {entry_title}")
-            logger.debug(f"Episode Unmatched (Public Only): '{entry_title}'")
-            final_link = pub_link
+            stdout.write(f"  [Public Only] {getattr(pub_entry, 'title', 'Untitled Episode')}")
+            logger.debug(f"Episode Unmatched (Public Only): '{getattr(pub_entry, 'title', '')}'")
 
-        final_sub_audio = sub_audio if sub_audio else public_audio
-
-        pub_chapters = extract_rss_chapters(entry)
-        
-        if match_data:
-            sub_audio, reason = match_data
-            priv_entry = private_pool[sub_audio]
-            priv_chapters = extract_rss_chapters(priv_entry)
-        else:
-            priv_chapters = None
-            
-        final_priv_chapters = priv_chapters if priv_chapters else pub_chapters
-
-        Episode.objects.update_or_create(
-            podcast=podcast, guid=entry_guid,
-            defaults={
-                'title': entry_title,
-                'pub_date': dt,
-                'link': final_link,
-                'audio_url_public': public_audio,
-                'audio_url_subscriber': final_sub_audio,
-                'raw_description': raw_desc,
-                'clean_description': clean_html_description(raw_desc, podcast.network), 
-                'duration': duration_val,
-                'match_reason': reason,
-                'chapters_public': pub_chapters,
-                'chapters_private': final_priv_chapters,
-            }
-        )
+        commit_episode(podcast, pub_entry, sub_entry, reason, stdout, enhancer)
         count += 1
 
+    # 2. Process all Private Orphans
     for priv_audio in unmatched_private_audios:
-        entry = private_pool[priv_audio]
+        sub_entry = private_pool[priv_audio]
+        stdout.write(f"  [Private Exclusive Captured] {getattr(sub_entry, 'title', 'Untitled Episode')}")
+        logger.debug(f"Episode Unmatched (Private Exclusive): '{getattr(sub_entry, 'title', '')}'")
         
-        if hasattr(entry, 'published_parsed') and entry.published_parsed:
-            dt = make_aware(datetime.fromtimestamp(time.mktime(entry.published_parsed)))
-        else:
-            dt = make_aware(datetime.now())
-
-        entry_title = getattr(entry, 'title', 'Untitled Episode')
-        raw_desc = getattr(entry, 'description', '')
-        duration_val = entry.get('itunes_duration', '')
-        link = getattr(entry, 'link', '')
-        
-        entry_guid = getattr(entry, 'id', None)
-        if not entry_guid:
-            fallback_string = f"{entry_title}-{dt.timestamp()}-{priv_audio}"
-            entry_guid = hashlib.md5(fallback_string.encode('utf-8')).hexdigest()
-
-        pub_chapters = extract_rss_chapters(entry)
-        
-        if match_data:
-            sub_audio, reason = match_data
-            priv_entry = private_pool[sub_audio]
-            priv_chapters = extract_rss_chapters(priv_entry)
-        else:
-            priv_chapters = None
-            
-        final_priv_chapters = priv_chapters if priv_chapters else pub_chapters
-
-        Episode.objects.update_or_create(
-            podcast=podcast, guid=entry_guid,
-            defaults={
-                'title': entry_title,
-                'pub_date': dt,
-                'link': link,
-                'audio_url_public': '', 
-                'audio_url_subscriber': priv_audio,
-                'raw_description': raw_desc,
-                'clean_description': clean_html_description(raw_desc, podcast.network), 
-                'duration': duration_val,
-                'match_reason': 'Private Exclusive',
-                'chapters_public': None,
-                'chapters_private': final_priv_chapters,
-            }
-        )
+        commit_episode(podcast, None, sub_entry, "Private Exclusive", stdout, enhancer)
         count += 1
         exclusive_count += 1
-        stdout.write(f"  [Private Exclusive Captured] {entry_title}")
-        logger.debug(f"Episode Unmatched (Private Exclusive): '{entry_title}'")
 
     summary = f"Finished. Total: {count} | Matches: {matches} | Premium Exclusives: {exclusive_count}"
     stdout.write(summary)

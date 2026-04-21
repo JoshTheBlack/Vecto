@@ -36,6 +36,9 @@
             <a class="list-group-item list-group-item-action border-secondary" id="list-mixes-list" data-bs-toggle="list" href="#list-mixes" role="tab">
                 <i class="bi bi-collection-play me-2"></i> Network Mixes
             </a>
+            <a class="list-group-item list-group-item-action border-secondary" id="list-merge-list" data-bs-toggle="list" href="#list-merge" role="tab">
+                <i class="bi bi-intersect me-2"></i> Merge Desk
+            </a>
             <a class="list-group-item list-group-item-action border-secondary" id="list-sync-list" data-bs-toggle="list" href="#list-sync" role="tab">
                 <i class="bi bi-people me-2"></i> Patreon Sync
             </a>
@@ -618,11 +621,210 @@
                 </div>
             </div>
 
-        </div>
-    </div>
-</div>
+            <div class="tab-pane fade" id="list-merge" role="tabpanel">
+                <div class="card shadow-sm border-secondary bg-dark mb-4">
+                    <div class="card-body">
+                        
+                        <div class="d-flex justify-content-between align-items-center mb-4 border-bottom border-secondary pb-3">
+                            <div>
+                                <h4 class="fw-bold mb-1"><i class="bi bi-intersect text-warning"></i> Data Reconciliation</h4>
+                                <p class="text-muted small mb-0">Search, Filter, Merge Orphans, and Split algorithmic errors.</p>
+                            </div>
+                            
+                            <div class="btn-group" role="group">
+                                <a href="?network={{ current_network.slug }}&merge_view=orphans&merge_q={{ merge_q|urlencode }}&merge_podcast_id={{ merge_podcast_id }}" class="btn btn-sm fw-bold {% if merge_view == 'orphans' %}btn-warning text-dark{% else %}btn-outline-secondary{% endif %}">
+                                    <i class="bi bi-link-45deg"></i> Merge Orphans
+                                </a>
+                                <a href="?network={{ current_network.slug }}&merge_view=matched&merge_q={{ merge_q|urlencode }}&merge_podcast_id={{ merge_podcast_id }}" class="btn btn-sm fw-bold {% if merge_view == 'matched' %}btn-warning text-dark{% else %}btn-outline-secondary{% endif %}">
+                                    <i class="bi bi-scissors"></i> Split Matched
+                                </a>
+                            </div>
+                        </div>
 
+                        <form method="GET" class="row gx-2 mb-4">
+                            <input type="hidden" name="network" value="{{ current_network.slug }}">
+                            <input type="hidden" name="merge_view" value="{{ merge_view }}">
+                            
+                            <div class="col-md-{% if merge_view == 'matched' %}3{% else %}4{% endif %} mb-2">
+                                <select name="merge_podcast_id" class="form-select bg-black text-warning fw-bold border-secondary" onchange="this.form.submit()">
+                                    {% for pod in network_podcasts %}
+                                        <option value="{{ pod.id }}" {% if merge_podcast_id == pod.id|stringformat:"s" %}selected{% endif %}>
+                                            {{ pod.title }}
+                                        </option>
+                                    {% endfor %}
+                                </select>
+                            </div>
+
+                            <div class="col-md-{% if merge_view == 'matched' %}6{% else %}8{% endif %} mb-2">
+                                <div class="input-group">
+                                    <span class="input-group-text bg-black border-secondary text-muted"><i class="bi bi-search"></i></span>
+                                    <input type="text" name="merge_q" value="{{ merge_q }}" class="form-control bg-black text-light border-secondary" placeholder="Search by Title, GUID, or MP3 URL...">
+                                    <button class="btn btn-secondary fw-bold" type="submit">Search</button>
+                                </div>
+                            </div>
+                            
+                            {% if merge_view == 'matched' %}
+                            <div class="col-md-3 mb-2">
+                                <select name="merge_reason" class="form-select bg-black text-light border-secondary" onchange="this.form.submit()">
+                                    <option value="">All Match Types...</option>
+                                    {% for reason in match_reasons %}
+                                        <option value="{{ reason }}" {% if merge_reason == reason %}selected{% endif %}>{{ reason }}</option>
+                                    {% endfor %}
+                                </select>
+                            </div>
+                            {% endif %}
+                        </form>
+
+                        {% if merge_view == 'orphans' %}
+                        <form method="POST" action="{% url 'creator_settings' %}">
+                            {% csrf_token %}
+                            <input type="hidden" name="action" value="merge_episodes">
+                            <input type="hidden" name="merge_podcast_id" value="{{ merge_podcast_id }}">
+
+                            <div class="row">
+                                <div class="col-md-6 border-end border-secondary">
+                                    <h6 class="text-light fw-bold mb-3 border-bottom border-secondary pb-2">
+                                        <i class="bi bi-globe me-1"></i> Public Orphans ({{ public_orphans.paginator.count }})
+                                    </h6>
+                                    
+                                    <div class="pe-2 mb-3" style="min-height: 400px;">
+                                        {% for ep in public_orphans %}
+                                        <label class="card bg-black border-secondary mb-2 cursor-pointer w-100" style="cursor: pointer;">
+                                            <div class="card-body p-2 d-flex align-items-center">
+                                                <input class="form-check-input me-3 merge-radio" type="radio" name="public_episode_id" value="{{ ep.id }}" onchange="checkMergeState()">
+                                                <div style="min-width: 0;">
+                                                    <span class="badge bg-secondary mb-1" style="font-size: 0.6rem;">{{ ep.podcast.title }}</span>
+                                                    <h6 class="text-light fw-bold mb-0 text-truncate" style="font-size: 0.9rem;" title="{{ ep.title }}">{{ ep.title }}</h6>
+                                                    <small class="text-muted d-block" style="font-size: 0.75rem;">{{ ep.pub_date|date:"M j, Y" }}</small>
+                                                </div>
+                                            </div>
+                                        </label>
+                                        {% empty %}
+                                        <div class="text-center py-5 text-muted"><small>No Public orphans found!</small></div>
+                                        {% endfor %}
+                                    </div>
+                                    
+                                    <div class="d-flex justify-content-between align-items-center border-top border-secondary pt-2">
+                                        <small class="text-muted">Pg {{ public_orphans.number }} of {{ public_orphans.paginator.num_pages }}</small>
+                                        <div class="btn-group">
+                                            {% if public_orphans.has_previous %}
+                                            <a href="?network={{ current_network.slug }}&merge_view=orphans&merge_podcast_id={{ merge_podcast_id }}&merge_q={{ merge_q|urlencode }}&pub_page={{ public_orphans.previous_page_number }}&priv_page={{ private_orphans.number }}" class="btn btn-sm btn-outline-secondary"><i class="bi bi-chevron-left"></i></a>
+                                            {% endif %}
+                                            {% if public_orphans.has_next %}
+                                            <a href="?network={{ current_network.slug }}&merge_view=orphans&merge_podcast_id={{ merge_podcast_id }}&merge_q={{ merge_q|urlencode }}&pub_page={{ public_orphans.next_page_number }}&priv_page={{ private_orphans.number }}" class="btn btn-sm btn-outline-secondary"><i class="bi bi-chevron-right"></i></a>
+                                            {% endif %}
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <div class="col-md-6">
+                                    <h6 class="text-warning fw-bold mb-3 border-bottom border-secondary pb-2">
+                                        <i class="bi bi-lock-fill me-1"></i> Premium Orphans ({{ private_orphans.paginator.count }})
+                                    </h6>
+                                    
+                                    <div class="pe-2 mb-3" style="min-height: 400px;">
+                                        {% for ep in private_orphans %}
+                                        <label class="card bg-black border-warning mb-2 cursor-pointer w-100" style="cursor: pointer;">
+                                            <div class="card-body p-2 d-flex align-items-center">
+                                                <input class="form-check-input me-3 merge-radio" type="radio" name="private_episode_id" value="{{ ep.id }}" onchange="checkMergeState()">
+                                                <div style="min-width: 0;">
+                                                    <span class="badge bg-warning text-dark mb-1" style="font-size: 0.6rem;">{{ ep.podcast.title }}</span>
+                                                    <h6 class="text-light fw-bold mb-0 text-truncate" style="font-size: 0.9rem;" title="{{ ep.title }}">{{ ep.title }}</h6>
+                                                    <small class="text-muted d-block" style="font-size: 0.75rem;">{{ ep.pub_date|date:"M j, Y" }}</small>
+                                                </div>
+                                            </div>
+                                        </label>
+                                        {% empty %}
+                                        <div class="text-center py-5 text-muted"><small>No Premium orphans found!</small></div>
+                                        {% endfor %}
+                                    </div>
+                                    
+                                    <div class="d-flex justify-content-between align-items-center border-top border-secondary pt-2">
+                                        <small class="text-muted">Pg {{ private_orphans.number }} of {{ private_orphans.paginator.num_pages }}</small>
+                                        <div class="btn-group">
+                                            {% if private_orphans.has_previous %}
+                                            <a href="?network={{ current_network.slug }}&merge_view=orphans&merge_podcast_id={{ merge_podcast_id }}&merge_q={{ merge_q|urlencode }}&pub_page={{ public_orphans.number }}&priv_page={{ private_orphans.previous_page_number }}" class="btn btn-sm btn-outline-secondary"><i class="bi bi-chevron-left"></i></a>
+                                            {% endif %}
+                                            {% if private_orphans.has_next %}
+                                            <a href="?network={{ current_network.slug }}&merge_view=orphans&merge_podcast_id={{ merge_podcast_id }}&merge_q={{ merge_q|urlencode }}&pub_page={{ public_orphans.number }}&priv_page={{ private_orphans.next_page_number }}" class="btn btn-sm btn-outline-secondary"><i class="bi bi-chevron-right"></i></a>
+                                            {% endif %}
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div class="mt-4 pt-3 border-top border-secondary text-end">
+                                <button type="submit" id="btn-execute-merge" class="btn btn-warning fw-bold" disabled>
+                                    <i class="bi bi-magic me-1"></i> Merge Selected Episodes
+                                </button>
+                            </div>
+                        </form>
+
+                        {% elif merge_view == 'matched' %}
+                        <h6 class="text-light fw-bold mb-3 border-bottom border-secondary pb-2">
+                            <i class="bi bi-check2-all me-1"></i> Matched Episodes ({{ matched_episodes.paginator.count }})
+                        </h6>
+                        
+                        <div class="list-group list-group-flush bg-black rounded border border-secondary mb-3">
+                            {% for ep in matched_episodes %}
+                            <div class="list-group-item bg-transparent text-light border-secondary d-flex justify-content-between align-items-center py-3">
+                                <div style="min-width: 0; max-width: 70%;">
+                                    <div class="d-flex align-items-center mb-1">
+                                        <span class="badge bg-secondary me-2" style="font-size: 0.6rem;">{{ ep.podcast.title }}</span>
+                                        <span class="badge bg-info text-dark" style="font-size: 0.6rem;">{{ ep.match_reason }}</span>
+                                    </div>
+                                    <h6 class="fw-bold mb-0 text-truncate" title="{{ ep.title }}">{{ ep.title }}</h6>
+                                    <small class="text-muted">{{ ep.pub_date|date:"M j, Y" }}</small>
+                                </div>
+                                
+                                <form method="POST" action="{% url 'creator_settings' %}">
+                                    {% csrf_token %}
+                                    <input type="hidden" name="action" value="split_episode">
+                                    <input type="hidden" name="episode_id" value="{{ ep.id }}">
+                                    <input type="hidden" name="merge_podcast_id" value="{{ merge_podcast_id }}">
+                                    <button type="submit" class="btn btn-sm btn-outline-danger fw-bold" onclick="return confirm('Are you sure you want to unpair this episode? It will become two separate orphans.');">
+                                        <i class="bi bi-scissors"></i> Split
+                                    </button>
+                                </form>
+                            </div>
+                            {% empty %}
+                            <div class="text-center py-5 text-muted"><small>No matched episodes found.</small></div>
+                            {% endfor %}
+                        </div>
+
+                        <div class="d-flex justify-content-between align-items-center">
+                            <small class="text-muted">Page {{ matched_episodes.number }} of {{ matched_episodes.paginator.num_pages }}</small>
+                            <div class="btn-group">
+                                {% if matched_episodes.has_previous %}
+                                <a href="?network={{ current_network.slug }}&merge_view=matched&merge_podcast_id={{ merge_podcast_id }}&merge_q={{ merge_q|urlencode }}&merge_reason={{ merge_reason|urlencode }}&match_page={{ matched_episodes.previous_page_number }}" class="btn btn-outline-secondary"><i class="bi bi-chevron-left"></i> Prev</a>
+                                {% endif %}
+                                {% if matched_episodes.has_next %}
+                                <a href="?network={{ current_network.slug }}&merge_view=matched&merge_podcast_id={{ merge_podcast_id }}&merge_q={{ merge_q|urlencode }}&merge_reason={{ merge_reason|urlencode }}&match_page={{ matched_episodes.next_page_number }}" class="btn btn-outline-secondary">Next <i class="bi bi-chevron-right"></i></a>
+                                {% endif %}
+                            </div>
+                        </div>
+                        {% endif %}
+
+                    </div>
+                </div>
+            </div>   
+        </div>   
+    </div>   
+</div>   
 <script>
+// ==========================================
+// MERGE DESK LOGIC
+// ==========================================
+function checkMergeState() {
+    const pubSelected = document.querySelector('input[name="public_episode_id"]:checked');
+    const privSelected = document.querySelector('input[name="private_episode_id"]:checked');
+    const mergeBtn = document.getElementById('btn-execute-merge');
+    if (mergeBtn) mergeBtn.disabled = !(pubSelected && privSelected);
+}
+
+// ==========================================
+// THEME CONFIG VALIDATION
+// ==========================================
 document.addEventListener('DOMContentLoaded', function() {
     const networkForm = document.getElementById('networkSettingsForm');
     if (networkForm) {
@@ -630,10 +832,8 @@ document.addEventListener('DOMContentLoaded', function() {
             const jsonTextarea = document.querySelector('textarea[name="theme_config"]');
             if (jsonTextarea && jsonTextarea.value.trim() !== '') {
                 try {
-                    // Try to natively parse it
                     JSON.parse(jsonTextarea.value);
                 } catch (error) {
-                    // If it fails, stop the form from submitting and warn the user
                     e.preventDefault();
                     alert("Invalid JSON in Theme Config:\n\n" + error.message + "\n\nPlease fix any formatting errors before saving.");
                     jsonTextarea.focus();
@@ -643,6 +843,9 @@ document.addEventListener('DOMContentLoaded', function() {
     }
 });
 
+// ==========================================
+// LIVE IMPORT STREAMING
+// ==========================================
 function startLiveImport(showId) {
     const btn = document.getElementById(`btn-import-${showId}`);
     const terminalContainer = document.getElementById(`terminal-container-${showId}`);
@@ -686,25 +889,6 @@ function startLiveImport(showId) {
     };
 }
 
-document.addEventListener('DOMContentLoaded', function() {
-    const urlParams = new URLSearchParams(window.location.search);
-    const autoImportId = urlParams.get('auto_import');
-    
-    if (autoImportId) {
-        setTimeout(() => {
-            const collapseElement = document.getElementById(`collapse-${autoImportId}`);
-            if (collapseElement) {
-                const bsCollapse = new bootstrap.Collapse(collapseElement, {toggle: false});
-                bsCollapse.show();
-                
-                startLiveImport(autoImportId);
-                
-                window.history.replaceState({}, document.title, window.location.pathname + "?network=" + urlParams.get('network'));
-            }
-        }, 500);
-    }
-});
-
 function startAllLiveImports() {
     const importButtons = document.querySelectorAll('[id^="btn-import-"]');
     importButtons.forEach(btn => {
@@ -719,5 +903,55 @@ function startAllLiveImports() {
         }
     });
 }
+
+// ==========================================
+// TAB PERSISTENCE & AUTO-ACTIONS
+// ==========================================
+document.addEventListener('DOMContentLoaded', function() {
+    const urlParams = new URLSearchParams(window.location.search);
+    let activeTabId = sessionStorage.getItem('activeCreatorTab');
+
+    // 1. Force specific tabs based on URL context clues
+    if (urlParams.has('merge_view')) {
+        activeTabId = '#list-merge';
+    } else if (urlParams.has('auto_import')) {
+        activeTabId = '#list-shows';
+    } else if (window.location.hash) {
+        activeTabId = window.location.hash;
+    }
+
+    // 2. Activate the correct tab instantly
+    if (activeTabId) {
+        const triggerEl = document.querySelector(`a[href="${activeTabId}"][data-bs-toggle="list"]`);
+        if (triggerEl) {
+            const tab = new bootstrap.Tab(triggerEl);
+            tab.show();
+        }
+    }
+
+    // 3. Remember the tab if the user clicks one manually
+    const tabElements = document.querySelectorAll('a[data-bs-toggle="list"]');
+    tabElements.forEach(el => {
+        el.addEventListener('shown.bs.tab', function (event) {
+            const targetHref = event.target.getAttribute('href');
+            sessionStorage.setItem('activeCreatorTab', targetHref);
+            history.replaceState(null, null, window.location.pathname + window.location.search + targetHref);
+        });
+    });
+
+    // 4. Trigger auto-import if flagged in URL
+    const autoImportId = urlParams.get('auto_import');
+    if (autoImportId) {
+        setTimeout(() => {
+            const collapseElement = document.getElementById(`collapse-${autoImportId}`);
+            if (collapseElement) {
+                const bsCollapse = new bootstrap.Collapse(collapseElement, {toggle: false});
+                bsCollapse.show();
+                startLiveImport(autoImportId);
+                window.history.replaceState({}, document.title, window.location.pathname + "?network=" + urlParams.get('network'));
+            }
+        }, 500);
+    }
+});
 </script>
 {% endblock %}

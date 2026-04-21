@@ -89,7 +89,8 @@ def inject_rss_extensions(request, rss_str, episodes, access_map=None, default_f
     Injects standard <category> tags and <podcast:chapters> tags.
     access_map is used for mix feeds to know which version of chapters to serve.
     """
-    tag_map = {str(ep.guid): ep for ep in episodes}
+    # Matches the exact ID assigned in the PodgenEpisode generators below
+    tag_map = {str(ep.guid_public or ep.guid_private or ep.id): ep for ep in episodes}
     if not tag_map:
         return rss_str
 
@@ -576,6 +577,77 @@ def creator_settings(request):
             messages.success(request, f"Network Mix '{mix_name}' deleted.")
             return redirect(f"{reverse('creator_settings')}?network={net_slug}")
 
+        # --- MERGE DESK: MERGE EPISODES ---
+        elif action == 'merge_episodes':
+            pub_id = request.POST.get('public_episode_id')
+            priv_id = request.POST.get('private_episode_id')
+
+            if pub_id and priv_id:
+                try:
+                    pub_ep = Episode.objects.get(id=pub_id, podcast__network=current_network)
+                    priv_ep = Episode.objects.get(id=priv_id, podcast__network=current_network)
+                    podcast_id = request.POST.get('merge_podcast_id', '')
+
+                    # Stitch the Private data into the Public episode
+                    pub_ep.guid_private = priv_ep.guid_private or priv_ep.guid_public
+                    pub_ep.audio_url_subscriber = priv_ep.audio_url_subscriber
+                    if priv_ep.chapters_private:
+                        pub_ep.chapters_private = priv_ep.chapters_private
+                        
+                    # Inherit tags if the private feed scraped them but public missed them
+                    if priv_ep.tags and not pub_ep.tags:
+                        pub_ep.tags = priv_ep.tags
+
+                    pub_ep.match_reason = "Manual Merge (Merge Desk)"
+                    
+                    pub_ep.save()
+                    priv_ep.delete()
+
+                    messages.success(request, f"Successfully merged '{priv_ep.title}' into '{pub_ep.title}'.")
+                except Episode.DoesNotExist:
+                    messages.error(request, "One or both episodes could not be found.")
+                except Exception as e:
+                    messages.error(request, f"Merge failed: {str(e)}")
+            else:
+                messages.error(request, "You must select one episode from each column to merge.")
+            return redirect(f"{reverse('creator_settings')}?network={current_network.slug}&merge_view=orphans&merge_podcast_id={podcast_id}")
+
+        # --- MERGE DESK: SPLIT EPISODES ---
+        elif action == 'split_episode':
+            ep_id = request.POST.get('episode_id')
+            podcast_id = request.POST.get('merge_podcast_id', '')
+            try:
+                ep = Episode.objects.get(id=ep_id, podcast__network=current_network)
+
+                # 1. Create the Private Orphan clone
+                priv_ep = Episode(
+                    podcast=ep.podcast,
+                    title=ep.title,
+                    pub_date=ep.pub_date,
+                    raw_description=ep.raw_description,
+                    clean_description=ep.clean_description,
+                    duration=ep.duration,
+                    link=ep.link,
+                    tags=ep.tags,
+                    guid_private=ep.guid_private,
+                    audio_url_subscriber=ep.audio_url_subscriber,
+                    chapters_private=ep.chapters_private,
+                    match_reason="Manually Unpaired"
+                )
+                priv_ep.save()
+
+                # 2. Strip private data from original (making it a Public Orphan)
+                ep.guid_private = None
+                ep.audio_url_subscriber = ""
+                ep.chapters_private = None
+                ep.match_reason = "Manually Unpaired"
+                ep.save()
+
+                messages.success(request, f"Successfully split '{ep.title}' into two orphaned episodes.")
+            except Episode.DoesNotExist:
+                messages.error(request, "Episode not found.")
+            return redirect(f"{reverse('creator_settings')}?network={current_network.slug}&merge_view=matched&merge_podcast_id={podcast_id}")
+
     allowed_networks = allowed_networks.prefetch_related('podcasts', 'podcasts__required_tier')
     total_patrons = 0
     if current_network and current_network.patreon_campaign_id:
@@ -587,12 +659,109 @@ def creator_settings(request):
         total_patrons = PatronProfile.objects.filter(**kwargs).count()
     tiers = PatreonTier.objects.filter(network__in=allowed_networks).order_by('minimum_cents')
     
+    allowed_networks = allowed_networks.prefetch_related('podcasts', 'podcasts__required_tier')
+    total_patrons = 0
+    if current_network and current_network.patreon_campaign_id:
+        thirty_days_ago = timezone.now() - timedelta(days=30)
+        kwargs = {
+            "active_pledges__has_key": str(current_network.patreon_campaign_id),
+            "last_active__gte": thirty_days_ago
+        }
+        total_patrons = PatronProfile.objects.filter(**kwargs).count()
+    tiers = PatreonTier.objects.filter(network__in=allowed_networks).order_by('minimum_cents')
+    
+    # =========================================================
+    # THE MERGE DESK ENGINE (Search, Filter, Paginate)
+    # =========================================================
+    from django.db.models import Q, F
+    
+    merge_view = request.GET.get('merge_view', 'orphans')
+    merge_q = request.GET.get('merge_q', '').strip()
+    merge_reason = request.GET.get('merge_reason', '')
+    merge_podcast_id = request.GET.get('merge_podcast_id')
+
+    # 1. Determine the Selected Podcast (Default to first in network)
+    network_podcasts = current_network.podcasts.all()
+    selected_podcast = None
+    if merge_podcast_id:
+        selected_podcast = network_podcasts.filter(id=merge_podcast_id).first()
+    
+    if not selected_podcast and network_podcasts.exists():
+        selected_podcast = network_podcasts.first()
+        
+    merge_podcast_id = str(selected_podcast.id) if selected_podcast else ''
+
+    # 2. Base Query (ISOLATED TO SINGLE PODCAST)
+    if selected_podcast:
+        base_episodes = Episode.objects.filter(podcast=selected_podcast).select_related('podcast').order_by('-pub_date')
+    else:
+        base_episodes = Episode.objects.none()
+
+    # Apply Deep Search
+    if merge_q:
+        search_q = (
+            Q(title__icontains=merge_q) |
+            Q(guid_public__icontains=merge_q) |
+            Q(guid_private__icontains=merge_q) |
+            Q(audio_url_public__icontains=merge_q) |
+            Q(audio_url_subscriber__icontains=merge_q)
+        )
+        base_episodes = base_episodes.filter(search_q)
+
+    # ---------------------------------------------------------
+    # ORPHAN LOGIC (Matches the boolean properties in models.py)
+    # ---------------------------------------------------------
+    empty_pub = Q(audio_url_public__isnull=True) | Q(audio_url_public__exact='') | Q(audio_url_public__iexact='none')
+    empty_sub = Q(audio_url_subscriber__isnull=True) | Q(audio_url_subscriber__exact='') | Q(audio_url_subscriber__iexact='none') | Q(audio_url_subscriber=F('audio_url_public'))
+
+    # 1. Public Orphans: Has distinct Public audio, NO distinct Premium audio
+    public_orphans_qs = base_episodes.exclude(empty_pub).filter(empty_sub)
+
+    # 2. Private Orphans: Has distinct Premium audio, NO Public audio
+    private_orphans_qs = base_episodes.exclude(empty_sub).filter(empty_pub)
+
+    # 3. Matched: Has BOTH distinct audio files
+    matched_qs = base_episodes.exclude(empty_pub).exclude(empty_sub)
+    
+    if merge_reason:
+        matched_qs = matched_qs.filter(match_reason=merge_reason)
+
+    # 3. Get distinct Match Reasons for the dropdown filter (ISOLATED TO PODCAST)
+    match_reasons = []
+    if selected_podcast:
+        match_reasons = Episode.objects.filter(podcast=selected_podcast)\
+            .exclude(match_reason__in=['Public Only (No Match)', 'Private Exclusive', '', 'Manually Unpaired'])\
+            .exclude(match_reason__isnull=True)\
+            .values_list('match_reason', flat=True).distinct()
+
+    # 4. Paginate Results (50 per page to keep the UI snappy)
+    pub_page = request.GET.get('pub_page', 1)
+    priv_page = request.GET.get('priv_page', 1)
+    match_page = request.GET.get('match_page', 1)
+
+    public_orphans = Paginator(public_orphans_qs, 50).get_page(pub_page)
+    private_orphans = Paginator(private_orphans_qs, 50).get_page(priv_page)
+    matched_episodes = Paginator(matched_qs, 50).get_page(match_page)
+
     context = {
         'networks': allowed_networks,
         'current_network': current_network,
         'total_patrons': total_patrons,
         'tiers': tiers,
-        'theme_config_json': json.dumps(current_network.theme_config, indent=2) if current_network else "{}"
+        'theme_config_json': json.dumps(current_network.theme_config, indent=2) if current_network else "{}",
+        
+        # Merge Desk Context
+        'merge_view': merge_view,
+        'merge_q': merge_q,
+        'merge_reason': merge_reason,
+        'match_reasons': match_reasons,
+        'public_orphans': public_orphans,
+        'private_orphans': private_orphans,
+        'matched_episodes': matched_episodes,
+        
+        # New Context Variables
+        'network_podcasts': network_podcasts,
+        'merge_podcast_id': merge_podcast_id,
     }
     return render(request, 'pod_manager/creator_settings.html', context)
 
@@ -966,7 +1135,7 @@ def generate_custom_feed(request):
             p.episodes.append(PodgenEpisode(
                 title=ep.title,
                 media=Media(url=audio_url, size=0, type="audio/mpeg", duration=parse_duration(ep.duration)),
-                id=ep.guid,
+                id=ep.guid_public or ep.guid_private or str(ep.id),
                 publication_date=ep.pub_date,
                 summary=assembled_desc, 
             ))

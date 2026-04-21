@@ -184,34 +184,57 @@ def commit_episode(podcast, pub_entry, sub_entry, match_reason, stdout, enhancer
     Intelligently creates or updates an episode.
     - Prevents duplicates by checking BOTH guid_public and guid_private.
     - Prevents overwriting manual edits if is_metadata_locked is True.
+    - NEW: Rejects algorithmic matches if an episode was manually unpaired.
     """
     pub_guid = getattr(pub_entry, 'id', None) if pub_entry else None
     sub_guid = getattr(sub_entry, 'id', None) if sub_entry else None
     
-    # 1. Anti-Zombie Lookup: Find the episode if it exists under EITHER guid
-    episode = None
-    if pub_guid:
-        episode = Episode.objects.filter(podcast=podcast, guid_public=pub_guid).first()
-    if not episode and sub_guid:
-        episode = Episode.objects.filter(podcast=podcast, guid_private=sub_guid).first()
+    # 1. Independent Lookup: Find the exact database records for these GUIDs
+    ep_pub = Episode.objects.filter(podcast=podcast, guid_public=pub_guid).first() if pub_guid else None
+    ep_priv = Episode.objects.filter(podcast=podcast, guid_private=sub_guid).first() if sub_guid else None
         
+    # ==========================================================
+    # THE DIVORCE CLAUSE (Anti-Match Protection)
+    # ==========================================================
+    # If the fuzzy algorithm attempted to merge them, but the database says 
+    # one (or both) of them were Manually Unpaired, we reject the match.
+    if pub_entry and sub_entry:
+        is_pub_unpaired = ep_pub and ep_pub.match_reason == 'Manually Unpaired'
+        is_priv_unpaired = ep_priv and ep_priv.match_reason == 'Manually Unpaired'
+        
+        if is_pub_unpaired or is_priv_unpaired:
+            stdout.write(f"  [Split Enforced] Preventing algorithmic re-merge of unpaired episode: {getattr(pub_entry, 'title', '')}")
+            
+            # Recursively save them as two distinct orphans, preserving their unpaired status
+            commit_episode(podcast, pub_entry, None, "Manually Unpaired", stdout, enhancer)
+            commit_episode(podcast, None, sub_entry, "Manually Unpaired", stdout, enhancer)
+            return None # Exit this joint commit
+    # ==========================================================
+
+    # 2. Standard Anti-Zombie Lookup
+    episode = ep_pub or ep_priv
     is_new = False
+    
     if not episode:
         episode = Episode(podcast=podcast)
         is_new = True
         
-    # 2. Always update the routing identifiers
+    # 3. Always update the routing identifiers
     if pub_guid: episode.guid_public = pub_guid
     if sub_guid: episode.guid_private = sub_guid
-    episode.match_reason = match_reason
     
-    # 3. Always update audio URLs
+    # Protect manual audit trails from being overwritten by the algorithm
+    protected_reasons = ['Manually Unpaired', 'Manual Merge (Merge Desk)']
+    if episode.match_reason not in protected_reasons:
+        episode.match_reason = match_reason
+        
+    # 4. Always update audio URLs (Hosts frequently rotate CDNs or ad-tracking prefixes)
     if pub_entry:
         episode.audio_url_public = get_enclosure(pub_entry) 
     if sub_entry:
         episode.audio_url_subscriber = get_enclosure(sub_entry)
 
-    # 4. THE METADATA LOCK
+    # 5. THE METADATA LOCK
     if not episode.is_metadata_locked:
         source_entry = pub_entry if pub_entry else sub_entry
         
@@ -237,9 +260,9 @@ def commit_episode(podcast, pub_entry, sub_entry, match_reason, stdout, enhancer
         if sub_entry:
             episode.chapters_private = extract_rss_chapters(sub_entry)
 
-        # 5. Execute custom network enhancements (like HTML chapters or WP scraping)
-        if enhancer:
-            enhancer(episode, pub_entry, sub_entry, is_new, stdout)
+    # 6. Execute custom network enhancements (like HTML chapters or WP scraping)
+    if enhancer:
+        enhancer(episode, pub_entry, sub_entry, is_new, stdout)
 
     episode.save()
     

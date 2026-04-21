@@ -23,7 +23,6 @@ from django.contrib.auth.decorators import login_required
 from django.contrib.auth.models import User
 from django.core.cache import cache
 from django.core.files.base import ContentFile
-from django.core.management import call_command
 from django.core.paginator import Paginator
 from django.db import transaction
 from django.db.models import Q
@@ -36,7 +35,7 @@ from django.views.decorators.csrf import csrf_exempt
 from podgen import Podcast as PodgenPodcast, Episode as PodgenEpisode, Media, Person, Category
 from lxml import etree
 
-from .models import PatronProfile, Podcast, Episode, Network, PatreonTier, UserMix
+from .models import PatronProfile, Podcast, Episode, Network, PatreonTier, UserMix, NetworkMix
 from .tasks import task_ingest_feed
 
 warnings.filterwarnings("ignore", message=".*Image URL must end with.*")
@@ -504,6 +503,79 @@ def creator_settings(request):
             
             return redirect(f"{reverse('creator_settings')}?network={network.slug}")
 
+        # --- NETWORK MIX: CREATE ---
+        elif action == 'add_network_mix':
+            # BUG FIX: Explicitly fetch the target network from the form, NOT request.network
+            target_network_id = request.POST.get('network_id')
+            target_network = get_object_or_404(Network, id=target_network_id)
+
+            name = request.POST.get('name')
+            slug = request.POST.get('slug')
+            tier_id = request.POST.get('tier_id')
+            image_url_input = request.POST.get('mix_image', '').strip()
+            podcast_ids = request.POST.getlist('podcasts')
+
+            try:
+                new_mix = NetworkMix(network=target_network, name=name, slug=slug)
+                if tier_id:
+                    new_mix.required_tier = get_object_or_404(PatreonTier, id=tier_id, network=target_network)
+
+                if 'mix_image_upload' in request.FILES:
+                    new_mix.image_upload = request.FILES['mix_image_upload']
+                elif image_url_input:
+                    error_msg = process_mix_image_url(image_url_input, new_mix)
+                    if error_msg:
+                        messages.warning(request, f"Mix created, but artwork failed: {error_msg}")
+
+                new_mix.save()
+                if podcast_ids:
+                    new_mix.selected_podcasts.set(podcast_ids)
+                messages.success(request, f"Network Mix '{name}' created successfully!")
+            except Exception as e:
+                messages.error(request, f"Error adding mix: {str(e)}")
+            return redirect(f"{reverse('creator_settings')}?network={target_network.slug}")
+
+        # --- NETWORK MIX: EDIT ---
+        elif action == 'edit_network_mix':
+            mix_id = request.POST.get('mix_id')
+            target_mix = get_object_or_404(NetworkMix, id=mix_id)
+            
+            target_mix.name = request.POST.get('name')
+            target_mix.slug = request.POST.get('slug')
+            
+            tier_id = request.POST.get('tier_id')
+            if tier_id:
+                target_mix.required_tier = get_object_or_404(PatreonTier, id=tier_id, network=target_mix.network)
+            else:
+                target_mix.required_tier = None
+                
+            image_url_input = request.POST.get('mix_image', '').strip()
+            
+            if 'mix_image_upload' in request.FILES:
+                target_mix.image_upload = request.FILES['mix_image_upload']
+            elif image_url_input and image_url_input != target_mix.image_url:
+                error_msg = process_mix_image_url(image_url_input, target_mix)
+                if error_msg:
+                    messages.warning(request, f"Mix updated, but new artwork failed: {error_msg}")
+
+            podcast_ids = request.POST.getlist('podcasts')
+            target_mix.selected_podcasts.set(podcast_ids)
+            
+            target_mix.save()
+            messages.success(request, f"Network Mix '{target_mix.name}' updated successfully!")
+            return redirect(f"{reverse('creator_settings')}?network={target_mix.network.slug}")
+
+        # --- NETWORK MIX: DELETE ---
+        elif action == 'delete_network_mix':
+            mix_id = request.POST.get('mix_id')
+            target_mix = get_object_or_404(NetworkMix, id=mix_id)
+            net_slug = target_mix.network.slug
+            
+            mix_name = target_mix.name
+            target_mix.delete()
+            messages.success(request, f"Network Mix '{mix_name}' deleted.")
+            return redirect(f"{reverse('creator_settings')}?network={net_slug}")
+
     allowed_networks = allowed_networks.prefetch_related('podcasts', 'podcasts__required_tier')
     total_patrons = 0
     if current_network and current_network.patreon_campaign_id:
@@ -767,11 +839,39 @@ def user_feeds(request):
         # visibility logic: If logged in, ALWAYS give the unique feed so it can upgrade/downgrade dynamically.
         if profile is not None:
             raw_url = reverse('custom_feed') + f"?auth={profile.feed_token}&show={podcast.slug}&network={podcast.network.slug}"
-            feed_data.append({'podcast': podcast, 'has_access': has_access, 'req_dollars': req_cents/100, 'feed_url': request.build_absolute_uri(raw_url)})
+            feed_data.append({'is_network_mix': False, 'podcast': podcast, 'has_access': has_access, 'req_dollars': req_cents/100, 'feed_url': request.build_absolute_uri(raw_url)})
         elif req_cents == 0 or podcast.public_feed_url:
             # Guest visitors get the public URL
             raw_url = reverse('public_feed', args=[podcast.slug]) 
-            feed_data.append({'podcast': podcast, 'has_access': False, 'req_dollars': req_cents/100, 'feed_url': request.build_absolute_uri(raw_url)})
+            feed_data.append({'is_network_mix': False, 'podcast': podcast, 'has_access': False, 'req_dollars': req_cents/100, 'feed_url': request.build_absolute_uri(raw_url)})
+
+    # === NEW: INJECT NETWORK MIXES INTO "YOUR FEEDS" ===
+    from .models import NetworkMix
+    network_mixes = NetworkMix.objects.filter(network__in=target_networks).select_related('network', 'required_tier')
+    for nmix in network_mixes:
+        mix_req_cents = nmix.required_tier.minimum_cents if nmix.required_tier else 0
+        camp_id = str(nmix.network.patreon_campaign_id)
+        user_cents = active_pledges.get(camp_id, 0) if profile else 0
+        has_access = (mix_req_cents == 0) or (user_cents >= mix_req_cents)
+        
+        if profile:
+            raw_url = reverse('network_mix_feed', args=[nmix.network.slug, nmix.slug]) + f"?auth={profile.feed_token}"
+        else:
+            raw_url = reverse('network_mix_feed', args=[nmix.network.slug, nmix.slug])
+            
+        feed_data.append({
+            'is_network_mix': True,
+            'mix': nmix,
+            'has_access': has_access,
+            'req_dollars': mix_req_cents / 100,
+            'feed_url': request.build_absolute_uri(raw_url)
+        })
+
+    # Sort feed_data: Network Mixes first (0), then Podcasts (1). Sorted alphabetically within each group.
+    feed_data = sorted(feed_data, key=lambda x: (
+        0 if x.get('is_network_mix') else 1,
+        x['mix'].name.lower() if x.get('is_network_mix') else x['podcast'].title.lower()
+    ))
 
     # Fix modal podcast list (include all supported networks)
     available_podcasts = []
@@ -1004,6 +1104,7 @@ def generate_mix_feed(request, unique_id):
                 assembled_desc += "<br><br>" + "<br><br>".join(footer_parts)
 
             feed.episodes.append(PodgenEpisode(
+                id=ep.guid,
                 title=display_title,
                 summary=assembled_desc, 
                 publication_date=ep.pub_date,
@@ -1014,6 +1115,113 @@ def generate_mix_feed(request, unique_id):
         feed_xml = inject_rss_extensions(request, raw_xml, episodes, access_map=access_map) 
         cache.set(cache_key, feed_xml, 300)
         logger.debug(f"Successfully generated and cached mix feed: {cache_key}")
+        
+    return HttpResponse(feed_xml, content_type='application/rss+xml')
+
+def generate_network_mix_feed(request, network_slug, mix_slug):
+    logger.info(f"Network Mix feed requested: network='{network_slug}', mix='{mix_slug}'")
+    network_mix = get_object_or_404(NetworkMix, slug=mix_slug, network__slug=network_slug)
+    
+    feed_token = request.GET.get('auth')
+    profile = None
+    active_pledges = {}
+    
+    if feed_token:
+        try:
+            profile = PatronProfile.objects.get(feed_token=feed_token)
+            if not profile.last_active or profile.last_active < timezone.now() - timedelta(hours=24):
+                profile.last_active = timezone.now()
+                profile.save(update_fields=['last_active'])
+            active_pledges = profile.active_pledges or {}
+        except PatronProfile.DoesNotExist:
+            logger.warning(f"Invalid token format received for network mix: {feed_token}")
+
+    mix_req_cents = network_mix.required_tier.minimum_cents if network_mix.required_tier else 0
+    camp_id = str(network_mix.network.patreon_campaign_id)
+    user_cents = active_pledges.get(camp_id, 0)
+    
+    user_meets_mix_tier = (mix_req_cents == 0) or (user_cents >= mix_req_cents)
+
+    cache_key = f"network_mix_{network_mix.unique_id}_{feed_token}"
+    feed_xml = cache.get(cache_key)
+
+    if feed_xml:
+        logger.debug(f"Cache HIT for network mix: {cache_key}")
+    else:
+        logger.debug(f"Cache MISS for network mix: {cache_key}. Generating XML...")
+        selected_podcasts = network_mix.selected_podcasts.select_related('required_tier', 'network').all()
+        
+        access_map = {}
+        for podcast in selected_podcasts:
+            req_cents = podcast.required_tier.minimum_cents if podcast.required_tier else 0
+            access_map[podcast.id] = user_meets_mix_tier and (user_cents >= req_cents)
+                
+        episodes = Episode.objects.filter(podcast__in=selected_podcasts).select_related('podcast', 'podcast__network').order_by('-pub_date')[:5000]
+        
+        image_url = request.build_absolute_uri(network_mix.display_image) if network_mix.display_image else request.build_absolute_uri(network_mix.network.default_image_url)
+
+        from podgen import Podcast as PodgenPodcast, Episode as PodgenEpisode, Media, Person
+        from django.utils.dateparse import parse_duration
+
+        feed = PodgenPodcast(
+            name=network_mix.name,
+            description=f"A curated network mix by {network_mix.network.name}.",
+            website=network_mix.network.website_url or request.build_absolute_uri('/'),
+            explicit=False,
+            image=image_url,
+            withhold_from_itunes=True,
+            authors=[Person(name=network_mix.network.name, email="hosts@example.com")],
+            owner=Person(name=network_mix.network.name, email="hosts@example.com"),
+        )
+        
+        for ep in episodes:
+            has_access = access_map.get(ep.podcast_id, False)
+            
+            if not has_access and not ep.audio_url_public:
+                continue
+                
+            audio_url = request.build_absolute_uri(reverse('play_episode', args=[ep.id]))
+            if feed_token:
+                audio_url += f"?auth={feed_token}"
+
+            display_title = f"[{ep.podcast.title}] {ep.title}"
+            
+            audio_banner = ""
+            if ep.audio_url_subscriber and ep.audio_url_public and ep.audio_url_subscriber != ep.audio_url_public:
+                if has_access:
+                    audio_banner = "Premium: "
+                else:
+                    audio_banner = "Standard: "
+            elif not ep.audio_url_public:
+                audio_banner = "Premium Exclusive: "
+
+            assembled_desc = audio_banner + (ep.clean_description or ep.raw_description)
+            
+            footer_parts = []
+            if has_access:
+                if ep.podcast.show_footer_private: footer_parts.append(ep.podcast.show_footer_private)
+                if ep.podcast.network.global_footer_private: footer_parts.append(ep.podcast.network.global_footer_private)
+            else:
+                if ep.podcast.show_footer_public: footer_parts.append(ep.podcast.show_footer_public)
+                if ep.podcast.network.global_footer_public: footer_parts.append(ep.podcast.network.global_footer_public)
+            
+            if footer_parts:
+                assembled_desc += "<br><br>" + "<br><br>".join(footer_parts)
+
+            ep_duration = parse_duration(ep.duration) if ep.duration else None
+
+            feed.episodes.append(PodgenEpisode(
+                id=ep.guid,
+                title=display_title,
+                summary=assembled_desc, 
+                publication_date=ep.pub_date,
+                media=Media(url=audio_url, size=0, type="audio/mpeg", duration=ep_duration)
+            ))
+            
+        raw_xml = feed.rss_str()
+        from .views import inject_rss_extensions
+        feed_xml = inject_rss_extensions(request, raw_xml, episodes, access_map=access_map) 
+        cache.set(cache_key, feed_xml, 300)
         
     return HttpResponse(feed_xml, content_type='application/rss+xml')
 

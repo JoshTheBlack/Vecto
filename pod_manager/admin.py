@@ -1,6 +1,7 @@
 from django.contrib import admin
 from django.contrib.auth.admin import UserAdmin as BaseUserAdmin
 from django.contrib.auth.models import User
+from django.db.models import Q, F, BooleanField, ExpressionWrapper
 from .models import Network, PatreonTier, Podcast, Episode, UserMix, PatronProfile
 
 @admin.register(Network)
@@ -11,13 +12,37 @@ class NetworkAdmin(admin.ModelAdmin):
 
 @admin.register(Episode)
 class EpisodeAdmin(admin.ModelAdmin):
-    list_display = ('title', 'podcast', 'pub_date', 'match_reason', 'has_premium_audio')
+    list_display = ('title', 'podcast', 'pub_date', 'match_reason', 'has_public_audio', 'has_premium_audio')
     list_filter = ('podcast__network', 'podcast', 'pub_date', 'match_reason')
     search_fields = ('title', 'raw_description', 'guid')
     
+    def get_queryset(self, request):
+        qs = super().get_queryset(request)
+        # Calculate the boolean logic inside the database so the admin table can sort it
+        qs = qs.annotate(
+            _has_public=ExpressionWrapper(
+                Q(audio_url_public__isnull=False) & ~Q(audio_url_public=''),
+                output_field=BooleanField()
+            ),
+            _has_premium=ExpressionWrapper(
+                Q(audio_url_subscriber__isnull=False) & ~Q(audio_url_subscriber='') & ~Q(audio_url_subscriber=F('audio_url_public')),
+                output_field=BooleanField()
+            )
+        )
+        return qs
+
+    def has_public_audio(self, obj):
+        return bool(obj.audio_url_public)
+    has_public_audio.boolean = True
+    has_public_audio.short_description = "Public"
+    has_public_audio.admin_order_field = '_has_public'  # Links the column to the SQL annotation
+
     def has_premium_audio(self, obj):
-        return obj.audio_url_public != obj.audio_url_subscriber
+        return bool(obj.audio_url_subscriber) and obj.audio_url_subscriber != obj.audio_url_public
     has_premium_audio.boolean = True
+    has_premium_audio.short_description = "Premium"
+    has_premium_audio.admin_order_field = '_has_premium'  # Links the column to the SQL annotation
+    
     ordering = ('-pub_date',)
 
 @admin.register(PatronProfile)

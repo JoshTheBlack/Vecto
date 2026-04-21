@@ -161,22 +161,47 @@
     </div>
     <ul class="list-group list-group-flush bg-dark">
         {% for item in feed_data %}
+            
+            {% ifchanged item.is_network_mix %}
+                <li class="list-group-item bg-black py-2 border-secondary small fw-bold text-uppercase {% if item.is_network_mix %}text-warning{% else %}text-muted{% endif %}" style="letter-spacing: 1px;">
+                    {% if item.is_network_mix %}
+                        <i class="bi bi-star-fill me-1"></i> Network Super Feeds
+                    {% else %}
+                        <i class="bi bi-mic-fill me-1"></i> Standard Podcasts
+                    {% endif %}
+                </li>
+            {% endifchanged %}
+
             <li class="list-group-item bg-transparent text-light py-3 feed-item">
                 <div class="row align-items-center">
                     <div class="col-md-4 d-flex align-items-center">
-                        {% if item.podcast.image_url %}
-                            <img src="{{ item.podcast.image_url }}" class="rounded me-3 shadow-sm border border-secondary" style="width: 56px; height: 56px; object-fit: cover;">
-                        {% elif item.podcast.network.default_image_url %}
-                            <img src="{{ item.podcast.network.default_image_url }}" class="rounded me-3 shadow-sm border border-secondary" style="width: 56px; height: 56px; object-fit: cover;">
+                        {% if item.is_network_mix %}
+                            {% if item.mix.display_image %}
+                                <img src="{{ item.mix.display_image }}" class="rounded me-3 shadow-sm border border-secondary" style="width: 56px; height: 56px; object-fit: cover;">
+                            {% else %}
+                                <div class="rounded bg-black d-flex justify-content-center align-items-center me-3 border border-secondary shadow-sm" style="width: 56px; height: 56px;">
+                                    <i class="bi bi-collection-play text-warning fs-4"></i>
+                                </div>
+                            {% endif %}
+                            <div>
+                                <h5 class="mb-1 fw-bold feed-title">{{ item.mix.name }}</h5>
+                                <p class="mb-0 text-muted small">{{ item.mix.network.name }} Super Feed</p>
+                            </div>
                         {% else %}
-                            <div class="rounded bg-black d-flex justify-content-center align-items-center me-3 border border-secondary shadow-sm" style="width: 56px; height: 56px;">
-                                <i class="bi bi-mic text-warning fs-4"></i>
+                            {% if item.podcast.image_url %}
+                                <img src="{{ item.podcast.image_url }}" class="rounded me-3 shadow-sm border border-secondary" style="width: 56px; height: 56px; object-fit: cover;">
+                            {% elif item.podcast.network.default_image_url %}
+                                <img src="{{ item.podcast.network.default_image_url }}" class="rounded me-3 shadow-sm border border-secondary" style="width: 56px; height: 56px; object-fit: cover;">
+                            {% else %}
+                                <div class="rounded bg-black d-flex justify-content-center align-items-center me-3 border border-secondary shadow-sm" style="width: 56px; height: 56px;">
+                                    <i class="bi bi-mic text-warning fs-4"></i>
+                                </div>
+                            {% endif %}
+                            <div>
+                                <h5 class="mb-1 fw-bold feed-title">{{ item.podcast.title }}</h5>
+                                <p class="mb-0 text-muted small">{{ item.podcast.network.name }} Network</p>
                             </div>
                         {% endif %}
-                        <div>
-                            <h5 class="mb-1 fw-bold feed-title">{{ item.podcast.title }}</h5>
-                            <p class="mb-0 text-muted small">{{ item.podcast.network.name }} Network</p>
-                        </div>
                     </div>
                     
                     <div class="col-md-8 mt-3 mt-md-0">
@@ -187,10 +212,7 @@
                             </button>
                             
                             <button class="btn btn-warning dropdown-toggle fw-bold text-dark btn-add-to-app shadow-sm" type="button" data-bs-toggle="dropdown">
-                                <!-- <span>Add to App</span> 
-                                <div class="app-preview-tray border-dark">-->
-                                    <i class="icon-mini icon-pocketcasts"></i>
-                               <!--  </div>-->
+                                <i class="icon-mini icon-pocketcasts"></i>
                             </button>
                             <ul class="dropdown-menu dropdown-menu-dark dropdown-menu-end border-secondary shadow p-2" style="min-width: 240px;">
                                 <li><a class="dropdown-item dropdown-item-podcast rounded" href="#" onclick="openPodcastApp('apple', '{{ item.feed_url }}')">
@@ -221,9 +243,17 @@
                         </div>
                         
                         {% if item.has_access %}
-                            <small class="text-success mt-1 d-block"><i class="bi bi-star-fill"></i> Premium Unlocked via Patreon.</small>
+                            {% if item.is_network_mix %}
+                                <small class="text-success mt-1 d-block"><i class="bi bi-star-fill"></i> Network Super Feed (Premium Unlocked)</small>
+                            {% else %}
+                                <small class="text-success mt-1 d-block"><i class="bi bi-star-fill"></i> Premium Unlocked via Patreon.</small>
+                            {% endif %}
                         {% else %}
-                            <small class="text-muted mt-1 d-block"><i class="bi bi-info-circle"></i> Public (Ad-Supported) version. Requires a <strong>${{ item.req_dollars|floatformat:2 }}</strong> pledge to unlock Premium.</small>
+                            {% if item.is_network_mix %}
+                                <small class="text-muted mt-1 d-block"><i class="bi bi-info-circle"></i> Network Super Feed (Public version. Requires a <strong>${{ item.req_dollars|floatformat:2 }}</strong> pledge to unlock Premium).</small>
+                            {% else %}
+                                <small class="text-muted mt-1 d-block"><i class="bi bi-info-circle"></i> Public (Ad-Supported) version. Requires a <strong>${{ item.req_dollars|floatformat:2 }}</strong> pledge to unlock Premium.</small>
+                            {% endif %}
                         {% endif %}
                     </div>
                 </div>

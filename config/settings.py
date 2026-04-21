@@ -20,7 +20,6 @@ load_dotenv()
 # Patreon OAuth Credentials
 PATREON_CLIENT_ID = os.getenv("PATREON_CLIENT_ID")
 PATREON_CLIENT_SECRET = os.getenv("PATREON_CLIENT_SECRET")
-# The URL Patreon will send the user back to (needs to match your portal settings)
 PATREON_REDIRECT_URI = os.getenv("PATREON_REDIRECT_URI")
 PATREON_WEBHOOK_SECRET = os.getenv("PATREON_WEBHOOK_SECRET")
 
@@ -28,16 +27,22 @@ PATREON_WEBHOOK_SECRET = os.getenv("PATREON_WEBHOOK_SECRET")
 BASE_DIR = Path(__file__).resolve().parent.parent
 
 
-# Quick-start development settings - unsuitable for production
-# See https://docs.djangoproject.com/en/6.0/howto/deployment/checklist/
-
 # SECURITY WARNING: keep the secret key used in production secret!
 SECRET_KEY = os.getenv("DJANGO_SECRET_KEY")
 
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = os.getenv('DEBUG', 'False') == 'True'
+RAW_DEBUG = os.getenv('DEBUG', 'False')
 
-ALLOWED_HOSTS = ['.joshtheblack.com', 'localhost', '127.0.0.1', '.baldmove.com']
+# Check if we are running in the local IDE environment
+IS_IDE = (RAW_DEBUG == 'IDE')
+
+# Django's internal DEBUG needs to be a boolean, so it's True if 'True' OR 'IDE'
+DEBUG = (RAW_DEBUG in ['True', 'IDE'])
+
+if IS_IDE:
+    ALLOWED_HOSTS = ['baldmove.local', 'localhost', '127.0.0.1', 'bm.local', 'gaylene-unfollowable-burl.ngrok-free.dev']
+else:
+    ALLOWED_HOSTS = ['.joshtheblack.com', 'localhost', '127.0.0.1', '.baldmove.com']
 
 SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
 
@@ -93,82 +98,46 @@ TEMPLATES = [
 
 WSGI_APPLICATION = 'config.wsgi.application'
 
-
-# Database
-"""
-DATABASES = {
-    'default': {
-        'ENGINE': 'django.db.backends.sqlite3',
-        'NAME': BASE_DIR / 'db.sqlite3',
-        'OPTIONS': {
-            'timeout': 20,
-            # NEW: Enable Write-Ahead Logging to allow concurrent thread ingestion
-            'init_command': 'PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;',
-        }
-    }
-}
-"""
-DATABASES = {
-    'default': {
-        'ENGINE': 'django.db.backends.postgresql',
-        'NAME': os.getenv('POSTGRES_DB', 'vecto'),
-        'USER': os.getenv('POSTGRES_USER', 'vecto_user'),
-        'PASSWORD': os.getenv('POSTGRES_PASSWORD', 'vecto_pass'),
-        'HOST': os.getenv('POSTGRES_HOST', 'db'),
-        'PORT': os.getenv('POSTGRES_PORT', '5432'),
-    }
-}
-
-# settings.py
-RAW_REDIS_URL = os.getenv("REDIS_URL")
-REDIS_URL = RAW_REDIS_URL if RAW_REDIS_URL else "redis://redis:6379/0"
-
-if REDIS_URL:
-    CACHES = {
-        "default": {
-            "BACKEND": "django.core.cache.backends.redis.RedisCache",
-            "LOCATION": REDIS_URL,
+# HYBRID DATABASE ROUTING
+if IS_IDE:
+    DATABASES = {
+        'default': {
+            'ENGINE': 'django.db.backends.sqlite3',
+            'NAME': BASE_DIR / 'db.sqlite3',
+            'OPTIONS': {
+                'timeout': 20,
+                'init_command': 'PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;',
+            }
         }
     }
 else:
-    CACHES = {
-        "default": {
-            "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
+    DATABASES = {
+        'default': {
+            'ENGINE': 'django.db.backends.postgresql',
+            'NAME': os.getenv('POSTGRES_DB', 'vecto'),
+            'USER': os.getenv('POSTGRES_USER', 'vecto_user'),
+            'PASSWORD': os.getenv('POSTGRES_PASSWORD', 'vecto_pass'),
+            'HOST': os.getenv('POSTGRES_HOST', 'db'),
+            'PORT': os.getenv('POSTGRES_PORT', '5432'),
         }
     }
 
 # Password validation
 AUTH_PASSWORD_VALIDATORS = [
-    {
-        'NAME': 'django.contrib.auth.password_validation.UserAttributeSimilarityValidator',
-    },
-    {
-        'NAME': 'django.contrib.auth.password_validation.MinimumLengthValidator',
-    },
-    {
-        'NAME': 'django.contrib.auth.password_validation.CommonPasswordValidator',
-    },
-    {
-        'NAME': 'django.contrib.auth.password_validation.NumericPasswordValidator',
-    },
+    {'NAME': 'django.contrib.auth.password_validation.UserAttributeSimilarityValidator'},
+    {'NAME': 'django.contrib.auth.password_validation.MinimumLengthValidator'},
+    {'NAME': 'django.contrib.auth.password_validation.CommonPasswordValidator'},
+    {'NAME': 'django.contrib.auth.password_validation.NumericPasswordValidator'},
 ]
 
-
 # Internationalization
-# https://docs.djangoproject.com/en/6.0/topics/i18n/
-
 LANGUAGE_CODE = 'en-us'
-
 TIME_ZONE = 'UTC'
-
 USE_I18N = True
-
 USE_TZ = True
 
 
-# Static files (CSS, JavaScript, Images)
-# https://docs.djangoproject.com/en/6.0/howto/static-files/
-
+# Static & Media
 STATIC_URL = '/static/'
 STATIC_ROOT = BASE_DIR / 'staticfiles'
 STATICFILES_DIRS = [
@@ -182,22 +151,17 @@ STORAGES = {
         "BACKEND": "whitenoise.storage.CompressedStaticFilesStorage",
     },
 }
+
 # ==========================================
 # MEDIA SETTINGS (For User Uploads)
 # ==========================================
 MEDIA_URL = '/media/'
 MEDIA_ROOT = os.path.join(BASE_DIR, 'media')
 
-# ==========================================
+
 # AUTHENTICATION ROUTING
-# ==========================================
-# Where to send users if they try to access a protected page
 LOGIN_URL = 'patreon_login'
-
-# Where to send users after they successfully log in
 LOGIN_REDIRECT_URL = 'home'
-
-# Where to send users after they log out
 LOGOUT_REDIRECT_URL = 'home'
 
 # ==========================================
@@ -240,10 +204,31 @@ LOGGING = {
     },
 }
 
+# HYBRID CACHE & CELERY ROUTING
+if IS_IDE:
+    # Use Local Memory Cache
+    CACHES = {
+        "default": {
+            "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
+        }
+    }
+    # Force Celery to bypass Redis and run everything instantly in the same terminal
+    CELERY_TASK_ALWAYS_EAGER = True
+    CELERY_TASK_EAGER_PROPAGATES = True
+else:
+    # Use Redis Cache & Full Celery Worker Pipeline
+    RAW_REDIS_URL = os.getenv("REDIS_URL")
+    REDIS_URL = RAW_REDIS_URL.strip('"\'') if RAW_REDIS_URL else "redis://redis:6379/0"
+    
+    CACHES = {
+        "default": {
+            "BACKEND": "django.core.cache.backends.redis.RedisCache",
+            "LOCATION": REDIS_URL,
+        }
+    }
+    CELERY_BROKER_URL = REDIS_URL
+    CELERY_RESULT_BACKEND = REDIS_URL
 
-# Celery Configuration
-CELERY_BROKER_URL = os.getenv("REDIS_URL", "redis://redis:6379/0")
-CELERY_RESULT_BACKEND = os.getenv("REDIS_URL", "redis://redis:6379/0")
 CELERY_ACCEPT_CONTENT = ['json']
 CELERY_TASK_SERIALIZER = 'json'
 CELERY_TIMEZONE = TIME_ZONE

@@ -178,34 +178,78 @@ def get_cached_feed(url, feed_type, stdout):
     return feedparser.parse(content)
 
 def run_ingest(podcast, stdout):
-    logger.info(f"Starting Default Ingest Strategy for podcast: {podcast.title} (ID: {podcast.id})")
+    logger.info(f"Starting Ingest Strategy for podcast: {podcast.title} (ID: {podcast.id})")
     stdout.write(f"--- Harvesting: {podcast.title} ---")
 
-    sub_data = get_cached_feed(podcast.subscriber_feed_url, "PRIVATE", stdout)
-    if hasattr(sub_data, 'status') and sub_data.status == 401:
-        logger.error(f"Auth Failed on Private Feed for podcast: {podcast.title}")
-        stdout.write("[ERROR] Auth Failed on Private Feed.")
-        return
+    sub_data = None
+    if podcast.subscriber_feed_url:
+        sub_data = get_cached_feed(podcast.subscriber_feed_url, "PRIVATE", stdout)
+        if hasattr(sub_data, 'status') and sub_data.status == 401:
+            logger.error(f"Auth Failed on Private Feed for podcast: {podcast.title}")
+            stdout.write("[ERROR] Auth Failed on Private Feed.")
+            return
 
-    public_data = get_cached_feed(podcast.public_feed_url, "PUBLIC", stdout)
+    public_data = None
+    if podcast.public_feed_url:
+        public_data = get_cached_feed(podcast.public_feed_url, "PUBLIC", stdout)
 
+    # 3. Dynamic Title & Artwork Extraction
     feed_image = ""
-    if 'image' in public_data.feed:
-        feed_image = public_data.feed.image.get('href') or public_data.feed.image.get('url', '')
+    feed_title = ""
+    source_data = public_data if public_data else sub_data
+    
+    if source_data and hasattr(source_data, 'feed'):
+        # Image extraction
+        if 'image' in source_data.feed:
+            feed_image = source_data.feed.image.get('href') or source_data.feed.image.get('url', '')
+        if not feed_image and 'itunes_image' in source_data.feed:
+            feed_image = source_data.feed.itunes_image.get('href', '')
+            
+        # Title extraction
+        feed_title = source_data.feed.get('title', '')
+
+    needs_save = False
+
+    # Process and Update Title
+    if feed_title:
+        cleaned_title = feed_title
+        if podcast.network.ignored_title_tags:
+            tags = [t.strip() for t in podcast.network.ignored_title_tags.split(',') if t.strip()]
+            for tag in tags:
+                # Case-insensitive removal of the ignored tag
+                pattern = re.compile(re.escape(tag), re.IGNORECASE)
+                cleaned_title = pattern.sub('', cleaned_title)
+        
+        # Clean up any leftover double-spaces or trailing spaces
+        cleaned_title = " ".join(cleaned_title.split())
+        
+        if cleaned_title and podcast.title != cleaned_title:
+            logger.info(f"Updating podcast title from '{podcast.title}' to '{cleaned_title}'")
+            podcast.title = cleaned_title
+            stdout.write(f"  [Title Updated]: {cleaned_title}")
+            needs_save = True
+
+    # Process and Update Artwork
     if feed_image and podcast.image_url != feed_image:
         logger.info(f"Updating podcast artwork for {podcast.title} to {feed_image}")
         podcast.image_url = feed_image
-        podcast.save()
         stdout.write(f"  [Artwork Captured]: {feed_image}")
+        needs_save = True
+
+    # Save the database record only once if anything changed
+    if needs_save:
+        podcast.save()
 
     private_pool = {}
-    for entry in sub_data.entries:
-        audio_url = get_enclosure(entry)
-        if audio_url:
-            private_pool[audio_url] = entry
+    unmatched_private_audios = set()
+    if sub_data:
+        for entry in sub_data.entries:
+            audio_url = get_enclosure(entry)
+            if audio_url: 
+                private_pool[audio_url] = entry
+        unmatched_private_audios = set(private_pool.keys())
             
-    unmatched_private_audios = set(private_pool.keys())
-    public_entries_list = list(public_data.entries)
+    public_entries_list = list(public_data.entries) if public_data else []
     unmatched_public_indices = set(range(len(public_entries_list)))
     matched_pairs = {} 
 

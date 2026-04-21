@@ -141,11 +141,11 @@ class Podcast(models.Model):
     title = models.TextField()
     slug = models.SlugField()
     
-    public_feed_url = models.URLField()
-    subscriber_feed_url = models.URLField()
+    public_feed_url = models.URLField(max_length=2000, blank=True, null=True)
+    subscriber_feed_url = models.URLField(max_length=2000, blank=True, null=True)
     required_tier = models.ForeignKey(PatreonTier, on_delete=models.SET_NULL, null=True, blank=True)
 
-    image_url = models.URLField(blank=True, help_text="Automatically populated from the RSS feed.")
+    image_url = models.URLField(max_length=2000, blank=True, help_text="Automatically populated from the RSS feed.")
 
     # Show-Specific Footers (e.g., Apple Podcasts Review Link for this specific show)
     show_footer_public = models.TextField(blank=True, help_text="Appended above the global public footer.")
@@ -172,8 +172,8 @@ class Episode(models.Model):
     pub_date = models.DateTimeField()
     
     # We store both versions of the audio
-    audio_url_public = models.URLField()
-    audio_url_subscriber = models.URLField()
+    audio_url_public = models.URLField(max_length=2000, blank=True, null=True)
+    audio_url_subscriber = models.URLField(max_length=2000, blank=True, null=True)
     match_reason = models.CharField(max_length=100, blank=True, help_text="Audit trail for how the private audio was matched during ingestion.")
     
     # Store descriptions separately for cleaning/normalization
@@ -182,7 +182,7 @@ class Episode(models.Model):
 
     duration = models.CharField(max_length=20, blank=True)
 
-    link = models.URLField(max_length=1000, blank=True, null=True)
+    link = models.URLField(max_length=2000, blank=True, null=True)
 
     tags = models.JSONField(default=list, blank=True)
 
@@ -203,9 +203,14 @@ class Episode(models.Model):
         return f"{self.podcast.title} | {self.title}"
     
     @property
+    def has_public_audio(self):
+        """Returns True if a public audio URL exists."""
+        return bool(self.audio_url_public)
+
+    @property
     def is_premium(self):
-        """Returns True if this episode has a unique subscriber URL."""
-        return self.audio_url_public != self.audio_url_subscriber
+        """Returns True if a subscriber audio URL exists AND it is different from the public one."""
+        return bool(self.audio_url_subscriber) and self.audio_url_subscriber != self.audio_url_public
 
 def mix_cover_path(instance, filename):
     """Always name the file exactly <UUID>.<ext>"""
@@ -322,3 +327,66 @@ class Invoice(models.Model):
     
     def __str__(self):
         return f"{self.network.name} - {self.created_at.strftime('%Y-%m')}"
+    
+class NetworkMix(models.Model):
+    """A curated super-feed managed by the network creators."""
+    network = models.ForeignKey(Network, on_delete=models.CASCADE, related_name='mixes')
+    name = models.CharField(max_length=200)
+    slug = models.SlugField()
+    
+    image_url = models.URLField(max_length=2000, blank=True, help_text="Optional custom artwork URL")
+    image_upload = models.ImageField(upload_to=mix_cover_path, storage=mix_storage, blank=True, null=True, help_text="Uploaded artwork")
+    
+    unique_id = models.UUIDField(default=uuid.uuid4, editable=False, unique=True)
+    selected_podcasts = models.ManyToManyField('Podcast')
+    required_tier = models.ForeignKey('PatreonTier', on_delete=models.SET_NULL, null=True, blank=True, help_text="If set, the entire feed requires this tier to access.")
+
+    class Meta:
+        unique_together = ('network', 'slug')
+
+    def __str__(self):
+        return f"{self.network.name} Mix - {self.name}"
+        
+    @property
+    def display_image(self):
+        if self.image_upload:
+            return self.image_upload.url
+        return self.image_url
+
+    def save(self, *args, **kwargs):
+        super().save(*args, **kwargs)
+        # Post-process (Crop & Resize) using the exact same logic as UserMix
+        if self.image_upload:
+            try:
+                with Image.open(self.image_upload) as img:
+                    original_format = img.format or 'JPEG'
+                    width, height = img.size
+                    if width != height:
+                        new_size = min(width, height)
+                        left = (width - new_size) / 2
+                        top = (height - new_size) / 2
+                        right = (width + new_size) / 2
+                        bottom = (height + new_size) / 2
+                        img = img.crop((left, top, right, bottom))
+                    if img.height > 500 or img.width > 500:
+                        img.thumbnail((500, 500), Image.Resampling.LANCZOS)
+                    if original_format == 'JPEG' and img.mode in ('RGBA', 'LA', 'P'):
+                        img = img.convert('RGB')
+                        
+                    from io import BytesIO
+                    temp_handle = BytesIO()
+                    img.save(temp_handle, format=original_format)
+                    temp_handle.seek(0)
+                    
+                self.image_upload.close()
+                self.image_upload.save(self.image_upload.name, ContentFile(temp_handle.read()), save=False)
+            except Exception as e:
+                logger.error(f"Image processing failed for network mix {self.unique_id}: {e}", exc_info=True)
+
+@receiver(post_delete, sender=NetworkMix)
+def auto_delete_file_on_delete_network_mix(sender, instance, **kwargs):
+    if instance.image_upload:
+        try:
+            instance.image_upload.storage.delete(instance.image_upload.name)
+        except Exception:
+            pass

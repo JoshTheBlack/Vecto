@@ -25,6 +25,7 @@ urlpatterns = [
 
     # Feed Endpoints
     path('feed/', views.generate_custom_feed, name='custom_feed'),
+    path('feed/<slug:network_slug>/mix/<slug:mix_slug>/', views.generate_network_mix_feed, name='network_mix_feed'),
     path('public/feed/<slug:podcast_slug>/', views.generate_public_feed, name='public_feed'),
     path('feed/mix/<uuid:unique_id>', views.generate_mix_feed, name='mix_feed'),
     path('import/stream/<int:show_id>/', views.stream_feed_import, name='stream_feed_import'),

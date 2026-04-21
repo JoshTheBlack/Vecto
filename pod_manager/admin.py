@@ -1,9 +1,28 @@
 from django.contrib import admin
+from django.contrib.admin import SimpleListFilter
 from django.contrib.auth.admin import UserAdmin as BaseUserAdmin
 from django.contrib.auth.models import User
 from django.db.models import Q, F, BooleanField, ExpressionWrapper
 from .models import Network, PatreonTier, Podcast, Episode, UserMix, PatronProfile
 
+class S3SubscriberAudioFilter(SimpleListFilter):
+    title = 'S3 Hosted Audio (Affected)'
+    parameter_name = 's3_audio'
+
+    def lookups(self, request, model_admin):
+        return (
+            ('yes', 'Hosted on Amazon S3'),
+            ('no', 'Hosted Elsewhere'),
+        )
+
+    def queryset(self, request, queryset):
+        # Using icontains catches both s3.amazonaws.com/bucket and bucket.s3.amazonaws.com
+        if self.value() == 'yes':
+            return queryset.filter(audio_url_subscriber__icontains='s3.amazonaws.com')
+        if self.value() == 'no':
+            return queryset.exclude(audio_url_subscriber__icontains='s3.amazonaws.com')
+        return queryset
+    
 @admin.register(Network)
 class NetworkAdmin(admin.ModelAdmin):
     list_display = ('name', 'slug')
@@ -13,7 +32,7 @@ class NetworkAdmin(admin.ModelAdmin):
 @admin.register(Episode)
 class EpisodeAdmin(admin.ModelAdmin):
     list_display = ('title', 'podcast', 'pub_date', 'match_reason', 'has_public_audio', 'has_premium_audio')
-    list_filter = ('podcast__network', 'podcast', 'pub_date', 'match_reason')
+    list_filter = ('podcast__network', 'podcast', S3SubscriberAudioFilter, 'pub_date', 'match_reason')
     search_fields = ('title', 'raw_description', 'guid')
     
     def get_queryset(self, request):

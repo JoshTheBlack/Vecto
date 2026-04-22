@@ -28,12 +28,9 @@ services:
     image: postgres:15
     volumes:
       - postgres_data:/var/lib/postgresql/data
-    environment:
-      - POSTGRES_USER=vecto_user
-      - POSTGRES_PASSWORD=vecto_pass
-      - POSTGRES_DB=vecto
+    env_file: .env
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U vecto_user -d vecto"]
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
       interval: 5s
       retries: 5
     networks:

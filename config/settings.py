@@ -41,17 +41,44 @@ IS_IDE = (RAW_DEBUG == 'IDE')
 # Django's internal DEBUG needs to be a boolean, so it's True if 'True' OR 'IDE'
 DEBUG = (RAW_DEBUG in ['True', 'IDE'])
 
-if IS_IDE:
-    ALLOWED_HOSTS = ['baldmove.local', 'localhost', '127.0.0.1', 'bm.local', 'gaylene-unfollowable-burl.ngrok-free.dev']
-else:
-    ALLOWED_HOSTS = ['.joshtheblack.com', 'localhost', '127.0.0.1', '.baldmove.com']
+# ==========================================
+# ALLOWED HOSTS (Dynamic Multi-Tenant)
+# ==========================================
+class DynamicTenantHosts(list):
+    def __contains__(self, host):
+        # 1. Global Wildcard Bypass
+        if '*' in self:
+            return True
+
+        clean_host = host.split(':')[0].lower()
+
+        # 2. Check explicitly defined .env hosts
+        for base in self:
+            base = base.lower()
+            if base.startswith('.') and clean_host.endswith(base): 
+                return True
+            if clean_host == base: 
+                return True
+
+        # 3. Check database for dynamic client domains
+        try:
+            from pod_manager.models import Network
+            return Network.objects.filter(custom_domain__iexact=clean_host).exists()
+        except Exception:
+            return False
+
+# Grab raw strings from .env
+env_hosts_string = os.getenv('ALLOWED_HOSTS', 'localhost,127.0.0.1')
+env_csrf_string = os.getenv('CSRF_TRUSTED_ORIGINS', 'https://localhost')
+
+# Convert comma-separated strings to Python lists
+base_hosts_list = [h.strip() for h in env_hosts_string.split(',') if h.strip()]
+CSRF_TRUSTED_ORIGINS = [h.strip() for h in env_csrf_string.split(',') if h.strip()]
+
+# Assign dynamic host validator
+ALLOWED_HOSTS = DynamicTenantHosts(base_hosts_list)
 
 SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
-
-CSRF_TRUSTED_ORIGINS = [
-    'https://*.joshtheblack.com',
-    'https://*.baldmove.com',
-]
 
 # Application definition
 

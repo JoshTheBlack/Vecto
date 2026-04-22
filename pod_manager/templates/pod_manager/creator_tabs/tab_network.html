@@ -1,0 +1,100 @@
+            <div class="tab-pane fade show active" id="list-networks" role="tabpanel">
+                <div class="card shadow-sm mb-4 border-secondary bg-dark">
+                    <div class="card-header bg-black border-bottom border-secondary d-flex justify-content-between align-items-center">
+                        <h4 class="mb-0 fw-bold">{{ current_network.name }} Settings</h4>
+                    </div>
+                    <div class="card-body">
+                        <form id="networkSettingsForm" method="POST" action="{% url 'creator_settings' %}">
+                            {% csrf_token %}
+                            <input type="hidden" name="action" value="update_network">
+                            <input type="hidden" name="network_id" value="{{ current_network.id }}">
+                            
+                            <h5 class="fw-bold mb-3 border-bottom border-secondary pb-2 text-warning">Integrations & URLs</h5>
+                            <div class="row mb-4">
+                                <div class="col-md-6 mb-3">
+                                    <label class="form-label text-muted small fw-bold d-block">Patreon Connection</label>
+                                    {% if current_network.patreon_sync_enabled %}
+                                        <div class="alert alert-success d-flex justify-content-between align-items-center py-1 px-3 mb-0" style="height: 38px;">
+                                            <span class="small fw-bold"><i class="bi bi-check-circle-fill"></i> Campaign Linked</span>
+                                            <a href="{% url 'patreon_login' %}?network_id={{ current_network.id }}" class="btn btn-sm btn-outline-success border-0 py-0"><i class="bi bi-arrow-repeat"></i> Re-link</a>
+                                        </div>
+                                        <input type="hidden" name="patreon_campaign_id" value="{{ current_network.patreon_campaign_id }}">
+                                    {% else %}
+                                        <a href="{% url 'patreon_login' %}?network_id={{ current_network.id }}" class="btn btn-primary btn-sm fw-bold w-100 d-flex align-items-center justify-content-center" style="height: 38px;">
+                                            <i class="bi bi-link-45deg fs-5 me-1"></i> Link Patreon Campaign
+                                        </a>
+                                    {% endif %}
+                                </div>
+                                <div class="col-md-6 mb-3">
+                                    <label class="form-label text-muted small fw-bold">Website URL</label>
+                                    <input type="url" name="website_url" class="form-control bg-black text-light border-secondary" value="{{ current_network.website_url }}" placeholder="https://...">
+                                </div>
+                                <div class="col-md-12 mb-3">
+                                    <label class="form-label text-muted small fw-bold">Default Image URL</label>
+                                    <input type="url" name="default_image_url" class="form-control bg-black text-light border-secondary" value="{{ current_network.default_image_url }}">
+                                    <div class="form-text text-muted">Fallback logo for RSS feeds and Custom Mixes.</div>
+                                </div>
+                            </div>
+                            
+                            <h5 class="fw-bold mb-3 border-bottom border-secondary pb-2 text-warning">Feed Processing Rules</h5>
+                            <div class="row mb-4">
+                                <div class="col-md-12 mb-3">
+                                    <label class="form-label text-muted small fw-bold">Ignored Title Tags</label>
+                                    <input type="text" name="ignored_title_tags" class="form-control bg-black text-light border-secondary" value="{{ current_network.ignored_title_tags }}" placeholder="(ad-free), (premium), instant">
+                                    <div class="form-text text-muted">Comma-separated tags to strip from titles during import.</div>
+                                </div>
+                                <div class="col-md-12 mb-3">
+                                    <label class="form-label text-muted small fw-bold">Description Cut Triggers</label>
+                                    <input type="text" name="description_cut_triggers" class="form-control bg-black text-light border-secondary" value="{{ current_network.description_cut_triggers }}" placeholder="Ad Choices, Please leave a review on Apple Podcasts">
+                                    <div class="form-text text-muted">Any paragraph or list item containing one of these exact, comma-separated phrases will be completely deleted from the show notes.</div>
+                                </div>
+                            </div>
+                            
+                            <h5 class="fw-bold mb-3 border-bottom border-secondary pb-2 text-warning">Global Feed Footers</h5>
+                            <div class="row mb-4">
+                                <div class="col-md-12 mb-3">
+                                    <label class="form-label text-muted small fw-bold">Public Feed Footer (HTML)</label>
+                                    <textarea name="footer_public" class="form-control bg-black text-light border-secondary" rows="2">{{ current_network.global_footer_public }}</textarea>
+                                </div>
+                                <div class="col-md-12 mb-3">
+                                    <label class="form-label text-muted small fw-bold">Private Feed Footer (HTML)</label>
+                                    <textarea name="footer_private" class="form-control bg-black text-light border-secondary" rows="2">{{ current_network.global_footer_private }}</textarea>
+                                </div>
+                            </div>
+                            
+                            <h5 class="fw-bold mb-3 border-bottom border-secondary pb-2 mt-4 text-warning">Social Media Links</h5>
+                            <div class="row">
+                                <div class="col-md-4 mb-3">
+                                    <label class="form-label text-muted small fw-bold">Patreon</label>
+                                    <input type="url" name="url_patreon" class="form-control bg-black text-light border-secondary" value="{{ current_network.url_patreon }}">
+                                </div>
+                                <div class="col-md-4 mb-3">
+                                    <label class="form-label text-muted small fw-bold">YouTube</label>
+                                    <input type="url" name="url_youtube" class="form-control bg-black text-light border-secondary" value="{{ current_network.url_youtube }}">
+                                </div>
+                                <div class="col-md-4 mb-3">
+                                    <label class="form-label text-muted small fw-bold">Twitch</label>
+                                    <input type="url" name="url_twitch" class="form-control bg-black text-light border-secondary" value="{{ current_network.url_twitch }}">
+                                </div>
+                                <div class="col-md-6 mb-3">
+                                    <label class="form-label text-muted small fw-bold">Bluesky</label>
+                                    <input type="url" name="url_bluesky" class="form-control bg-black text-light border-secondary" value="{{ current_network.url_bluesky }}">
+                                </div>
+                                <div class="col-md-6 mb-3">
+                                    <label class="form-label text-muted small fw-bold">Twitter (X)</label>
+                                    <input type="url" name="url_twitter" class="form-control bg-black text-light border-secondary" value="{{ current_network.url_twitter }}">
+                                </div>
+                            </div>
+
+                            <h5 class="fw-bold mb-3 border-bottom border-secondary pb-2 text-warning">White-Label Theming</h5>
+                            <div class="mb-4">
+                                <label class="form-label text-muted small fw-bold">Theme Config (JSON)</label>
+                                <textarea name="theme_config" class="form-control bg-black text-light border-secondary font-monospace" rows="15">{{ theme_config_json|safe }}</textarea>
+                            </div>
+                            
+                            <button type="submit" class="btn btn-warning fw-bold"><i class="bi bi-floppy"></i> Save Network Configurations</button>
+                        </form>
+                    </div>
+                </div>
+            </div>
+        

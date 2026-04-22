@@ -1,0 +1,197 @@
+            <div class="tab-pane fade" id="list-shows" role="tabpanel">
+                <div class="card shadow-sm mb-4 border-secondary bg-dark">
+                    <div class="card-body">
+                        
+                        <div class="d-flex justify-content-between align-items-center mb-4">
+                            <h4 class="fw-bold mb-0">Podcasts in {{ current_network.name }}</h4>
+                            <div>
+                                <button type="button" class="btn btn-success btn-sm me-2 text-dark fw-bold" onclick="startAllLiveImports()">
+                                    <i class="bi bi-cloud-arrow-down-fill"></i> Import All
+                                </button>
+                                <button type="button" class="btn btn-warning btn-sm fw-bold" data-bs-toggle="modal" data-bs-target="#addShowModal">
+                                    <i class="bi bi-plus-lg"></i> Add New Show
+                                </button>
+                            </div>
+                        </div>
+
+                        <form id="manage-podcasts-form" class="row gx-2 mb-4 bg-black p-3 rounded border border-secondary mx-0">
+                            <input type="hidden" name="network" value="{{ current_network.slug }}">
+                            
+                            <div class="col-md-5 mb-2 mb-md-0">
+                                <div class="input-group input-group-sm">
+                                    <span class="input-group-text bg-dark border-secondary text-muted"><i class="bi bi-search"></i></span>
+                                    <input type="text" name="show_q" value="{{ show_q }}" class="form-control bg-dark text-light border-secondary" placeholder="Search Podcasts..." oninput="applyLiveFilter()">
+                                </div>
+                            </div>
+
+                            <div class="col-md-3 mb-2 mb-md-0">
+                                <select name="show_sort" class="form-select form-select-sm bg-dark text-light border-secondary" onchange="applyLiveFilter()">
+                                    <option value="alpha" {% if show_sort == 'alpha' %}selected{% endif %}>A-Z (Default)</option>
+                                    <option value="recent" {% if show_sort == 'recent' %}selected{% endif %}>Recently Updated</option>
+                                    <option value="oldest" {% if show_sort == 'oldest' %}selected{% endif %}>Stale (Oldest First)</option>
+                                    <option value="count_desc" {% if show_sort == 'count_desc' %}selected{% endif %}>Most Episodes</option>
+                                </select>
+                            </div>
+
+                            <div class="col-md-4 mb-2 mb-md-0">
+                                <select name="show_mix" class="form-select form-select-sm bg-dark text-light border-secondary" onchange="applyLiveFilter()">
+                                    <option value="">All Feeds</option>
+                                    {% for mix in current_network.mixes.all %}
+                                        <option value="{{ mix.id }}" {% if show_mix == mix.id|stringformat:"s" %}selected{% endif %}>In: {{ mix.name }}</option>
+                                    {% endfor %}
+                                </select>
+                            </div>
+                        </form>
+                        
+                        <div class="accordion accordion-flush" id="showsAccordion">
+                            {% for show in manage_podcasts %} <div class="accordion-item bg-black border-secondary mb-2 rounded">
+                                <h2 class="accordion-header" id="heading-{{ show.id }}">
+                                    <button class="accordion-button collapsed bg-black text-light border-secondary" type="button" data-bs-toggle="collapse" data-bs-target="#collapse-{{ show.id }}">
+                                        {% if show.image_url %}
+                                            <img src="{{ show.image_url }}" alt="cover" class="rounded me-3" style="width: 40px; height: 40px; object-fit: cover;">
+                                        {% endif %}
+                                        <div class="d-flex flex-column">
+                                            <span class="fw-bold">{{ show.title }}</span>
+                                            <small class="text-muted text-uppercase" style="font-size: 0.7rem;">
+                                                Tier: ${{ show.required_tier.minimum_dollars|default:0|floatformat:2 }} &bull; 
+                                                {{ show.episode_count }} Episodes &bull; 
+                                                Latest: {% if show.latest_episode_date %}{{ show.latest_episode_date|date:"M j, Y" }}{% else %}<span class="text-danger">Never</span>{% endif %}
+                                            </small>
+                                        </div>
+                                    </button>
+                                </h2>
+                                <div id="collapse-{{ show.id }}" class="accordion-collapse collapse" data-bs-parent="#showsAccordion">
+                                    <div class="accordion-body">
+                                        
+                                        <div class="mb-4 border-bottom border-secondary pb-3">
+                                            <div class="d-flex justify-content-between align-items-center mb-2">
+                                                <span class="text-muted small fw-bold text-uppercase">Data Ingestion</span>
+                                                <button type="button" class="btn btn-sm btn-success text-dark fw-bold" id="btn-import-{{ show.id }}" onclick="startLiveImport({{ show.id }})">
+                                                    <i class="bi bi-cloud-arrow-down-fill"></i> Run Live Import
+                                                </button>
+                                            </div>
+                                            
+                                            <div id="terminal-container-{{ show.id }}" class="d-none mt-3">
+                                                <div class="text-end mb-1">
+                                                    <button type="button" class="btn btn-sm text-muted text-hover-warning p-0" onclick="document.getElementById('terminal-container-{{ show.id }}').classList.add('d-none')">
+                                                        <i class="bi bi-x-circle"></i> Close Log
+                                                    </button>
+                                                </div>
+                                                <pre id="terminal-{{ show.id }}" class="bg-black text-light p-3 rounded border border-secondary font-monospace" style="height: 250px; overflow-y: auto; font-size: 0.85rem; white-space: pre-wrap;"></pre>
+                                            </div>
+                                        </div>
+                                        
+                                        <form method="POST" action="{% url 'creator_settings' %}">
+                                            {% csrf_token %}
+                                            <input type="hidden" name="action" value="update_show">
+                                            <input type="hidden" name="show_id" value="{{ show.id }}">
+                                            
+                                            <div class="row">
+                                                <div class="col-md-6 mb-3">
+                                                    <label class="form-label text-muted small fw-bold">Public Feed RSS URL</label>
+                                                    <input type="url" name="public_feed_url" class="form-control bg-dark text-light border-secondary" value="{{ show.public_feed_url|default_if_none:'' }}" placeholder="https://... (Leave blank if Premium-Only)">
+                                                </div>
+                                                <div class="col-md-6 mb-3">
+                                                    <label class="form-label text-muted small fw-bold">Subscriber Feed URL (Base)</label>
+                                                    <input type="url" name="subscriber_feed_url" class="form-control bg-dark text-light border-secondary" value="{{ show.subscriber_feed_url|default_if_none:'' }}" placeholder="https://... (Leave blank if Public-Only)">
+                                                </div>
+                                            </div>
+
+                                            <div class="mb-3">
+                                                <label class="form-label text-muted small fw-bold">Required Patreon Tier</label>
+                                                <select name="tier_id" class="form-select bg-dark text-light border-secondary">
+                                                    <option value="">Public / Free</option>
+                                                    {% for tier in current_network.tiers.all %}
+                                                        <option value="{{ tier.id }}" {% if show.required_tier_id == tier.id %}selected{% endif %}>
+                                                            ${{ tier.minimum_dollars|floatformat:2 }} - {{ tier.name }}
+                                                        </option>
+                                                    {% endfor %}
+                                                </select>
+                                            </div>
+                                            
+                                            <div class="mb-3">
+                                                <label class="form-label text-muted small fw-bold">Show-Specific Public Footer (Optional)</label>
+                                                <textarea name="show_footer_public" class="form-control bg-dark text-light border-secondary" rows="2">{{ show.show_footer_public }}</textarea>
+                                            </div>
+                                            
+                                            <div class="mb-4">
+                                                <label class="form-label text-muted small fw-bold">Show-Specific Private Footer (Optional)</label>
+                                                <textarea name="show_footer_private" class="form-control bg-dark text-light border-secondary" rows="2">{{ show.show_footer_private }}</textarea>
+                                            </div>
+                                            
+                                            <button type="submit" class="btn btn-outline-warning btn-sm fw-bold"><i class="bi bi-floppy"></i> Save Show Settings</button>
+                                        </form>
+                                        
+                                    </div>
+                                </div>
+                            </div>
+                            {% empty %}
+                            <div class="text-center py-5">
+                                <p class="text-muted mb-0">No shows added to this network yet.</p>
+                            </div>
+                            {% endfor %}
+                        </div>
+
+                    </div>
+                </div>
+            </div>
+            
+            <div class="modal fade" id="addShowModal" tabindex="-1" aria-hidden="true">
+              <div class="modal-dialog modal-lg">
+                <div class="modal-content bg-dark text-light border-secondary">
+                  <div class="modal-header border-bottom border-secondary bg-black">
+                    <h5 class="modal-title fw-bold"><i class="bi bi-mic text-warning"></i> Add New Podcast</h5>
+                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                  </div>
+                  <form method="POST" action="{% url 'creator_settings' %}">
+                      <div class="modal-body p-4">
+                          {% csrf_token %}
+                          <input type="hidden" name="action" value="add_show">
+                          <input type="hidden" name="network_id" value="{{ current_network.id }}">
+                          
+                          <div class="mb-3">
+                              <label class="form-label text-muted small fw-bold">Adding to Network</label>
+                              <input type="text" class="form-control bg-dark text-muted border-secondary" value="{{ current_network.name }}" disabled>
+                          </div>
+                          
+                          <div class="row">
+                              <div class="col-md-6 mb-3">
+                                  <label class="form-label text-muted small fw-bold">Show Title</label>
+                                  <input type="text" name="title" class="form-control bg-black text-light border-secondary" required placeholder="e.g., Prestige">
+                              </div>
+                              <div class="col-md-6 mb-3">
+                                  <label class="form-label text-muted small fw-bold">Slug</label>
+                                  <input type="text" name="slug" class="form-control bg-black text-light border-secondary" required placeholder="e.g., prestige">
+                                  <div class="form-text text-muted">URL-friendly name. No spaces.</div>
+                              </div>
+                          </div>
+                          
+                          <div class="mb-3">
+                              <label class="form-label text-muted small fw-bold">Required Tier</label>
+                              <select name="tier_id" class="form-select bg-black text-light border-secondary">
+                                  <option value="">Public / Free</option>
+                                  {% for tier in current_network.tiers.all %}
+                                      <option value="{{ tier.id }}">${{ tier.minimum_dollars|floatformat:2 }} - {{ tier.name }}</option>
+                                  {% endfor %}
+                              </select>
+                          </div>
+                          
+                          <div class="col-md-6 mb-3">
+                            <label class="form-label text-muted small fw-bold">Public Feed RSS URL</label>
+                            <input type="url" name="public_feed_url" class="form-control bg-dark text-light border-secondary" value="{{ show.public_feed_url|default_if_none:'' }}" placeholder="https://... (Leave blank if Premium-Only)">
+                        </div>
+                        <div class="col-md-6 mb-3">
+                            <label class="form-label text-muted small fw-bold">Subscriber Feed URL (Base)</label>
+                            <input type="url" name="subscriber_feed_url" class="form-control bg-dark text-light border-secondary" value="{{ show.subscriber_feed_url|default_if_none:'' }}" placeholder="https://... (Leave blank if Public-Only)">
+                        </div>
+                          
+                      </div>
+                      <div class="modal-footer border-top border-secondary">
+                        <button type="button" class="btn btn-outline-light" data-bs-dismiss="modal">Cancel</button>
+                        <button type="submit" class="btn btn-warning fw-bold"><i class="bi bi-plus-circle"></i> Create Show</button>
+                      </div>
+                  </form>
+                </div>
+              </div>
+            </div>
+            

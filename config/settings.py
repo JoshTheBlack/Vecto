@@ -66,17 +66,35 @@ class DynamicTenantHosts(list):
             return Network.objects.filter(custom_domain__iexact=clean_host).exists()
         except Exception:
             return False
+# ==========================================
+# CSRF ORIGINS (Linked to Allowed Hosts)
+# ==========================================
+class DynamicTenantCSRF(list):
+    def __init__(self, allowed_hosts_instance):
+        self.allowed_hosts = allowed_hosts_instance
 
+    def __contains__(self, origin):
+        # The origin looks like 'https://vecto.joshtheblack.com'
+        try:
+            # Strip the scheme (http:// or https://) to isolate the domain
+            host = origin.split('://')[1].lower()
+            # Feed the domain directly into our Allowed Hosts checker!
+            return host in self.allowed_hosts
+        except IndexError:
+            return False
+            
+    def __iter__(self):
+        # Django's CSRF middleware tries to iterate over this list to check
+        # for strict wildcards if __contains__ fails. We just return empty.
+        return iter([])
+    
 # Grab raw strings from .env
 env_hosts_string = os.getenv('ALLOWED_HOSTS', 'localhost,127.0.0.1')
-env_csrf_string = os.getenv('CSRF_TRUSTED_ORIGINS', 'https://localhost')
-
-# Convert comma-separated strings to Python lists
 base_hosts_list = [h.strip() for h in env_hosts_string.split(',') if h.strip()]
-CSRF_TRUSTED_ORIGINS = [h.strip() for h in env_csrf_string.split(',') if h.strip()]
 
 # Assign dynamic host validator
 ALLOWED_HOSTS = DynamicTenantHosts(base_hosts_list)
+CSRF_TRUSTED_ORIGINS = DynamicTenantCSRF(ALLOWED_HOSTS)
 
 SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
 

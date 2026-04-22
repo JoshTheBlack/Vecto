@@ -10,6 +10,9 @@ class NetworkMiddleware:
         self.get_response = get_response
 
     def __call__(self, request):
+        if request.path.startswith('/api/') or request.path.startswith('/admin/') or request.path.startswith('/static/'):
+            # Just pass the request through safely without attaching a network
+            return self.get_response(request)
         host = request.get_host().split(':')[0] # Remove port if present
         logger.debug(f"Incoming request for host: '{host}' | Path: {request.path}")
         

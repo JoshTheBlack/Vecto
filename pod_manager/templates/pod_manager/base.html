@@ -301,5 +301,18 @@
 </div>
 
 <script src="{% static 'pod_manager/js/bootstrap.bundle.min.js' %}"></script>
+{% if request.is_impersonating %}
+    <div class="fixed-bottom bg-danger text-white text-center py-2 shadow-lg fw-bold" style="z-index: 10000; border-top: 3px solid #ffc107;">
+        <i class="bi bi-incognito me-2 fs-5"></i> 
+        You are currently impersonating <span class="text-warning">{{ request.user.first_name|default:request.user.username }}</span>. 
+        Any actions you take will be performed as this user.
+        <a href="{% url 'stop_impersonation' %}" class="btn btn-sm btn-dark ms-3 border border-warning fw-bold text-warning">
+            Exit Impersonation <i class="bi bi-box-arrow-right ms-1"></i>
+        </a>
+    </div>
+    <div style="height: 50px;"></div> 
+    {% endif %}
+</body>
+</html>
 </body>
 </html>

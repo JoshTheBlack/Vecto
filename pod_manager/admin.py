@@ -3,6 +3,8 @@ from django.contrib.admin import SimpleListFilter
 from django.contrib.auth.admin import UserAdmin as BaseUserAdmin
 from django.contrib.auth.models import User
 from django.db.models import Q, F, BooleanField, ExpressionWrapper
+from django.utils.html import format_html, mark_safe
+from django.urls import reverse
 from .models import Network, PatreonTier, Podcast, Episode, UserMix, PatronProfile
 
 class S3SubscriberAudioFilter(SimpleListFilter):
@@ -88,10 +90,13 @@ class PatronProfileInline(admin.StackedInline):
 admin.site.unregister(User)
 
 @admin.register(User)
-class UserAdmin(BaseUserAdmin):
+class CustomUserAdmin(BaseUserAdmin):
     inlines = (PatronProfileInline,)
-    list_display = BaseUserAdmin.list_display + ('get_total_pledge_display',)
+    
+    # Append BOTH of our custom columns to the end of the standard Django list
+    list_display = BaseUserAdmin.list_display + ('get_total_pledge_display', 'impersonate_action')
 
+    # --- Column 1: Patreon Pledge ---
     def get_total_pledge_display(self, instance):
         if hasattr(instance, 'patron_profile') and instance.patron_profile.active_pledges:
             total_cents = sum(instance.patron_profile.active_pledges.values())
@@ -100,6 +105,19 @@ class UserAdmin(BaseUserAdmin):
     
     get_total_pledge_display.short_description = 'Total Pledge'
 
+    # --- Column 2: Impersonation ---
+    def impersonate_action(self, obj):
+        if not obj.is_superuser:
+            url = reverse('start_impersonation', args=[obj.id])
+            # format_html is correct here because we are injecting the 'url' variable
+            return format_html('<a class="button" style="background-color: #ffc107; color: black; font-weight: bold; padding: 5px 10px; border-radius: 4px;" href="{}">Impersonate</a>', url)
+        
+        # mark_safe is required here because there are no variables to inject
+        return mark_safe('<span style="color: gray;">Superuser (Locked)</span>')
+        
+    impersonate_action.short_description = 'Impersonate User'
+
+ 
 admin.site.register(PatreonTier)
 admin.site.register(Podcast)
 admin.site.register(UserMix)

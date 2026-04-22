@@ -113,6 +113,8 @@ INSTALLED_APPS = [
 
 CRYPTOGRAPHY_KEY = os.environ.get('DJANGO_CRYPTOGRAPHY_KEY', 'generate-a-secure-random-string-here')
 
+
+
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
     'whitenoise.middleware.WhiteNoiseMiddleware',
@@ -120,9 +122,10 @@ MIDDLEWARE = [
     'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
     'django.contrib.auth.middleware.AuthenticationMiddleware',
-    'pod_manager.middleware.NetworkMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
+    'pod_manager.middleware.ImpersonationMiddleware',
+    'pod_manager.middleware.NetworkMiddleware', 
 ]
 
 ROOT_URLCONF = 'config.urls'

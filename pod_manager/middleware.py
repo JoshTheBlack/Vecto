@@ -1,6 +1,8 @@
 import logging
 from django.http import Http404
 from django.shortcuts import render
+from django.contrib.auth.models import User
+from django.utils.deprecation import MiddlewareMixin
 from .models import Network
 
 logger = logging.getLogger(__name__)
@@ -50,3 +52,41 @@ class NetworkMiddleware:
                 raise Http404("Tenant not found. No network is configured for this domain.")
 
         return self.get_response(request)
+
+class ImpersonationMiddleware(MiddlewareMixin):
+    """
+    Allows staff members to view the site as a standard user.
+    Maintains a strict security boundary preventing superuser hijacking.
+    """
+    def process_request(self, request):
+        request.is_impersonating = False
+        request.impersonator = None
+
+        # 1. If not logged in, or not a staff member, ignore completely.
+        if not hasattr(request, 'user') or not request.user.is_authenticated:
+            return
+            
+        # Security: If a non-staff user somehow gets this session key, purge it immediately.
+        if not request.user.is_staff:
+            if 'impersonated_user_id' in request.session:
+                del request.session['impersonated_user_id']
+            return
+
+        impersonated_user_id = request.session.get('impersonated_user_id')
+        if impersonated_user_id:
+            try:
+                impersonated_user = User.objects.get(id=impersonated_user_id)
+                
+                # Security: NEVER allow impersonation of a superuser
+                if impersonated_user.is_superuser:
+                    logger.warning(f"SECURITY: Staff user {request.user.email} attempted to impersonate SUPERUSER {impersonated_user.email}. Session purged.")
+                    del request.session['impersonated_user_id']
+                    return
+
+                # 2. Swap the user object and set the flags for the templates
+                request.impersonator = request.user
+                request.user = impersonated_user
+                request.is_impersonating = True
+                
+            except User.DoesNotExist:
+                del request.session['impersonated_user_id']

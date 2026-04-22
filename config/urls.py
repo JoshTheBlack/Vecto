@@ -24,6 +24,8 @@ urlpatterns = [
     path('oauth/patreon/callback', views.patreon_callback, name='patreon_callback'),
     path('patreon/callback/webhook/', views.patreon_webhook, name='patreon_webhook'),
     path('api/traefik-config/', views.traefik_config_api, name='traefik_config_api'),
+    path('impersonate/start/<int:user_id>/', views.start_impersonation, name='start_impersonation'),
+    path('impersonate/stop/', views.stop_impersonation, name='stop_impersonation'),
 
     # Feed Endpoints
     path('feed/', views.generate_custom_feed, name='custom_feed'),

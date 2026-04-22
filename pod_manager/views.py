@@ -18,6 +18,7 @@ from datetime import timedelta
 import requests
 from django.conf import settings
 from django.contrib import messages
+from django.contrib.admin.views.decorators import staff_member_required
 from django.contrib.auth import login
 from django.contrib.auth.decorators import login_required
 from django.contrib.auth.models import User
@@ -370,6 +371,35 @@ def logout_view(request):
     from django.contrib.auth import logout
     logout(request)
     return redirect('home')
+
+# ==========================================
+# STAFF IMPERSONATION VIEWS
+# ==========================================
+@staff_member_required
+def start_impersonation(request, user_id):
+    target_user = get_object_or_404(User, id=user_id)
+
+    if target_user.is_superuser:
+        messages.error(request, "Security restriction: You cannot impersonate a superuser.")
+        return redirect('admin:auth_user_changelist')
+
+    if target_user == request.user:
+        messages.warning(request, "You are already logged in as yourself.")
+        return redirect('admin:auth_user_changelist')
+
+    request.session['impersonated_user_id'] = target_user.id
+    logger.info(f"Staff User {request.user.username} initiated impersonation of {target_user.username}")
+    
+    messages.success(request, f"Now viewing site as {target_user.email}.")
+    return redirect('home')
+
+def stop_impersonation(request):
+    if 'impersonated_user_id' in request.session:
+        logger.info(f"Staff User {request.impersonator.username} ended impersonation.")
+        del request.session['impersonated_user_id']
+        messages.success(request, "Impersonation ended. Welcome back.")
+        
+    return redirect('admin:auth_user_changelist')
 
 # ==========================================
 # USER-FACING VIEWS

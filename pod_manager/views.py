@@ -1627,6 +1627,41 @@ def play_episode(request, episode_id):
     response['Cache-Control'] = 'no-cache, no-store, must-revalidate'
     return response
 
+def traefik_config_api(request):
+    # Security: Require a token so only Traefik can read this endpoint
+    # You can set this token to any secure string you want
+    expected_token = getattr(settings, 'TRAEFIK_API_TOKEN', None)
+    if request.GET.get('token') != expected_token:
+        return HttpResponseForbidden("Unauthorized access.")
+
+    routers = {}
+
+    # Fetch all networks that have a custom domain explicitly set
+    networks = Network.objects.exclude(custom_domain__isnull=True).exclude(custom_domain__exact='')
+
+    for network in networks:
+        # Router names must be unique. We use the network ID to guarantee this.
+        router_name = f"custom-domain-{network.id}"
+
+        routers[router_name] = {
+            "rule": f"Host(`{network.custom_domain}`)",
+            # This MUST exactly match the service name defined in your fileConfig.yml
+            "service": "vecto-service",
+            "tls": {
+                # Replace 'myresolver' with your actual Let's Encrypt certResolver name
+                "certResolver": "letsencrypt" 
+            }
+        }
+
+    # Traefik expects this exact nested JSON structure
+    traefik_json = {
+        "http": {
+            "routers": routers
+        }
+    }
+
+    return JsonResponse(traefik_json)
+
 # ==========================================
 # BACKGROUND QUEUE & IMPORT STREAMING
 # ==========================================

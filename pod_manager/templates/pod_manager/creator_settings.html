@@ -166,10 +166,38 @@
                                 </button>
                             </div>
                         </div>
+
+                        <form id="manage-podcasts-form" class="row gx-2 mb-4 bg-black p-3 rounded border border-secondary mx-0">
+                            <input type="hidden" name="network" value="{{ current_network.slug }}">
+                            
+                            <div class="col-md-5 mb-2 mb-md-0">
+                                <div class="input-group input-group-sm">
+                                    <span class="input-group-text bg-dark border-secondary text-muted"><i class="bi bi-search"></i></span>
+                                    <input type="text" name="show_q" value="{{ show_q }}" class="form-control bg-dark text-light border-secondary" placeholder="Search Podcasts..." oninput="applyLiveFilter()">
+                                </div>
+                            </div>
+
+                            <div class="col-md-3 mb-2 mb-md-0">
+                                <select name="show_sort" class="form-select form-select-sm bg-dark text-light border-secondary" onchange="applyLiveFilter()">
+                                    <option value="alpha" {% if show_sort == 'alpha' %}selected{% endif %}>A-Z (Default)</option>
+                                    <option value="recent" {% if show_sort == 'recent' %}selected{% endif %}>Recently Updated</option>
+                                    <option value="oldest" {% if show_sort == 'oldest' %}selected{% endif %}>Stale (Oldest First)</option>
+                                    <option value="count_desc" {% if show_sort == 'count_desc' %}selected{% endif %}>Most Episodes</option>
+                                </select>
+                            </div>
+
+                            <div class="col-md-4 mb-2 mb-md-0">
+                                <select name="show_mix" class="form-select form-select-sm bg-dark text-light border-secondary" onchange="applyLiveFilter()">
+                                    <option value="">All Feeds</option>
+                                    {% for mix in current_network.mixes.all %}
+                                        <option value="{{ mix.id }}" {% if show_mix == mix.id|stringformat:"s" %}selected{% endif %}>In: {{ mix.name }}</option>
+                                    {% endfor %}
+                                </select>
+                            </div>
+                        </form>
                         
                         <div class="accordion accordion-flush" id="showsAccordion">
-                            {% for show in current_network.podcasts.all %}
-                            <div class="accordion-item bg-black border-secondary mb-2 rounded">
+                            {% for show in manage_podcasts %} <div class="accordion-item bg-black border-secondary mb-2 rounded">
                                 <h2 class="accordion-header" id="heading-{{ show.id }}">
                                     <button class="accordion-button collapsed bg-black text-light border-secondary" type="button" data-bs-toggle="collapse" data-bs-target="#collapse-{{ show.id }}">
                                         {% if show.image_url %}
@@ -178,7 +206,9 @@
                                         <div class="d-flex flex-column">
                                             <span class="fw-bold">{{ show.title }}</span>
                                             <small class="text-muted text-uppercase" style="font-size: 0.7rem;">
-                                                Tier: ${{ show.required_tier.minimum_dollars|default:0|floatformat:2 }} &bull; {{ show.episodes.count }} Episodes
+                                                Tier: ${{ show.required_tier.minimum_dollars|default:0|floatformat:2 }} &bull; 
+                                                {{ show.episode_count }} Episodes &bull; 
+                                                Latest: {% if show.latest_episode_date %}{{ show.latest_episode_date|date:"M j, Y" }}{% else %}<span class="text-danger">Never</span>{% endif %}
                                             </small>
                                         </div>
                                     </button>
@@ -914,7 +944,7 @@ document.addEventListener('DOMContentLoaded', function() {
     // 1. Force specific tabs based on URL context clues
     if (urlParams.has('merge_view')) {
         activeTabId = '#list-merge';
-    } else if (urlParams.has('auto_import')) {
+    } else if (urlParams.has('auto_import') || urlParams.has('show_q') || urlParams.has('show_sort') || urlParams.has('show_mix')) {
         activeTabId = '#list-shows';
     } else if (window.location.hash) {
         activeTabId = window.location.hash;
@@ -953,5 +983,47 @@ document.addEventListener('DOMContentLoaded', function() {
         }, 500);
     }
 });
+
+// ==========================================
+// LIVE FILTERING (AJAX)
+// ==========================================
+let filterTimeout = null;
+
+function applyLiveFilter() {
+    clearTimeout(filterTimeout);
+    
+    const accordion = document.getElementById('showsAccordion');
+    accordion.style.opacity = '0.5'; // Dim slightly to indicate loading
+
+    // 300ms debounce so we don't spam requests on every single keystroke
+    filterTimeout = setTimeout(() => {
+        const form = document.getElementById('manage-podcasts-form');
+        const url = new URL(window.location.pathname, window.location.origin);
+        
+        // Grab all inputs from the form automatically
+        const params = new URLSearchParams(new FormData(form));
+        
+        fetch(url.pathname + '?' + params.toString())
+            .then(response => response.text())
+            .then(html => {
+                const parser = new DOMParser();
+                const doc = parser.parseFromString(html, 'text/html');
+                
+                // Extract just the new accordion HTML and replace the old one
+                const newAccordion = doc.getElementById('showsAccordion');
+                if (newAccordion) {
+                    accordion.innerHTML = newAccordion.innerHTML;
+                }
+                
+                accordion.style.opacity = '1';
+                // Silently update the URL bar so browser back-buttons still work
+                window.history.replaceState({}, '', url.pathname + '?' + params.toString() + '#list-shows');
+            })
+            .catch(error => {
+                console.error("Live filter failed:", error);
+                accordion.style.opacity = '1';
+            });
+    }, 300); 
+}
 </script>
 {% endblock %}

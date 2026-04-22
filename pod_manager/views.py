@@ -25,7 +25,8 @@ from django.core.cache import cache
 from django.core.files.base import ContentFile
 from django.core.paginator import Paginator
 from django.db import transaction
-from django.db.models import Q
+from django.db.models import Q, F, Case, When, Value, CharField, Max, Count
+from django.db.models.functions import Substr, Lower
 from django.http import JsonResponse, HttpResponse, HttpResponseForbidden, StreamingHttpResponse, Http404, HttpResponseRedirect
 from django.shortcuts import redirect, get_object_or_404, render
 from django.urls import reverse
@@ -671,9 +672,54 @@ def creator_settings(request):
     tiers = PatreonTier.objects.filter(network__in=allowed_networks).order_by('minimum_cents')
     
     # =========================================================
+    # MANAGE PODCASTS ENGINE (Search, Filter, Sort)
+    # =========================================================
+    show_q = request.GET.get('show_q', '').strip()
+    show_sort = request.GET.get('show_sort', 'alpha')
+    show_mix = request.GET.get('show_mix', '')
+
+    # 1. Annotate the query with clean sorting titles, max dates, and episode counts
+    # (Using istartswith instead of regex ensures it runs perfectly on both Postgres AND your local SQLite!)
+    manage_podcasts = current_network.podcasts.annotate(
+        clean_title=Case(
+            When(title__istartswith='The ', then=Substr('title', 5)),
+            When(title__istartswith='A ', then=Substr('title', 3)),
+            When(title__istartswith='An ', then=Substr('title', 4)),
+            default='title',
+            output_field=CharField()
+        ),
+        latest_episode_date=Max('episodes__pub_date'),
+        episode_count=Count('episodes', distinct=True)
+    )
+
+    # 2. Apply Text Search Filter
+    if show_q:
+        manage_podcasts = manage_podcasts.filter(
+            Q(title__icontains=show_q) | Q(slug__icontains=show_q)
+        )
+
+    # 3. Apply Super Mix Filter
+    if show_mix:
+        try:
+            mix = current_network.mixes.get(id=show_mix)
+            manage_podcasts = manage_podcasts.filter(id__in=mix.selected_podcasts.all())
+        except Exception:
+            pass
+
+    # 4. Apply Smart Sorting
+    if show_sort == 'recent':
+        manage_podcasts = manage_podcasts.order_by(F('latest_episode_date').desc(nulls_last=True))
+    elif show_sort == 'oldest':
+        manage_podcasts = manage_podcasts.order_by(F('latest_episode_date').asc(nulls_last=True))
+    elif show_sort == 'count_desc':
+        manage_podcasts = manage_podcasts.order_by('-episode_count')
+    else:
+        # Default to Alpha (A-Z) utilizing the stripped 'clean_title'
+        manage_podcasts = manage_podcasts.order_by(Lower('clean_title'))
+
+    # =========================================================
     # THE MERGE DESK ENGINE (Search, Filter, Paginate)
     # =========================================================
-    from django.db.models import Q, F
     
     merge_view = request.GET.get('merge_view', 'orphans')
     merge_q = request.GET.get('merge_q', '').strip()
@@ -749,7 +795,11 @@ def creator_settings(request):
         'total_patrons': total_patrons,
         'tiers': tiers,
         'theme_config_json': json.dumps(current_network.theme_config, indent=2) if current_network else "{}",
-        
+        # Manage Podcasts Context
+        'manage_podcasts': manage_podcasts,
+        'show_q': show_q,
+        'show_sort': show_sort,
+        'show_mix': show_mix,
         # Merge Desk Context
         'merge_view': merge_view,
         'merge_q': merge_q,
@@ -758,8 +808,6 @@ def creator_settings(request):
         'public_orphans': public_orphans,
         'private_orphans': private_orphans,
         'matched_episodes': matched_episodes,
-        
-        # New Context Variables
         'network_podcasts': network_podcasts,
         'merge_podcast_id': merge_podcast_id,
     }

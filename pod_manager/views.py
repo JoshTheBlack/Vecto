@@ -335,8 +335,10 @@ def patreon_callback(request):
             logger.warning(f"Updating existing Patreon ID for {email} from {profile.patreon_id} to {patreon_id}")
             profile.patreon_id = patreon_id
 
+        known_campaign_ids = set(Network.objects.exclude(patreon_campaign_id__isnull=True).exclude(patreon_campaign_id='').values_list('patreon_campaign_id', flat=True))
         # --- INSTANT PLEDGE SYNC LOGIC ---
         active_pledges = profile.active_pledges or {}
+        seen_campaigns = set()
         
         for item in included_data:
             if item.get('type') == 'member':
@@ -349,13 +351,25 @@ def patreon_callback(request):
                 campaign_data = rels.get('campaign', {}).get('data', {})
                 if campaign_data:
                     campaign_id = str(campaign_data.get('id'))
-                    # If active, set the cents. Otherwise, set to 0 to revoke.
-                    active_pledges[campaign_id] = cents if status == 'active_patron' else 0
+                    
+                    # SECURITY & OPTIMIZATION: Only process campaigns belonging to Vecto networks
+                    if campaign_id in known_campaign_ids:
+                        seen_campaigns.add(campaign_id)
+                        
+                        if status == 'active_patron':
+                            active_pledges[campaign_id] = cents
+                        elif campaign_id in active_pledges:
+                            # Delete the key entirely to save database space instead of setting to 0
+                            del active_pledges[campaign_id]
+
+        # Cleanup: Remove old campaigns the user dropped, OR campaigns that left Vecto
+        for old_campaign in list(active_pledges.keys()):
+            if old_campaign not in known_campaign_ids or old_campaign not in seen_campaigns:
+                del active_pledges[old_campaign]
 
         profile.active_pledges = active_pledges
         profile.last_active = timezone.now()
         profile.save()
-        # ---------------------------------
 
         login(request, user)
         logger.info(f"User {email} successfully logged in via Patreon and pledges synced.")
@@ -1522,14 +1536,25 @@ def patreon_webhook(request):
             campaign_relationship = member_data.get('relationships', {}).get('campaign', {}).get('data', {})
             campaign_id = str(campaign_relationship.get('id', ''))
             
-            if campaign_id:
+            # Verify the campaign actually belongs to a Vecto network
+            is_vecto_campaign = Network.objects.filter(patreon_campaign_id=campaign_id).exists()
+            
+            if campaign_id and is_vecto_campaign:
                 active_pledges = profile.active_pledges or {}
-                active_pledges[campaign_id] = final_amount
+                
+                if final_amount > 0:
+                    active_pledges[campaign_id] = final_amount
+                elif campaign_id in active_pledges:
+                    # Delete the key to save space if the pledge was cancelled
+                    del active_pledges[campaign_id]
+                    
                 profile.active_pledges = active_pledges
                 profile.save()
-                logger.info(f"Webhook Success: Updated {profile.user.email} on Campaign {campaign_id} to {final_amount} cents.")
+                logger.info(f"Webhook Success: Updated {profile.user.email} on Campaign {campaign_id}.")
+            elif not is_vecto_campaign:
+                logger.info(f"Webhook Ignored: Campaign {campaign_id} does not belong to any Vecto network.")
             else:
-                logger.warning(f"Webhook processed for {patreon_user_id}, but no campaign ID was found in the payload.")
+                logger.warning(f"Webhook processed for {patreon_user_id}, but no campaign ID was found.")
                 
         return HttpResponse("Success", status=200)
         

@@ -1,3 +1,4 @@
+import json
 from django.contrib import admin
 from django.contrib.admin import SimpleListFilter
 from django.contrib.auth.admin import UserAdmin as BaseUserAdmin
@@ -84,8 +85,88 @@ class PatronProfileInline(admin.StackedInline):
     model = PatronProfile
     can_delete = False
     verbose_name_plural = 'Patron Profile'
-    fields = ('patreon_id', 'active_pledges', 'feed_token')
-    readonly_fields = ('feed_token',)
+    
+    # We leave 'active_pledges' editable, but add our helper guide as read-only
+    fields = ('patreon_id', 'feed_token', 'last_active', 'campaign_reference_guide', 'active_pledges')
+    readonly_fields = ('campaign_reference_guide', 'feed_token', 'last_active')
+
+    def campaign_reference_guide(self, obj):
+        networks = Network.objects.exclude(patreon_campaign_id__isnull=True).exclude(patreon_campaign_id='')
+        
+        # 1. Build the Interactive HTML UI
+        html = "<div style='padding: 15px; background-color: #212529; color: #f8f9fa; border-radius: 6px; border: 1px solid #495057;'>"
+        html += "<h4 style='color: #ffc107; margin-top: 0;'><i class='bi bi-sliders'></i> Patreon Test Interface</h4>"
+        html += "<p style='font-size: 0.9em; color: #adb5bd;'>Enter pledge amounts below in dollars (e.g. 5.00). The hidden JSON database field will update automatically.</p>"
+        
+        for net in networks:
+            camp_id = str(net.patreon_campaign_id)
+            current_cents = obj.active_pledges.get(camp_id, 0) if obj and obj.active_pledges else 0
+            current_dollars = current_cents / 100.0
+            
+            html += f"<div style='margin-bottom: 10px; padding-bottom: 10px; border-bottom: 1px solid #343a40; display: flex; justify-content: space-between; align-items: center;'>"
+            html += f"  <div><strong style='font-size: 1.1em;'>{net.name}</strong><br><span style='color: #6c757d; font-size: 0.85em;'>ID: {camp_id}</span></div>"
+            html += f"  <div style='display: flex; align-items: center;'>$"
+            html += f"    <input type='number' step='0.01' min='0' class='custom-pledge-input' data-campaign-id='{camp_id}' value='{current_dollars:.2f}' "
+            html += f"           style='margin-left: 5px; width: 100px; padding: 4px; border-radius: 4px; border: 1px solid #6c757d; background: #343a40; color: white;'>"
+            html += f"  </div>"
+            html += f"</div>"
+
+        # --- NEW: RAW JSON DEBUG BLOCK ---
+        raw_json_str = json.dumps(obj.active_pledges, indent=2) if obj and obj.active_pledges else "{}"
+        html += "<div style='margin-top: 15px; padding-top: 10px; border-top: 1px dashed #495057;'>"
+        html += "<div style='font-size: 0.75em; color: #6c757d; margin-bottom: 5px; text-transform: uppercase; letter-spacing: 1px;'>Raw JSON Payload (Live)</div>"
+        html += f"<pre id='raw-json-debug' style='background: #1a1d20; color: #6c757d; padding: 10px; border-radius: 4px; font-size: 0.85em; overflow-x: auto; margin: 0;'>{raw_json_str}</pre>"
+        html += "</div>"
+        # ---------------------------------
+            
+        html += "</div>"
+
+        # 2. Inject the Javascript to act as the "Glue"
+        js = """
+        <script>
+        document.addEventListener('DOMContentLoaded', function() {
+            // Find the actual Django JSON textarea and our new debug block
+            const jsonField = document.querySelector('textarea[id$="-active_pledges"]');
+            const debugBlock = document.getElementById('raw-json-debug');
+            if (!jsonField) return;
+
+            // Hide the original field's entire row to keep the UI clean
+            const fieldRow = jsonField.closest('.form-row');
+            if (fieldRow) {
+                fieldRow.style.display = 'none';
+            }
+
+            // Grab all our new custom inputs
+            const inputs = document.querySelectorAll('.custom-pledge-input');
+
+            // Function to compile the inputs and inject them into both locations
+            function updateJSON() {
+                const newData = {};
+                inputs.forEach(input => {
+                    const val = parseFloat(input.value);
+                    if (!isNaN(val) && val > 0) {
+                        newData[input.dataset.campaignId] = Math.round(val * 100); 
+                    }
+                });
+                
+                // 1. Update the hidden field for Django to save
+                jsonField.value = JSON.stringify(newData);
+                
+                // 2. Update the visual debug block with pretty-printed JSON
+                if (debugBlock) {
+                    debugBlock.textContent = JSON.stringify(newData, null, 2);
+                }
+            }
+
+            // Listen for keystrokes/clicks on our custom inputs
+            inputs.forEach(input => {
+                input.addEventListener('input', updateJSON);
+            });
+        });
+        </script>
+        """
+        
+        return mark_safe(html + js)
 
 admin.site.unregister(User)
 

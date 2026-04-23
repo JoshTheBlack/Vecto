@@ -1,0 +1,251 @@
+{% extends 'pod_manager/base.html' %}
+{% load static %}
+
+{% block content %}
+<style>
+    /* Theme-Agnostic Utility Classes */
+    .text-accent { color: var(--vecto-primary) !important; }
+    .bg-accent { background-color: var(--vecto-primary) !important; }
+    .border-accent { border-color: var(--vecto-primary) !important; }
+    .text-surface-muted { color: var(--vecto-surface-muted) !important; }
+
+    /* Character Sheet Aesthetics */
+    .sheet-container {
+        border: 2px solid var(--bs-border-color);
+        background-color: var(--vecto-surface-bg);
+        color: var(--vecto-surface-text);
+        border-radius: var(--bs-border-radius);
+        box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+    }
+    .sheet-header {
+        border-bottom: 2px solid var(--bs-border-color);
+        background-color: rgba(0, 0, 0, 0.15); 
+    }
+    .stat-box {
+        border: 2px solid var(--bs-border-color);
+        border-radius: 12px;
+        text-align: center;
+        background-color: rgba(0, 0, 0, 0.15);
+        position: relative;
+        padding-top: 1.5rem;
+    }
+    .stat-box-label {
+        position: absolute;
+        top: -12px;
+        left: 50%;
+        transform: translateX(-50%);
+        background-color: var(--vecto-surface-bg);
+        padding: 0 10px;
+        font-size: 0.75rem;
+        text-transform: uppercase;
+        font-weight: bold;
+        letter-spacing: 1px;
+        color: var(--vecto-primary);
+        border: 1px solid var(--bs-border-color);
+        border-radius: 4px;
+    }
+    .stat-box-value {
+        font-size: 2.5rem;
+        font-family: monospace;
+        font-weight: bold;
+        line-height: 1;
+    }
+    .stat-box-sub {
+        font-size: 0.8rem;
+        color: var(--vecto-surface-muted);
+        margin-top: 0.5rem;
+        border-top: 1px solid var(--bs-border-color);
+        padding-top: 0.25rem;
+    }
+    .section-title {
+        font-size: 1.2rem;
+        font-weight: bold;
+        text-transform: uppercase;
+        letter-spacing: 2px;
+        border-bottom: 2px solid var(--vecto-primary);
+        padding-bottom: 0.5rem;
+        margin-bottom: 1.5rem;
+        color: var(--vecto-primary);
+    }
+    .badge-icon {
+        width: 60px;
+        height: 60px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 2rem;
+        border-radius: 50%;
+        background-color: rgba(0, 0, 0, 0.15);
+        border: 2px solid var(--bs-border-color);
+        margin: 0 auto 0.5rem auto;
+        opacity: 0.4;
+        filter: grayscale(100%);
+        transition: all 0.3s ease;
+    }
+    .badge-icon.unlocked {
+        opacity: 1;
+        filter: grayscale(0%);
+        border-color: var(--vecto-primary);
+        box-shadow: 0 0 15px rgba(0, 0, 0, 0.2);
+        color: var(--vecto-primary);
+    }
+</style>
+
+<div class="container py-4">
+    <div class="sheet-container p-0">
+        
+        <div class="sheet-header p-4 d-flex justify-content-between align-items-center flex-wrap gap-3">
+            <div class="d-flex align-items-center gap-4">
+                <div class="rounded-circle border border-accent d-flex justify-content-center align-items-center" style="width: 80px; height: 80px; background-color: rgba(0,0,0,0.2);">
+                    <i class="bi bi-person-fill text-accent" style="font-size: 3rem;"></i>
+                </div>
+                <div>
+                    <h1 class="mb-0 fw-bold">{{ request.user.first_name|default:request.user.username }}</h1>
+                    <div class="text-accent fw-bold text-uppercase" style="letter-spacing: 1px;">
+                        Level {{ level }} {{ title }}
+                    </div>
+                </div>
+            </div>
+            
+            <div class="text-end small text-surface-muted">
+                <div><strong>Current Obsession:</strong> <span style="color: var(--vecto-surface-text);">{{ profile.current_obsession.title|default:"Wandering Adventurer" }}</span></div>
+                <div><strong>Account Vintage:</strong> <span style="color: var(--vecto-surface-text);">{{ profile.patreon_join_date|date:"F Y"|default:"Unknown Origins" }}</span></div>
+            </div>
+        </div>
+
+        <div class="row g-0">
+            <div class="col-md-3 p-4 border-end" style="background-color: rgba(0,0,0,0.05); border-color: var(--bs-border-color) !important;">
+                <div class="d-flex flex-column gap-4">
+                    
+                    <div class="stat-box">
+                        <div class="stat-box-label">Trust Score</div>
+                        <div class="stat-box-value {% if profile.trust_score < 50 %}text-danger{% elif profile.trust_score < 80 %}text-warning{% else %}text-success{% endif %}">
+                            {{ profile.trust_score|default_if_none:100 }}
+                        </div>
+                        <div class="stat-box-sub pb-2 px-2">Reputation</div>
+                    </div>
+
+                    <div class="stat-box">
+                        <div class="stat-box-label">Endurance</div>
+                        <div class="stat-box-value">{{ profile.total_hours_accessed|floatformat:0 }}</div>
+                        <div class="stat-box-sub pb-2 px-2">Hours Accessed</div>
+                    </div>
+
+                    <div class="stat-box">
+                        <div class="stat-box-label">Activity</div>
+                        <div class="stat-box-value">{{ profile.total_playback_hits }}</div>
+                        <div class="stat-box-sub pb-2 px-2">Episodes Played</div>
+                    </div>
+
+                </div>
+            </div>
+
+            <div class="col-md-9 p-4">
+                
+                <div class="mb-5">
+                    <div class="d-flex justify-content-between small mb-1 fw-bold text-uppercase text-surface-muted">
+                        <span>Experience</span>
+                        {% if level < 4 %}
+                            <span>{{ total_approved }} / {{ next_level_goal }} Edits to Level {{ level|add:"1" }}</span>
+                        {% else %}
+                            <span class="text-accent">Max Level Achieved</span>
+                        {% endif %}
+                    </div>
+                    <div class="progress border" style="height: 12px; background-color: rgba(0,0,0,0.2); border-color: var(--bs-border-color) !important;">
+                        <div class="progress-bar bg-accent" role="progressbar" style="width: {{ progress_percent }}%;" aria-valuenow="{{ progress_percent }}" aria-valuemin="0" aria-valuemax="100"></div>
+                    </div>
+                </div>
+
+                <div class="row g-5">
+                    <div class="col-md-6">
+                        <h3 class="section-title">Archival Skills</h3>
+                        
+                        <div class="d-flex justify-content-between align-items-center mb-3 pb-2 border-bottom" style="border-color: rgba(0,0,0,0.1) !important;">
+                            <span><i class="bi bi-clock-history me-2 text-surface-muted"></i> Chapters Mapped</span>
+                            <span class="badge border fs-6" style="background-color: rgba(0,0,0,0.2); border-color: var(--bs-border-color) !important;">{{ profile.edits_chapters }}</span>
+                        </div>
+                        
+                        <div class="d-flex justify-content-between align-items-center mb-3 pb-2 border-bottom" style="border-color: rgba(0,0,0,0.1) !important;">
+                            <span><i class="bi bi-tags me-2 text-surface-muted"></i> Tags Applied</span>
+                            <span class="badge border fs-6" style="background-color: rgba(0,0,0,0.2); border-color: var(--bs-border-color) !important;">{{ profile.edits_tags }}</span>
+                        </div>
+                        
+                        <div class="d-flex justify-content-between align-items-center mb-3 pb-2 border-bottom" style="border-color: rgba(0,0,0,0.1) !important;">
+                            <span><i class="bi bi-card-text me-2 text-surface-muted"></i> Descriptions Scribed</span>
+                            <span class="badge border fs-6" style="background-color: rgba(0,0,0,0.2); border-color: var(--bs-border-color) !important;">{{ profile.edits_descriptions }}</span>
+                        </div>
+
+                        <div class="d-flex justify-content-between align-items-center mb-3 pb-2 border-bottom" style="border-color: rgba(0,0,0,0.1) !important;">
+                            <span><i class="bi bi-lightning-charge me-2 text-surface-muted"></i> First Responder</span>
+                            <span class="badge border fs-6" style="background-color: rgba(0,0,0,0.2); border-color: var(--bs-border-color) !important;">{{ profile.first_responder_count }}</span>
+                        </div>
+                    </div>
+
+                    <div class="col-md-6">
+                        <h3 class="section-title">Features & Traits</h3>
+                        
+                        <div class="card border mb-3" style="background-color: rgba(0,0,0,0.15); border-color: var(--bs-border-color) !important;">
+                            <div class="card-body py-2 px-3 d-flex align-items-center">
+                                <i class="bi bi-fire text-danger fs-3 me-3"></i>
+                                <div>
+                                    <div class="fw-bold">Daily Ritual</div>
+                                    <div class="small text-surface-muted">Current active daily listening streak: <span class="text-accent fw-bold">{{ profile.streak_days }} Days</span></div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="card border mb-3" style="background-color: rgba(0,0,0,0.15); border-color: var(--bs-border-color) !important;">
+                            <div class="card-body py-2 px-3 d-flex align-items-center">
+                                <i class="bi bi-calendar2-week text-info fs-3 me-3"></i>
+                                <div>
+                                    <div class="fw-bold">Weekly Devotion</div>
+                                    <div class="small text-surface-muted">Current active weekly listening streak: <span class="text-accent fw-bold">{{ profile.streak_weeks }} Weeks</span></div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="mt-5">
+                    <h3 class="section-title">Badge Inventory</h3>
+                    
+                    <div class="row text-center g-3">
+                        <div class="col-6 col-md-3">
+                            <div class="badge-icon {% if level >= 1 %}unlocked{% endif %}">
+                                <i class="bi bi-shield"></i>
+                            </div>
+                            <div class="fw-bold small">Initiate</div>
+                            <div style="font-size: 0.7rem;" class="text-surface-muted">Submit 1 Edit</div>
+                        </div>
+                        
+                        <div class="col-6 col-md-3">
+                            <div class="badge-icon {% if level >= 2 %}unlocked{% endif %}">
+                                <i class="bi bi-compass"></i>
+                            </div>
+                            <div class="fw-bold small">Scout</div>
+                            <div style="font-size: 0.7rem;" class="text-surface-muted">1 Approved Edit</div>
+                        </div>
+                        
+                        <div class="col-6 col-md-3">
+                            <div class="badge-icon {% if level >= 3 %}unlocked{% endif %}">
+                                <i class="bi bi-journal-bookmark-fill"></i>
+                            </div>
+                            <div class="fw-bold small">Archivist</div>
+                            <div style="font-size: 0.7rem;" class="text-surface-muted">10 Approved Edits</div>
+                        </div>
+                        
+                        <div class="col-6 col-md-3">
+                            <div class="badge-icon {% if level >= 4 %}unlocked{% endif %}">
+                                <i class="bi bi-gem"></i>
+                            </div>
+                            <div class="fw-bold small">Grand Archivist</div>
+                            <div style="font-size: 0.7rem;" class="text-surface-muted">50 Approved Edits</div>
+                        </div>
+                    </div>
+                </div>
+
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

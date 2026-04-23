@@ -97,6 +97,11 @@ class Network(models.Model):
     global_footer_public = models.TextField(blank=True, help_text="Appended to all public feeds in this network.")
     global_footer_private = models.TextField(blank=True, help_text="Appended to all private feeds in this network.")
     
+    auto_approve_trust_threshold = models.IntegerField(
+        default=80, 
+        help_text="Users with a trust score equal to or above this number bypass the review inbox. (Set to 101 to disable auto-approve)."
+    )
+
     ingester_module = models.CharField(
         max_length=50, 
         default='default', 
@@ -307,6 +312,28 @@ class PatronProfile(models.Model):
     feed_token = models.UUIDField(default=uuid.uuid4, editable=False, unique=True)
     last_active = models.DateTimeField(auto_now_add=True)
 
+    # --- Support Duration ---
+    patreon_join_dates = models.JSONField(default=dict, blank=True)
+
+    # --- Gamification: Consumption Stats ---
+    total_playback_hits = models.IntegerField(default=0)
+    total_hours_accessed = models.FloatField(default=0.0)
+    current_obsession = models.ForeignKey('Podcast', on_delete=models.SET_NULL, null=True, blank=True, related_name='obsessed_fans')
+    
+    # --- Gamification: Streaks ---
+    streak_days = models.IntegerField(default=0)
+    streak_weeks = models.IntegerField(default=0)
+    last_playback_date = models.DateField(null=True, blank=True)
+    last_play_week = models.IntegerField(null=True, blank=True)
+    
+    # --- Gamification: Contribution & Safety ---
+    edits_chapters = models.IntegerField(default=0)
+    edits_tags = models.IntegerField(default=0)
+    edits_descriptions = models.IntegerField(default=0)
+    first_responder_count = models.IntegerField(default=0)
+    edits_rejected = models.IntegerField(default=0)
+    trust_score = models.IntegerField(default=0)
+
     def __str__(self):
         return f"{self.user.email} - Profile"
     
@@ -387,6 +414,52 @@ class NetworkMix(models.Model):
                 self.image_upload.save(self.image_upload.name, ContentFile(temp_handle.read()), save=False)
             except Exception as e:
                 logger.error(f"Image processing failed for network mix {self.unique_id}: {e}", exc_info=True)
+
+class EpisodeEditSuggestion(models.Model):
+    STATUS_CHOICES = [
+        ('pending', 'Pending'),
+        ('approved', 'Approved'),
+        ('rejected', 'Rejected'),
+        ('rolled_back', 'Rolled Back'),
+    ]
+
+    episode = models.ForeignKey(Episode, on_delete=models.CASCADE, related_name='edit_suggestions')
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='submitted_edits')
+    
+    # Store the proposed changes (e.g., {"description": "New text", "tags": "new, tags"})
+    suggested_data = models.JSONField(default=dict)
+    # Store the exact state of the fields BEFORE the edit was applied, used for rollbacks
+    original_data = models.JSONField(default=dict, null=True, blank=True)
+    
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='pending')
+    is_first_responder = models.BooleanField(default=False)
+    
+    created_at = models.DateTimeField(auto_now_add=True)
+    resolved_at = models.DateTimeField(null=True, blank=True)
+
+    def __str__(self):
+        return f"Edit by {self.user.username} for {self.episode.title} ({self.status})"
+
+class FeedAnalytics(models.Model):
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='feed_analytics')
+    network = models.ForeignKey(Network, on_delete=models.CASCADE, related_name='analytics')
+    # Nullable because a User Mix feed isn't tied to a single podcast
+    podcast = models.ForeignKey(Podcast, on_delete=models.CASCADE, null=True, blank=True, related_name='analytics')
+    
+    date = models.DateField()
+    rss_hits = models.IntegerField(default=0)
+    playback_hits = models.IntegerField(default=0)
+
+    class Meta:
+        # Ensure we only have one row per user, per show, per day
+        unique_together = ('user', 'network', 'podcast', 'date')
+        indexes = [
+            models.Index(fields=['date', 'network']),
+            models.Index(fields=['user', 'date']),
+        ]
+
+    def __str__(self):
+        return f"{self.user.username} - {self.date} - RSS: {self.rss_hits} | Plays: {self.playback_hits}"
 
 @receiver(post_delete, sender=NetworkMix)
 def auto_delete_file_on_delete_network_mix(sender, instance, **kwargs):

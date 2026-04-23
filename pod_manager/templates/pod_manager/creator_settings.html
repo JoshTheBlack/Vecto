@@ -29,7 +29,7 @@
 <div class="row">
     <div class="col-md-3 mb-4">
         <div class="list-group shadow-sm" id="list-tab" role="tablist">
-            <a class="list-group-item list-group-item-action border-secondary active" id="list-networks-list" data-bs-toggle="list" href="#list-networks" role="tab">
+            <a class="list-group-item list-group-item-action border-secondary {% if request.GET.tab != 'audit' %}active{% endif %}" id="list-networks-list" data-bs-toggle="list" href="#list-networks" role="tab">
                 <i class="bi bi-globe2 me-2"></i> Network Profile
             </a>
             <a class="list-group-item list-group-item-action border-secondary" id="list-shows-list" data-bs-toggle="list" href="#list-shows" role="tab">
@@ -43,6 +43,9 @@
             </a>
             <a class="list-group-item list-group-item-action border-secondary" id="list-inbox-list" data-bs-toggle="list" href="#list-inbox" role="tab">
                 <i class="bi bi-inbox me-2"></i> Community Edits
+            </a>
+            <a class="list-group-item list-group-item-action border-secondary {% if request.GET.tab == 'audit' %}active{% endif %}" id="list-audit-list" data-bs-toggle="list" href="#list-audit" role="tab">
+                <i class="bi bi-shield-check me-2"></i> Audit Log
             </a>
             <a class="list-group-item list-group-item-action border-secondary" id="list-sync-list" data-bs-toggle="list" href="#list-sync" role="tab">
                 <i class="bi bi-people me-2"></i> Patreon Sync
@@ -67,6 +70,8 @@
             {% include 'pod_manager/creator_tabs/tab_sync.html' %}
 
             {% include 'pod_manager/creator_tabs/tab_inbox.html' %}
+
+            {% include 'pod_manager/creator_tabs/tab_audit_log.html' %}
 
         </div>   
     </div>   

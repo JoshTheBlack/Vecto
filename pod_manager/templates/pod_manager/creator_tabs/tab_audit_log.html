@@ -1,66 +1,70 @@
-<style>
-    /* CSS Grid forces the Left and Right columns to stretch and match row heights perfectly */
-    .diff-grid {
-        display: grid;
-        grid-template-columns: 1fr 1fr;
-        gap: 1rem;
-        color: var(--vecto-surface-text);
-    }
-    @media (max-width: 768px) {
-        .diff-grid { grid-template-columns: 1fr; }
-    }
-    .diff-box {
-        background-color: rgba(128, 128, 128, 0.08); /* Neutral shading for light/dark mode */
-        border: 1px solid var(--bs-border-color);
-        padding: 1rem;
-        border-radius: var(--bs-border-radius);
-    }
-    .accordion-button:not(.collapsed) {
-        background-color: rgba(128, 128, 128, 0.05) !important;
-        color: var(--vecto-surface-text) !important;
-    }
-</style>
-
-<div class="tab-pane fade" id="list-inbox" role="tabpanel" aria-labelledby="list-inbox-list">
-    <div class="d-flex justify-content-between align-items-center mb-4">
+<div class="tab-pane fade {% if request.GET.tab == 'audit' %}show active{% endif %}" id="list-audit" role="tabpanel" aria-labelledby="list-audit-list">
+    
+    <div class="d-flex justify-content-between align-items-center mb-4 flex-wrap gap-3">
         <div>
-            <h4 class="text-accent mb-1"><i class="bi bi-inbox-fill"></i> The Archivist Inbox</h4>
-            <p class="text-surface-muted mb-0 small">Review metadata suggestions from your listeners.</p>
-        </div>
-        <div>
-            <span class="badge fs-6" style="border: 1px solid var(--bs-border-color); background-color: var(--vecto-surface-bg); color: var(--vecto-surface-text);">
-                {{ pending_edits|length }} Pending Edits
-            </span>
+            <h4 class="text-accent mb-1"><i class="bi bi-shield-check"></i> Audit Log</h4>
+            <p class="text-surface-muted mb-0 small">Review and rollback previously applied or rejected edits.</p>
         </div>
     </div>
 
-    {% if not pending_edits %}
-        <div class="text-center py-5 rounded" style="border: 2px dashed var(--bs-border-color);">
-            <i class="bi bi-check2-circle text-success" style="font-size: 3rem;"></i>
-            <h5 class="mt-3" style="color: var(--vecto-surface-text);">Inbox Zero</h5>
-            <p class="text-surface-muted small mb-0">All listener suggestions have been reviewed.</p>
+    <div class="card p-3 mb-4 shadow-sm" style="background-color: var(--vecto-surface-bg); border-color: var(--bs-border-color) !important;">
+        <form method="GET" class="row g-2 align-items-center">
+            <input type="hidden" name="network" value="{{ current_network.slug }}">
+            <input type="hidden" name="tab" value="audit">
+            
+            <div class="col-md-4">
+                <input type="text" name="audit_q" class="form-control form-control-sm" placeholder="Search podcast or episode..." value="{{ request.GET.audit_q }}">
+            </div>
+            <div class="col-md-3">
+                <input type="text" name="audit_user" class="form-control form-control-sm" placeholder="Filter by username..." value="{{ request.GET.audit_user }}">
+            </div>
+            <div class="col-md-3">
+                <select name="audit_status" class="form-select form-select-sm">
+                    <option value="">All Statuses</option>
+                    <option value="approved" {% if request.GET.audit_status == 'approved' %}selected{% endif %}>Approved (Applied)</option>
+                    <option value="rejected" {% if request.GET.audit_status == 'rejected' %}selected{% endif %}>Rejected</option>
+                    <option value="rolled_back" {% if request.GET.audit_status == 'rolled_back' %}selected{% endif %}>Rolled Back</option>
+                </select>
+            </div>
+            <div class="col-md-2 d-grid">
+                <button type="submit" class="btn btn-sm" style="background-color: var(--vecto-primary); color: var(--vecto-primary-text);">Search</button>
+            </div>
+        </form>
+    </div>
+
+    {% if not audit_page_obj %}
+        <div class="text-center py-4 rounded" style="border: 2px dashed var(--bs-border-color);">
+            <p class="text-surface-muted small mb-0">No edits found matching your criteria.</p>
         </div>
     {% else %}
-        <div class="accordion" id="inboxAccordion">
-            {% for edit in pending_edits %}
+        <div class="accordion" id="auditAccordion">
+            {% for edit in audit_page_obj %}
             
             <div class="accordion-item mb-3 shadow-sm" style="background-color: var(--vecto-surface-bg); border: 1px solid var(--bs-border-color); border-radius: var(--bs-border-radius); overflow: hidden;">
-                <h2 class="accordion-header" id="heading{{ edit.id }}">
-                    <button class="accordion-button collapsed py-3" type="button" data-bs-toggle="collapse" data-bs-target="#collapse{{ edit.id }}" style="background-color: transparent; color: var(--vecto-surface-text); box-shadow: none;">
+                <h2 class="accordion-header" id="headingAudit{{ edit.id }}">
+                    <button class="accordion-button collapsed py-3" type="button" data-bs-toggle="collapse" data-bs-target="#collapseAudit{{ edit.id }}" style="background-color: transparent; color: var(--vecto-surface-text); box-shadow: none;">
                         <div class="d-flex w-100 justify-content-between align-items-center me-3">
                             <div>
                                 <strong>{{ edit.episode.podcast.title }}</strong>: {{ edit.episode.title }}
                             </div>
                             <div class="text-end">
-                                <span class="badge me-2" style="border: 1px solid var(--bs-border-color); background-color: rgba(128,128,128,0.1); color: var(--vecto-surface-text);">
-                                    User: {{ edit.user.username }} (Trust: <span class="{% if edit.user.patron_profile.trust_score < 50 %}text-danger{% else %}text-success{% endif %}">{{ edit.user.patron_profile.trust_score }}</span>)
-                                </span>
-                                <span class="text-surface-muted small">{{ edit.created_at|timesince }} ago</span>
+                                {% if edit.status == 'approved' %}
+                                    <span class="badge bg-success bg-opacity-25 text-success border border-success me-2">Applied</span>
+                                {% elif edit.status == 'rejected' %}
+                                    <span class="badge bg-danger bg-opacity-25 text-danger border border-danger me-2">Rejected</span>
+                                {% else %}
+                                    <span class="badge bg-warning bg-opacity-25 text-warning border border-warning me-2">Rolled Back</span>
+                                {% endif %}
+                                
+                                <a href="?network={{ current_network.slug }}&tab=audit&audit_user={{ edit.user.username }}" class="badge text-decoration-none me-2" style="border: 1px solid var(--bs-border-color); background-color: rgba(128,128,128,0.1); color: var(--vecto-surface-text);">
+                                    User: {{ edit.user.username }} <i class="bi bi-search ms-1"></i>
+                                </a>
+                                <span class="text-surface-muted small">{{ edit.resolved_at|timesince }} ago</span>
                             </div>
                         </div>
                     </button>
                 </h2>
-                <div id="collapse{{ edit.id }}" class="accordion-collapse collapse" data-bs-parent="#inboxAccordion">
+                <div id="collapseAudit{{ edit.id }}" class="accordion-collapse collapse" data-bs-parent="#auditAccordion">
                     <div class="accordion-body diff-wrapper" style="background-color: var(--vecto-surface-bg); border-top: 1px solid var(--bs-border-color);">
                         
                         <div class="row g-0 mb-3">
@@ -68,7 +72,7 @@
                                 <h6 class="text-danger fw-bold mb-0"><i class="bi bi-clock-history"></i> Previous Data</h6>
                             </div>
                             <div class="col-md-6 p-2 ps-3">
-                                <h6 class="text-success fw-bold mb-0"><i class="bi bi-check-circle"></i> Suggested Edit</h6>
+                                <h6 class="text-success fw-bold mb-0"><i class="bi bi-check-circle"></i> Suggested Data</h6>
                             </div>
                         </div>
 
@@ -119,50 +123,69 @@
 
                         </div>
 
+                        {% if edit.status == 'approved' %}
                         <div class="mt-4 pt-3 border-top d-flex justify-content-between align-items-center" style="border-color: var(--bs-border-color) !important;">
                             <form method="POST" class="d-inline" onsubmit="return confirm('WARNING: This will revert EVERY approved edit this user has ever made on this network, and drop their trust score to 0. Proceed?');">
                                 {% csrf_token %}
                                 <input type="hidden" name="action" value="bulk_rollback">
                                 <input type="hidden" name="spammer_id" value="{{ edit.user.id }}">
                                 <input type="hidden" name="network_id" value="{{ current_network.id }}">
-                                <input type="hidden" name="current_tab" value="inbox">
+                                <input type="hidden" name="current_tab" value="audit">
+                                <input type="hidden" name="audit_page" value="{{ request.GET.audit_page }}">
+                                <input type="hidden" name="audit_q" value="{{ request.GET.audit_q }}">
+                                <input type="hidden" name="audit_status" value="{{ request.GET.audit_status }}">
+                                <input type="hidden" name="audit_user" value="{{ request.GET.audit_user }}">
                                 <button type="submit" class="btn btn-sm btn-outline-danger" title="Ban User & Revert All Their Edits">
                                     <i class="bi bi-radioactive"></i> Bulk Rollback User
                                 </button>
                             </form>
 
-                            <div class="d-flex gap-2">
-                                <form method="POST" class="d-inline">
-                                    {% csrf_token %}
-                                    <input type="hidden" name="action" value="reject_edit">
-                                    <input type="hidden" name="edit_id" value="{{ edit.id }}">
-                                    <input type="hidden" name="network_id" value="{{ current_network.id }}">
-                                    <input type="hidden" name="current_tab" value="inbox">
-                                    <button type="submit" class="btn" style="background-color: transparent; border: 1px solid #dc3545; color: #dc3545;">
-                                        <i class="bi bi-x-lg"></i> Reject (-2 Trust)
-                                    </button>
-                                </form>
-
-                                <form method="POST" class="d-inline">
-                                    {% csrf_token %}
-                                    <input type="hidden" name="action" value="approve_edit">
-                                    <input type="hidden" name="edit_id" value="{{ edit.id }}">
-                                    <input type="hidden" name="network_id" value="{{ current_network.id }}">
-                                    <input type="hidden" name="current_tab" value="inbox">
-                                    <button type="submit" class="btn btn-success">
-                                        <i class="bi bi-check-lg"></i> Approve & Apply
-                                    </button>
-                                </form>
-                            </div>
+                            <form method="POST" class="d-inline" onsubmit="return confirm('Are you sure you want to roll back this specific edit? The user will lose 5 trust points.');">
+                                {% csrf_token %}
+                                <input type="hidden" name="action" value="rollback_single_edit">
+                                <input type="hidden" name="edit_id" value="{{ edit.id }}">
+                                <input type="hidden" name="network_id" value="{{ current_network.id }}">
+                                <input type="hidden" name="current_tab" value="audit">
+                                <input type="hidden" name="audit_page" value="{{ request.GET.audit_page }}">
+                                <input type="hidden" name="audit_q" value="{{ request.GET.audit_q }}">
+                                <input type="hidden" name="audit_status" value="{{ request.GET.audit_status }}">
+                                <input type="hidden" name="audit_user" value="{{ request.GET.audit_user }}">
+                                <button type="submit" class="btn btn-sm btn-outline-warning" title="Revert this specific edit">
+                                    <i class="bi bi-arrow-counterclockwise"></i> Revert Edit (-5 Trust)
+                                </button>
+                            </form>
                         </div>
+                        {% endif %}
 
                     </div>
                 </div>
             </div>
             {% endfor %}
         </div>
+
+        {% if audit_page_obj.has_other_pages %}
+        <nav aria-label="Audit Log Pagination" class="mt-4">
+            <ul class="pagination justify-content-center">
+                {% if audit_page_obj.has_previous %}
+                    <li class="page-item">
+                        <a class="page-link" style="background-color: var(--vecto-surface-bg); color: var(--vecto-surface-text); border-color: var(--bs-border-color);" href="?network={{ current_network.slug }}&tab=audit&audit_page={{ audit_page_obj.previous_page_number }}&audit_q={{ request.GET.audit_q }}&audit_status={{ request.GET.audit_status }}&audit_user={{ request.GET.audit_user }}">Previous</a>
+                    </li>
+                {% endif %}
+                
+                <li class="page-item disabled">
+                    <span class="page-link" style="background-color: rgba(128,128,128,0.1); color: var(--vecto-surface-muted); border-color: var(--bs-border-color);">Page {{ audit_page_obj.number }} of {{ audit_page_obj.paginator.num_pages }}</span>
+                </li>
+                
+                {% if audit_page_obj.has_next %}
+                    <li class="page-item">
+                        <a class="page-link" style="background-color: var(--vecto-surface-bg); color: var(--vecto-surface-text); border-color: var(--bs-border-color);" href="?network={{ current_network.slug }}&tab=audit&audit_page={{ audit_page_obj.next_page_number }}&audit_q={{ request.GET.audit_q }}&audit_status={{ request.GET.audit_status }}&audit_user={{ request.GET.audit_user }}">Next</a>
+                    </li>
+                {% endif %}
+            </ul>
+        </nav>
+        {% endif %}
     {% endif %}
-</div> 
+</div>
 
 <script src="https://cdn.jsdelivr.net/npm/diff@5.2.0/dist/diff.min.js"></script>
 <script>

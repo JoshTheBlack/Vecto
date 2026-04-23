@@ -1,5 +1,6 @@
 import logging
 from celery import shared_task
+from collections import defaultdict
 from django.core.cache import cache
 from django.core.management import call_command
 from pod_manager.models import Network
@@ -9,7 +10,7 @@ from django.core.files.base import ContentFile
 from django.template.loader import render_to_string
 import pdfkit
 import platform
-from .models import Network, PatronProfile, Invoice, Podcast
+from .models import Network, PatronProfile, Invoice, Podcast, Episode
 import io
 from datetime import timedelta
 
@@ -182,3 +183,122 @@ def task_sync_last_active_timestamps():
     if keys_to_delete:
         # Pass the unpacked list of raw keys directly to Redis to delete them
         redis_client.delete(*keys_to_delete)
+
+def parse_duration_to_hours(duration_str):
+    """Helper to convert the HH:MM:SS string to fractional hours."""
+    if not duration_str:
+        return 0.0
+    try:
+        parts = duration_str.split(':')
+        if len(parts) == 3:
+            return int(parts[0]) + (int(parts[1]) / 60.0) + (float(parts[2]) / 3600.0)
+        elif len(parts) == 2:
+            return (int(parts[0]) / 60.0) + (float(parts[1]) / 3600.0)
+        else:
+            return float(parts[0]) / 3600.0
+    except ValueError:
+        return 0.0
+
+@shared_task
+def sweep_analytics_buffer():
+    """
+    Sweeps Redis for playback and RSS hits, aggregates them, 
+    and applies the data to the Patron profiles.
+    """
+    logger.info("Starting Analytics Buffer Sweep...")
+    
+    # 1. Gather all analytics keys from Redis
+    play_keys = cache.keys("analytics:play:*")
+    rss_keys = cache.keys("analytics:rss:*")
+    
+    if not play_keys and not rss_keys:
+        logger.info("No analytics keys found. Sweep complete.")
+        return
+
+    # Data structures to aggregate hits before hitting the DB
+    profile_updates = defaultdict(lambda: {
+        'play_hits': 0,
+        'episodes_played': set(),
+        'podcast_hits': defaultdict(int),
+        'rss_hits': 0
+    })
+
+    # 2. Sweep Playback Keys
+    for key in play_keys:
+        hits = cache.get(key)
+        if hits:
+            parts = key.split(':')
+            if len(parts) == 5:
+                p_id, e_id, pod_id = int(parts[2]), int(parts[3]), int(parts[4])
+                profile_updates[p_id]['play_hits'] += hits
+                profile_updates[p_id]['episodes_played'].add(e_id)
+                profile_updates[p_id]['podcast_hits'][pod_id] += hits
+        cache.delete(key) 
+
+    # 3. Sweep RSS Keys
+    for key in rss_keys:
+        hits = cache.get(key)
+        if hits:
+            p_id = int(key.split(':')[2])
+            profile_updates[p_id]['rss_hits'] += hits
+        cache.delete(key)
+
+    # 4. Fetch necessary DB objects in bulk
+    all_profile_ids = list(profile_updates.keys())
+    profiles = {p.id: p for p in PatronProfile.objects.filter(id__in=all_profile_ids)}
+    
+    all_episode_ids = {e_id for data in profile_updates.values() for e_id in data['episodes_played']}
+    episodes = {e.id: e for e in Episode.objects.filter(id__in=all_episode_ids)}
+
+    today = timezone.now().date()
+    current_iso_week = today.isocalendar()[1]
+    profiles_to_save = []
+
+    # 5. Apply Gamification Math
+    for p_id, data in profile_updates.items():
+        if p_id not in profiles:
+            continue
+            
+        profile = profiles[p_id]
+        
+        # A. Apply Raw Hits (Activity Score)
+        profile.total_playback_hits += data['play_hits']
+        
+        # B. Apply Endurance (Hours Accessed)
+        hours_gained = 0.0
+        for e_id in data['episodes_played']:
+            if e_id in episodes:
+                hours_gained += parse_duration_to_hours(episodes[e_id].duration)
+        profile.total_hours_accessed += hours_gained
+        
+        # C. Calculate Streaks
+        if data['play_hits'] > 0:
+            # Daily Streak
+            if profile.last_playback_date == today - timedelta(days=1):
+                profile.streak_days += 1
+            elif profile.last_playback_date != today:
+                profile.streak_days = 1 
+            profile.last_playback_date = today
+            
+            # Weekly Streak
+            if profile.last_play_week == current_iso_week - 1:
+                profile.streak_weeks += 1
+            elif profile.last_play_week != current_iso_week:
+                profile.streak_weeks = 1 
+            profile.last_play_week = current_iso_week
+
+        # D. Determine Current Obsession
+        if data['podcast_hits']:
+            top_podcast_id = max(data['podcast_hits'], key=data['podcast_hits'].get)
+            profile.current_obsession_id = top_podcast_id
+
+        profiles_to_save.append(profile)
+
+    # 6. Bulk write back to Postgres
+    if profiles_to_save:
+        PatronProfile.objects.bulk_update(
+            profiles_to_save, 
+            ['total_playback_hits', 'total_hours_accessed', 'streak_days', 'streak_weeks', 'last_playback_date', 'last_play_week', 'current_obsession_id']
+        )
+        
+    logger.info(f"Sweep complete. Updated {len(profiles_to_save)} profiles.")

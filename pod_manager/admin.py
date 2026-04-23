@@ -6,7 +6,7 @@ from django.contrib.auth.models import User
 from django.db.models import Q, F, BooleanField, ExpressionWrapper
 from django.utils.html import format_html, mark_safe
 from django.urls import reverse
-from .models import Network, PatreonTier, Podcast, Episode, UserMix, PatronProfile
+from .models import Network, PatreonTier, Podcast, Episode, UserMix, PatronProfile, EpisodeEditSuggestion
 
 class S3SubscriberAudioFilter(SimpleListFilter):
     title = 'S3 Hosted Audio (Affected)'
@@ -202,3 +202,30 @@ class CustomUserAdmin(BaseUserAdmin):
 admin.site.register(PatreonTier)
 admin.site.register(Podcast)
 admin.site.register(UserMix)
+
+@admin.register(EpisodeEditSuggestion)
+class EpisodeEditSuggestionAdmin(admin.ModelAdmin):
+    # What shows up in the main list view
+    list_display = ('episode', 'user', 'status', 'is_first_responder', 'created_at')
+    
+    # Adds a sidebar to filter by pending/approved or first responders
+    list_filter = ('status', 'is_first_responder', 'created_at')
+    
+    # Adds a search bar to find specific users or episodes
+    search_fields = ('episode__title', 'user__username', 'user__email')
+    
+    # Protects the timestamps from accidental editing
+    readonly_fields = ('created_at', 'resolved_at')
+    
+    # Organizes the detail page layout
+    fieldsets = (
+        ('Reference', {
+            'fields': ('episode', 'user', 'status', 'is_first_responder')
+        }),
+        ('Payload Data (JSON)', {
+            'fields': ('suggested_data', 'original_data')
+        }),
+        ('Timestamps', {
+            'fields': ('created_at', 'resolved_at')
+        }),
+    )

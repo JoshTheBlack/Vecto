@@ -3,21 +3,36 @@
 
 {% block content %}
 <link rel="stylesheet" href="{% static 'pod_manager/css/plyr.css' %}" />
+<link href="https://cdn.quilljs.com/1.3.7/quill.snow.css" rel="stylesheet">
 <style>
-    /* Constrain the height of the settings menu and make it scrollable */
-    .plyr__menu__container {
-        max-height: 250px;
-        overflow-y: auto;
+    /* Quill Dark Mode Overrides to match Vecto Theme */
+    .ql-toolbar.ql-snow { 
+        border-color: var(--bs-secondary) !important; 
+        background-color: #212529; /* Bootstrap bg-dark */
+        border-top-left-radius: 0.375rem;
+        border-top-right-radius: 0.375rem;
     }
+    .ql-container.ql-snow { 
+        border-color: var(--bs-secondary) !important; 
+        font-family: inherit; 
+        font-size: 1rem; 
+        border-bottom-left-radius: 0.375rem;
+        border-bottom-right-radius: 0.375rem;
+        min-height: 200px;
+    }
+    .ql-snow .ql-stroke { stroke: #f8f9fa; }
+    .ql-snow .ql-fill, .ql-snow .ql-stroke.ql-fill { fill: #f8f9fa; }
+    .ql-snow .ql-picker { color: #f8f9fa; }
+    .ql-snow .ql-picker-options { background-color: #212529; border-color: var(--bs-secondary); }
+
+    .plyr__menu__container { max-height: 250px; overflow-y: auto; }
+    .plyr__menu__container::-webkit-scrollbar { width: 6px; }
+    .plyr__menu__container::-webkit-scrollbar-thumb { background: var(--vecto-primary); border-radius: 3px; }
     
-    /* Style the scrollbar to match the theme */
-    .plyr__menu__container::-webkit-scrollbar {
-        width: 6px;
-    }
-    .plyr__menu__container::-webkit-scrollbar-thumb {
-        background: var(--vecto-primary); /* Automatically uses your theme color */
-        border-radius: 3px;
-    }
+    /* Edit Mode Specific Styles */
+    .nav-tabs .nav-link.active { border-bottom-color: transparent !important; }
+    .chapter-row { transition: all 0.2s ease-in-out; }
+    .chapter-row:hover { background-color: rgba(255, 255, 255, 0.05); }
 </style>
 
 <nav aria-label="breadcrumb" class="mb-4">
@@ -29,127 +44,303 @@
 
 <div class="row justify-content-center">
     <div class="col-md-10">
-        <div class="card shadow-lg mb-4 border-secondary">
-            <div class="card-header d-flex justify-content-between align-items-center bg-dark">
-                <span class="text-muted"><i class="bi bi-mic text-warning"></i> {{ ep.podcast.title }}</span>
-                <span class="text-muted">{{ ep.pub_date|date:"F d, Y" }}</span>
-            </div>
-            
-            <div class="card-body bg-black p-4">
-                <div class="row align-items-center mb-4">
-                    <div class="col-md-3 text-center mb-3 mb-md-0">
-                        {% if ep.podcast.image_url %}
-                            <img src="{{ ep.podcast.image_url }}" class="img-fluid rounded shadow-lg border border-secondary" style="max-width: 200px;">
-                        {% elif ep.podcast.network.default_image_url %}
-                            <img src="{{ ep.podcast.network.default_image_url }}" class="img-fluid rounded shadow-lg border border-secondary" style="max-width: 200px;">
-                        {% else %}
-                            <div class="rounded bg-dark d-flex justify-content-center align-items-center border border-secondary shadow-lg mx-auto" style="width: 200px; height: 200px;">
-                                <i class="bi bi-mic text-warning" style="font-size: 4rem;"></i>
-                            </div>
-                        {% endif %}
-                    </div>
+        
+        <ul class="nav nav-tabs border-secondary mb-0" id="episodeTabs" role="tablist">
+            <li class="nav-item" role="presentation">
+                <button class="nav-link active text-light bg-dark border-secondary" id="listen-tab" data-bs-toggle="tab" data-bs-target="#listen" type="button" role="tab" aria-selected="true">
+                    <i class="bi bi-play-circle"></i> Listen
+                </button>
+            </li>
+            {% if request.user.is_authenticated %}
+            <li class="nav-item" role="presentation">
+                <button class="nav-link text-muted border-secondary" id="edit-tab" data-bs-toggle="tab" data-bs-target="#edit" type="button" role="tab" aria-selected="false">
+                    <i class="bi bi-tools"></i> Contribute Edits
+                </button>
+            </li>
+            {% endif %}
+        </ul>
 
-                    <div class="col-md-9">
-                        <h1 class="card-title fw-bold mb-3">
-                            {{ ep.title }}
-                        </h1>
-                        <div class="d-flex flex-wrap gap-2 align-items-center">
-                            {% if ep.is_premium and not ep.user_has_access %}
-                                <span class="badge bg-warning fs-6"><i class="bi bi-unlock-fill"></i> Ad-Free Available</span>
-                            {% elif ep.is_premium and ep.user_has_access %}
-                                <span class="badge bg-success fs-6"><i class="bi bi-star-fill"></i> Premium Enabled</span>
-                            {% endif %}
-                            <span class="text-muted"><i class="bi bi-calendar3 me-1"></i> {{ ep.pub_date|date:"F d, Y" }}</span>
-                            {% if ep.duration %}
-                                <span class="text-muted ms-3"><i class="bi bi-clock me-1"></i> {{ ep.duration }}</span>
+        <div class="card shadow-lg mb-4 border-secondary border-top-0 rounded-top-0">
+            <div class="card-body bg-black p-4 tab-content" id="episodeTabsContent">
+                
+                <div class="tab-pane fade show active" id="listen" role="tabpanel" aria-labelledby="listen-tab">
+                    <div class="row align-items-center mb-4">
+                        <div class="col-md-3 text-center mb-3 mb-md-0">
+                            {% if ep.podcast.image_url %}
+                                <img src="{{ ep.podcast.image_url }}" class="img-fluid rounded shadow-lg border border-secondary" style="max-width: 200px;">
+                            {% elif ep.podcast.network.default_image_url %}
+                                <img src="{{ ep.podcast.network.default_image_url }}" class="img-fluid rounded shadow-lg border border-secondary" style="max-width: 200px;">
+                            {% else %}
+                                <div class="rounded bg-dark d-flex justify-content-center align-items-center border border-secondary shadow-lg mx-auto" style="width: 200px; height: 200px;">
+                                    <i class="bi bi-mic text-warning" style="font-size: 4rem;"></i>
+                                </div>
                             {% endif %}
                         </div>
+
+                        <div class="col-md-9">
+                            <h1 class="card-title fw-bold mb-3">{{ ep.title }}</h1>
+                            <div class="d-flex flex-wrap gap-2 align-items-center">
+                                {% if ep.is_premium and not ep.user_has_access %}
+                                    <span class="badge bg-warning fs-6"><i class="bi bi-unlock-fill"></i> Ad-Free Available</span>
+                                {% elif ep.is_premium and ep.user_has_access %}
+                                    <span class="badge bg-success fs-6"><i class="bi bi-star-fill"></i> Premium Enabled</span>
+                                {% endif %}
+                                <span class="text-muted"><i class="bi bi-calendar3 me-1"></i> {{ ep.pub_date|date:"F d, Y" }}</span>
+                                {% if ep.duration %}
+                                    <span class="text-muted ms-3"><i class="bi bi-clock me-1"></i> {{ ep.duration }}</span>
+                                {% endif %}
+                            </div>
+                        </div>
                     </div>
-                </div>
-                
-                <div class="mb-4">
-                    <audio class="js-player" controls>
-                        <source src="{% if ep.user_has_access %}{{ ep.audio_url_subscriber }}{% else %}{{ ep.audio_url_public }}{% endif %}" type="audio/mpeg">
-                    </audio>
-                </div>
-
-                {% if ep.user_has_access %}
-                <div class="mb-4">
-                    <a href="{{ ep.audio_url_subscriber }}" class="btn btn-outline-light btn-sm" download>
-                        <i class="bi bi-cloud-download"></i> Download
-                    </a>
-                </div>
-                {% endif %}
-
-                {% if ep.is_premium and not ep.user_has_access %}
-                    <div class="alert alert-dark border border-warning text-warning py-2 px-3 mb-4" role="alert">
-                        <i class="bi bi-star-fill"></i> An ad-free version of this episode is available by <a href="{% url 'patreon_login' %}" class="alert-link">logging in</a>.
-                    </div>
-                {% endif %}
-
-                {% if ep.is_premium and ep.user_has_access %}
+                    
                     <div class="mb-4">
-                        <button class="btn btn-sm btn-outline-secondary" type="button" data-bs-toggle="collapse" data-bs-target="#publicAudioCollapse" aria-expanded="false" aria-controls="publicAudioCollapse">
-                            <i class="bi bi-music-note-list"></i> Show Ad-Supported Version
-                        </button>
-                        
-                        <div class="collapse mt-3" id="publicAudioCollapse">
-                            <div class="card card-body bg-dark border-secondary">
-                                <p class="small text-muted mb-2">Public (Ad-Supported) Audio:</p>
-                                <audio class="js-player" controls>
-                                    <source src="{{ ep.audio_url_public }}" type="audio/mpeg">
-                                </audio>
-                                <div class="mt-2">
-                                    <a href="{{ ep.audio_url_public }}" class="text-muted small text-decoration-none" download>
-                                        <i class="bi bi-cloud-download"></i> Download Public MP3
-                                    </a>
+                        <audio class="js-player" controls>
+                            <source src="{% if ep.user_has_access %}{{ ep.audio_url_subscriber }}{% else %}{{ ep.audio_url_public }}{% endif %}" type="audio/mpeg">
+                        </audio>
+                    </div>
+
+                    {% if ep.user_has_access %}
+                    <div class="mb-4">
+                        <a href="{{ ep.audio_url_subscriber }}" class="btn btn-outline-light btn-sm" download>
+                            <i class="bi bi-cloud-download"></i> Download
+                        </a>
+                    </div>
+                    {% endif %}
+
+                    {% if ep.is_premium and not ep.user_has_access %}
+                        <div class="alert alert-dark border border-warning text-warning py-2 px-3 mb-4" role="alert">
+                            <i class="bi bi-star-fill"></i> An ad-free version of this episode is available by <a href="{% url 'patreon_login' %}" class="alert-link">logging in</a>.
+                        </div>
+                    {% endif %}
+
+                    {% if ep.is_premium and ep.user_has_access %}
+                        <div class="mb-4">
+                            <button class="btn btn-sm btn-outline-secondary" type="button" data-bs-toggle="collapse" data-bs-target="#publicAudioCollapse" aria-expanded="false" aria-controls="publicAudioCollapse">
+                                <i class="bi bi-music-note-list"></i> Show Ad-Supported Version
+                            </button>
+                            <div class="collapse mt-3" id="publicAudioCollapse">
+                                <div class="card card-body bg-dark border-secondary">
+                                    <p class="small text-muted mb-2">Public (Ad-Supported) Audio:</p>
+                                    <audio class="js-player" controls>
+                                        <source src="{{ ep.audio_url_public }}" type="audio/mpeg">
+                                    </audio>
+                                    <div class="mt-2">
+                                        <a href="{{ ep.audio_url_public }}" class="text-muted small text-decoration-none" download>
+                                            <i class="bi bi-cloud-download"></i> Download Public MP3
+                                        </a>
+                                    </div>
                                 </div>
                             </div>
                         </div>
+                    {% endif %}
+
+                    <hr class="border-secondary mb-4">
+                    <div class="text-light" style="font-size: 1.1rem; line-height: 1.6;">
+                        {{ ep.display_description|safe }}
                     </div>
-                {% endif %}
 
-                <hr class="border-secondary mb-4">
-
-                <div class="text-light" style="font-size: 1.1rem; line-height: 1.6;">
-                    {{ ep.display_description|safe }}
+                    {% if ep.tags %}
+                    <div class="mt-5 pt-4 border-top border-secondary">
+                        <h6 class="text-muted text-uppercase small fw-bold mb-3"><i class="bi bi-tags-fill"></i> Associated Tags</h6>
+                        <div>
+                            {% for tag in ep.tags %}
+                                <a href="{% url 'home' %}?q={{ tag|urlencode }}&network={{ ep.podcast.network.slug }}" class="badge bg-dark text-light border border-secondary text-decoration-none me-2 mb-2 p-2 shadow-sm fs-6" style="transition: all 0.2s;" onmouseover="this.classList.replace('text-light', 'text-warning'); this.classList.replace('border-secondary', 'border-warning');" onmouseout="this.classList.replace('text-warning', 'text-light'); this.classList.replace('border-warning', 'border-secondary');">
+                                    <i class="bi bi-tag-fill text-muted"></i> {{ tag }}
+                                </a>
+                            {% endfor %}
+                        </div>
+                    </div>
+                    {% endif %}
                 </div>
 
-                {% if ep.tags %}
-                <div class="mt-5 pt-4 border-top border-secondary">
-                    <h6 class="text-muted text-uppercase small fw-bold mb-3"><i class="bi bi-tags-fill"></i> Associated Tags</h6>
-                    <div>
-                        {% for tag in ep.tags %}
-                            <a href="{% url 'home' %}?q={{ tag|urlencode }}&network={{ ep.podcast.network.slug }}" class="badge bg-dark text-light border border-secondary text-decoration-none me-2 mb-2 p-2 shadow-sm fs-6" style="transition: all 0.2s;" onmouseover="this.classList.replace('text-light', 'text-warning'); this.classList.replace('border-secondary', 'border-warning');" onmouseout="this.classList.replace('text-warning', 'text-light'); this.classList.replace('border-warning', 'border-secondary');">
-                                <i class="bi bi-tag-fill text-muted"></i> {{ tag }}
-                            </a>
-                        {% endfor %}
+                {% if request.user.is_authenticated %}
+                <div class="tab-pane fade" id="edit" role="tabpanel" aria-labelledby="edit-tab">
+                    
+                    <div class="d-flex justify-content-between align-items-center mb-4 pb-3 border-bottom border-secondary">
+                        <div>
+                            <h4 class="text-warning mb-1"><i class="bi bi-journal-code"></i> The Archivist Desk</h4>
+                            <p class="text-muted mb-0 small">Help improve metadata. Approved edits earn badges and trust score.</p>
+                        </div>
+                        <div class="text-end">
+                            <span class="badge bg-dark border border-secondary p-2 fs-6">
+                                Trust Score: <span class="text-success">{{ request.user.patron_profile.trust_score|default_if_none:100 }}</span>
+                            </span>
+                        </div>
                     </div>
+
+                    <form id="episodeEditForm" method="POST" action="{% url 'submit_episode_edit' ep.id %}">
+                        {% csrf_token %}
+                        <input type="hidden" name="payload" id="jsonPayload">
+                        
+                        <div class="row mb-4">
+                            <div class="col-12 mb-3">
+                                <label class="form-label text-light fw-bold">Tags (Comma Separated)</label>
+                                <input type="text" class="form-control bg-dark text-light border-secondary" id="editTags" value="{{ ep.tags|join:', ' }}">
+                            </div>
+                            <div class="col-12">
+                                <label class="form-label text-light fw-bold">Clean Description</label>
+                                <div id="editDescContainer" class="bg-dark text-light">
+                                    {{ ep.clean_description|default:ep.raw_description|safe }}
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="mb-4">
+                            <label class="form-label text-light fw-bold mb-2">Chapters / Timestamps</label>
+                            
+                            <div class="bg-dark border border-secondary rounded p-3 mb-3" id="chapterContainer">
+                                </div>
+                            
+                            <button type="button" class="btn btn-sm btn-outline-success w-100 p-2" onclick="addChapterRow()">
+                                <i class="bi bi-plus-lg fw-bold"></i> Add Another Chapter
+                            </button>
+                        </div>
+
+                        <div class="d-grid gap-2 d-md-flex justify-content-md-end mt-5 pt-3 border-top border-secondary">
+                            <button type="submit" class="btn btn-warning btn-lg"><i class="bi bi-send"></i> Submit Edit Suggestion</button>
+                        </div>
+                    </form>
                 </div>
                 {% endif %}
+
             </div>
         </div>
     </div>
 </div>
 
+{{ ep.chapters_public|default:"[]"|json_script:"existing-chapters" }}
+
 <script src="{% static 'pod_manager/js/plyr.js' %}"></script>
+<script src="https://cdn.quilljs.com/1.3.7/quill.min.js"></script>
 <script>
     document.addEventListener('DOMContentLoaded', () => {
-        // Initialize all elements with the 'js-player' class
+        
+        // --- 1. INITIALIZE QUILL RTE ---
+        const quill = new Quill('#editDescContainer', {
+            theme: 'snow',
+            modules: {
+                toolbar: [
+                    ['bold', 'italic', 'underline', 'strike'],
+                    ['blockquote', 'code-block'],
+                    [{ 'list': 'ordered'}, { 'list': 'bullet' }],
+                    [{ 'header': [2, 3, false] }], 
+                    ['link', 'clean']
+                ]
+            }
+        });
+
+        // --- 2. INITIALIZE PLYR ---
         const players = Plyr.setup('.js-player', {
-            controls: [
-                'play',             // Play/pause playback
-                'progress',         // The progress bar and scrubber for playback and buffering
-                'current-time',     // The current time of playback
-                'duration',         // The full duration of the media
-                'mute',             // Toggle mute
-                'volume',           // Volume control
-                'settings'          // Settings menu (for Speed)
-            ],
+            controls: ['play', 'progress', 'current-time', 'duration', 'mute', 'volume', 'settings'],
             settings: ['speed'],
             speed: { selected: 1, options: [0.5, 0.75, 0.8, 0.9, 1, 1.1, 1.2, 1.25, 1.5, 1.75, 2, 2.5] },
             iconUrl: "{% static 'pod_manager/img/plyr.svg' %}"
         });
+
+        // Tab Switching Logic
+        const tabBtns = document.querySelectorAll('button[data-bs-toggle="tab"]');
+        tabBtns.forEach(btn => {
+            btn.addEventListener('shown.bs.tab', function (event) {
+                tabBtns.forEach(b => {
+                    b.classList.remove('text-light', 'bg-dark');
+                    b.classList.add('text-muted');
+                });
+                event.target.classList.remove('text-muted');
+                event.target.classList.add('text-light', 'bg-dark');
+            });
+        });
+
+        // --- 3. CHAPTER EDITOR ENGINE ---
+        const chapterContainer = document.getElementById('chapterContainer');
+        const form = document.getElementById('episodeEditForm');
+        const payloadInput = document.getElementById('jsonPayload');
+        
+        let existingChapters = [];
+        try {
+            const parsed = JSON.parse(document.getElementById('existing-chapters').textContent);
+            if (parsed && Array.isArray(parsed)) {
+                existingChapters = parsed;
+            }
+        } catch (e) {
+            console.error("No existing chapters found or invalid JSON.");
+        }
+
+        function formatTime(totalSeconds) {
+            if (!totalSeconds) return "00:00:00";
+            const h = Math.floor(totalSeconds / 3600).toString().padStart(2, '0');
+            const m = Math.floor((totalSeconds % 3600) / 60).toString().padStart(2, '0');
+            const s = Math.floor(totalSeconds % 60).toString().padStart(2, '0');
+            return `${h}:${m}:${s}`;
+        }
+
+        function parseTime(timeStr) {
+            const parts = timeStr.split(':').reverse();
+            let seconds = 0;
+            if (parts[0]) seconds += parseInt(parts[0], 10);
+            if (parts[1]) seconds += parseInt(parts[1], 10) * 60;
+            if (parts[2]) seconds += parseInt(parts[2], 10) * 3600;
+            return seconds;
+        }
+
+        window.addChapterRow = function(startTime = 0, title = "", url = "") {
+            const row = document.createElement('div');
+            row.className = 'row g-2 align-items-center mb-2 chapter-row p-1 rounded';
+            row.innerHTML = `
+                <div class="col-md-2">
+                    <input type="text" class="form-control form-control-sm bg-black text-light border-secondary chap-time" placeholder="00:00:00" value="${formatTime(startTime)}">
+                </div>
+                <div class="col-md-4">
+                    <input type="text" class="form-control form-control-sm bg-black text-light border-secondary chap-title" placeholder="Chapter Title" value="${title}">
+                </div>
+                <div class="col-md-5">
+                    <input type="text" class="form-control form-control-sm bg-black text-light border-secondary chap-url" placeholder="Optional URL/Link" value="${url}">
+                </div>
+                <div class="col-md-1 text-end">
+                    <button type="button" class="btn btn-sm btn-outline-danger" onclick="this.closest('.chapter-row').remove()"><i class="bi bi-trash"></i></button>
+                </div>
+            `;
+            chapterContainer.appendChild(row);
+        }
+
+        // Initialize rows
+        if (existingChapters.length > 0) {
+            existingChapters.forEach(c => addChapterRow(c.startTime, c.title, c.url || ""));
+        } else {
+            addChapterRow(); // Spawn a default blank row
+        }
+
+        // --- 4. PACKAGE DATA ON SUBMIT ---
+        if (form) {
+            form.addEventListener('submit', (e) => {
+                const tagsInput = document.getElementById('editTags').value;
+                const tagsArray = tagsInput.split(',').map(t => t.trim()).filter(t => t);
+                const descInput = quill.root.innerHTML;
+                
+                const chapters = [];
+                document.querySelectorAll('.chapter-row').forEach(row => {
+                    const timeStr = row.querySelector('.chap-time').value;
+                    const title = row.querySelector('.chap-title').value.trim();
+                    const url = row.querySelector('.chap-url').value.trim();
+                    
+                    if (title) { // Only save if a title was actually entered
+                        const chap = { startTime: parseTime(timeStr), title: title };
+                        if (url) chap.url = url;
+                        chapters.push(chap);
+                    }
+                });
+
+                // Sort chapters chronologically
+                chapters.sort((a, b) => a.startTime - b.startTime);
+
+                const finalPayload = {
+                    description: descInput,
+                    tags: tagsArray,
+                    chapters: chapters
+                };
+                
+                payloadInput.value = JSON.stringify(finalPayload);
+            });
+        }
     });
 </script>
 {% endblock %}

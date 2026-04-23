@@ -13,6 +13,7 @@ urlpatterns = [
     
     # Listener Routes
     path('feeds/', views.user_feeds, name='user_feeds'),
+    path('profile/', views.user_profile, name='user_profile'),
     
     # Creator Route
     path('creator/', views.creator_settings, name='creator_settings'),
@@ -26,6 +27,7 @@ urlpatterns = [
     path('api/traefik-config/', views.traefik_config_api, name='traefik_config_api'),
     path('impersonate/start/<int:user_id>/', views.start_impersonation, name='start_impersonation'),
     path('impersonate/stop/', views.stop_impersonation, name='stop_impersonation'),
+    path('episode/<int:episode_id>/edit/', views.submit_episode_edit, name='submit_episode_edit'),
 
     # Feed Endpoints
     path('feed/', views.generate_custom_feed, name='custom_feed'),

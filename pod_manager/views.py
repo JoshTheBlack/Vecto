@@ -37,7 +37,7 @@ from django.views.decorators.csrf import csrf_exempt
 from podgen import Podcast as PodgenPodcast, Episode as PodgenEpisode, Media, Person, Category
 from lxml import etree
 
-from .models import PatronProfile, Podcast, Episode, Network, PatreonTier, UserMix, NetworkMix
+from .models import PatronProfile, Podcast, Episode, Network, PatreonTier, UserMix, NetworkMix, EpisodeEditSuggestion
 from .tasks import task_ingest_feed
 
 warnings.filterwarnings("ignore", message=".*Image URL must end with.*")
@@ -67,12 +67,15 @@ def get_and_buffer_profile_auth(feed_token):
         if not profile:
             return None
             
+        owned_network_ids = list(profile.user.owned_networks.values_list('id', flat=True))
+            
         auth_data = {
             'id': profile.id,
             'active_pledges': profile.active_pledges or {},
             'first_name': profile.user.first_name,
             'email': profile.user.email,
-            'feed_token': profile.feed_token
+            'feed_token': profile.feed_token,
+            'owned_network_ids': owned_network_ids,
         }
         cache.set(auth_cache_key, auth_data, timeout=3600) # Cache for 1 hour
 
@@ -329,7 +332,7 @@ def patreon_callback(request):
             "https://www.patreon.com/api/oauth2/v2/identity"
             "?include=memberships.campaign"
             "&fields[user]=email,first_name,last_name"
-            "&fields[member]=patron_status,currently_entitled_amount_cents"
+            "&fields[member]=patron_status,currently_entitled_amount_cents,pledge_relationship_start"
         )
         user_res = requests.get(identity_url, headers=headers, timeout=10)
         
@@ -370,9 +373,12 @@ def patreon_callback(request):
             profile.patreon_id = patreon_id
 
         known_campaign_ids = set(Network.objects.exclude(patreon_campaign_id__isnull=True).exclude(patreon_campaign_id='').values_list('patreon_campaign_id', flat=True))
-        # --- INSTANT PLEDGE SYNC LOGIC ---
+        
+        # --- SYNC PLEDGES AND DATES ---
         active_pledges = profile.active_pledges or {}
+        join_dates = profile.patreon_join_dates or {}
         seen_campaigns = set()
+        earliest_start = None  # To calculate overall Account Vintage
         
         for item in included_data:
             if item.get('type') == 'member':
@@ -381,27 +387,50 @@ def patreon_callback(request):
                 
                 status = attrs.get('patron_status')
                 cents = attrs.get('currently_entitled_amount_cents', 0)
+                start_date_str = attrs.get('pledge_relationship_start')
                 
                 campaign_data = rels.get('campaign', {}).get('data', {})
                 if campaign_data:
                     campaign_id = str(campaign_data.get('id'))
                     
-                    # SECURITY & OPTIMIZATION: Only process campaigns belonging to Vecto networks
+                    # SECURITY: Only process campaigns linked to Vecto networks
                     if campaign_id in known_campaign_ids:
                         seen_campaigns.add(campaign_id)
                         
                         if status == 'active_patron':
                             active_pledges[campaign_id] = cents
+                            
+                            # Log and store the specific start date for this network
+                            if start_date_str:
+                                join_dates[campaign_id] = start_date_str
+                                logger.info(f"Vecto Match: ID {campaign_id} | Pledge: ${cents/100} | Since: {start_date_str}")
+                                
+                                # Track earliest date for global profile vintage
+                                try:
+                                    current_dt = timezone.datetime.fromisoformat(start_date_str.replace('Z', '+00:00'))
+                                    if not earliest_start or current_dt < earliest_start:
+                                        earliest_start = current_dt
+                                except Exception as dt_err:
+                                    logger.warning(f"Failed to parse date {start_date_str}: {dt_err}")
+
                         elif campaign_id in active_pledges:
-                            # Delete the key entirely to save database space instead of setting to 0
+                            # User is no longer active for this specific Vecto campaign
                             del active_pledges[campaign_id]
 
-        # Cleanup: Remove old campaigns the user dropped, OR campaigns that left Vecto
+        # Cleanup: Remove old campaigns the user dropped or that left Vecto
         for old_campaign in list(active_pledges.keys()):
-            if old_campaign not in known_campaign_ids or old_campaign not in seen_campaigns:
+            if old_campaign not in seen_campaigns:
                 del active_pledges[old_campaign]
+                if old_campaign in join_dates:
+                    del join_dates[old_campaign]
 
+        # Finalize Profile Data
         profile.active_pledges = active_pledges
+        profile.patreon_join_dates = join_dates
+        if earliest_start:
+            profile.patreon_join_date = earliest_start # Single date for "Pioneer" status
+            logger.info(f"Global Account Vintage for {email}: {earliest_start}")
+        
         profile.last_active = timezone.now()
         profile.save()
 
@@ -454,6 +483,58 @@ def stop_impersonation(request):
 # ==========================================
 
 @login_required(login_url='/login/')
+def user_profile(request):
+    profile = request.user.patron_profile
+    
+    # Calculate Total Approved Edits (Sum of granular stats)
+    total_approved = profile.edits_chapters + profile.edits_tags + profile.edits_descriptions
+    
+    # Determine Character Level & Title
+    level = 0
+    title = "Commoner" # Hasn't done anything yet
+    
+    # Check if they have submitted at least one edit (Pending or otherwise)
+    has_submitted = EpisodeEditSuggestion.objects.filter(user=request.user).exists()
+    
+    if total_approved >= 50:
+        level = 4
+        title = "Grand Archivist"
+    elif total_approved >= 10:
+        level = 3
+        title = "Archivist"
+    elif total_approved >= 1:
+        level = 2
+        title = "Scout"
+    elif has_submitted:
+        level = 1
+        title = "Initiate"
+
+    # Calculate Progress to Next Level
+    progress_percent = 0
+    next_level_goal = 0
+    if level == 1:
+        next_level_goal = 1
+        progress_percent = (total_approved / 1) * 100
+    elif level == 2:
+        next_level_goal = 10
+        progress_percent = (total_approved / 10) * 100
+    elif level == 3:
+        next_level_goal = 50
+        progress_percent = (total_approved / 50) * 100
+    elif level == 4:
+        progress_percent = 100 # Max Level
+
+    context = {
+        'profile': profile,
+        'total_approved': total_approved,
+        'level': level,
+        'title': title,
+        'next_level_goal': next_level_goal,
+        'progress_percent': min(progress_percent, 100),
+    }
+    return render(request, 'pod_manager/user_profile.html', context)
+
+@login_required(login_url='/login/')
 def creator_settings(request):
     if request.user.is_superuser:
         allowed_networks = Network.objects.all()
@@ -472,6 +553,21 @@ def creator_settings(request):
     if request.method == 'POST':
         action = request.POST.get('action')
 
+        def get_inbox_redirect():
+            current_tab = request.POST.get('current_tab', 'inbox')
+            url = f"{reverse('creator_settings')}?network={current_network.slug}&tab={current_tab}"
+            if current_tab == 'audit':
+                audit_page = request.POST.get('audit_page', '')
+                audit_q = request.POST.get('audit_q', '')
+                audit_status = request.POST.get('audit_status', '')
+                audit_user = request.POST.get('audit_user', '')
+                
+                if audit_page: url += f"&audit_page={urllib.parse.quote(str(audit_page))}"
+                if audit_q: url += f"&audit_q={urllib.parse.quote(str(audit_q))}"
+                if audit_status: url += f"&audit_status={urllib.parse.quote(str(audit_status))}"
+                if audit_user: url += f"&audit_user={urllib.parse.quote(str(audit_user))}"
+            return url
+        
         if action == 'update_network':
             network_id = request.POST.get('network_id')
             network = get_object_or_404(allowed_networks, id=network_id)
@@ -727,6 +823,136 @@ def creator_settings(request):
                 messages.error(request, "Episode not found.")
             return redirect(f"{reverse('creator_settings')}?network={current_network.slug}&merge_view=matched&merge_podcast_id={podcast_id}")
 
+        # --- INBOX: APPROVE / REJECT ---
+        elif action in ['approve_edit', 'reject_edit']:
+            edit_id = request.POST.get('edit_id')
+            edit = get_object_or_404(EpisodeEditSuggestion, id=edit_id, episode__podcast__network=current_network)
+            profile = edit.user.patron_profile
+
+            if action == 'approve_edit':
+                # Apply data to Episode
+                ep = edit.episode
+                ep.clean_description = edit.suggested_data.get('description', ep.clean_description)
+                ep.tags = edit.suggested_data.get('tags', ep.tags)
+                ep.chapters_public = edit.suggested_data.get('chapters', ep.chapters_public)
+                ep.save()
+
+                # Update Edit Status
+                edit.status = 'approved'
+                edit.resolved_at = timezone.now()
+                edit.save()
+
+                # Reward User (+5 Trust, ceiling at 100)
+                profile.trust_score += 5
+                
+                # Increment Stats (Only if changed)
+                if edit.suggested_data.get('chapters') != edit.original_data.get('chapters'): 
+                    profile.edits_chapters += len(edit.suggested_data.get('chapters', []))
+                if edit.suggested_data.get('tags') != edit.original_data.get('tags'): 
+                    profile.edits_tags += 1
+                if edit.suggested_data.get('description') != edit.original_data.get('description'): 
+                    profile.edits_descriptions += 1
+                    
+                if edit.is_first_responder: profile.first_responder_count += 1
+                profile.save()
+                
+                messages.success(request, "Edit approved and applied. User rewarded +5 Trust.")
+
+            elif action == 'reject_edit':
+                edit.status = 'rejected'
+                edit.resolved_at = timezone.now()
+                edit.save()
+
+                # Punish User (-2 Trust, floor at 0)
+                profile.trust_score = max(0, profile.trust_score - 2)
+                profile.edits_rejected += 1
+                profile.save()
+                messages.warning(request, "Edit rejected. User trust score penalized by 2.")
+
+            return redirect(get_inbox_redirect())
+
+        # --- INBOX: BULK ROLLBACK (THE NUKE BUTTON) ---
+        elif action == 'bulk_rollback':
+            spammer_id = request.POST.get('spammer_id')
+            spammer = get_object_or_404(User, id=spammer_id)
+            
+            # Find ALL edits by this user on this network (Approved AND Pending)
+            bad_edits = EpisodeEditSuggestion.objects.filter(
+                user=spammer, 
+                episode__podcast__network=current_network, 
+                status__in=['approved', 'pending']
+            )
+            
+            rollback_count = 0
+            for edit in bad_edits:
+                # If it was applied, revert the episode data
+                if edit.status == 'approved':
+                    ep = edit.episode
+                    ep.clean_description = edit.original_data.get('description', ep.clean_description)
+                    ep.tags = edit.original_data.get('tags', ep.tags)
+                    ep.chapters_public = edit.original_data.get('chapters', ep.chapters_public)
+                    ep.save()
+                    edit.status = 'rolled_back'
+                else:
+                    # If it was just pending, reject it
+                    edit.status = 'rejected'
+                    
+                edit.resolved_at = timezone.now()
+                edit.save()
+                rollback_count += 1
+                
+            # Nuke their trust score AND gamification stats entirely
+            if hasattr(spammer, 'patron_profile'):
+                profile = spammer.patron_profile
+                profile.trust_score = 0
+                profile.edits_chapters = 0
+                profile.edits_tags = 0
+                profile.edits_descriptions = 0
+                profile.first_responder_count = 0
+                profile.save()
+            
+            messages.success(request, f"Nuked! Rolled back and rejected {rollback_count} edits from {spammer.email}. Trust score reset to 0.")
+            return redirect(get_inbox_redirect())
+
+        # --- INBOX: SINGLE ROLLBACK ---
+        elif action == 'rollback_single_edit':
+            edit_id = request.POST.get('edit_id')
+            # Ensure we only rollback approved edits for the current network
+            edit = get_object_or_404(EpisodeEditSuggestion, id=edit_id, episode__podcast__network=current_network, status='approved')
+            profile = edit.user.patron_profile
+
+            # 1. Revert the episode data to the original snapshot
+            ep = edit.episode
+            ep.clean_description = edit.original_data.get('description', ep.clean_description)
+            ep.tags = edit.original_data.get('tags', ep.tags)
+            ep.chapters_public = edit.original_data.get('chapters', ep.chapters_public)
+            ep.save()
+
+            # 2. Update the edit status
+            edit.status = 'rolled_back'
+            edit.resolved_at = timezone.now()
+            edit.save()
+
+            # 3. Penalize the user (-5 Trust) and reverse gamification progress
+            profile.trust_score = max(0, profile.trust_score - 5)
+            profile.edits_rejected += 1
+            
+            # Remove the stats they gained when this was approved (Only if changed)
+            if edit.suggested_data.get('chapters') != edit.original_data.get('chapters'): 
+                    profile.edits_chapters = max(0, profile.edits_chapters - len(edit.suggested_data.get('chapters', [])))
+            if edit.suggested_data.get('tags') != edit.original_data.get('tags'): 
+                profile.edits_tags = max(0, profile.edits_tags - 1)
+            if edit.suggested_data.get('description') != edit.original_data.get('description'): 
+                profile.edits_descriptions = max(0, profile.edits_descriptions - 1)
+            
+            if edit.is_first_responder: 
+                profile.first_responder_count = max(0, profile.first_responder_count - 1)
+            
+            profile.save()
+
+            messages.success(request, f"Single edit rolled back. {edit.user.username}'s trust score was penalized by 5.")
+            return redirect(get_inbox_redirect())
+
     allowed_networks = allowed_networks.prefetch_related('podcasts', 'podcasts__required_tier')
     total_patrons = 0
     if current_network and current_network.patreon_campaign_id:
@@ -867,6 +1093,39 @@ def creator_settings(request):
     private_orphans = Paginator(private_orphans_qs, 50).get_page(priv_page)
     matched_episodes = Paginator(matched_qs, 50).get_page(match_page)
 
+    # ---------------------------------------------------------
+    # INBOX & AUDIT LOG ENGINE
+    # ---------------------------------------------------------
+    pending_edits = []
+    audit_page_obj = None
+    
+    audit_q = request.GET.get('audit_q', '').strip()
+    audit_status = request.GET.get('audit_status', '')
+    audit_user = request.GET.get('audit_user', '').strip()
+
+    if current_network:
+        pending_edits = EpisodeEditSuggestion.objects.filter(
+            episode__podcast__network=current_network, status='pending'
+        ).select_related('episode', 'user__patron_profile').order_by('created_at')
+        
+        # Base Audit Query (Everything NOT pending)
+        audit_qs = EpisodeEditSuggestion.objects.filter(
+            episode__podcast__network=current_network
+        ).exclude(status='pending').select_related('episode', 'user__patron_profile').order_by('-resolved_at')
+        
+        if audit_status:
+            audit_qs = audit_qs.filter(status=audit_status)
+        if audit_q:
+            audit_qs = audit_qs.filter(
+                Q(episode__title__icontains=audit_q) |
+                Q(episode__podcast__title__icontains=audit_q)
+            )
+        if audit_user:
+            audit_qs = audit_qs.filter(user__username__icontains=audit_user)
+
+        audit_page_num = request.GET.get('audit_page', 1)
+        audit_page_obj = Paginator(audit_qs, 20).get_page(audit_page_num)
+
     context = {
         'networks': allowed_networks,
         'current_network': current_network,
@@ -888,6 +1147,8 @@ def creator_settings(request):
         'matched_episodes': matched_episodes,
         'network_podcasts': network_podcasts,
         'merge_podcast_id': merge_podcast_id,
+        'pending_edits': pending_edits,
+        'audit_page_obj': audit_page_obj,
     }
     return render(request, 'pod_manager/creator_settings.html', context)
 
@@ -898,11 +1159,16 @@ def home(request):
     
     # 1. Determine user's active pledged networks
     user_networks = Network.objects.none()
-    if request.user.is_authenticated and hasattr(request.user, 'patron_profile'):
-        pledges = request.user.patron_profile.active_pledges or {}
-        # Get slugs of networks where the user has an active pledge > $0
-        active_campaign_ids = [cid for cid, amt in pledges.items() if amt > 0]
-        user_networks = Network.objects.filter(patreon_campaign_id__in=active_campaign_ids).distinct()
+    owned_network_ids = []
+    if request.user.is_authenticated:
+        owned_network_ids = list(request.user.owned_networks.values_list('id', flat=True))
+        if hasattr(request.user, 'patron_profile'):
+            pledges = request.user.patron_profile.active_pledges or {}
+            active_campaign_ids = [cid for cid, amt in pledges.items() if amt > 0]
+            # Match if they pledge OR if they own it!
+            user_networks = Network.objects.filter(
+                Q(patreon_campaign_id__in=active_campaign_ids) | Q(id__in=owned_network_ids)
+            ).distinct()
 
     # 2. Base Queries
     podcasts = Podcast.objects.all().order_by('title')
@@ -968,7 +1234,10 @@ def home(request):
         req_cents = ep.podcast.required_tier.minimum_cents if ep.podcast.required_tier else 0
         camp_id = str(ep.podcast.network.patreon_campaign_id)
         user_cents = user_active_pledges.get(camp_id, 0)
-        ep.user_has_access = (user_cents >= req_cents)
+        
+        # Check ownership bypass here
+        is_owner = ep.podcast.network_id in owned_network_ids
+        ep.user_has_access = is_owner or (user_cents >= req_cents)
 
     context = {
         'episodes': page_obj,          
@@ -994,7 +1263,9 @@ def episode_detail(request, episode_id):
     req_cents = ep.podcast.required_tier.minimum_cents if ep.podcast.required_tier else 0
     camp_id = str(ep.podcast.network.patreon_campaign_id)
     user_cents = user_active_pledges.get(camp_id, 0)
-    ep.user_has_access = (user_cents >= req_cents)
+    
+    is_owner = request.user.is_authenticated and ep.podcast.network.owners.filter(id=request.user.id).exists()
+    ep.user_has_access = is_owner or (user_cents >= req_cents)
     
     if ep.podcast.network != request.network and not ep.user_has_access:
         logger.warning(f"Cross-network block: User {request.user.username} attempted to view episode {episode_id} from a different network without access.")
@@ -1047,9 +1318,11 @@ def user_feeds(request):
         active_pledges = profile.active_pledges or {}
         total_dollars = sum(active_pledges.values()) / 100 if active_pledges else 0
         
-        # Identify all networks this user supports
+        # Identify all networks this user supports OR owns
         active_campaign_ids = [cid for cid, amt in active_pledges.items() if amt > 0]
-        user_networks = Network.objects.filter(patreon_campaign_id__in=active_campaign_ids).distinct()
+        user_networks = Network.objects.filter(
+            Q(patreon_campaign_id__in=active_campaign_ids) | Q(owners=request.user)
+        ).distinct()
 
         # === HANDLE MIX POST ACTIONS ===
         if request.method == 'POST' and 'create_mix' in request.POST:
@@ -1115,11 +1388,18 @@ def user_feeds(request):
                 messages.success(request, "Mix deleted successfully.")
             return redirect('user_feeds')
 
-    # 2. Determine target networks for display
+    # 2. Determine target networks for display and THEME
     if selected_networks:
         target_networks = user_networks if 'all' in selected_networks else user_networks.filter(slug__in=selected_networks)
+        
+        # --- THEME LOGIC FIX ---
+        if len(selected_networks) == 1 and 'all' not in selected_networks:
+            current_view_network = get_object_or_404(Network, slug=selected_networks[0])
+        else:
+            current_view_network = request.network
     else:
         target_networks = [request.network]
+        current_view_network = request.network
 
     # 3. Build Feed Data (Shows public feeds for guests)
     feed_data = []
@@ -1127,7 +1407,9 @@ def user_feeds(request):
         req_cents = podcast.required_tier.minimum_cents if podcast.required_tier else 0
         camp_id = str(podcast.network.patreon_campaign_id)
         user_cents = active_pledges.get(camp_id, 0)
-        has_access = (user_cents >= req_cents) and (req_cents > 0) and (profile is not None)
+        
+        is_owner = request.user.is_authenticated and podcast.network.owners.filter(id=request.user.id).exists()
+        has_access = is_owner or ((user_cents >= req_cents) and (req_cents > 0) and (profile is not None))
         
         # visibility logic: If logged in, ALWAYS give the unique feed so it can upgrade/downgrade dynamically.
         if profile is not None:
@@ -1145,7 +1427,9 @@ def user_feeds(request):
         mix_req_cents = nmix.required_tier.minimum_cents if nmix.required_tier else 0
         camp_id = str(nmix.network.patreon_campaign_id)
         user_cents = active_pledges.get(camp_id, 0) if profile else 0
-        has_access = (mix_req_cents == 0) or (user_cents >= mix_req_cents)
+        
+        is_owner = request.user.is_authenticated and nmix.network.owners.filter(id=request.user.id).exists()
+        has_access = is_owner or ((user_cents >= mix_req_cents) and (profile is not None))
         
         if profile:
             raw_url = reverse('network_mix_feed', args=[nmix.network.slug, nmix.slug]) + f"?auth={profile.feed_token}"
@@ -1179,7 +1463,7 @@ def user_feeds(request):
         'profile': profile, 'dollars': total_dollars, 'feed_data': feed_data,
         'available_podcasts': available_podcasts, 'mix_data': mix_data,
         'user_networks': user_networks, 'selected_networks': selected_networks or [request.network.slug],
-        'current_network': request.network,
+        'current_network': current_view_network, # <--- Fix applied here
     }
     return render(request, 'pod_manager/user_feeds.html', context)
 
@@ -1205,11 +1489,14 @@ def generate_custom_feed(request):
         return HttpResponseForbidden("Invalid authentication token format.")
 
     active_pledges = auth_data['active_pledges']
+    owned_networks = auth_data.get('owned_network_ids', [])
+    
     required_cents = podcast.required_tier.minimum_cents if podcast.required_tier else 0
     camp_id = str(podcast.network.patreon_campaign_id)
     user_cents = active_pledges.get(camp_id, 0)
     
-    has_access = (user_cents >= required_cents)
+    is_owner = podcast.network.id in owned_networks
+    has_access = is_owner or (user_cents >= required_cents)
 
     version = cache.get(f"podcast_cache_version_{podcast.id}", 1)
     cache_key = f"xml_feed_{version}_{auth_data['feed_token']}_{podcast.slug}_{has_access}"
@@ -1265,6 +1552,12 @@ def generate_custom_feed(request):
         timeout_seconds = podcast.network.feed_cache_minutes * 60
         cache.set(cache_key, xml_output, timeout=timeout_seconds)
         logger.debug(f"Successfully generated and cached custom feed: {cache_key}")
+
+    rss_cache_key = f"analytics:rss:{auth_data['id']}"
+    try:
+        cache.incr(rss_cache_key)
+    except ValueError:
+        cache.set(rss_cache_key, 1, timeout=172800)
 
     return HttpResponse(xml_output, content_type='application/rss+xml')
 
@@ -1339,11 +1632,14 @@ def generate_mix_feed(request, unique_id):
         
         selected_podcasts = user_mix.selected_podcasts.select_related('required_tier', 'network').all()
         
+        owned_networks = auth_data.get('owned_network_ids', []) if auth_data else []
         access_map = {}
         for podcast in selected_podcasts:
             req_cents = podcast.required_tier.minimum_cents if podcast.required_tier else 0
             camp_id = str(podcast.network.patreon_campaign_id)
-            has_access = (active_pledges.get(camp_id, 0) >= req_cents)
+            
+            is_owner = podcast.network.id in owned_networks
+            has_access = is_owner or (active_pledges.get(camp_id, 0) >= req_cents)
             access_map[podcast.id] = has_access
             logger.debug(f"Mix Feed Access Check: {auth_data['first_name']} -> {podcast.title}: {has_access}")
                 
@@ -1399,6 +1695,12 @@ def generate_mix_feed(request, unique_id):
         cache.set(cache_key, feed_xml, 300)
         logger.debug(f"Successfully generated and cached mix feed: {cache_key}")
         
+    rss_cache_key = f"analytics:rss:{auth_data['id']}"
+    try:
+        cache.incr(rss_cache_key)
+    except ValueError:
+        cache.set(rss_cache_key, 1, timeout=172800)
+
     return HttpResponse(feed_xml, content_type='application/rss+xml')
 
 def generate_network_mix_feed(request, network_slug, mix_slug):
@@ -1409,10 +1711,12 @@ def generate_network_mix_feed(request, network_slug, mix_slug):
     profile = None
     active_pledges = {}
     
+    owned_networks = []
     if feed_token:
         auth_data = get_and_buffer_profile_auth(feed_token)
         if auth_data:
             active_pledges = auth_data['active_pledges']
+            owned_networks = auth_data.get('owned_network_ids', [])
         else:
             logger.warning(f"Invalid or missing token received for network mix: {feed_token}")
 
@@ -1420,7 +1724,8 @@ def generate_network_mix_feed(request, network_slug, mix_slug):
     camp_id = str(network_mix.network.patreon_campaign_id)
     user_cents = active_pledges.get(camp_id, 0)
     
-    user_meets_mix_tier = (mix_req_cents == 0) or (user_cents >= mix_req_cents)
+    is_owner = network_mix.network.id in owned_networks
+    user_meets_mix_tier = is_owner or (mix_req_cents == 0) or (user_cents >= mix_req_cents)
 
     cache_key = f"network_mix_{network_mix.unique_id}_{feed_token}"
     feed_xml = cache.get(cache_key)
@@ -1721,10 +2026,20 @@ def play_episode(request, episode_id):
     if feed_token:
         auth_data = get_and_buffer_profile_auth(feed_token)
         if auth_data:
+            owned_networks = auth_data.get('owned_network_ids', [])
+            is_owner = ep.podcast.network.id in owned_networks
+            
             req_cents = ep.podcast.required_tier.minimum_cents if ep.podcast.required_tier else 0
             camp_id = str(ep.podcast.network.patreon_campaign_id)
             user_cents = auth_data['active_pledges'].get(camp_id, 0)
-            has_access = (user_cents >= req_cents)
+            has_access = is_owner or (user_cents >= req_cents)
+            if has_access:
+                # Key format: analytics:play:{profile_id}:{episode_id}:{podcast_id}
+                cache_key = f"analytics:play:{auth_data['id']}:{ep.id}:{ep.podcast_id}"
+                try:
+                    cache.incr(cache_key)
+                except ValueError:
+                    cache.set(cache_key, 1, timeout=172800)
             logger.info(f"[ROUTER] User: {auth_data['email']} | Has: {user_cents}¢ | Needs: {req_cents}¢ | Access Granted: {has_access}")
         else:
             logger.warning(f"[ROUTER] Invalid auth token provided: {feed_token}")
@@ -1763,11 +2078,11 @@ def traefik_config_api(request):
 
         routers[router_name] = {
             "rule": f"Host(`{network.custom_domain}`)",
-            # This MUST exactly match the service name defined in your fileConfig.yml
+            "entryPoints": ["https"], 
             "service": "vecto-service",
             "tls": {
-                # Replace 'myresolver' with your actual Let's Encrypt certResolver name
-                "certResolver": "letsencrypt" 
+                # Force these external domains to use the HTTP-01 challenge
+                "certResolver": "http_resolver" 
             }
         }
 
@@ -1779,6 +2094,76 @@ def traefik_config_api(request):
     }
 
     return JsonResponse(traefik_json)
+
+@login_required(login_url='/login/')
+def submit_episode_edit(request, episode_id):
+    if request.method != 'POST':
+        return HttpResponseForbidden("Only POST allowed")
+        
+    ep = get_object_or_404(Episode, id=episode_id)
+    payload_str = request.POST.get('payload')
+    
+    if not payload_str:
+        messages.error(request, "Payload missing. Could not submit edit.")
+        return redirect('episode_detail', episode_id=ep.id)
+        
+    try:
+        suggested_data = json.loads(payload_str)
+        profile = request.user.patron_profile
+        network = ep.podcast.network
+        
+        # 1. Snapshot original state
+        original_data = {
+            "description": ep.clean_description,
+            "tags": ep.tags or [],
+            "chapters": ep.chapters_public or []
+        }
+        
+        is_first = not EpisodeEditSuggestion.objects.filter(episode=ep, status='approved').exists()
+        
+        # 2. THE AUTO-APPROVE ENGINE
+        is_trusted = profile.trust_score >= network.auto_approve_trust_threshold
+        final_status = 'approved' if is_trusted else 'pending'
+        
+        # 3. Create the suggestion record
+        EpisodeEditSuggestion.objects.create(
+            episode=ep, user=request.user, suggested_data=suggested_data,
+            original_data=original_data, status=final_status, is_first_responder=is_first,
+            resolved_at=timezone.now() if is_trusted else None
+        )
+        
+        # 4. Apply instantly if trusted
+        if is_trusted:
+            ep.clean_description = suggested_data.get('description', ep.clean_description)
+            ep.tags = suggested_data.get('tags', ep.tags)
+            ep.chapters_public = suggested_data.get('chapters', ep.chapters_public)
+            ep.save()
+            
+            # Reward User (+5 Trust, ceiling at 100)
+            profile.trust_score += 5
+            
+            # Increment Gamification Stats (Counting ALL chapters)
+            if suggested_data.get('chapters') != original_data.get('chapters'): 
+                profile.edits_chapters += len(suggested_data.get('chapters', []))
+            if suggested_data.get('tags') != original_data.get('tags'): 
+                profile.edits_tags += 1
+            if suggested_data.get('description') != original_data.get('description'): 
+                profile.edits_descriptions += 1
+                
+            if is_first: profile.first_responder_count += 1
+            profile.save()
+            
+            messages.success(request, "Your trust score is high enough that your edit was approved and applied instantly. Thank you!")
+        else:
+            messages.success(request, "Your edit has been submitted to the archivists for review. Thank you for contributing!")
+        
+    except json.JSONDecodeError:
+        messages.error(request, "Failed to parse edit payload. Please try again.")
+    except Exception as e:
+        logger.error(f"Error saving edit suggestion: {e}")
+        messages.error(request, "An internal error occurred while saving your edit.")
+        
+    return redirect('episode_detail', episode_id=ep.id)
 
 # ==========================================
 # BACKGROUND QUEUE & IMPORT STREAMING

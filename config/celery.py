@@ -22,4 +22,8 @@ app.conf.beat_schedule = {
         'task': 'pod_manager.tasks.task_generate_monthly_invoices',
         'schedule': crontab(day_of_month='1', hour=0, minute=0),
     },
+    'sync-active-timestamps-hourly': {
+        'task': 'pod_manager.tasks.task_sync_last_active_timestamps',
+        'schedule': crontab(minute=0), 
+    },
 }

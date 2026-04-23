@@ -128,3 +128,53 @@ def task_sync_all_networks():
 def task_clean_mix_images():
     logger.info("Running nightly sweep of orphaned mix images.")
     call_command('clean_mix_images')
+
+@shared_task
+def task_sync_last_active_timestamps():
+    """
+    Sweeps Redis for buffered 'last_active' timestamps and bulk updates PatronProfiles.
+    """
+    # 1. We use the lower-level Redis client to efficiently find all matching keys
+    # (Django's default cache framework doesn't have a great way to search keys by pattern)
+    redis_client = cache.client.get_client()
+    
+    # Find all keys matching our buffer pattern
+    # Note: If you are using django-redis, keys might have a prefix like ":1:buffer_last_active_*"
+    keys = redis_client.keys("*buffer_last_active_*")
+    
+    if not keys:
+        logger.info("No active timestamps to sync.")
+        return
+
+    profiles_to_update = []
+    keys_to_delete = []
+
+    for key_bytes in keys:
+        # Decode the key and extract the profile ID
+        key_str = key_bytes.decode('utf-8')
+        # Strip any django-redis prefixes (usually ':1:')
+        clean_key = key_str.split('buffer_last_active_')[-1]
+        
+        try:
+            profile_id = int(clean_key)
+            # Retrieve the timestamp we saved in views.py
+            last_active_time = cache.get(f"buffer_last_active_{profile_id}")
+            
+            if last_active_time:
+                # Prepare the object for the bulk update
+                profile = PatronProfile(id=profile_id)
+                profile.last_active = last_active_time
+                profiles_to_update.append(profile)
+                keys_to_delete.append(key_str)
+                
+        except (ValueError, TypeError):
+            continue
+
+    # 2. Execute a single massive database write!
+    if profiles_to_update:
+        PatronProfile.objects.bulk_update(profiles_to_update, ['last_active'])
+        logger.info(f"Successfully bulk-updated {len(profiles_to_update)} user activity timestamps.")
+
+    # 3. Clean up Redis so we don't process them again
+    if keys_to_delete:
+        redis_client.delete(*keys_to_delete)

@@ -7,6 +7,8 @@ services:
       - "--providers.docker=true"
       - "--providers.docker.exposedbydefault=false"
       - "--providers.docker.network=vecto_proxy"
+      - "--providers.http.endpoint=http://web:8000/api/traefik-config/?token=${TRAEFIK_API_TOKEN}"
+      - "--providers.http.pollInterval=15s"
       - "--entrypoints.web.address=:80"
       - "--entrypoints.websecure.address=:443"
       - "--entrypoints.web.http.redirections.entrypoint.to=websecure"
@@ -22,10 +24,12 @@ services:
       - letsencrypt:/letsencrypt
     networks:
       - proxy
+      - internal
     restart: unless-stopped
 
   db:
     image: postgres:15
+    command: postgres -c max_connections=200
     volumes:
       - postgres_data:/var/lib/postgresql/data
     env_file: .env
@@ -35,15 +39,44 @@ services:
       retries: 5
     networks:
       - internal
+    restart: unless-stopped
+
+  # --- NEW: PgBouncer Service ---
+  pgbouncer:
+    image: edoburu/pgbouncer:1.21.0
+    env_file: .env
+    environment:
+      - DB_HOST=db
+      - DB_USER=${POSTGRES_USER}
+      - DB_PASSWORD=${POSTGRES_PASSWORD}
+      - DB_NAME=${POSTGRES_DB}
+      - POOL_MODE=transaction
+      - MAX_CLIENT_CONN=5000
+      - DEFAULT_POOL_SIZE=20
+      - LISTEN_PORT=6432
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -p 6432 -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      retries: 5
+    networks:
+      - internal
+    restart: unless-stopped
 
   redis:
     image: redis:7
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_data:/data
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
       retries: 5
     networks:
       - internal
+    restart: unless-stopped
 
   web:
     build: .
@@ -58,7 +91,7 @@ services:
       - REDIS_URL=redis://redis:6379/0
     env_file: .env
     depends_on:
-      db:
+      pgbouncer:
         condition: service_healthy
       redis:
         condition: service_healthy
@@ -83,7 +116,7 @@ services:
       - REDIS_URL=redis://redis:6379/0
     env_file: .env
     depends_on:
-      db:
+      pgbouncer:
         condition: service_healthy
       redis:
         condition: service_healthy
@@ -100,7 +133,7 @@ services:
       - REDIS_URL=redis://redis:6379/0
     env_file: .env
     depends_on:
-      db:
+      pgbouncer:
         condition: service_healthy
       redis:
         condition: service_healthy
@@ -116,4 +149,5 @@ networks:
 volumes:
   postgres_data:
   media_data:
+  redis_data:
   letsencrypt:

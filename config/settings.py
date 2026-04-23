@@ -167,8 +167,14 @@ else:
             'NAME': os.getenv('POSTGRES_DB', 'vecto'),
             'USER': os.getenv('POSTGRES_USER', 'vecto_user'),
             'PASSWORD': os.getenv('POSTGRES_PASSWORD', 'vecto_pass'),
-            'HOST': os.getenv('POSTGRES_HOST', 'db'),
-            'PORT': os.getenv('POSTGRES_PORT', '5432'),
+            
+            # 1. Route through the Bouncer
+            'HOST': os.getenv('POSTGRES_HOST', 'pgbouncer'),
+            'PORT': os.getenv('POSTGRES_PORT', '6432'),
+            
+            # 2. Activate Connection Pooling
+            'CONN_MAX_AGE': 60,         # Keep connections alive for 60 seconds
+            'CONN_HEALTH_CHECKS': True, # Ensure Django drops dead connections gracefully
         }
     }
 

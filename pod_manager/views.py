@@ -48,6 +48,40 @@ logger = logging.getLogger(__name__)
 # HELPER FUNCTIONS
 # ==========================================
 
+def get_and_buffer_profile_auth(feed_token):
+    """
+    Checks Redis for the user's active pledges to avoid DB queries.
+    Buffers the 'last_active' timestamp in Redis instead of writing to Postgres.
+    Returns a dictionary of the profile data, or None if invalid.
+    """
+    if not feed_token:
+        return None
+
+    # 1. Try to get the auth payload from Redis
+    auth_cache_key = f"auth_profile_{feed_token}"
+    auth_data = cache.get(auth_cache_key)
+
+    if not auth_data:
+        # 2. CACHE MISS: Hit the DB once, then cache it for an hour
+        profile = PatronProfile.objects.select_related('user').filter(feed_token=feed_token).first()
+        if not profile:
+            return None
+            
+        auth_data = {
+            'id': profile.id,
+            'active_pledges': profile.active_pledges or {},
+            'first_name': profile.user.first_name,
+            'email': profile.user.email,
+            'feed_token': profile.feed_token
+        }
+        cache.set(auth_cache_key, auth_data, timeout=3600) # Cache for 1 hour
+
+    # 3. BUFFER THE WRITE: Push the timestamp to Redis instead of the DB
+    # We set a 24-hour timeout on this key just so Redis cleans it up eventually if the sync task fails
+    cache.set(f"buffer_last_active_{auth_data['id']}", timezone.now(), timeout=86400)
+    
+    return auth_data
+
 def parse_duration(duration_str: str) -> timedelta | None:
     if not duration_str:
         return None
@@ -1008,9 +1042,7 @@ def user_feeds(request):
     if request.user.is_authenticated and hasattr(request.user, 'patron_profile'):
         profile = request.user.patron_profile
 
-        if not profile.last_active or profile.last_active < timezone.now() - timedelta(hours=24):
-            profile.last_active = timezone.now()
-            profile.save(update_fields=['last_active'])
+        cache.set(f"buffer_last_active_{profile.id}", timezone.now(), timeout=86400)
 
         active_pledges = profile.active_pledges or {}
         total_dollars = sum(active_pledges.values()) / 100 if active_pledges else 0
@@ -1167,17 +1199,12 @@ def generate_custom_feed(request):
     else:
         podcast = get_object_or_404(Podcast, slug=podcast_slug, network=request.network)
 
-    try:
-        profile = get_object_or_404(PatronProfile, feed_token=feed_token)
-    except ValueError:
-        logger.warning(f"Invalid token format received: {feed_token}")
+    auth_data = get_and_buffer_profile_auth(feed_token)
+    if not auth_data:
+        logger.warning(f"Invalid or missing token received: {feed_token}")
         return HttpResponseForbidden("Invalid authentication token format.")
 
-    if not profile.last_active or profile.last_active < timezone.now() - timedelta(hours=24):
-        profile.last_active = timezone.now()
-        profile.save(update_fields=['last_active'])
-
-    active_pledges = profile.active_pledges or {}
+    active_pledges = auth_data['active_pledges']
     required_cents = podcast.required_tier.minimum_cents if podcast.required_tier else 0
     camp_id = str(podcast.network.patreon_campaign_id)
     user_cents = active_pledges.get(camp_id, 0)
@@ -1185,7 +1212,7 @@ def generate_custom_feed(request):
     has_access = (user_cents >= required_cents)
 
     version = cache.get(f"podcast_cache_version_{podcast.id}", 1)
-    cache_key = f"xml_feed_{version}_{profile.feed_token}_{podcast.slug}_{has_access}"
+    cache_key = f"xml_feed_{version}_{auth_data['feed_token']}_{podcast.slug}_{has_access}"
     xml_output = cache.get(cache_key)
 
     if xml_output:
@@ -1195,8 +1222,8 @@ def generate_custom_feed(request):
         episodes = podcast.episodes.all().order_by('-pub_date')[:2000]
         
         p = PodgenPodcast(
-            name=f"{podcast.title} for {profile.user.first_name}",
-            description=f"Personalized feed for {profile.user.first_name}.",
+            name=f"{podcast.title} for {auth_data['first_name']}",
+            description=f"Personalized feed for {auth_data['first_name']}.",
             website=podcast.network.website_url or "https://example.com",
             explicit=True,
             image=podcast.image_url or podcast.network.default_image_url or "https://example.com/logo.png",
@@ -1209,7 +1236,7 @@ def generate_custom_feed(request):
             if not ep.audio_url_subscriber and not ep.audio_url_public:
                 continue
 
-            audio_url = request.build_absolute_uri(reverse('play_episode', args=[ep.id])) + f"?auth={profile.feed_token}"
+            audio_url = request.build_absolute_uri(reverse('play_episode', args=[ep.id])) + f"?auth={auth_data['feed_token']}"
 
             assembled_desc = ep.clean_description
             footer_parts = []
@@ -1305,15 +1332,10 @@ def generate_mix_feed(request, unique_id):
         logger.debug(f"Cache HIT for mix feed: {cache_key}")
     else:
         logger.debug(f"Cache MISS for mix feed: {cache_key}. Generating XML...")
-        user_mix = get_object_or_404(UserMix, unique_id=unique_id, is_active=True)
+        user_mix = get_object_or_404(UserMix.objects.select_related('user__patron_profile'), unique_id=unique_id, is_active=True)
         
-        profile = user_mix.user.patron_profile
-
-        if not profile.last_active or profile.last_active < timezone.now() - timedelta(hours=24):
-            profile.last_active = timezone.now()
-            profile.save(update_fields=['last_active'])
-
-        active_pledges = profile.active_pledges or {}
+        auth_data = get_and_buffer_profile_auth(user_mix.user.patron_profile.feed_token)
+        active_pledges = auth_data['active_pledges'] if auth_data else {}
         
         selected_podcasts = user_mix.selected_podcasts.select_related('required_tier', 'network').all()
         
@@ -1323,7 +1345,7 @@ def generate_mix_feed(request, unique_id):
             camp_id = str(podcast.network.patreon_campaign_id)
             has_access = (active_pledges.get(camp_id, 0) >= req_cents)
             access_map[podcast.id] = has_access
-            logger.debug(f"Mix Feed Access Check: {profile.user.username} -> {podcast.title}: {has_access}")
+            logger.debug(f"Mix Feed Access Check: {auth_data['first_name']} -> {podcast.title}: {has_access}")
                 
         episodes = Episode.objects.filter(podcast__in=selected_podcasts).select_related('podcast', 'podcast__network').order_by('-pub_date')[:500]
         
@@ -1347,7 +1369,7 @@ def generate_mix_feed(request, unique_id):
             if not ep.audio_url_subscriber and not ep.audio_url_public:
                 continue
                 
-            audio_url = request.build_absolute_uri(reverse('play_episode', args=[ep.id])) + f"?auth={profile.feed_token}"
+            audio_url = request.build_absolute_uri(reverse('play_episode', args=[ep.id])) + f"?auth={auth_data['feed_token']}"
 
             display_title = f"[{ep.podcast.title}] {ep.title}"
             
@@ -1388,14 +1410,11 @@ def generate_network_mix_feed(request, network_slug, mix_slug):
     active_pledges = {}
     
     if feed_token:
-        try:
-            profile = PatronProfile.objects.get(feed_token=feed_token)
-            if not profile.last_active or profile.last_active < timezone.now() - timedelta(hours=24):
-                profile.last_active = timezone.now()
-                profile.save(update_fields=['last_active'])
-            active_pledges = profile.active_pledges or {}
-        except PatronProfile.DoesNotExist:
-            logger.warning(f"Invalid token format received for network mix: {feed_token}")
+        auth_data = get_and_buffer_profile_auth(feed_token)
+        if auth_data:
+            active_pledges = auth_data['active_pledges']
+        else:
+            logger.warning(f"Invalid or missing token received for network mix: {feed_token}")
 
     mix_req_cents = network_mix.required_tier.minimum_cents if network_mix.required_tier else 0
     camp_id = str(network_mix.network.patreon_campaign_id)
@@ -1697,20 +1716,16 @@ def play_episode(request, episode_id):
     
     logger.debug(f"[ROUTER] Episode: '{ep.title}' | Auth Token Provided: {bool(feed_token)}")
     
-    # 1. Evaluate their pledge status on the fly
+    # 1. Evaluate their pledge status on the fly using Redis
     has_access = False
     if feed_token:
-        profile = PatronProfile.objects.filter(feed_token=feed_token).first()
-        if profile:
-            if not profile.last_active or profile.last_active < timezone.now() - timedelta(hours=24):
-                profile.last_active = timezone.now()
-                profile.save(update_fields=['last_active'])
-
+        auth_data = get_and_buffer_profile_auth(feed_token)
+        if auth_data:
             req_cents = ep.podcast.required_tier.minimum_cents if ep.podcast.required_tier else 0
             camp_id = str(ep.podcast.network.patreon_campaign_id)
-            user_cents = profile.active_pledges.get(camp_id, 0) if profile.active_pledges else 0
+            user_cents = auth_data['active_pledges'].get(camp_id, 0)
             has_access = (user_cents >= req_cents)
-            logger.info(f"[ROUTER] User: {profile.user.email} | Has: {user_cents}¢ | Needs: {req_cents}¢ | Access Granted: {has_access}")
+            logger.info(f"[ROUTER] User: {auth_data['email']} | Has: {user_cents}¢ | Needs: {req_cents}¢ | Access Granted: {has_access}")
         else:
             logger.warning(f"[ROUTER] Invalid auth token provided: {feed_token}")
     else:

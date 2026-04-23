@@ -134,12 +134,19 @@ def task_sync_last_active_timestamps():
     """
     Sweeps Redis for buffered 'last_active' timestamps and bulk updates PatronProfiles.
     """
-    # 1. We use the lower-level Redis client to efficiently find all matching keys
-    # (Django's default cache framework doesn't have a great way to search keys by pattern)
-    redis_client = cache.client.get_client()
+    import redis
+    from django.conf import settings
+    
+    # 1. Gracefully skip if running IDE tests with LocMemCache
+    if 'locmem' in settings.CACHES['default']['BACKEND'].lower():
+        logger.info("Local memory cache detected, skipping Redis sweep.")
+        return
+
+    # 2. Connect directly to Redis using the URL from settings
+    redis_url = settings.CACHES['default']['LOCATION']
+    redis_client = redis.from_url(redis_url)
     
     # Find all keys matching our buffer pattern
-    # Note: If you are using django-redis, keys might have a prefix like ":1:buffer_last_active_*"
     keys = redis_client.keys("*buffer_last_active_*")
     
     if not keys:
@@ -150,31 +157,28 @@ def task_sync_last_active_timestamps():
     keys_to_delete = []
 
     for key_bytes in keys:
-        # Decode the key and extract the profile ID
         key_str = key_bytes.decode('utf-8')
-        # Strip any django-redis prefixes (usually ':1:')
+        # Extract the profile ID regardless of Django's internal cache prefixes (e.g. ':1:')
         clean_key = key_str.split('buffer_last_active_')[-1]
         
         try:
             profile_id = int(clean_key)
-            # Retrieve the timestamp we saved in views.py
+            # Retrieve the timestamp (we still use cache.get so it handles the prefixing natively)
             last_active_time = cache.get(f"buffer_last_active_{profile_id}")
             
             if last_active_time:
-                # Prepare the object for the bulk update
                 profile = PatronProfile(id=profile_id)
                 profile.last_active = last_active_time
                 profiles_to_update.append(profile)
-                keys_to_delete.append(key_str)
+                keys_to_delete.append(key_str) # Save the raw Redis key for deletion
                 
         except (ValueError, TypeError):
             continue
 
-    # 2. Execute a single massive database write!
     if profiles_to_update:
         PatronProfile.objects.bulk_update(profiles_to_update, ['last_active'])
         logger.info(f"Successfully bulk-updated {len(profiles_to_update)} user activity timestamps.")
 
-    # 3. Clean up Redis so we don't process them again
     if keys_to_delete:
+        # Pass the unpacked list of raw keys directly to Redis to delete them
         redis_client.delete(*keys_to_delete)

@@ -98,6 +98,14 @@ class Network(models.Model):
     global_footer_public = models.TextField(blank=True, help_text="Appended to all public feeds in this network.")
     global_footer_private = models.TextField(blank=True, help_text="Appended to all private feeds in this network.")
     
+    # --- BRANDING & METADATA ---
+    summary = models.TextField(blank=True, null=True)
+    one_liner = models.CharField(max_length=255, blank=True, null=True)
+    logo_url = models.URLField(max_length=500, blank=True, null=True) # Maps to image_small_url
+    banner_image_url = models.URLField(max_length=500, blank=True, null=True) # Maps to image_url
+    patreon_url = models.URLField(max_length=500, blank=True, null=True)
+    discord_server_id = models.CharField(max_length=100, blank=True, null=True)
+    
     auto_approve_trust_threshold = models.IntegerField(
         default=80, 
         help_text="Users with a trust score equal to or above this number bypass the review inbox. (Set to 101 to disable auto-approve)."

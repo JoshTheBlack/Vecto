@@ -608,7 +608,6 @@ def home(request):
     }
     return render(request, 'pod_manager/home.html', context)
 
-@login_required(login_url='/login/')
 def user_feeds(request):
     tenant_profile = getattr(request, 'tenant_profile', None)
     profile = getattr(request.user, 'patron_profile', None) if request.user.is_authenticated else None
@@ -955,7 +954,7 @@ def _link_creator_campaign(request, network_id, access_token, refresh_token):
     url = (
         "https://www.patreon.com/api/oauth2/v2/campaigns"
         "?include=tiers"
-        "&fields[campaign]=created_at,image_url,url"
+        "&fields[campaign]=created_at,image_url,image_small_url,url,vanity,summary,one_liner,discord_server_id"
         "&fields[tier]=title,amount_cents,url"
     )
     
@@ -968,16 +967,18 @@ def _link_creator_campaign(request, network_id, access_token, refresh_token):
         
         if camp_data:
             campaign_id = camp_data[0]['id']
-            created_at_str = camp_data[0].get('attributes', {}).get('created_at')
             attrs = camp_data[0].get('attributes', {})
             
-            if not network.default_image_url and attrs.get('image_url'):
-                network.default_image_url = attrs.get('image_url')
-            
-            if not network.website_url and attrs.get('url'):
-                network.website_url = attrs.get('url')
-                
+            # Only overwrite these if they are empty, so we don't destroy manual edits
+            if not network.logo_url: network.logo_url = attrs.get('image_small_url', '')
+            if not network.banner_image_url: network.banner_image_url = attrs.get('image_url', '')
+            if not network.patreon_url: network.patreon_url = attrs.get('url', '')
+            if not network.summary: network.summary = attrs.get('summary', '')
+            if not network.one_liner: network.one_liner = attrs.get('one_liner', '')
+            if not network.discord_server_id: network.discord_server_id = attrs.get('discord_server_id', '')
+
             network.patreon_campaign_id = campaign_id
+            created_at_str = attrs.get('created_at')
             if created_at_str:
                 network.patreon_campaign_created_at = timezone.datetime.fromisoformat(created_at_str.replace('Z', '+00:00'))
             

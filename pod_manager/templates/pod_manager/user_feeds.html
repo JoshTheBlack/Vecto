@@ -250,9 +250,19 @@
                             {% endif %}
                         {% else %}
                             {% if item.is_network_mix %}
-                                <small class="text-muted mt-1 d-block"><i class="bi bi-info-circle"></i> Network Super Feed (Public version. Requires a <strong>${% widthratio item.mix.required_tier.minimum_cents|default:0 100 1 %}.00</strong> pledge to unlock Premium).</small>
+                                <div class="mt-2 p-2 bg-dark rounded border border-secondary d-flex align-items-center justify-content-between">
+                                    <small class="text-muted mb-0"><i class="bi bi-info-circle"></i> Requires <strong>${% widthratio item.mix.required_tier.minimum_cents|default:0 100 1 %}.00</strong> pledge.</small>
+                                    {% if item.mix.required_tier.checkout_url %}
+                                        <a href="{{ item.mix.required_tier.checkout_url }}" target="_blank" class="btn btn-sm btn-outline-warning fw-bold py-0" style="font-size: 0.75rem;">Unlock</a>
+                                    {% endif %}
+                                </div>
                             {% else %}
-                                <small class="text-muted mt-1 d-block"><i class="bi bi-info-circle"></i> Public (Ad-Supported) version. Requires a <strong>${% widthratio item.podcast.required_tier.minimum_cents|default:0 100 1 %}.00</strong> pledge to unlock Premium.</small>
+                                <div class="mt-2 p-2 bg-dark rounded border border-secondary d-flex align-items-center justify-content-between">
+                                    <small class="text-muted mb-0"><i class="bi bi-info-circle"></i> Requires <strong>${% widthratio item.podcast.required_tier.minimum_cents|default:0 100 1 %}.00</strong> pledge.</small>
+                                    {% if item.podcast.required_tier.checkout_url %}
+                                        <a href="{{ item.podcast.required_tier.checkout_url }}" target="_blank" class="btn btn-sm btn-outline-warning fw-bold py-0" style="font-size: 0.75rem;">Unlock</a>
+                                    {% endif %}
+                                </div>
                             {% endif %}
                         {% endif %}
                     </div>

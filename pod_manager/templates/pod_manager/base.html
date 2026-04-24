@@ -192,18 +192,55 @@
     </style>
 </head>
 <body>
-
+{% if current_network.banner_image_url %}
+    <div class="network-fixed-banner" style="background-image: url('{{ current_network.banner_image_url }}');"></div>
+    
+    <style>
+        .network-fixed-banner {
+            position: fixed;
+            top: 60px; 
+            left: 0;
+            width: 100%;
+            
+            /* Maintain the exact 2.5:1 aspect ratio of a 1200x480 image */
+            height: 40vw; 
+            
+            z-index: -10; 
+            
+            /* Forces the image width to lock to the container width, 
+               and lets the height scale naturally */
+            background-size: 100% auto; 
+            
+            background-position: top center; 
+            background-repeat: no-repeat;
+            opacity: 0.35; 
+            
+            /* Put your mask back in to blend the bottom edge */
+            mask-image: linear-gradient(to bottom, black 75%, transparent 100%);
+            -webkit-mask-image: linear-gradient(to bottom, black 75%, transparent 100%);
+        }
+    </style>
+{% endif %}
 <div class="sticky-top mb-4 shadow-sm header-wrapper">
     
     <nav class="navbar navbar-expand-lg navbar-dark border-0">
         <div class="container">
-            <a class="navbar-brand text-light fw-bold d-flex align-items-center" href="{% url 'home' %}">
-                {% if current_network and current_network.theme_config.logo_url %}
-                    <img src="{{ current_network.theme_config.logo_url }}" alt="{{ current_network.name }}" style="height: 32px; width: auto;" class="me-2">
+            <a class="navbar-brand d-flex align-items-center" href="{% url 'home' %}">
+    
+                {% if current_network.theme_config.logo_url %}
+                    <img src="{{ current_network.theme_config.logo_url }}" alt="Logo" class="d-inline-block align-text-top rounded me-2" style="height: 32px; width: auto;">
+                {% elif current_network.logo_url %}
+                    <img src="{{ current_network.logo_url }}" alt="Logo" class="d-inline-block align-text-top rounded border border-secondary shadow-sm me-2" style="height: 32px; width: 32px; object-fit: cover;">
                 {% else %}
-                    <i class="bi bi-broadcast text-warning me-2 fs-4"></i> 
-                    {{ current_network.name|default:"Vecto" }}
+                    <i class="bi bi-broadcast me-2 text-warning"></i>
                 {% endif %}
+
+                <div class="d-flex flex-column justify-content-center">
+                    <span class="fw-bold" style="line-height: 1.1;">{{ current_network.name }}</span>
+                    {% if current_network.one_liner %}
+                        <span class="text-muted" style="font-size: 0.65rem; font-weight: 500; text-transform: uppercase; letter-spacing: 0.5px;">{{ current_network.one_liner }}</span>
+                    {% endif %}
+                </div>
             </a>
             
             <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav">

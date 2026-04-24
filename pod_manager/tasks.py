@@ -1,6 +1,7 @@
 import logging
 from celery import shared_task
 from collections import defaultdict
+from django.conf import settings
 from django.core.cache import cache
 from django.core.management import call_command
 from pod_manager.models import Network
@@ -8,9 +9,8 @@ from django.utils import timezone
 from datetime import timedelta
 from django.core.files.base import ContentFile
 from django.template.loader import render_to_string
-import pdfkit
-import platform
-from .models import Network, PatronProfile, Invoice, Podcast, Episode
+import pdfkit, redis, platform
+from .models import Network, PatronProfile, Invoice, Podcast, Episode, NetworkMembership
 import io
 from datetime import timedelta
 
@@ -71,11 +71,11 @@ def task_generate_monthly_invoices():
 
     for network in networks:
         # Dynamically count users (Active + Lapsed bandwidth users)
-        kwargs = {
-            f"active_pledges__has_key": str(network.patreon_campaign_id),
-            "last_active__gte": thirty_days_ago
-        }
-        active_count = PatronProfile.objects.filter(**kwargs).count()
+        active_count = NetworkMembership.objects.filter(
+            network=network,
+            is_active_patron=True,
+            user__patron_profile__last_active__gte=thirty_days_ago
+        ).count()
 
         active_user_cost = network.per_user_cost * active_count
         total_due = network.base_cost + active_user_cost
@@ -201,104 +201,111 @@ def parse_duration_to_hours(duration_str):
 
 @shared_task
 def sweep_analytics_buffer():
-    """
-    Sweeps Redis for playback and RSS hits, aggregates them, 
-    and applies the data to the Patron profiles.
-    """
-    logger.info("Starting Analytics Buffer Sweep...")
+    logger.info("Starting Multi-Tenant Analytics Buffer Sweep...")
     
-    # 1. Gather all analytics keys from Redis
-    play_keys = cache.keys("analytics:play:*")
-    rss_keys = cache.keys("analytics:rss:*")
+    # Connect directly to Redis
+    redis_url = settings.CACHES['default']['LOCATION']
+    redis_client = redis.from_url(redis_url)
     
-    if not play_keys and not rss_keys:
+    play_keys = redis_client.keys("*analytics:play:*")
+    
+    if not play_keys:
         logger.info("No analytics keys found. Sweep complete.")
         return
 
-    # Data structures to aggregate hits before hitting the DB
-    profile_updates = defaultdict(lambda: {
-        'play_hits': 0,
-        'episodes_played': set(),
-        'podcast_hits': defaultdict(int),
-        'rss_hits': 0
+    raw_play_data = []
+    profile_ids = set()
+    podcast_ids = set()
+    episode_ids = set()
+    keys_to_delete = []
+
+    # 1. Sweep and Parse Redis Keys
+    for key_bytes in play_keys:
+        key_str = key_bytes.decode('utf-8')
+        hits = redis_client.get(key_bytes)
+        
+        if hits:
+            clean_key = key_str.split('analytics:play:')[-1]
+            parts = clean_key.split(':')
+            if len(parts) == 3:
+                p_id, e_id, pod_id = int(parts[0]), int(parts[1]), int(parts[2])
+                raw_play_data.append({'p_id': p_id, 'e_id': e_id, 'pod_id': pod_id, 'hits': int(hits)})
+                profile_ids.add(p_id)
+                episode_ids.add(e_id)
+                podcast_ids.add(pod_id)
+                
+        keys_to_delete.append(key_bytes)
+
+    # 2. Build Lookup Dictionaries to route data to the correct Network
+    profile_to_user = dict(PatronProfile.objects.filter(id__in=profile_ids).values_list('id', 'user_id'))
+    podcast_to_network = dict(Podcast.objects.filter(id__in=podcast_ids).values_list('id', 'network_id'))
+    episodes = {e.id: e for e in Episode.objects.filter(id__in=episode_ids)}
+
+    # Structure: (user_id, network_id) -> { play_hits, episodes_played, podcast_hits }
+    membership_updates = defaultdict(lambda: {
+        'play_hits': 0, 'episodes_played': set(), 'podcast_hits': defaultdict(int)
     })
 
-    # 2. Sweep Playback Keys
-    for key in play_keys:
-        hits = cache.get(key)
-        if hits:
-            parts = key.split(':')
-            if len(parts) == 5:
-                p_id, e_id, pod_id = int(parts[2]), int(parts[3]), int(parts[4])
-                profile_updates[p_id]['play_hits'] += hits
-                profile_updates[p_id]['episodes_played'].add(e_id)
-                profile_updates[p_id]['podcast_hits'][pod_id] += hits
-        cache.delete(key) 
-
-    # 3. Sweep RSS Keys
-    for key in rss_keys:
-        hits = cache.get(key)
-        if hits:
-            p_id = int(key.split(':')[2])
-            profile_updates[p_id]['rss_hits'] += hits
-        cache.delete(key)
-
-    # 4. Fetch necessary DB objects in bulk
-    all_profile_ids = list(profile_updates.keys())
-    profiles = {p.id: p for p in PatronProfile.objects.filter(id__in=all_profile_ids)}
-    
-    all_episode_ids = {e_id for data in profile_updates.values() for e_id in data['episodes_played']}
-    episodes = {e.id: e for e in Episode.objects.filter(id__in=all_episode_ids)}
+    # 3. Route Hits to the correct User/Network pair
+    for data in raw_play_data:
+        user_id = profile_to_user.get(data['p_id'])
+        network_id = podcast_to_network.get(data['pod_id'])
+        
+        if user_id and network_id:
+            mem_key = (user_id, network_id)
+            membership_updates[mem_key]['play_hits'] += data['hits']
+            membership_updates[mem_key]['episodes_played'].add(data['e_id'])
+            membership_updates[mem_key]['podcast_hits'][data['pod_id']] += data['hits']
 
     today = timezone.now().date()
     current_iso_week = today.isocalendar()[1]
-    profiles_to_save = []
+    memberships_to_save = []
 
-    # 5. Apply Gamification Math
-    for p_id, data in profile_updates.items():
-        if p_id not in profiles:
-            continue
-            
-        profile = profiles[p_id]
+    # 4. Apply Gamification Math to NetworkMembership
+    for (user_id, network_id), data in membership_updates.items():
+        # Using get_or_create ensures even non-patrons start tracking stats if they listen
+        membership, created = NetworkMembership.objects.get_or_create(user_id=user_id, network_id=network_id)
         
-        # A. Apply Raw Hits (Activity Score)
-        profile.total_playback_hits += data['play_hits']
+        # A. Apply Raw Hits
+        membership.total_playback_hits += data['play_hits']
         
-        # B. Apply Endurance (Hours Accessed)
+        # B. Apply Endurance
         hours_gained = 0.0
         for e_id in data['episodes_played']:
             if e_id in episodes:
                 hours_gained += parse_duration_to_hours(episodes[e_id].duration)
-        profile.total_hours_accessed += hours_gained
+        membership.total_hours_accessed += hours_gained
         
         # C. Calculate Streaks
         if data['play_hits'] > 0:
-            # Daily Streak
-            if profile.last_playback_date == today - timedelta(days=1):
-                profile.streak_days += 1
-            elif profile.last_playback_date != today:
-                profile.streak_days = 1 
-            profile.last_playback_date = today
+            if membership.last_playback_date == today - timedelta(days=1):
+                membership.streak_days += 1
+            elif membership.last_playback_date != today:
+                membership.streak_days = 1 
+            membership.last_playback_date = today
             
-            # Weekly Streak
-            if profile.last_play_week == current_iso_week - 1:
-                profile.streak_weeks += 1
-            elif profile.last_play_week != current_iso_week:
-                profile.streak_weeks = 1 
-            profile.last_play_week = current_iso_week
+            if membership.last_play_week == current_iso_week - 1:
+                membership.streak_weeks += 1
+            elif membership.last_play_week != current_iso_week:
+                membership.streak_weeks = 1 
+            membership.last_play_week = current_iso_week
 
-        # D. Determine Current Obsession
+        # D. Determine Obsession (Strictly isolated to this Network!)
         if data['podcast_hits']:
             top_podcast_id = max(data['podcast_hits'], key=data['podcast_hits'].get)
-            profile.current_obsession_id = top_podcast_id
+            membership.current_obsession_id = top_podcast_id
 
-        profiles_to_save.append(profile)
+        memberships_to_save.append(membership)
 
-    # 6. Bulk write back to Postgres
-    if profiles_to_save:
-        PatronProfile.objects.bulk_update(
-            profiles_to_save, 
+    # 5. Bulk write back to Postgres
+    if memberships_to_save:
+        NetworkMembership.objects.bulk_update(
+            memberships_to_save, 
             ['total_playback_hits', 'total_hours_accessed', 'streak_days', 'streak_weeks', 'last_playback_date', 'last_play_week', 'current_obsession_id']
         )
+
+    # 6. Clear Redis Buffer
+    if keys_to_delete:
+        redis_client.delete(*keys_to_delete)
         
-    logger.info(f"Sweep complete. Updated {len(profiles_to_save)} profiles.")
+    logger.info(f"Sweep complete. Updated {len(memberships_to_save)} Network Memberships.")

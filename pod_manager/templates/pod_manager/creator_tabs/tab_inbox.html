@@ -53,7 +53,7 @@
                             </div>
                             <div class="text-end">
                                 <span class="badge me-2" style="border: 1px solid var(--bs-border-color); background-color: rgba(128,128,128,0.1); color: var(--vecto-surface-text);">
-                                    User: {{ edit.user.username }} (Trust: <span class="{% if edit.user.patron_profile.trust_score < 50 %}text-danger{% else %}text-success{% endif %}">{{ edit.user.patron_profile.trust_score }}</span>)
+                                    User: {{ edit.user.username }} (Trust: <span class="{% if edit.membership.trust_score < 50 %}text-danger{% else %}text-success{% endif %}">{{ edit.membership.trust_score|default:"100" }}</span>)
                                 </span>
                                 <span class="text-surface-muted small">{{ edit.created_at|timesince }} ago</span>
                             </div>

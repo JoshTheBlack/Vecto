@@ -1,10 +1,9 @@
 """
-This module contains all the view logic for the pod_manager application.
-It handles user authentication via Patreon, serves user-facing pages,
-generates dynamic RSS feeds, processes Patreon webhooks, and manages
-a background task queue for importing podcast feeds.
+This module handles all view logic for pod_manager.
+Refactored for SRP, DRY, and Multi-Tenant Architecture.
 """
 import logging
+import warnings
 import hashlib
 import hmac
 import json
@@ -12,8 +11,6 @@ import asyncio
 import threading
 import time
 import urllib.parse
-import warnings
-from datetime import timedelta
 
 import requests
 from django.conf import settings
@@ -26,7 +23,7 @@ from django.core.cache import cache
 from django.core.files.base import ContentFile
 from django.core.paginator import Paginator
 from django.db import transaction
-from django.db.models import Q, F, Case, When, Value, CharField, Max, Count
+from django.db.models import Q, F, Case, When, CharField, Max, Count
 from django.db.models.functions import Substr, Lower
 from django.http import JsonResponse, HttpResponse, HttpResponseForbidden, StreamingHttpResponse, Http404, HttpResponseRedirect
 from django.shortcuts import redirect, get_object_or_404, render
@@ -34,296 +31,905 @@ from django.urls import reverse
 from django.utils import timezone
 from datetime import timedelta
 from django.views.decorators.csrf import csrf_exempt
+
 from podgen import Podcast as PodgenPodcast, Episode as PodgenEpisode, Media, Person
 from lxml import etree
 
-from .models import PatronProfile, Podcast, Episode, Network, PatreonTier, UserMix, NetworkMix, EpisodeEditSuggestion
-from .tasks import task_ingest_feed, parse_duration_to_hours
+from .models import PatronProfile, NetworkMembership, Podcast, Episode, Network, PatreonTier, UserMix, NetworkMix, EpisodeEditSuggestion
+from .tasks import task_ingest_feed
 
 warnings.filterwarnings("ignore", message=".*Image URL must end with.*")
 warnings.filterwarnings("ignore", message=".*Size is set to 0.*")
 
 logger = logging.getLogger(__name__)
+
 # ==========================================
-# HELPER FUNCTIONS
+# 1. DOMAIN SERVICES (SRP)
 # ==========================================
 
-def get_live_user_stats(profile):
-    import redis
-    import logging
-    from django.conf import settings
-    from django.utils import timezone
-    from datetime import timedelta
-    from collections import defaultdict
-    from .models import Episode, Podcast
-    from .tasks import parse_duration_to_hours
+def _evaluate_access(user, podcast, network=None):
+    if not user.is_authenticated:
+        return False, False
+        
+    net = network or podcast.network
+    is_owner = net.owners.filter(id=user.id).exists()
+    if is_owner:
+        return True, True
+
+    membership = NetworkMembership.objects.filter(user=user, network=net).first()
+    if not membership:
+        return False, False
+
+    req_cents = podcast.required_tier.minimum_cents if (podcast and podcast.required_tier) else 0
+    if req_cents == 0:
+        return True, False
+
+    has_access = membership.is_active_patron and (membership.patreon_pledge_cents >= req_cents)
+    return has_access, False
+
+def _build_episode_description(episode, has_access):
+    desc = episode.clean_description or episode.raw_description
+    footer_parts = []
     
-    logger = logging.getLogger(__name__)
+    if has_access:
+        if episode.podcast.show_footer_private: footer_parts.append(episode.podcast.show_footer_private)
+        if episode.podcast.network.global_footer_private: footer_parts.append(episode.podcast.network.global_footer_private)
+    else:
+        if episode.podcast.show_footer_public: footer_parts.append(episode.podcast.show_footer_public)
+        if episode.podcast.network.global_footer_public: footer_parts.append(episode.podcast.network.global_footer_public)
 
-    # 1. Start with the permanent DB values
-    live_play_hits = profile.total_playback_hits or 0
-    live_hours = profile.total_hours_accessed or 0.0
-    live_streak_days = profile.streak_days or 0
-    live_streak_weeks = profile.streak_weeks or 0
-    live_obsession_title = profile.current_obsession.title if profile.current_obsession else "Wandering Adventurer"
-    
-    today = timezone.now().date()
-    current_iso_week = today.isocalendar()[1]
-
-    # 2. Check for Local IDE bypass
-    cache_backend = settings.CACHES['default'].get('BACKEND', '').lower()
-    if 'locmem' in cache_backend or 'dummy' in cache_backend:
-        return {
-            'playback_hits': live_play_hits, 'hours_accessed': round(live_hours, 2),
-            'streak_days': live_streak_days, 'streak_weeks': live_streak_weeks,
-            'obsession_title': live_obsession_title
-        }
-        
-    # 3. Live Redis Projection
-    try:
-        redis_url = settings.CACHES['default']['LOCATION']
-        redis_client = redis.from_url(redis_url)
-        
-        play_keys = redis_client.keys(f"*analytics:play:{profile.id}:*")
-        pending_episode_ids = set()
-        podcast_hits = defaultdict(int)
-        
-        for key_bytes in play_keys:
-            hits = redis_client.get(key_bytes)
-            if hits:
-                live_play_hits += int(hits)
-                
-                key_str = key_bytes.decode('utf-8')
-                clean_key = key_str.split('analytics:play:')[-1]
-                parts = clean_key.split(':')
-                if len(parts) == 3:
-                    e_id, pod_id = int(parts[1]), int(parts[2])
-                    pending_episode_ids.add(e_id)
-                    podcast_hits[pod_id] += int(hits)
-                    
-        if pending_episode_ids:
-            episodes = Episode.objects.filter(id__in=pending_episode_ids)
-            for ep in episodes:
-                live_hours += parse_duration_to_hours(ep.duration)
-                
-        # PROJECT STREAKS
-        if play_keys:
-            if profile.last_playback_date != today:
-                if profile.last_playback_date == today - timedelta(days=1):
-                    live_streak_days += 1
-                else:
-                    live_streak_days = 1
-
-            if profile.last_play_week != current_iso_week:
-                if profile.last_play_week == current_iso_week - 1:
-                    live_streak_weeks += 1
-                else:
-                    live_streak_weeks = 1
-                    
-        # PROJECT OBSESSION
-        if podcast_hits:
-            top_pod_id = max(podcast_hits, key=podcast_hits.get)
-            obsession_pod = Podcast.objects.filter(id=top_pod_id).first()
-            if obsession_pod:
-                live_obsession_title = obsession_pod.title
-
-    except Exception as e:
-        logger.error(f"Failed to fetch live stats from Redis: {e}")
-        pass
-        
-    return {
-        'playback_hits': live_play_hits,
-        'hours_accessed': round(live_hours, 2),
-        'streak_days': live_streak_days, 
-        'streak_weeks': live_streak_weeks,
-        'obsession_title': live_obsession_title
-    }
-
-def get_and_buffer_profile_auth(feed_token):
-    """
-    Checks Redis for the user's active pledges to avoid DB queries.
-    Buffers the 'last_active' timestamp in Redis instead of writing to Postgres.
-    Returns a dictionary of the profile data, or None if invalid.
-    """
-    if not feed_token:
-        return None
-
-    # 1. Try to get the auth payload from Redis
-    auth_cache_key = f"auth_profile_{feed_token}"
-    auth_data = cache.get(auth_cache_key)
-
-    if not auth_data:
-        # 2. CACHE MISS: Hit the DB once, then cache it for an hour
-        profile = PatronProfile.objects.select_related('user').filter(feed_token=feed_token).first()
-        if not profile:
-            return None
-            
-        owned_network_ids = list(profile.user.owned_networks.values_list('id', flat=True))
-            
-        auth_data = {
-            'id': profile.id,
-            'active_pledges': profile.active_pledges or {},
-            'first_name': profile.user.first_name,
-            'email': profile.user.email,
-            'feed_token': profile.feed_token,
-            'owned_network_ids': owned_network_ids,
-        }
-        cache.set(auth_cache_key, auth_data, timeout=3600) # Cache for 1 hour
-
-    # 3. BUFFER THE WRITE: Push the timestamp to Redis instead of the DB
-    # We set a 24-hour timeout on this key just so Redis cleans it up eventually if the sync task fails
-    cache.set(f"buffer_last_active_{auth_data['id']}", timezone.now(), timeout=86400)
-    
-    return auth_data
+    if footer_parts:
+        desc += "<br><br>" + "<br><br>".join(footer_parts)
+    return desc
 
 def parse_duration(duration_str: str) -> timedelta | None:
-    if not duration_str:
-        return None
+    if not duration_str: return None
     try:
-        if ':' in duration_str:
-            parts = duration_str.split(':')
-            sec = int(float(parts[-1])) # Safely handle float seconds
-            if len(parts) == 3:
-                return timedelta(hours=int(parts[0]), minutes=int(parts[1]), seconds=sec)
-            elif len(parts) == 2:
-                return timedelta(minutes=int(parts[0]), seconds=sec)
-        else:
-            return timedelta(seconds=int(float(duration_str)))
+        parts = duration_str.split(':')
+        sec = int(float(parts[-1]))
+        if len(parts) == 3: return timedelta(hours=int(parts[0]), minutes=int(parts[1]), seconds=sec)
+        elif len(parts) == 2: return timedelta(minutes=int(parts[0]), seconds=sec)
+        return timedelta(seconds=int(float(duration_str)))
     except ValueError:
         return None
-    
-def get_active_pledge_amount(patreon_json: dict, campaign_id: str) -> int:
-    if 'included' not in patreon_json or not campaign_id:
-        return 0
+
+def process_mix_image_url(image_url, mix_instance):
+    if not image_url: return None
+    try:
+        res = requests.get(image_url, timeout=5) 
+        if res.status_code == 200:
+            import os
+            temp_name = os.path.basename(image_url).split('?')[0] or "cover.jpg"
+            mix_instance.image_upload.save(temp_name, ContentFile(res.content), save=False)
+            mix_instance.image_url = "" 
+            return None 
+        return f"Server returned status {res.status_code}."
+    except requests.exceptions.RequestException:
+        return "URL invalid or unreachable."
+
+# ==========================================
+# 2. DRY RSS FEED GENERATOR
+# ==========================================
+
+class RSSFeedBuilder:
+    def __init__(self, request, title, description, image_url, network, feed_type='private'):
+        self.request = request
+        self.feed_type = feed_type
+        self.network = network
+        self.episodes_data = [] 
         
-    for item in patreon_json['included']:
-        if item.get('type') == 'member':
-            relationships = item.get('relationships', {})
-            campaign_data = relationships.get('campaign', {}).get('data', {})
-            
-            if campaign_data and str(campaign_data.get('id')) == str(campaign_id):
-                attributes = item.get('attributes', {})
-                if attributes.get('patron_status') == 'active_patron':
-                    return attributes.get('currently_entitled_amount_cents', 0)
-    return 0
+        self.feed = PodgenPodcast(
+            name=title,
+            description=description,
+            website=network.website_url or request.build_absolute_uri('/'),
+            explicit=True,
+            image=image_url or network.default_image_url or "https://example.com/logo.png",
+            authors=[Person(name=network.name, email="hosts@example.com")],
+            owner=Person(name=network.name, email="hosts@example.com"),
+            withhold_from_itunes=True,
+        )
 
-def invalidate_show_cache(show_id: int):
-    version_key = f"podcast_cache_version_{show_id}"
-    try:
-        cache.incr(version_key)
-    except ValueError:
-        cache.set(version_key, 1, timeout=None)
+    def add_episode(self, episode, target_audio_url, has_access, display_title=None):
+        desc = _build_episode_description(episode, has_access)
+        self.episodes_data.append(episode)
+        
+        self.feed.episodes.append(PodgenEpisode(
+            id=episode.guid_public or episode.guid_private or str(episode.id),
+            title=display_title or episode.title,
+            summary=desc, 
+            publication_date=episode.pub_date,
+            media=Media(
+                url=target_audio_url, size=0, type="audio/mpeg", 
+                duration=parse_duration(episode.duration)
+            )
+        ))
 
-def inject_rss_extensions(request, rss_str, episodes, access_map=None, default_feed_type='private'):
-    """
-    Injects standard <category> tags and <podcast:chapters> tags.
-    access_map is used for mix feeds to know which version of chapters to serve.
-    """
-    # Matches the exact ID assigned in the PodgenEpisode generators below
-    tag_map = {str(ep.guid_public or ep.guid_private or ep.id): ep for ep in episodes}
-    if not tag_map:
-        return rss_str
+    def render(self, access_map=None):
+        raw_xml = self.feed.rss_str()
+        
+        tag_map = {str(ep.guid_public or ep.guid_private or ep.id): ep for ep in self.episodes_data}
+        if not tag_map: return raw_xml
 
-    root = etree.fromstring(rss_str.encode('utf-8'))
-    podcast_ns = "https://podcastindex.org/namespace/1.0"
-    etree.register_namespace('podcast', podcast_ns)
+        root = etree.fromstring(raw_xml.encode('utf-8'))
+        podcast_ns = "https://podcastindex.org/namespace/1.0"
+        etree.register_namespace('podcast', podcast_ns)
 
-    for item in root.findall('.//item'):
-        guid_elem = item.find('guid')
-        if guid_elem is not None and guid_elem.text in tag_map:
-            ep = tag_map[guid_elem.text]
-            
-            if ep.tags:
+        for item in root.findall('.//item'):
+            guid_elem = item.find('guid')
+            if guid_elem is not None and guid_elem.text in tag_map:
+                ep = tag_map[guid_elem.text]
+                
                 for tag in ep.tags:
                     cat_elem = etree.SubElement(item, 'category')
                     cat_elem.text = etree.CDATA(str(tag))
-            
-            if access_map is not None:
-                has_access = access_map.get(ep.podcast_id, False)
-                feed_type = 'private' if has_access else 'public'
-            else:
-                feed_type = default_feed_type
                 
-            has_chapters = bool(ep.chapters_private or ep.chapters_public)
-            
-            # Inject Chapters ONLY if data exists
-            if has_chapters:
-                chapter_url = request.build_absolute_uri(reverse('episode_chapters', args=[ep.id, feed_type]))
-                chap_elem = etree.SubElement(item, f'{{{podcast_ns}}}chapters')
-                chap_elem.set('url', chapter_url)
-                chap_elem.set('type', 'application/json')
+                ep_access = access_map.get(ep.podcast_id, False) if access_map else (self.feed_type == 'private')
+                ftype = 'private' if ep_access else 'public'
                 
-    return etree.tostring(root, encoding='utf-8', xml_declaration=True).decode('utf-8')
-
-def process_mix_image_url(image_url, user_mix_instance):
-    """Safely attempts to download an image from a URL and attach it to the model."""
-    if not image_url:
-        return None
-    try:
-        # 5 second timeout so the user isn't left hanging forever
-        response = requests.get(image_url, timeout=5) 
-        if response.status_code == 200:
-            import os
-            temp_name = os.path.basename(image_url).split('?')[0] or "cover.jpg"
-            user_mix_instance.image_upload.save(temp_name, ContentFile(response.content), save=False)
-            user_mix_instance.image_url = "" # Clear the URL so we rely on the uploaded file
-            return None # None means no errors!
-        else:
-            return f"Could not download image. Server returned status {response.status_code}."
-    except requests.exceptions.RequestException as e:
-        return "Could not download image. The URL might be invalid or unreachable."
-
-def refresh_patreon_token(network):
-    """
-    Trades a saved refresh_token for a new access_token.
-    Returns True if successful, False if the refresh token is also invalid/expired.
-    """
-    logger.debug(f"--- [AUTO-HEAL] Triggering Token Refresh for {network.name} ---")
-    
-    if not network.patreon_creator_refresh_token:
-        logger.error("[AUTO-HEAL] FAILED: No refresh token found in the database!")
-        return False
-
-    token_url = "https://www.patreon.com/api/oauth2/token"
-    data = {
-        'grant_type': 'refresh_token',
-        'refresh_token': network.patreon_creator_refresh_token,
-        'client_id': settings.PATREON_CLIENT_ID,
-        'client_secret': settings.PATREON_CLIENT_SECRET,
-    }
-    
-    try:
-        logger.debug("[AUTO-HEAL] Sending POST request to Patreon /api/oauth2/token...")
-        res = requests.post(token_url, data=data, timeout=10)
-        logger.debug(f"[AUTO-HEAL] Patreon Refresh Response Status: {res.status_code}")
-        
-        if res.status_code == 200:
-            tokens = res.json()
-            network.patreon_creator_access_token = tokens['access_token']
-            
-            if 'refresh_token' in tokens:
-                network.patreon_creator_refresh_token = tokens['refresh_token']
-                logger.debug("[AUTO-HEAL] Received both new access AND refresh tokens.")
-            else:
-                logger.warning("[AUTO-HEAL] Received new access token, but NO new refresh token.")
-                
-            network.save()
-            logger.debug("[AUTO-HEAL] SUCCESS. Tokens saved to database.")
-            return True
-        else:
-            logger.error(f"[AUTO-HEAL] FAILED. Patreon rejected the refresh request: {res.text}")
-            return False
-            
-    except Exception as e:
-        logger.error(f"[AUTO-HEAL] CRITICAL ERROR during refresh request: {str(e)}")
-        return False
+                if ep.chapters_private or ep.chapters_public:
+                    chapter_url = self.request.build_absolute_uri(reverse('episode_chapters', args=[ep.id, ftype]))
+                    chap_elem = etree.SubElement(item, f'{{{podcast_ns}}}chapters')
+                    chap_elem.set('url', chapter_url)
+                    chap_elem.set('type', 'application/json')
+                    
+        return etree.tostring(root, encoding='utf-8', xml_declaration=True).decode('utf-8')
 
 # ==========================================
-# PATREON OAUTH HELPER FUNCTIONS
+# 3. PATREON SYNC ENGINE (MULTI-TENANT)
+# ==========================================
+
+def _sync_patron_profile(user, user_data, included_data, current_network=None):
+    patreon_id = user_data.get('id')
+    attributes = user_data.get('attributes', {})
+    
+    # 1. Update Global Profile
+    profile, _ = PatronProfile.objects.get_or_create(user=user, defaults={'patreon_id': patreon_id})
+    profile.profile_image_url = attributes.get('image_url')
+    socials = attributes.get('social_connections', {}) or {}
+    discord_info = socials.get('discord') or {}
+    profile.discord_id = discord_info.get('user_id') if discord_info else None
+    profile.last_active = timezone.now()
+    if profile.patreon_id != patreon_id: profile.patreon_id = patreon_id
+    profile.save()
+
+    # Even if they pay $0, they are now a registered free listener on this network.
+    if current_network:
+        NetworkMembership.objects.get_or_create(user=user, network=current_network)
+
+    known_campaigns = {str(n.patreon_campaign_id): n for n in Network.objects.exclude(patreon_campaign_id__isnull=True)}
+    seen_campaigns = set()
+    
+    for item in included_data:
+        if item.get('type') == 'member':
+            attrs = item.get('attributes', {})
+            campaign_data = item.get('relationships', {}).get('campaign', {}).get('data', {})
+            
+            if campaign_data:
+                campaign_id = str(campaign_data.get('id'))
+                if campaign_id in known_campaigns:
+                    seen_campaigns.add(campaign_id)
+                    network = known_campaigns[campaign_id]
+                    
+                    membership, _ = NetworkMembership.objects.get_or_create(user=user, network=network)
+                    
+                    if attrs.get('patron_status') == 'active_patron':
+                        membership.patreon_pledge_cents = attrs.get('currently_entitled_amount_cents', 0)
+                        membership.is_active_patron = True
+                        
+                        start_date_str = attrs.get('pledge_relationship_start')
+                        if start_date_str:
+                            try:
+                                membership.patreon_join_date = timezone.datetime.fromisoformat(start_date_str.replace('Z', '+00:00'))
+                            except Exception: pass
+                    else:
+                        membership.patreon_pledge_cents = 0
+                        membership.is_active_patron = False
+                        
+                    membership.save()
+
+    for mem in NetworkMembership.objects.filter(user=user, is_active_patron=True):
+        if str(mem.network.patreon_campaign_id) not in seen_campaigns:
+            mem.is_active_patron = False
+            mem.patreon_pledge_cents = 0
+            mem.save()
+
+    return profile
+
+def sync_network_patrons(network):
+    logger.debug(f"--- Starting COMPLETE Sync for Network: {network.name} ---")
+    if not network.patreon_creator_access_token or not network.patreon_campaign_id:
+        return 0, "Network is not properly linked to Patreon."
+
+    campaign_id_str = str(network.patreon_campaign_id)
+    base_url = f"https://www.patreon.com/api/oauth2/v2/campaigns/{campaign_id_str}/members"
+    params = {"include": "user", "fields[member]": "patron_status,currently_entitled_amount_cents", "fields[user]": "email", "page[count]": 100}
+    headers = {'Authorization': f'Bearer {network.patreon_creator_access_token}'}
+    
+    updated_count, seen_patreon_ids, url = 0, set(), f"{base_url}?{urllib.parse.urlencode(params)}"
+
+    while url:
+        res = requests.get(url, headers=headers)
+        if res.status_code == 401 or "Unauthorized" in res.text:
+            network.patreon_sync_enabled = False
+            network.save()
+            return updated_count, "Patreon authorization permanently expired."
+            
+        if res.status_code == 429:
+            time.sleep(int(res.headers.get('Retry-After', 5)))
+            continue 
+            
+        if res.status_code != 200: return updated_count, f"API Error: {res.text}"
+        
+        data = res.json()
+        included = {i['id']: i for i in data.get('included', []) if i['type'] == 'user'}
+
+        for member in data.get('data', []):
+            rel_user = member.get('relationships', {}).get('user', {}).get('data', {})
+            if not rel_user: continue
+                
+            patreon_id = rel_user['id']
+            seen_patreon_ids.add(patreon_id) 
+            email = included.get(patreon_id, {}).get('attributes', {}).get('email')
+
+            profile = PatronProfile.objects.filter(patreon_id=patreon_id).first()
+            if not profile and email: profile = PatronProfile.objects.filter(user__email=email).first()
+
+            if profile:
+                attrs = member.get('attributes', {})
+                status = attrs.get('patron_status')
+                cents = attrs.get('currently_entitled_amount_cents', 0)
+                
+                membership, _ = NetworkMembership.objects.get_or_create(user=profile.user, network=network)
+                membership.patreon_pledge_cents = cents if status == 'active_patron' else 0
+                membership.is_active_patron = (membership.patreon_pledge_cents > 0)
+                membership.save()
+                updated_count += 1
+
+        url = data.get('links', {}).get('next')
+        if url: time.sleep(0.5)
+
+    stale = NetworkMembership.objects.filter(network=network, is_active_patron=True).exclude(user__patron_profile__patreon_id__in=seen_patreon_ids)
+    revoked_count = stale.update(is_active_patron=False, patreon_pledge_cents=0)
+
+    logger.info(f"Sync Complete. Updated: {updated_count} | Revoked: {revoked_count}")
+    return updated_count, None
+
+@csrf_exempt
+def patreon_webhook(request):
+    if request.method != 'POST': return HttpResponse("Method not allowed", status=405)
+    
+    signature = request.headers.get('X-Patreon-Signature')
+    secret = settings.PATREON_WEBHOOK_SECRET.encode('utf-8')
+    expected_signature = hmac.new(secret, request.body, hashlib.md5).hexdigest()
+    if not hmac.compare_digest(expected_signature, signature): return HttpResponseForbidden("Invalid signature")
+
+    try:
+        data = json.loads(request.body)
+        member_data = data.get('data', {})
+        patreon_user_id = member_data.get('relationships', {}).get('user', {}).get('data', {}).get('id')
+
+        with transaction.atomic():
+            profile = PatronProfile.objects.select_for_update().get(patreon_id=patreon_user_id)
+            attrs = member_data.get('attributes', {})
+            cents = attrs.get('currently_entitled_amount_cents', 0)
+            status = attrs.get('patron_status') 
+            final_amount = cents if status == 'active_patron' else 0
+            
+            campaign_id = str(member_data.get('relationships', {}).get('campaign', {}).get('data', {}).get('id', ''))
+            network = Network.objects.filter(patreon_campaign_id=campaign_id).first()
+            
+            if network:
+                membership, _ = NetworkMembership.objects.get_or_create(user=profile.user, network=network)
+                membership.patreon_pledge_cents = final_amount
+                membership.is_active_patron = (final_amount > 0)
+                membership.save()
+                
+        return HttpResponse("Success", status=200)
+    except PatronProfile.DoesNotExist:
+        return HttpResponse("User not found.", status=200)
+    except Exception as e:
+        logger.error(f"Webhook Error: {str(e)}", exc_info=True)
+        return HttpResponse("Error", status=500)
+
+# ==========================================
+# 4. CREATOR SETTINGS & POST ACTION DISPATCHER
+# ==========================================
+
+def _handle_inbox_action(request, current_network, action):
+    edit_id = request.POST.get('edit_id')
+    edit = get_object_or_404(EpisodeEditSuggestion, id=edit_id, episode__podcast__network=current_network)
+    membership, _ = NetworkMembership.objects.get_or_create(user=edit.user, network=current_network)
+
+    if action == 'approve_edit':
+        ep = edit.episode
+        ep.clean_description = edit.suggested_data.get('description', ep.clean_description)
+        ep.tags = edit.suggested_data.get('tags', ep.tags)
+        ep.chapters_public = edit.suggested_data.get('chapters', ep.chapters_public)
+        ep.save()
+
+        edit.status = 'approved'
+        edit.resolved_at = timezone.now()
+        edit.save()
+
+        membership.trust_score = min(100, membership.trust_score + 5)
+        if edit.suggested_data.get('chapters') != edit.original_data.get('chapters'): membership.edits_chapters += len(edit.suggested_data.get('chapters', []))
+        if edit.suggested_data.get('tags') != edit.original_data.get('tags'): membership.edits_tags += 1
+        if edit.suggested_data.get('description') != edit.original_data.get('description'): membership.edits_descriptions += 1
+        if edit.is_first_responder: membership.first_responder_count += 1
+        membership.save()
+        messages.success(request, "Edit approved. User rewarded +5 Trust.")
+
+    elif action == 'reject_edit':
+        edit.status = 'rejected'
+        edit.resolved_at = timezone.now()
+        edit.save()
+        membership.trust_score = max(0, membership.trust_score - 2)
+        membership.save()
+        messages.warning(request, "Edit rejected. User penalized.")
+
+def _handle_rollback(request, current_network, action):
+    if action == 'rollback_single_edit':
+        edit = get_object_or_404(EpisodeEditSuggestion, id=request.POST.get('edit_id'), episode__podcast__network=current_network, status='approved')
+        membership, _ = NetworkMembership.objects.get_or_create(user=edit.user, network=current_network)
+        
+        ep = edit.episode
+        ep.clean_description = edit.original_data.get('description', ep.clean_description)
+        ep.tags = edit.original_data.get('tags', ep.tags)
+        ep.chapters_public = edit.original_data.get('chapters', ep.chapters_public)
+        ep.save()
+
+        edit.status = 'rolled_back'
+        edit.resolved_at = timezone.now()
+        edit.save()
+
+        membership.trust_score = max(0, membership.trust_score - 5)
+        if edit.suggested_data.get('chapters') != edit.original_data.get('chapters'): membership.edits_chapters = max(0, membership.edits_chapters - len(edit.suggested_data.get('chapters', [])))
+        if edit.suggested_data.get('tags') != edit.original_data.get('tags'): membership.edits_tags = max(0, membership.edits_tags - 1)
+        if edit.suggested_data.get('description') != edit.original_data.get('description'): membership.edits_descriptions = max(0, membership.edits_descriptions - 1)
+        if edit.is_first_responder: membership.first_responder_count = max(0, membership.first_responder_count - 1)
+        membership.save()
+        messages.success(request, "Edit rolled back and user penalized.")
+
+@login_required(login_url='/login/')
+def creator_settings(request):
+    allowed_networks = Network.objects.all() if request.user.is_superuser else Network.objects.filter(owners=request.user)
+    if not allowed_networks.exists(): return HttpResponseForbidden("No creator access.")
+
+    current_network = allowed_networks.filter(slug=request.GET.get('network')).first() or allowed_networks.first()
+
+    if request.method == 'POST':
+        action = request.POST.get('action')
+        
+        if action in ['approve_edit', 'reject_edit']:
+            _handle_inbox_action(request, current_network, action)
+        elif action in ['rollback_single_edit', 'bulk_rollback']:
+            _handle_rollback(request, current_network, action)
+        elif action == 'run_manual_sync':
+            count, error = sync_network_patrons(current_network)
+            if error: messages.error(request, f"Sync Failed: {error}")
+            else: messages.success(request, f"Synced {count} patrons.")
+            
+        elif action == 'update_network':
+            theme_config_str = request.POST.get('theme_config', '{}')
+            try:
+                current_network.theme_config = json.loads(theme_config_str)
+            except json.JSONDecodeError:
+                messages.error(request, f"Invalid JSON format for {current_network.name}. Settings not saved.")
+                return redirect(f"{reverse('creator_settings')}?network={current_network.slug}")
+
+            current_network.patreon_campaign_id = request.POST.get('patreon_campaign_id', '')
+            current_network.website_url = request.POST.get('website_url', '')
+            current_network.default_image_url = request.POST.get('default_image_url', '')
+            current_network.ignored_title_tags = request.POST.get('ignored_title_tags', '')
+            current_network.description_cut_triggers = request.POST.get('description_cut_triggers', '')
+            current_network.global_footer_public = request.POST.get('footer_public', '')
+            current_network.global_footer_private = request.POST.get('footer_private', '')
+            current_network.save()
+            messages.success(request, f"{current_network.name} settings saved successfully!")
+
+        elif action == 'update_show':
+            show_id = request.POST.get('show_id')
+            show = get_object_or_404(Podcast, id=show_id, network=current_network)
+            show.public_feed_url = request.POST.get('public_feed_url', show.public_feed_url)
+            show.subscriber_feed_url = request.POST.get('subscriber_feed_url', show.subscriber_feed_url)
+            
+            tier_id = request.POST.get('tier_id')
+            show.required_tier = get_object_or_404(PatreonTier, id=tier_id, network=current_network) if tier_id else None
+            show.show_footer_public = request.POST.get('show_footer_public', '')
+            show.show_footer_private = request.POST.get('show_footer_private', '')
+            show.save()
+            messages.success(request, f"{show.title} updated successfully!")
+
+        elif action == 'add_show':
+            title = request.POST.get('title')
+            slug = request.POST.get('slug')
+            tier_id = request.POST.get('tier_id')
+            req_tier = get_object_or_404(PatreonTier, id=tier_id, network=current_network) if tier_id else None
+            new_show = Podcast.objects.create(
+                network=current_network, title=title, slug=slug,
+                public_feed_url=request.POST.get('public_feed_url'), 
+                subscriber_feed_url=request.POST.get('subscriber_feed_url'),
+                required_tier=req_tier
+            )
+            messages.success(request, f"Show '{title}' added! Starting live ingestion...")
+            return redirect(f"{reverse('creator_settings')}?network={current_network.slug}&auto_import={new_show.id}")
+
+        elif action == 'merge_episodes':
+            pub_id = request.POST.get('public_episode_id')
+            priv_id = request.POST.get('private_episode_id')
+            if pub_id and priv_id:
+                pub_ep = Episode.objects.get(id=pub_id, podcast__network=current_network)
+                priv_ep = Episode.objects.get(id=priv_id, podcast__network=current_network)
+                pub_ep.guid_private = priv_ep.guid_private or priv_ep.guid_public
+                pub_ep.audio_url_subscriber = priv_ep.audio_url_subscriber
+                if priv_ep.chapters_private: pub_ep.chapters_private = priv_ep.chapters_private
+                if priv_ep.tags and not pub_ep.tags: pub_ep.tags = priv_ep.tags
+                pub_ep.match_reason = "Manual Merge (Merge Desk)"
+                pub_ep.save()
+                priv_ep.delete()
+                messages.success(request, f"Successfully merged '{priv_ep.title}' into '{pub_ep.title}'.")
+
+        elif action == 'split_episode':
+            ep = Episode.objects.get(id=request.POST.get('episode_id'), podcast__network=current_network)
+            Episode.objects.create(
+                podcast=ep.podcast, title=ep.title, pub_date=ep.pub_date,
+                raw_description=ep.raw_description, clean_description=ep.clean_description,
+                duration=ep.duration, link=ep.link, tags=ep.tags,
+                guid_private=ep.guid_private, audio_url_subscriber=ep.audio_url_subscriber,
+                chapters_private=ep.chapters_private, match_reason="Manually Unpaired"
+            )
+            ep.guid_private = None
+            ep.audio_url_subscriber = ""
+            ep.chapters_private = None
+            ep.match_reason = "Manually Unpaired"
+            ep.save()
+            messages.success(request, f"Successfully split '{ep.title}'.")
+        
+        return redirect(f"{reverse('creator_settings')}?network={current_network.slug}")
+
+    # 1. Manage Podcasts
+    manage_podcasts = current_network.podcasts.annotate(
+        clean_title=Case(When(title__istartswith='The ', then=Substr('title', 5)), default='title', output_field=CharField()),
+        latest_episode_date=Max('episodes__pub_date'),
+        episode_count=Count('episodes', distinct=True)
+    ).order_by(Lower('clean_title'))
+
+    # 2. Inbox (Pending Edits with Multi-Tenant Trust Scores)
+    pending_edits = EpisodeEditSuggestion.objects.filter(episode__podcast__network=current_network, status='pending').select_related('episode', 'user')
+    user_ids = [e.user_id for e in pending_edits]
+    memberships = {m.user_id: m for m in NetworkMembership.objects.filter(user_id__in=user_ids, network=current_network)}
+    for edit in pending_edits:
+        edit.membership = memberships.get(edit.user_id)
+
+    # 3. Merge Desk (Unpaired & Matched Episodes)
+    merge_view = request.GET.get('merge_view', 'orphans')
+    merge_podcast_id = request.GET.get('merge_podcast_id', '')
+    merge_q = request.GET.get('merge_q', '').strip()
+    merge_reason = request.GET.get('merge_reason', '').strip()
+
+    base_episodes = Episode.objects.filter(podcast__network=current_network).select_related('podcast')
+
+    if merge_podcast_id:
+        base_episodes = base_episodes.filter(podcast_id=merge_podcast_id)
+    if merge_q:
+        base_episodes = base_episodes.filter(
+            Q(title__icontains=merge_q) | 
+            Q(guid_public__icontains=merge_q) | 
+            Q(guid_private__icontains=merge_q)
+        )
+
+    public_orphans = None
+    private_orphans = None
+    matched_episodes = None
+    match_reasons = []
+
+    if merge_view == 'orphans':
+        pub_qs = base_episodes.filter(Q(guid_private__isnull=True) | Q(guid_private__exact='')).exclude(Q(audio_url_public__isnull=True) | Q(audio_url_public__exact='')).order_by('-pub_date')
+        public_orphans = Paginator(pub_qs, 20).get_page(request.GET.get('pub_page', 1))
+
+        priv_qs = base_episodes.filter(Q(guid_public__isnull=True) | Q(guid_public__exact='')).exclude(Q(audio_url_subscriber__isnull=True) | Q(audio_url_subscriber__exact='')).order_by('-pub_date')
+        private_orphans = Paginator(priv_qs, 20).get_page(request.GET.get('priv_page', 1))
+    
+    elif merge_view == 'matched':
+        matched_qs = base_episodes.exclude(Q(guid_public__isnull=True) | Q(guid_public__exact='')).exclude(Q(guid_private__isnull=True) | Q(guid_private__exact=''))
+        
+        match_reasons = Episode.objects.filter(podcast__network=current_network).exclude(match_reason__isnull=True).exclude(match_reason__exact='').values_list('match_reason', flat=True).distinct()
+        
+        if merge_reason:
+            matched_qs = matched_qs.filter(match_reason=merge_reason)
+            
+        matched_episodes = Paginator(matched_qs.order_by('-pub_date'), 20).get_page(request.GET.get('match_page', 1))
+
+    # 4. Audit Log
+    audit_query = EpisodeEditSuggestion.objects.filter(
+        episode__podcast__network=current_network
+    ).exclude(status='pending').select_related('episode', 'user')
+
+    audit_q = request.GET.get('audit_q', '').strip()
+    audit_status = request.GET.get('audit_status', '').strip()
+    audit_user = request.GET.get('audit_user', '').strip()
+
+    if audit_q:
+        audit_query = audit_query.filter(Q(episode__title__icontains=audit_q) | Q(episode__podcast__title__icontains=audit_q))
+    if audit_status:
+        audit_query = audit_query.filter(status=audit_status)
+    if audit_user:
+        audit_query = audit_query.filter(user__username__icontains=audit_user)
+
+    audit_query = audit_query.order_by('-resolved_at')
+    audit_paginator = Paginator(audit_query, 20)
+    audit_page_obj = audit_paginator.get_page(request.GET.get('audit_page', 1))
+
+    # 5. Final Context Assembly
+    context = {
+        'networks': allowed_networks,
+        'current_network': current_network,
+        'manage_podcasts': manage_podcasts,
+        'pending_edits': pending_edits,
+        'network_podcasts': manage_podcasts,
+        'merge_view': merge_view,
+        'merge_podcast_id': merge_podcast_id,
+        'merge_q': merge_q,
+        'merge_reason': merge_reason,
+        'public_orphans': public_orphans,
+        'private_orphans': private_orphans,
+        'matched_episodes': matched_episodes,
+        'match_reasons': match_reasons,
+        'audit_page_obj': audit_page_obj,
+        'theme_config_json': json.dumps(current_network.theme_config, indent=2),
+    }
+    return render(request, 'pod_manager/creator_settings.html', context)
+
+# ==========================================
+# 5. FRONTEND VIEWS (MULTI-TENANT)
+# ==========================================
+
+def home(request):
+    show_slug = request.GET.get('show')
+    search_query = request.GET.get('q', '').strip()
+    
+    tenant_profile = getattr(request, 'tenant_profile', None)
+    
+    query = Episode.objects.select_related('podcast', 'podcast__network', 'podcast__required_tier').filter(podcast__network=request.network)
+    podcasts = Podcast.objects.filter(network=request.network).order_by('title')
+
+    if show_slug: query = query.filter(podcast__slug=show_slug)
+    if search_query: query = query.filter(Q(title__icontains=search_query) | Q(clean_description__icontains=search_query))
+        
+    page_obj = Paginator(query.order_by('-pub_date'), 20).get_page(request.GET.get('page', 1))
+    
+    for ep in page_obj:
+        ep.user_has_access, is_owner = _evaluate_access(request.user, ep.podcast, request.network)
+
+    context = {
+        'episodes': page_obj, 'page_obj': page_obj, 'podcasts': podcasts,          
+        'current_filter': show_slug, 'current_network': request.network, 
+        'search_query': search_query, 'tenant_profile': tenant_profile
+    }
+    return render(request, 'pod_manager/home.html', context)
+
+@login_required(login_url='/login/')
+def user_feeds(request):
+    tenant_profile = getattr(request, 'tenant_profile', None)
+    profile = getattr(request.user, 'patron_profile', None) if request.user.is_authenticated else None
+    
+    # --- 1. HANDLE POST ACTIONS (CREATE, EDIT, DELETE MIX) ---
+    if request.method == 'POST':
+        if request.POST.get('create_mix'):
+            mix_name = request.POST.get('mix_name', '').strip() or f"{request.user.first_name}'s Custom Mix"
+            mix = UserMix.objects.create(
+                user=request.user,
+                network=request.network,
+                name=mix_name,
+                image_url=request.POST.get('mix_image', '')
+            )
+            if 'mix_image_upload' in request.FILES:
+                mix.image_upload = request.FILES['mix_image_upload']
+                
+            mix.selected_podcasts.set(request.POST.getlist('podcasts'))
+            mix.save()
+            messages.success(request, f"Mix '{mix.name}' created successfully!")
+
+        elif request.POST.get('edit_mix'):
+            mix = get_object_or_404(UserMix, id=request.POST.get('mix_id'), user=request.user, network=request.network)
+            mix.name = request.POST.get('mix_name', '').strip() or mix.name
+            mix.image_url = request.POST.get('mix_image', '') or mix.image_url
+            if 'mix_image_upload' in request.FILES:
+                mix.image_upload = request.FILES['mix_image_upload']
+                
+            mix.selected_podcasts.set(request.POST.getlist('podcasts'))
+            mix.save()
+            messages.success(request, "Mix updated successfully!")
+
+        elif request.POST.get('delete_mix'):
+            mix = get_object_or_404(UserMix, id=request.POST.get('mix_id'), user=request.user, network=request.network)
+            mix.delete()
+            messages.warning(request, "Custom mix deleted.")
+
+        return redirect('user_feeds')
+
+    # --- 2. GENERATE GET DATA ---
+    feed_data = []
+    available_podcasts = []
+    
+    for podcast in Podcast.objects.filter(network=request.network).select_related('network', 'required_tier'):
+        has_access, is_owner = _evaluate_access(request.user, podcast, request.network)
+        
+        available_podcasts.append({
+            'podcast': podcast,
+            'has_access': has_access
+        })
+        
+        if profile is not None:
+            raw_url = reverse('custom_feed') + f"?auth={profile.feed_token}&show={podcast.slug}"
+            feed_data.append({'is_network_mix': False, 'podcast': podcast, 'has_access': has_access, 'feed_url': request.build_absolute_uri(raw_url)})
+        elif not podcast.required_tier or podcast.public_feed_url:
+            raw_url = reverse('public_feed', args=[podcast.slug]) 
+            feed_data.append({'is_network_mix': False, 'podcast': podcast, 'has_access': False, 'feed_url': request.build_absolute_uri(raw_url)})
+
+    user_mixes = UserMix.objects.filter(user=request.user, network=request.network, is_active=True).prefetch_related('selected_podcasts') if request.user.is_authenticated else []
+    
+    network_mixes = NetworkMix.objects.filter(network=request.network)
+    for mix in network_mixes:
+        mix_req_cents = mix.required_tier.minimum_cents if mix.required_tier else 0
+        user_cents = tenant_profile.patreon_pledge_cents if tenant_profile else 0
+        is_owner = request.network.owners.filter(id=request.user.id).exists() if request.user.is_authenticated else False
+        
+        mix.has_access = is_owner or (mix_req_cents == 0) or (user_cents >= mix_req_cents)
+        mix.feed_url = request.build_absolute_uri(reverse('network_mix_feed', args=[request.network.slug, mix.slug])) + (f"?auth={profile.feed_token}" if profile else "")
+
+    context = {
+        'profile': profile, 
+        'tenant_profile': tenant_profile, 
+        'feed_data': feed_data,
+        'user_mixes': user_mixes,
+        'network_mixes': network_mixes,
+        'current_network': request.network,
+        'available_podcasts': available_podcasts
+    }
+    return render(request, 'pod_manager/user_feeds.html', context)
+
+def episode_detail(request, episode_id):
+    ep = get_object_or_404(Episode.objects.select_related('podcast', 'podcast__network'), id=episode_id)
+    ep.user_has_access, _ = _evaluate_access(request.user, ep.podcast, ep.podcast.network)
+    
+    if ep.podcast.network != request.network and not ep.user_has_access:
+        raise Http404("No Episode matches the given query.")
+    
+    ep.display_description = _build_episode_description(ep, ep.user_has_access)
+    return render(request, 'pod_manager/episode_detail.html', {'ep': ep})
+
+@login_required(login_url='/login/')
+def user_profile(request):
+    tenant_profile = getattr(request, 'tenant_profile', None)
+    
+    if not tenant_profile:
+        return render(request, 'pod_manager/user_profile.html', {
+            'level': 0, 'title': "Commoner", 'progress_percent': 0,
+            'total_approved': 0, 'account_vintage': None, 
+            'live_stats': {'playback_hits': 0, 'hours_accessed': 0.0, 'streak_days': 0, 'streak_weeks': 0, 'obsession_title': "Wandering Adventurer"}
+        })
+
+    account_vintage = tenant_profile.patreon_join_date
+    joined_after_launch_days = None
+    account_age_years = None
+
+    if account_vintage:
+        account_age_years = (timezone.now() - account_vintage).days / 365.25
+        if request.network.patreon_campaign_created_at:
+            delta = account_vintage - request.network.patreon_campaign_created_at
+            joined_after_launch_days = max(0, delta.days)
+
+    total_approved = EpisodeEditSuggestion.objects.filter(user=request.user, episode__podcast__network=request.network, status='approved').count()
+    
+    level, title, next_level_goal, progress_percent = 0, "Commoner", 1, 0
+    if total_approved >= 1000:
+        level, title, next_level_goal, progress_percent = 5, "Keeper of the Tome", 1000, 100
+    elif total_approved >= 500:
+        level, title, next_level_goal, progress_percent = 4, "Grand Archivist", 1000, (total_approved / 1000) * 100
+    elif total_approved >= 100:
+        level, title, next_level_goal, progress_percent = 3, "Archivist", 500, (total_approved / 500) * 100
+    elif total_approved >= 25:
+        level, title, next_level_goal, progress_percent = 2, "Scout", 100, (total_approved / 100) * 100
+    elif total_approved >= 1:
+        level, title, next_level_goal, progress_percent = 1, "Initiate", 25, (total_approved / 25) * 100
+
+    context = {
+        'profile': tenant_profile, 'total_approved': total_approved,
+        'level': level, 'title': title, 'next_level_goal': next_level_goal,
+        'progress_percent': min(progress_percent, 100),
+        'live_stats': get_live_user_stats(tenant_profile),
+        'account_vintage': account_vintage,
+        'joined_after_launch_days': joined_after_launch_days,
+        'account_age_years': account_age_years,
+    }
+    return render(request, 'pod_manager/user_profile.html', context)
+
+def episode_chapters(request, episode_id, feed_type):
+    ep = get_object_or_404(Episode, id=episode_id)
+    data = ep.chapters_public or ep.chapters_private if feed_type == 'public' else ep.chapters_private or ep.chapters_public
+    if not data: raise Http404("Chapters not found.")
+    response = JsonResponse(data)
+    response["Access-Control-Allow-Origin"] = "*"
+    return response
+
+# ==========================================
+# 6. RSS FEED ROUTES
+# ==========================================
+
+def generate_custom_feed(request):
+    feed_token = request.GET.get('auth')
+    podcast = get_object_or_404(Podcast, slug=request.GET.get('show'), network=request.network)
+    profile = get_object_or_404(PatronProfile, feed_token=feed_token)
+    has_access, _ = _evaluate_access(profile.user, podcast, podcast.network)
+
+    version = cache.get(f"podcast_cache_version_{podcast.id}", 1)
+    cache_key = f"xml_feed_{version}_{feed_token}_{podcast.slug}_{has_access}"
+    xml_output = cache.get(cache_key)
+
+    if not xml_output:
+        builder = RSSFeedBuilder(request, f"{podcast.title} for {profile.user.first_name}", f"Personalized feed.", podcast.image_url, podcast.network)
+        
+        for ep in podcast.episodes.all().order_by('-pub_date')[:2000]:
+            if not ep.has_public_audio and not ep.is_premium: continue
+            audio_url = request.build_absolute_uri(reverse('play_episode', args=[ep.id])) + f"?auth={feed_token}"
+            builder.add_episode(ep, audio_url, has_access)
+            
+        xml_output = builder.render()
+        cache.set(cache_key, xml_output, timeout=podcast.network.feed_cache_minutes * 60)
+
+    cache.incr(f"analytics:rss:{profile.id}") if cache.get(f"analytics:rss:{profile.id}") else cache.set(f"analytics:rss:{profile.id}", 1, 172800)
+    return HttpResponse(xml_output, content_type='application/rss+xml')
+
+def generate_public_feed(request, podcast_slug):
+    podcast = get_object_or_404(Podcast, slug=podcast_slug, network=request.network)
+    version = cache.get(f"podcast_cache_version_{podcast.id}", 1)
+    cache_key = f"xml_feed_public_{version}_{podcast.slug}"
+    xml_output = cache.get(cache_key)
+
+    if not xml_output:
+        builder = RSSFeedBuilder(request, podcast.title, "Public feed.", podcast.image_url, podcast.network, feed_type='public')
+        
+        for ep in podcast.episodes.all().order_by('-pub_date')[:500]:
+            if not ep.has_public_audio: continue
+            audio_url = request.build_absolute_uri(reverse('play_episode', args=[ep.id]))
+            builder.add_episode(ep, audio_url, False)
+            
+        xml_output = builder.render()
+        cache.set(cache_key, xml_output, timeout=podcast.network.feed_cache_minutes * 60)
+
+    return HttpResponse(xml_output, content_type='application/rss+xml')
+
+def generate_mix_feed(request, unique_id):
+    user_mix = get_object_or_404(UserMix.objects.select_related('user__patron_profile'), unique_id=unique_id, is_active=True)
+    cache_key = f"mix_feed_{unique_id}"
+    xml_output = cache.get(cache_key)
+
+    if not xml_output:
+        builder = RSSFeedBuilder(request, user_mix.name, f"Custom blended feed for {user_mix.user.first_name}.", user_mix.display_image or user_mix.network.default_image_url, user_mix.network)
+        
+        for ep in Episode.objects.filter(podcast__in=user_mix.selected_podcasts.all()).select_related('podcast', 'podcast__network').order_by('-pub_date')[:500]:
+            if not ep.has_public_audio and not ep.is_premium: continue
+            has_access, _ = _evaluate_access(user_mix.user, ep.podcast, ep.podcast.network)
+            audio_url = request.build_absolute_uri(reverse('play_episode', args=[ep.id])) + f"?auth={user_mix.user.patron_profile.feed_token}"
+            builder.add_episode(ep, audio_url, has_access, display_title=f"[{ep.podcast.title}] {ep.title}")
+            
+        xml_output = builder.render()
+        cache.set(cache_key, xml_output, 300)
+
+    return HttpResponse(xml_output, content_type='application/rss+xml')
+
+def generate_network_mix_feed(request, network_slug, mix_slug):
+    network_mix = get_object_or_404(NetworkMix, slug=mix_slug, network__slug=network_slug)
+    feed_token = request.GET.get('auth')
+    
+    profile = PatronProfile.objects.filter(feed_token=feed_token).first() if feed_token else None
+    user = profile.user if profile else request.user
+    
+    mix_req_cents = network_mix.required_tier.minimum_cents if network_mix.required_tier else 0
+    mix_membership = NetworkMembership.objects.filter(user=user, network=network_mix.network).first() if user.is_authenticated else None
+    user_cents = mix_membership.patreon_pledge_cents if mix_membership else 0
+    
+    is_owner = network_mix.network.owners.filter(id=user.id).exists() if user.is_authenticated else False
+    user_meets_mix_tier = is_owner or (mix_req_cents == 0) or (user_cents >= mix_req_cents)
+
+    cache_key = f"network_mix_{network_mix.unique_id}_{feed_token}"
+    xml_output = cache.get(cache_key)
+
+    if not xml_output:
+        builder = RSSFeedBuilder(request, network_mix.name, f"A curated network mix by {network_mix.network.name}.", network_mix.display_image or network_mix.network.default_image_url, network_mix.network)
+        
+        for ep in Episode.objects.filter(podcast__in=network_mix.selected_podcasts.all()).select_related('podcast', 'podcast__network').order_by('-pub_date')[:5000]:
+            ep_has_access, _ = _evaluate_access(user, ep.podcast, ep.podcast.network)
+            total_access = user_meets_mix_tier and ep_has_access
+            
+            if not total_access and not ep.audio_url_public: continue
+            
+            audio_url = request.build_absolute_uri(reverse('play_episode', args=[ep.id]))
+            if feed_token: audio_url += f"?auth={feed_token}"
+            
+            builder.add_episode(ep, audio_url, total_access, display_title=f"[{ep.podcast.title}] {ep.title}")
+            
+        xml_output = builder.render()
+        cache.set(cache_key, xml_output, 300)
+        
+    return HttpResponse(xml_output, content_type='application/rss+xml')
+
+def play_episode(request, episode_id):
+    ep = get_object_or_404(Episode.objects.select_related('podcast', 'podcast__network'), id=episode_id)
+    feed_token = request.GET.get('auth')
+    
+    has_access = False
+    if feed_token:
+        profile = PatronProfile.objects.filter(feed_token=feed_token).first()
+        if profile:
+            has_access, _ = _evaluate_access(profile.user, ep.podcast, ep.podcast.network)
+            if has_access:
+                ck = f"analytics:play:{profile.id}:{ep.id}:{ep.podcast_id}"
+                cache.incr(ck) if cache.get(ck) else cache.set(ck, 1, 172800)
+            
+    target_url = ep.audio_url_subscriber if (has_access and ep.audio_url_subscriber) else ep.audio_url_public
+    if not target_url: raise Http404("Audio file not found.")
+        
+    response = HttpResponseRedirect(target_url)
+    response['Cache-Control'] = 'no-cache, no-store, must-revalidate'
+    return response
+
+# ==========================================
+# 7. ACTION VIEWS
+# ==========================================
+
+@login_required(login_url='/login/')
+def submit_episode_edit(request, episode_id):
+    if request.method != 'POST': return HttpResponseForbidden("Only POST allowed")
+        
+    ep = get_object_or_404(Episode, id=episode_id)
+    payload_str = request.POST.get('payload')
+    if not payload_str: return redirect('episode_detail', episode_id=ep.id)
+        
+    try:
+        suggested_data = json.loads(payload_str)
+        network = ep.podcast.network
+        membership, _ = NetworkMembership.objects.get_or_create(user=request.user, network=network)
+        
+        original_data = {"description": ep.clean_description, "tags": ep.tags or [], "chapters": ep.chapters_public or []}
+        is_first = not EpisodeEditSuggestion.objects.filter(episode=ep, status='approved').exists()
+        
+        is_trusted = membership.trust_score >= network.auto_approve_trust_threshold
+        final_status = 'approved' if is_trusted else 'pending'
+        
+        EpisodeEditSuggestion.objects.create(
+            episode=ep, user=request.user, suggested_data=suggested_data,
+            original_data=original_data, status=final_status, is_first_responder=is_first,
+            resolved_at=timezone.now() if is_trusted else None
+        )
+        
+        if is_trusted:
+            ep.clean_description = suggested_data.get('description', ep.clean_description)
+            ep.tags = suggested_data.get('tags', ep.tags)
+            ep.chapters_public = suggested_data.get('chapters', ep.chapters_public)
+            ep.save()
+            
+            membership.trust_score = min(100, membership.trust_score + 5)
+            if suggested_data.get('chapters') != original_data.get('chapters'): membership.edits_chapters += len(suggested_data.get('chapters', []))
+            if suggested_data.get('tags') != original_data.get('tags'): membership.edits_tags += 1
+            if suggested_data.get('description') != original_data.get('description'): membership.edits_descriptions += 1
+            if is_first: membership.first_responder_count += 1
+            membership.save()
+            messages.success(request, "Edit approved instantly. +5 Trust.")
+        else:
+            messages.success(request, "Edit submitted for review.")
+            
+    except Exception as e:
+        messages.error(request, "Failed to submit edit.")
+        
+    return redirect('episode_detail', episode_id=ep.id)
+
+# ==========================================
+# 8. OAUTH & AUTHENTICATION
 # ==========================================
 
 def _exchange_patreon_token(code, redirect_uri):
-    """Exchanges the OAuth code for Patreon access and refresh tokens."""
     token_url = "https://www.patreon.com/api/oauth2/token"
     data = {
         "code": code,
@@ -344,19 +950,69 @@ def _link_creator_campaign(request, network_id, access_token, refresh_token):
     network = get_object_or_404(Network, id=network_id)
     
     headers = {"Authorization": f"Bearer {access_token}"}
-    camp_res = requests.get("https://www.patreon.com/api/oauth2/v2/campaigns", headers=headers, timeout=10)
+    
+    # 1. Update the URL to explicitly request tier data alongside the campaign data
+    url = (
+        "https://www.patreon.com/api/oauth2/v2/campaigns"
+        "?include=tiers"
+        "&fields[campaign]=created_at,image_url,url"
+        "&fields[tier]=title,amount_cents,url"
+    )
+    
+    camp_res = requests.get(url, headers=headers, timeout=10)
     
     if camp_res.status_code == 200:
-        camp_data = camp_res.json().get('data', [])
+        payload = camp_res.json()
+        camp_data = payload.get('data', [])
+        included_data = payload.get('included', [])
+        
         if camp_data:
             campaign_id = camp_data[0]['id']
+            created_at_str = camp_data[0].get('attributes', {}).get('created_at')
+            attrs = camp_data[0].get('attributes', {})
+            
+            if not network.default_image_url and attrs.get('image_url'):
+                network.default_image_url = attrs.get('image_url')
+            
+            if not network.website_url and attrs.get('url'):
+                network.website_url = attrs.get('url')
+                
             network.patreon_campaign_id = campaign_id
+            if created_at_str:
+                network.patreon_campaign_created_at = timezone.datetime.fromisoformat(created_at_str.replace('Z', '+00:00'))
+            
             network.patreon_sync_enabled = True
             network.patreon_creator_access_token = access_token
             network.patreon_creator_refresh_token = refresh_token
             network.save()
             
-            messages.success(request, f"Successfully linked Patreon Campaign {campaign_id}!")
+            tiers_created = 0
+            for item in included_data:
+                if item.get('type') == 'tier':
+                    tier_attrs = item.get('attributes', {})
+                    title = tier_attrs.get('title', 'Unnamed Tier')
+                    amount = tier_attrs.get('amount_cents', 0)
+                    checkout_url = tier_attrs.get('url', '')
+
+                    # Prevent making a "$0.00" tier if Patreon sends a ghost tier
+                    if amount > 0:
+                        # Auto-format the name as requested: "Network Name - Tier Name"
+                        formatted_name = f"{network.name} - {title}"
+                        
+                        from .models import PatreonTier
+                        tier, created = PatreonTier.objects.get_or_create(
+                            network=network,
+                            minimum_cents=amount,
+                            defaults={
+                                'name': formatted_name,
+                                'checkout_url': checkout_url # <-- Save it
+                            }
+                        )
+                        if created: tiers_created += 1
+
+            messages.success(request, f"Successfully linked Campaign! Auto-imported {tiers_created} reward tiers.")
+            
+            # Kick off the async patron sync
             threading.Thread(target=sync_network_patrons, args=(network,), daemon=True).start()
         else:
             messages.warning(request, "Linked, but no campaigns found on your Patreon account.")
@@ -367,7 +1023,6 @@ def _link_creator_campaign(request, network_id, access_token, refresh_token):
     return redirect('creator_settings')
 
 def _fetch_patreon_identity(access_token):
-    """Fetches the user's identity, images, and active memberships from Patreon."""
     headers = {"Authorization": f"Bearer {access_token}"}
     identity_url = (
         "https://www.patreon.com/api/oauth2/v2/identity"
@@ -377,137 +1032,41 @@ def _fetch_patreon_identity(access_token):
     )
     res = requests.get(identity_url, headers=headers, timeout=10)
     if res.status_code != 200:
-        logger.error(f"Failed to fetch user identity: {res.text}")
         return None, HttpResponse("Failed to fetch user info", status=400)
     return res.json(), None
 
-def _sync_patron_profile(user, user_data, included_data):
-    """Synchronizes local PatronProfile metadata and active pledges with Patreon data."""
-    patreon_id = user_data.get('id')
-    attributes = user_data.get('attributes', {})
-    image_url = attributes.get('image_url')
-    
-    socials = attributes.get('social_connections', {}) or {}
-    discord_info = socials.get('discord') or {}
-    discord_user_id = discord_info.get('user_id') if discord_info else None
-
-    # Get or Create Profile
-    profile, p_created = PatronProfile.objects.get_or_create(user=user, defaults={
-        'patreon_id': patreon_id,
-        'profile_image_url': image_url,
-        'discord_id': discord_user_id
-    })
-    
-    if not p_created:
-        profile.profile_image_url = image_url
-        profile.discord_id = discord_user_id
-        if profile.patreon_id != patreon_id:
-            logger.warning(f"Updating Patreon ID for {user.email} to {patreon_id}")
-            profile.patreon_id = patreon_id
-
-    # Sync Pledges
-    known_campaign_ids = set(Network.objects.exclude(patreon_campaign_id__isnull=True).exclude(patreon_campaign_id='').values_list('patreon_campaign_id', flat=True))
-    active_pledges = profile.active_pledges or {}
-    join_dates = profile.patreon_join_dates or {}
-    seen_campaigns = set()
-    earliest_start = None  
-    
-    for item in included_data:
-        if item.get('type') == 'member':
-            attrs = item.get('attributes', {})
-            campaign_data = item.get('relationships', {}).get('campaign', {}).get('data', {})
-            
-            if campaign_data:
-                campaign_id = str(campaign_data.get('id'))
-                if campaign_id in known_campaign_ids:
-                    seen_campaigns.add(campaign_id)
-                    
-                    if attrs.get('patron_status') == 'active_patron':
-                        cents = attrs.get('currently_entitled_amount_cents', 0)
-                        active_pledges[campaign_id] = cents
-                        
-                        start_date_str = attrs.get('pledge_relationship_start')
-                        if start_date_str:
-                            join_dates[campaign_id] = start_date_str
-                            try:
-                                current_dt = timezone.datetime.fromisoformat(start_date_str.replace('Z', '+00:00'))
-                                if not earliest_start or current_dt < earliest_start:
-                                    earliest_start = current_dt
-                            except Exception:
-                                pass
-                    elif campaign_id in active_pledges:
-                        del active_pledges[campaign_id]
-
-    # Cleanup missing campaigns
-    for old_campaign in list(active_pledges.keys()):
-        if old_campaign not in seen_campaigns:
-            del active_pledges[old_campaign]
-            if old_campaign in join_dates:
-                del join_dates[old_campaign]
-
-    profile.active_pledges = active_pledges
-    profile.patreon_join_dates = join_dates
-    
-    profile.last_active = timezone.now()
-    profile.save()
-    return profile
-    
-# ==========================================
-# OAUTH AUTHENTICATION
-# ==========================================
-
 def patreon_login(request):
     network_id = request.GET.get('network_id')
-    logger.info(f"Initiating Patreon OAuth login. Target network ID: {network_id}")
-    
-    # Dynamically build the redirect URI based on the current tenant's domain
     dynamic_redirect_uri = request.build_absolute_uri('/oauth/patreon/callback')
     
-    # Use creator scopes if linking a network, otherwise use basic listener scopes
-    if network_id:
-        scope = "identity identity[email] identity.memberships campaigns campaigns.members campaigns.members[email]"
-    else:
-        scope = "identity identity[email] identity.memberships"
+    scope = "identity identity[email] identity.memberships campaigns campaigns.members campaigns.members[email]" if network_id else "identity identity[email] identity.memberships"
     
-    base_url = "https://www.patreon.com/oauth2/authorize"
     params = {
         "response_type": "code",
         "client_id": settings.PATREON_CLIENT_ID,
         "redirect_uri": dynamic_redirect_uri,
         "scope": scope,
     }
-    
-    if network_id:
-        params["state"] = network_id
-        
-    url = f"{base_url}?{urllib.parse.urlencode(params)}"
-    logger.debug(f"Redirecting user to Patreon OAuth URL: {url}")
-    return redirect(url)
+    if network_id: params["state"] = network_id
+    return redirect(f"https://www.patreon.com/oauth2/authorize?{urllib.parse.urlencode(params)}")
 
 def patreon_callback(request):
     code = request.GET.get('code')
     state_network_id = request.GET.get('state')
-    logger.info(f"Received Patreon OAuth callback. Code present: {bool(code)}, State: {state_network_id}")
 
-    if not code:
-        logger.warning("Patreon callback failed: No authorization code provided.")
-        return HttpResponse("No code provided by Patreon", status=400)
+    if not code: return HttpResponse("No code provided by Patreon", status=400)
 
     try:
-        # 1. Exchange Code for Tokens
         dynamic_redirect_uri = request.build_absolute_uri('/oauth/patreon/callback')
         token_data, error_response = _exchange_patreon_token(code, dynamic_redirect_uri)
         if error_response: return error_response
 
         access_token = token_data['access_token']
         refresh_token = token_data['refresh_token']
-        logger.debug("Token exchange successful.")
         
-        # 2. Creator Linking Flow (Early Exit)
         if state_network_id and request.user.is_authenticated:
             return _link_creator_campaign(request, state_network_id, access_token, refresh_token)
 
-        # 3. Fetch User Identity
         payload, error_response = _fetch_patreon_identity(access_token)
         if error_response: return error_response
         
@@ -515,24 +1074,16 @@ def patreon_callback(request):
         included_data = payload.get('included', [])
         email = user_data.get('attributes', {}).get('email')
 
-        if not email:
-            logger.error("Patreon identity response did not include an email address.")
-            return HttpResponse("Patreon did not provide an email address.", status=400)
+        if not email: return HttpResponse("Patreon did not provide an email address.", status=400)
 
-        # 4. Get or Create Base User
         user, created = User.objects.get_or_create(username=email, defaults={
             'email': email,
             'first_name': user_data.get('attributes', {}).get('first_name', ''),
             'last_name': user_data.get('attributes', {}).get('last_name', '')
         })
-        if created: logger.info(f"Created new local User account for {email}")
 
-        # 5. Sync Vecto Profile and Pledges
-        _sync_patron_profile(user, user_data, included_data)
-
-        # 6. Finalize Login
+        _sync_patron_profile(user, user_data, included_data, current_network=request.network)
         login(request, user)
-        logger.info(f"User {email} successfully logged in via Patreon and pledges synced.")
         return redirect('home')
 
     except Exception as e:
@@ -540,18 +1091,13 @@ def patreon_callback(request):
         return HttpResponse(f"Error: {str(e)}", status=500)
 
 def logout_view(request):
-    logger.info(f"User {request.user.username if request.user.is_authenticated else 'Anonymous'} logged out.")
     from django.contrib.auth import logout
     logout(request)
     return redirect('home')
 
-# ==========================================
-# STAFF IMPERSONATION VIEWS
-# ==========================================
 @staff_member_required
 def start_impersonation(request, user_id):
     target_user = get_object_or_404(User, id=user_id)
-
     if target_user.is_superuser:
         messages.error(request, "Security restriction: You cannot impersonate a superuser.")
         return redirect('admin:auth_user_changelist')
@@ -561,1729 +1107,138 @@ def start_impersonation(request, user_id):
         return redirect('admin:auth_user_changelist')
 
     request.session['impersonated_user_id'] = target_user.id
-    logger.info(f"Staff User {request.user.username} initiated impersonation of {target_user.username}")
-    
     messages.success(request, f"Now viewing site as {target_user.email}.")
     return redirect('home')
 
 def stop_impersonation(request):
     if 'impersonated_user_id' in request.session:
-        logger.info(f"Staff User {request.impersonator.username} ended impersonation.")
         del request.session['impersonated_user_id']
         messages.success(request, "Impersonation ended. Welcome back.")
-        
     return redirect('admin:auth_user_changelist')
 
 # ==========================================
-# USER-FACING VIEWS
+# 9. UTILITIES & API
 # ==========================================
 
-from django.utils import timezone
-from .models import EpisodeEditSuggestion # Make sure this is imported at the top of your file
-
-@login_required(login_url='/login/')
-def user_profile(request):
+def get_live_user_stats(tenant_profile):
+    import redis
+    import logging
+    from django.conf import settings
     from django.utils import timezone
-    from .models import EpisodeEditSuggestion
+    from datetime import timedelta
+    from collections import defaultdict
+    from .models import Episode, Podcast
+    from .tasks import parse_duration_to_hours
     
-    profile = getattr(request.user, 'patron_profile', None)
+    logger = logging.getLogger(__name__)
+
+    live_play_hits = tenant_profile.total_playback_hits or 0
+    live_hours = tenant_profile.total_hours_accessed or 0.0
+    live_streak_days = tenant_profile.streak_days or 0
+    live_streak_weeks = tenant_profile.streak_weeks or 0
+    live_obsession_title = tenant_profile.current_obsession.title if tenant_profile.current_obsession else "Wandering Adventurer"
     
-    if not profile:
-        pass
+    today = timezone.now().date()
+    current_iso_week = today.isocalendar()[1]
 
-    # --- NETWORK-SPECIFIC ACCOUNT VINTAGE ---
-    account_vintage = None
-    if profile and profile.patreon_join_dates and hasattr(request, 'network') and request.network.patreon_campaign_id:
-        # The JSON keys are stored as strings, so we must cast the campaign ID to a string
-        campaign_id_str = str(request.network.patreon_campaign_id)
-        date_str = profile.patreon_join_dates.get(campaign_id_str)
-        
-        if date_str:
-            try:
-                account_vintage = timezone.datetime.fromisoformat(date_str.replace('Z', '+00:00'))
-            except Exception:
-                pass
-    # ----------------------------------------
-
-    # Calculate Total Approved Edits based on actual submissions
-    total_approved = EpisodeEditSuggestion.objects.filter(user=request.user, status='approved').count()
-    
-    # Determine Character Level & Title
-    level = 0
-    title = "Commoner"
-    
-    if total_approved >= 100:
-        level = 4
-        title = "Grand Archivist"
-        next_level_goal = 100
-        progress_percent = 100
-    elif total_approved >= 50:
-        level = 3
-        title = "Archivist"
-        next_level_goal = 100
-        progress_percent = (total_approved / 100) * 100
-    elif total_approved >= 10:
-        level = 2
-        title = "Scout"
-        next_level_goal = 50
-        progress_percent = (total_approved / 50) * 100
-    elif total_approved >= 1:
-        level = 1
-        title = "Initiate"
-        next_level_goal = 10
-        progress_percent = (total_approved / 10) * 100
-    else:
-        next_level_goal = 1
-        progress_percent = 0
-
-    live_stats = get_live_user_stats(profile)
-
-    context = {
-        'profile': profile,
-        'total_approved': total_approved,
-        'level': level,
-        'title': title,
-        'next_level_goal': next_level_goal,
-        'progress_percent': min(progress_percent, 100),
-        'live_stats': live_stats,
-        'account_vintage': account_vintage, 
-    }
-    return render(request, 'pod_manager/user_profile.html', context)
-
-@login_required(login_url='/login/')
-def creator_settings(request):
-    if request.user.is_superuser:
-        allowed_networks = Network.objects.all()
-    else:
-        allowed_networks = Network.objects.filter(owners=request.user)
-        
-    if not allowed_networks.exists():
-        return HttpResponseForbidden("You do not have creator access to any networks.")
-
-    current_network_slug = request.GET.get('network')
-    if current_network_slug:
-        current_network = get_object_or_404(allowed_networks, slug=current_network_slug)
-    else:
-        current_network = allowed_networks.first()
-
-    if request.method == 'POST':
-        action = request.POST.get('action')
-
-        def get_inbox_redirect():
-            current_tab = request.POST.get('current_tab', 'inbox')
-            url = f"{reverse('creator_settings')}?network={current_network.slug}&tab={current_tab}"
-            if current_tab == 'audit':
-                audit_page = request.POST.get('audit_page', '')
-                audit_q = request.POST.get('audit_q', '')
-                audit_status = request.POST.get('audit_status', '')
-                audit_user = request.POST.get('audit_user', '')
-                
-                if audit_page: url += f"&audit_page={urllib.parse.quote(str(audit_page))}"
-                if audit_q: url += f"&audit_q={urllib.parse.quote(str(audit_q))}"
-                if audit_status: url += f"&audit_status={urllib.parse.quote(str(audit_status))}"
-                if audit_user: url += f"&audit_user={urllib.parse.quote(str(audit_user))}"
-            return url
-        
-        if action == 'update_network':
-            network_id = request.POST.get('network_id')
-            network = get_object_or_404(allowed_networks, id=network_id)
-            
-            theme_config_str = request.POST.get('theme_config', '{}')
-            footer_public = request.POST.get('footer_public', '')
-            footer_private = request.POST.get('footer_private', '')
-
-            try:
-                network.theme_config = json.loads(theme_config_str)
-            except json.JSONDecodeError:
-                messages.error(request, f"Invalid JSON format for {network.name}. Settings not saved.")
-                return redirect(f"{reverse('creator_settings')}?network={network.slug}")
-
-            network.patreon_campaign_id = request.POST.get('patreon_campaign_id', '')
-            network.website_url = request.POST.get('website_url', '')
-            network.default_image_url = request.POST.get('default_image_url', '')
-            network.ignored_title_tags = request.POST.get('ignored_title_tags', '')
-            network.description_cut_triggers = request.POST.get('description_cut_triggers', '')
-
-            network.url_patreon = request.POST.get('url_patreon', '')
-            network.url_youtube = request.POST.get('url_youtube', '')
-            network.url_twitch = request.POST.get('url_twitch', '')
-            network.url_bluesky = request.POST.get('url_bluesky', '')
-            network.url_twitter = request.POST.get('url_twitter', '')
-            
-            network.global_footer_public = footer_public
-            network.global_footer_private = footer_private
-            network.save()
-
-            for show in network.podcasts.all():
-                invalidate_show_cache(show.id)
-
-            messages.success(request, f"{network.name} settings saved successfully! All related feed caches invalidated.")
-            return redirect(f"{reverse('creator_settings')}?network={network.slug}")
-
-        elif action == 'update_show':
-            show_id = request.POST.get('show_id')
-            show = get_object_or_404(Podcast, id=show_id, network__in=allowed_networks)
-            
-            # Capture the new URL fields
-            show.public_feed_url = request.POST.get('public_feed_url', show.public_feed_url)
-            show.subscriber_feed_url = request.POST.get('subscriber_feed_url', show.subscriber_feed_url)
-            
-            tier_id = request.POST.get('tier_id')
-            if tier_id:
-                # Force a check to ensure this tier belongs to THIS network
-                valid_tier = get_object_or_404(PatreonTier, id=tier_id, network=network)
-                show.required_tier = valid_tier
-            else:
-                show.required_tier = None
-            show.show_footer_public = request.POST.get('show_footer_public', '')
-            show.show_footer_private = request.POST.get('show_footer_private', '')
-
-            if tier_id:
-                show.required_tier_id = tier_id
-            else:
-                show.required_tier = None
-                
-            show.save()
-            invalidate_show_cache(show.id)
-            messages.success(request, f"{show.title} updated successfully! Feed cache invalidated.")
-            return redirect(f"{reverse('creator_settings')}?network={show.network.slug}")
-
-        elif action == 'add_show':
-            network_id = request.POST.get('network_id')
-            network = get_object_or_404(allowed_networks, id=network_id)
-            title = request.POST.get('title')
-            slug = request.POST.get('slug')
-            public_feed_url = request.POST.get('public_feed_url')
-            subscriber_feed_url = request.POST.get('subscriber_feed_url')
-            tier_id = request.POST.get('tier_id')
-
-            try:
-                new_show = Podcast(
-                    network=network, title=title, slug=slug,
-                    public_feed_url=public_feed_url, subscriber_feed_url=subscriber_feed_url,
-                )
-                
-                if tier_id:
-                    valid_tier = get_object_or_404(PatreonTier, id=tier_id, network=network)
-                    new_show.required_tier = valid_tier
-                else:
-                    new_show.required_tier = None
-                    
-                new_show.save()
-                
-                # Redirect with an 'auto_import' flag in the URL!
-                messages.success(request, f"Show '{title}' added! Starting live ingestion...")
-                return redirect(f"{reverse('creator_settings')}?network={network.slug}&auto_import={new_show.id}")
-                
-            except Exception as e:
-                messages.error(request, f"Error adding show: {str(e)}")
-                return redirect(f"{reverse('creator_settings')}?network={network.slug}")
-
-        elif action == 'run_manual_sync':
-            network_id = request.POST.get('network_id')
-            logger.info(f"Manual Sync requested for Network ID: {network_id} by User: {request.user.email}")
-            
-            network = get_object_or_404(allowed_networks, id=network_id)
-            
-            count, error = sync_network_patrons(network)
-            if error:
-                logger.error(f"Manual sync failed: {error}")
-                messages.error(request, f"Sync Failed: {error}")
-            else:
-                logger.info(f"Manual sync success. {count} records updated.")
-                messages.success(request, f"Successfully synced {count} patrons for {network.name}.")
-            
-            return redirect(f"{reverse('creator_settings')}?network={network.slug}")
-
-        # --- NETWORK MIX: CREATE ---
-        elif action == 'add_network_mix':
-            # BUG FIX: Explicitly fetch the target network from the form, NOT request.network
-            target_network_id = request.POST.get('network_id')
-            target_network = get_object_or_404(Network, id=target_network_id)
-
-            name = request.POST.get('name')
-            slug = request.POST.get('slug')
-            tier_id = request.POST.get('tier_id')
-            image_url_input = request.POST.get('mix_image', '').strip()
-            podcast_ids = request.POST.getlist('podcasts')
-
-            try:
-                new_mix = NetworkMix(network=target_network, name=name, slug=slug)
-                if tier_id:
-                    new_mix.required_tier = get_object_or_404(PatreonTier, id=tier_id, network=target_network)
-
-                if 'mix_image_upload' in request.FILES:
-                    new_mix.image_upload = request.FILES['mix_image_upload']
-                elif image_url_input:
-                    error_msg = process_mix_image_url(image_url_input, new_mix)
-                    if error_msg:
-                        messages.warning(request, f"Mix created, but artwork failed: {error_msg}")
-
-                new_mix.save()
-                if podcast_ids:
-                    new_mix.selected_podcasts.set(podcast_ids)
-                messages.success(request, f"Network Mix '{name}' created successfully!")
-            except Exception as e:
-                messages.error(request, f"Error adding mix: {str(e)}")
-            return redirect(f"{reverse('creator_settings')}?network={target_network.slug}")
-
-        # --- NETWORK MIX: EDIT ---
-        elif action == 'edit_network_mix':
-            mix_id = request.POST.get('mix_id')
-            target_mix = get_object_or_404(NetworkMix, id=mix_id)
-            
-            target_mix.name = request.POST.get('name')
-            target_mix.slug = request.POST.get('slug')
-            
-            tier_id = request.POST.get('tier_id')
-            if tier_id:
-                target_mix.required_tier = get_object_or_404(PatreonTier, id=tier_id, network=target_mix.network)
-            else:
-                target_mix.required_tier = None
-                
-            image_url_input = request.POST.get('mix_image', '').strip()
-            
-            if 'mix_image_upload' in request.FILES:
-                target_mix.image_upload = request.FILES['mix_image_upload']
-            elif image_url_input and image_url_input != target_mix.image_url:
-                error_msg = process_mix_image_url(image_url_input, target_mix)
-                if error_msg:
-                    messages.warning(request, f"Mix updated, but new artwork failed: {error_msg}")
-
-            podcast_ids = request.POST.getlist('podcasts')
-            target_mix.selected_podcasts.set(podcast_ids)
-            
-            target_mix.save()
-            messages.success(request, f"Network Mix '{target_mix.name}' updated successfully!")
-            return redirect(f"{reverse('creator_settings')}?network={target_mix.network.slug}")
-
-        # --- NETWORK MIX: DELETE ---
-        elif action == 'delete_network_mix':
-            mix_id = request.POST.get('mix_id')
-            target_mix = get_object_or_404(NetworkMix, id=mix_id)
-            net_slug = target_mix.network.slug
-            
-            mix_name = target_mix.name
-            target_mix.delete()
-            messages.success(request, f"Network Mix '{mix_name}' deleted.")
-            return redirect(f"{reverse('creator_settings')}?network={net_slug}")
-
-        # --- MERGE DESK: MERGE EPISODES ---
-        elif action == 'merge_episodes':
-            pub_id = request.POST.get('public_episode_id')
-            priv_id = request.POST.get('private_episode_id')
-
-            if pub_id and priv_id:
-                try:
-                    pub_ep = Episode.objects.get(id=pub_id, podcast__network=current_network)
-                    priv_ep = Episode.objects.get(id=priv_id, podcast__network=current_network)
-                    podcast_id = request.POST.get('merge_podcast_id', '')
-
-                    # Stitch the Private data into the Public episode
-                    pub_ep.guid_private = priv_ep.guid_private or priv_ep.guid_public
-                    pub_ep.audio_url_subscriber = priv_ep.audio_url_subscriber
-                    if priv_ep.chapters_private:
-                        pub_ep.chapters_private = priv_ep.chapters_private
-                        
-                    # Inherit tags if the private feed scraped them but public missed them
-                    if priv_ep.tags and not pub_ep.tags:
-                        pub_ep.tags = priv_ep.tags
-
-                    pub_ep.match_reason = "Manual Merge (Merge Desk)"
-                    
-                    pub_ep.save()
-                    priv_ep.delete()
-
-                    messages.success(request, f"Successfully merged '{priv_ep.title}' into '{pub_ep.title}'.")
-                except Episode.DoesNotExist:
-                    messages.error(request, "One or both episodes could not be found.")
-                except Exception as e:
-                    messages.error(request, f"Merge failed: {str(e)}")
-            else:
-                messages.error(request, "You must select one episode from each column to merge.")
-            return redirect(f"{reverse('creator_settings')}?network={current_network.slug}&merge_view=orphans&merge_podcast_id={podcast_id}")
-
-        # --- MERGE DESK: SPLIT EPISODES ---
-        elif action == 'split_episode':
-            ep_id = request.POST.get('episode_id')
-            podcast_id = request.POST.get('merge_podcast_id', '')
-            try:
-                ep = Episode.objects.get(id=ep_id, podcast__network=current_network)
-
-                # 1. Create the Private Orphan clone
-                priv_ep = Episode(
-                    podcast=ep.podcast,
-                    title=ep.title,
-                    pub_date=ep.pub_date,
-                    raw_description=ep.raw_description,
-                    clean_description=ep.clean_description,
-                    duration=ep.duration,
-                    link=ep.link,
-                    tags=ep.tags,
-                    guid_private=ep.guid_private,
-                    audio_url_subscriber=ep.audio_url_subscriber,
-                    chapters_private=ep.chapters_private,
-                    match_reason="Manually Unpaired"
-                )
-                priv_ep.save()
-
-                # 2. Strip private data from original (making it a Public Orphan)
-                ep.guid_private = None
-                ep.audio_url_subscriber = ""
-                ep.chapters_private = None
-                ep.match_reason = "Manually Unpaired"
-                ep.save()
-
-                messages.success(request, f"Successfully split '{ep.title}' into two orphaned episodes.")
-            except Episode.DoesNotExist:
-                messages.error(request, "Episode not found.")
-            return redirect(f"{reverse('creator_settings')}?network={current_network.slug}&merge_view=matched&merge_podcast_id={podcast_id}")
-
-        # --- INBOX: APPROVE / REJECT ---
-        elif action in ['approve_edit', 'reject_edit']:
-            edit_id = request.POST.get('edit_id')
-            edit = get_object_or_404(EpisodeEditSuggestion, id=edit_id, episode__podcast__network=current_network)
-            profile = edit.user.patron_profile
-
-            if action == 'approve_edit':
-                # Apply data to Episode
-                ep = edit.episode
-                ep.clean_description = edit.suggested_data.get('description', ep.clean_description)
-                ep.tags = edit.suggested_data.get('tags', ep.tags)
-                ep.chapters_public = edit.suggested_data.get('chapters', ep.chapters_public)
-                ep.save()
-
-                # Update Edit Status
-                edit.status = 'approved'
-                edit.resolved_at = timezone.now()
-                edit.save()
-
-                # Reward User (+5 Trust, ceiling at 100)
-                profile.trust_score += 5
-                
-                # Increment Stats (Only if changed)
-                if edit.suggested_data.get('chapters') != edit.original_data.get('chapters'): 
-                    profile.edits_chapters += len(edit.suggested_data.get('chapters', []))
-                if edit.suggested_data.get('tags') != edit.original_data.get('tags'): 
-                    profile.edits_tags += 1
-                if edit.suggested_data.get('description') != edit.original_data.get('description'): 
-                    profile.edits_descriptions += 1
-                    
-                if edit.is_first_responder: profile.first_responder_count += 1
-                profile.save()
-                
-                messages.success(request, "Edit approved and applied. User rewarded +5 Trust.")
-
-            elif action == 'reject_edit':
-                edit.status = 'rejected'
-                edit.resolved_at = timezone.now()
-                edit.save()
-
-                # Punish User (-2 Trust, floor at 0)
-                profile.trust_score = max(0, profile.trust_score - 2)
-                profile.edits_rejected += 1
-                profile.save()
-                messages.warning(request, "Edit rejected. User trust score penalized by 2.")
-
-            return redirect(get_inbox_redirect())
-
-        # --- INBOX: BULK ROLLBACK (THE NUKE BUTTON) ---
-        elif action == 'bulk_rollback':
-            spammer_id = request.POST.get('spammer_id')
-            spammer = get_object_or_404(User, id=spammer_id)
-            
-            # Find ALL edits by this user on this network (Approved AND Pending)
-            bad_edits = EpisodeEditSuggestion.objects.filter(
-                user=spammer, 
-                episode__podcast__network=current_network, 
-                status__in=['approved', 'pending']
-            )
-            
-            rollback_count = 0
-            for edit in bad_edits:
-                # If it was applied, revert the episode data
-                if edit.status == 'approved':
-                    ep = edit.episode
-                    ep.clean_description = edit.original_data.get('description', ep.clean_description)
-                    ep.tags = edit.original_data.get('tags', ep.tags)
-                    ep.chapters_public = edit.original_data.get('chapters', ep.chapters_public)
-                    ep.save()
-                    edit.status = 'rolled_back'
-                else:
-                    # If it was just pending, reject it
-                    edit.status = 'rejected'
-                    
-                edit.resolved_at = timezone.now()
-                edit.save()
-                rollback_count += 1
-                
-            # Nuke their trust score AND gamification stats entirely
-            if hasattr(spammer, 'patron_profile'):
-                profile = spammer.patron_profile
-                profile.trust_score = 0
-                profile.edits_chapters = 0
-                profile.edits_tags = 0
-                profile.edits_descriptions = 0
-                profile.first_responder_count = 0
-                profile.save()
-            
-            messages.success(request, f"Nuked! Rolled back and rejected {rollback_count} edits from {spammer.email}. Trust score reset to 0.")
-            return redirect(get_inbox_redirect())
-
-        # --- INBOX: SINGLE ROLLBACK ---
-        elif action == 'rollback_single_edit':
-            edit_id = request.POST.get('edit_id')
-            # Ensure we only rollback approved edits for the current network
-            edit = get_object_or_404(EpisodeEditSuggestion, id=edit_id, episode__podcast__network=current_network, status='approved')
-            profile = edit.user.patron_profile
-
-            # 1. Revert the episode data to the original snapshot
-            ep = edit.episode
-            ep.clean_description = edit.original_data.get('description', ep.clean_description)
-            ep.tags = edit.original_data.get('tags', ep.tags)
-            ep.chapters_public = edit.original_data.get('chapters', ep.chapters_public)
-            ep.save()
-
-            # 2. Update the edit status
-            edit.status = 'rolled_back'
-            edit.resolved_at = timezone.now()
-            edit.save()
-
-            # 3. Penalize the user (-5 Trust) and reverse gamification progress
-            profile.trust_score = max(0, profile.trust_score - 5)
-            profile.edits_rejected += 1
-            
-            # Remove the stats they gained when this was approved (Only if changed)
-            if edit.suggested_data.get('chapters') != edit.original_data.get('chapters'): 
-                    profile.edits_chapters = max(0, profile.edits_chapters - len(edit.suggested_data.get('chapters', [])))
-            if edit.suggested_data.get('tags') != edit.original_data.get('tags'): 
-                profile.edits_tags = max(0, profile.edits_tags - 1)
-            if edit.suggested_data.get('description') != edit.original_data.get('description'): 
-                profile.edits_descriptions = max(0, profile.edits_descriptions - 1)
-            
-            if edit.is_first_responder: 
-                profile.first_responder_count = max(0, profile.first_responder_count - 1)
-            
-            profile.save()
-
-            messages.success(request, f"Single edit rolled back. {edit.user.username}'s trust score was penalized by 5.")
-            return redirect(get_inbox_redirect())
-
-    allowed_networks = allowed_networks.prefetch_related('podcasts', 'podcasts__required_tier')
-    total_patrons = 0
-    if current_network and current_network.patreon_campaign_id:
-        thirty_days_ago = timezone.now() - timedelta(days=30)
-        kwargs = {
-            "active_pledges__has_key": str(current_network.patreon_campaign_id),
-            "last_active__gte": thirty_days_ago
+    cache_backend = settings.CACHES['default'].get('BACKEND', '').lower()
+    if 'locmem' in cache_backend or 'dummy' in cache_backend:
+        return {
+            'playback_hits': live_play_hits, 'hours_accessed': round(live_hours, 2),
+            'streak_days': live_streak_days, 'streak_weeks': live_streak_weeks,
+            'obsession_title': live_obsession_title
         }
-        total_patrons = PatronProfile.objects.filter(**kwargs).count()
-    tiers = PatreonTier.objects.filter(network__in=allowed_networks).order_by('minimum_cents')
-    
-    allowed_networks = allowed_networks.prefetch_related('podcasts', 'podcasts__required_tier')
-    total_patrons = 0
-    if current_network and current_network.patreon_campaign_id:
-        thirty_days_ago = timezone.now() - timedelta(days=30)
-        kwargs = {
-            "active_pledges__has_key": str(current_network.patreon_campaign_id),
-            "last_active__gte": thirty_days_ago
-        }
-        total_patrons = PatronProfile.objects.filter(**kwargs).count()
-    tiers = PatreonTier.objects.filter(network__in=allowed_networks).order_by('minimum_cents')
-    
-    # =========================================================
-    # MANAGE PODCASTS ENGINE (Search, Filter, Sort)
-    # =========================================================
-    show_q = request.GET.get('show_q', '').strip()
-    show_sort = request.GET.get('show_sort', 'alpha')
-    show_mix = request.GET.get('show_mix', '')
-
-    # 1. Annotate the query with clean sorting titles, max dates, and episode counts
-    # (Using istartswith instead of regex ensures it runs perfectly on both Postgres AND your local SQLite!)
-    manage_podcasts = current_network.podcasts.annotate(
-        clean_title=Case(
-            When(title__istartswith='The ', then=Substr('title', 5)),
-            When(title__istartswith='A ', then=Substr('title', 3)),
-            When(title__istartswith='An ', then=Substr('title', 4)),
-            default='title',
-            output_field=CharField()
-        ),
-        latest_episode_date=Max('episodes__pub_date'),
-        episode_count=Count('episodes', distinct=True)
-    )
-
-    # 2. Apply Text Search Filter
-    if show_q:
-        manage_podcasts = manage_podcasts.filter(
-            Q(title__icontains=show_q) | Q(slug__icontains=show_q)
-        )
-
-    # 3. Apply Super Mix Filter
-    if show_mix:
-        try:
-            mix = current_network.mixes.get(id=show_mix)
-            manage_podcasts = manage_podcasts.filter(id__in=mix.selected_podcasts.all())
-        except Exception:
-            pass
-
-    # 4. Apply Smart Sorting
-    if show_sort == 'recent':
-        manage_podcasts = manage_podcasts.order_by(F('latest_episode_date').desc(nulls_last=True))
-    elif show_sort == 'oldest':
-        manage_podcasts = manage_podcasts.order_by(F('latest_episode_date').asc(nulls_last=True))
-    elif show_sort == 'count_desc':
-        manage_podcasts = manage_podcasts.order_by('-episode_count')
-    else:
-        # Default to Alpha (A-Z) utilizing the stripped 'clean_title'
-        manage_podcasts = manage_podcasts.order_by(Lower('clean_title'))
-
-    # =========================================================
-    # THE MERGE DESK ENGINE (Search, Filter, Paginate)
-    # =========================================================
-    
-    merge_view = request.GET.get('merge_view', 'orphans')
-    merge_q = request.GET.get('merge_q', '').strip()
-    merge_reason = request.GET.get('merge_reason', '')
-    merge_podcast_id = request.GET.get('merge_podcast_id')
-
-    # 1. Determine the Selected Podcast (Default to first in network)
-    network_podcasts = current_network.podcasts.all()
-    selected_podcast = None
-    if merge_podcast_id:
-        selected_podcast = network_podcasts.filter(id=merge_podcast_id).first()
-    
-    if not selected_podcast and network_podcasts.exists():
-        selected_podcast = network_podcasts.first()
         
-    merge_podcast_id = str(selected_podcast.id) if selected_podcast else ''
-
-    # 2. Base Query (ISOLATED TO SINGLE PODCAST)
-    if selected_podcast:
-        base_episodes = Episode.objects.filter(podcast=selected_podcast).select_related('podcast').order_by('-pub_date')
-    else:
-        base_episodes = Episode.objects.none()
-
-    # Apply Deep Search
-    if merge_q:
-        search_q = (
-            Q(title__icontains=merge_q) |
-            Q(guid_public__icontains=merge_q) |
-            Q(guid_private__icontains=merge_q) |
-            Q(audio_url_public__icontains=merge_q) |
-            Q(audio_url_subscriber__icontains=merge_q)
-        )
-        base_episodes = base_episodes.filter(search_q)
-
-    # ---------------------------------------------------------
-    # ORPHAN LOGIC (Matches the boolean properties in models.py)
-    # ---------------------------------------------------------
-    empty_pub = Q(audio_url_public__isnull=True) | Q(audio_url_public__exact='') | Q(audio_url_public__iexact='none')
-    empty_sub = Q(audio_url_subscriber__isnull=True) | Q(audio_url_subscriber__exact='') | Q(audio_url_subscriber__iexact='none') | Q(audio_url_subscriber=F('audio_url_public'))
-
-    # 1. Public Orphans: Has distinct Public audio, NO distinct Premium audio
-    public_orphans_qs = base_episodes.exclude(empty_pub).filter(empty_sub)
-
-    # 2. Private Orphans: Has distinct Premium audio, NO Public audio
-    private_orphans_qs = base_episodes.exclude(empty_sub).filter(empty_pub)
-
-    # 3. Matched: Has BOTH distinct audio files
-    matched_qs = base_episodes.exclude(empty_pub).exclude(empty_sub)
-    
-    if merge_reason:
-        matched_qs = matched_qs.filter(match_reason=merge_reason)
-
-    # 3. Get distinct Match Reasons for the dropdown filter (ISOLATED TO PODCAST)
-    match_reasons = []
-    if selected_podcast:
-        match_reasons = Episode.objects.filter(podcast=selected_podcast)\
-            .exclude(match_reason__in=['Public Only (No Match)', 'Private Exclusive', '', 'Manually Unpaired'])\
-            .exclude(match_reason__isnull=True)\
-            .values_list('match_reason', flat=True).distinct()
-
-    # 4. Paginate Results (50 per page to keep the UI snappy)
-    pub_page = request.GET.get('pub_page', 1)
-    priv_page = request.GET.get('priv_page', 1)
-    match_page = request.GET.get('match_page', 1)
-
-    public_orphans = Paginator(public_orphans_qs, 50).get_page(pub_page)
-    private_orphans = Paginator(private_orphans_qs, 50).get_page(priv_page)
-    matched_episodes = Paginator(matched_qs, 50).get_page(match_page)
-
-    # ---------------------------------------------------------
-    # INBOX & AUDIT LOG ENGINE
-    # ---------------------------------------------------------
-    pending_edits = []
-    audit_page_obj = None
-    
-    audit_q = request.GET.get('audit_q', '').strip()
-    audit_status = request.GET.get('audit_status', '')
-    audit_user = request.GET.get('audit_user', '').strip()
-
-    if current_network:
-        pending_edits = EpisodeEditSuggestion.objects.filter(
-            episode__podcast__network=current_network, status='pending'
-        ).select_related('episode', 'user__patron_profile').order_by('created_at')
-        
-        # Base Audit Query (Everything NOT pending)
-        audit_qs = EpisodeEditSuggestion.objects.filter(
-            episode__podcast__network=current_network
-        ).exclude(status='pending').select_related('episode', 'user__patron_profile').order_by('-resolved_at')
-        
-        if audit_status:
-            audit_qs = audit_qs.filter(status=audit_status)
-        if audit_q:
-            audit_qs = audit_qs.filter(
-                Q(episode__title__icontains=audit_q) |
-                Q(episode__podcast__title__icontains=audit_q)
-            )
-        if audit_user:
-            audit_qs = audit_qs.filter(user__username__icontains=audit_user)
-
-        audit_page_num = request.GET.get('audit_page', 1)
-        audit_page_obj = Paginator(audit_qs, 20).get_page(audit_page_num)
-
-    context = {
-        'networks': allowed_networks,
-        'current_network': current_network,
-        'total_patrons': total_patrons,
-        'tiers': tiers,
-        'theme_config_json': json.dumps(current_network.theme_config, indent=2) if current_network else "{}",
-        # Manage Podcasts Context
-        'manage_podcasts': manage_podcasts,
-        'show_q': show_q,
-        'show_sort': show_sort,
-        'show_mix': show_mix,
-        # Merge Desk Context
-        'merge_view': merge_view,
-        'merge_q': merge_q,
-        'merge_reason': merge_reason,
-        'match_reasons': match_reasons,
-        'public_orphans': public_orphans,
-        'private_orphans': private_orphans,
-        'matched_episodes': matched_episodes,
-        'network_podcasts': network_podcasts,
-        'merge_podcast_id': merge_podcast_id,
-        'pending_edits': pending_edits,
-        'audit_page_obj': audit_page_obj,
-    }
-    return render(request, 'pod_manager/creator_settings.html', context)
-
-def home(request):
-    show_slug = request.GET.get('show')
-    search_query = request.GET.get('q', '').strip()
-    selected_networks = request.GET.getlist('network')
-    
-    # 1. Determine user's active pledged networks
-    user_networks = Network.objects.none()
-    owned_network_ids = []
-    if request.user.is_authenticated:
-        owned_network_ids = list(request.user.owned_networks.values_list('id', flat=True))
-        if hasattr(request.user, 'patron_profile'):
-            pledges = request.user.patron_profile.active_pledges or {}
-            active_campaign_ids = [cid for cid, amt in pledges.items() if amt > 0]
-            # Match if they pledge OR if they own it!
-            user_networks = Network.objects.filter(
-                Q(patreon_campaign_id__in=active_campaign_ids) | Q(id__in=owned_network_ids)
-            ).distinct()
-
-    # 2. Base Queries
-    podcasts = Podcast.objects.all().order_by('title')
-    query = Episode.objects.select_related('podcast', 'podcast__network', 'podcast__required_tier')
-
-    # 3. Determine Scope and Theme
-    if selected_networks:
-        if 'all' in selected_networks:
-            # BLENDED MODE
-            if user_networks.exists():
-                query = query.filter(podcast__network__in=user_networks)
-                podcasts = podcasts.filter(network__in=user_networks)
-            selected_networks = []
-            # Fallback to domain theme
-            current_view_network = request.network
-        else:
-            # FILTERED MODE
-            query = query.filter(podcast__network__slug__in=selected_networks)
-            podcasts = podcasts.filter(network__slug__in=selected_networks)
-            
-            # THEME LOGIC:
-            if len(selected_networks) == 1:
-                # If exactly one is selected, use its specific theme
-                current_view_network = get_object_or_404(Network, slug=selected_networks[0])
-            else:
-                # If multiple are selected, use the domain's default theme
-                current_view_network = request.network
-    else:
-        # DEFAULT: Current domain's network
-        query = query.filter(podcast__network=request.network)
-        podcasts = podcasts.filter(network=request.network)
-        selected_networks = [request.network.slug]
-        current_view_network = request.network
-
-    # 4. Apply Show Filter
-    if show_slug:
-        query = query.filter(podcast__slug=show_slug)
-
-    # 4.5 Apply Search Filter
-    if search_query:
-        query = query.filter(
-            Q(title__icontains=search_query) | 
-            Q(raw_description__icontains=search_query) |
-            Q(tags__icontains=search_query)
-        )
-        
-    all_episodes = query.order_by('-pub_date')
-    paginator = Paginator(all_episodes, 20)
-    
     try:
-        page_number = int(request.GET.get('page', 1))
-    except ValueError:
-        page_number = 1
+        redis_url = settings.CACHES['default']['LOCATION']
+        redis_client = redis.from_url(redis_url)
         
-    page_obj = paginator.get_page(page_number)
-    
-    # 5. Check Patreon Access per episode
-    user_active_pledges = {}
-    if request.user.is_authenticated and hasattr(request.user, 'patron_profile'):
-        user_active_pledges = request.user.patron_profile.active_pledges or {}
-
-    for ep in page_obj:
-        req_cents = ep.podcast.required_tier.minimum_cents if ep.podcast.required_tier else 0
-        camp_id = str(ep.podcast.network.patreon_campaign_id)
-        user_cents = user_active_pledges.get(camp_id, 0)
+        global_user_id = tenant_profile.user.patron_profile.id
+        play_keys = redis_client.keys(f"*analytics:play:{global_user_id}:*")
+        pending_episode_ids = set()
+        podcast_hits = defaultdict(int)
         
-        # Check ownership bypass here
-        is_owner = ep.podcast.network_id in owned_network_ids
-        ep.user_has_access = is_owner or (user_cents >= req_cents)
-
-    context = {
-        'episodes': page_obj,          
-        'page_obj': page_obj,          
-        'custom_page_range': range(max(1, page_obj.number - 5), min(paginator.num_pages, page_obj.number + 5) + 1), 
-        'podcasts': podcasts,          
-        'current_filter': show_slug,   
-        'current_network': current_view_network, 
-        'user_networks': user_networks,
-        'selected_networks': selected_networks,
-        'search_query': search_query,
-    }
-    return render(request, 'pod_manager/home.html', context)
-
-def episode_detail(request, episode_id):
-    logger.debug(f"Episode detail requested: ID {episode_id}")
-    ep = get_object_or_404(Episode.objects.select_related('podcast', 'podcast__network', 'podcast__required_tier'), id=episode_id)
-
-    user_active_pledges = {}
-    if request.user.is_authenticated and hasattr(request.user, 'patron_profile'):
-        user_active_pledges = request.user.patron_profile.active_pledges or {}
-        
-    req_cents = ep.podcast.required_tier.minimum_cents if ep.podcast.required_tier else 0
-    camp_id = str(ep.podcast.network.patreon_campaign_id)
-    user_cents = user_active_pledges.get(camp_id, 0)
-    
-    is_owner = request.user.is_authenticated and ep.podcast.network.owners.filter(id=request.user.id).exists()
-    ep.user_has_access = is_owner or (user_cents >= req_cents)
-    
-    if ep.podcast.network != request.network and not ep.user_has_access:
-        logger.warning(f"Cross-network block: User {request.user.username} attempted to view episode {episode_id} from a different network without access.")
-        raise Http404("No Episode matches the given query.")
-    
-    footer_parts = []
-    if ep.user_has_access:
-        if ep.podcast.show_footer_private: footer_parts.append(ep.podcast.show_footer_private)
-        if ep.podcast.network.global_footer_private: footer_parts.append(ep.podcast.network.global_footer_private)
-    else:
-        if ep.podcast.show_footer_public: footer_parts.append(ep.podcast.show_footer_public)
-        if ep.podcast.network.global_footer_public: footer_parts.append(ep.podcast.network.global_footer_public)
-
-    ep.display_description = ep.clean_description
-    if footer_parts:
-        ep.display_description += "<br><br>" + "<br><br>".join(footer_parts)
-
-    return render(request, 'pod_manager/episode_detail.html', {'ep': ep})
-
-def episode_chapters(request, episode_id, feed_type):
-    ep = get_object_or_404(Episode, id=episode_id)
-    
-    if feed_type == 'public':
-        data = ep.chapters_public or ep.chapters_private
-    else:
-        data = ep.chapters_private or ep.chapters_public
-        
-    if not data:
-        raise Http404("Chapters not found.")
-        
-    response = JsonResponse(data)
-    response["Access-Control-Allow-Origin"] = "*"
-    return response
-
-def user_feeds(request):
-    show_slug = request.GET.get('show')
-    selected_networks = request.GET.getlist('network') #
-    
-    profile = None
-    active_pledges = {}
-    total_dollars = 0
-    user_networks = Network.objects.none()
-
-    # 1. Gather authenticated data
-    if request.user.is_authenticated and hasattr(request.user, 'patron_profile'):
-        profile = request.user.patron_profile
-
-        cache.set(f"buffer_last_active_{profile.id}", timezone.now(), timeout=86400)
-
-        active_pledges = profile.active_pledges or {}
-        total_dollars = sum(active_pledges.values()) / 100 if active_pledges else 0
-        
-        # Identify all networks this user supports OR owns
-        active_campaign_ids = [cid for cid, amt in active_pledges.items() if amt > 0]
-        user_networks = Network.objects.filter(
-            Q(patreon_campaign_id__in=active_campaign_ids) | Q(owners=request.user)
-        ).distinct()
-
-        # === HANDLE MIX POST ACTIONS ===
-        if request.method == 'POST' and 'create_mix' in request.POST:
-            mix_name = request.POST.get('mix_name', '').strip() or f"UserMix {UserMix.objects.filter(user=request.user).count() + 1}"
-            logger.info(f"User {request.user.username} is creating a new mix: '{mix_name}'")
-            selected_podcast_ids = request.POST.getlist('podcasts')
-            image_url_input = request.POST.get('mix_image', '').strip()
-            
-            if selected_podcast_ids:
-                # Create the instance in memory (don't save to DB yet)
-                user_mix = UserMix(user=request.user, network=request.network, name=mix_name)
-                
-                # Prioritize file upload, fallback to URL
-                if 'mix_image_upload' in request.FILES:
-                    user_mix.image_upload = request.FILES['mix_image_upload']
-                elif image_url_input:
-                    error_msg = process_mix_image_url(image_url_input, user_mix)
-                    if error_msg:
-                        messages.warning(request, f"Mix created, but artwork failed: {error_msg}")
-                
-                # Save to DB and attach ManyToMany relationships
-                user_mix.save()
-                user_mix.selected_podcasts.set(selected_podcast_ids)
-                if 'mix_image_upload' in request.FILES or (image_url_input and not user_mix.image_url):
-                    messages.success(request, f"Mix '{mix_name}' created with custom artwork!")
-                else:
-                    messages.success(request, f"Mix '{mix_name}' created!")
-            return redirect('user_feeds')
-
-        if request.method == 'POST' and 'edit_mix' in request.POST:
-            mix_id = request.POST.get('mix_id')
-            logger.info(f"User {request.user.username} is editing mix ID: {mix_id}")
-            user_mix = UserMix.objects.filter(id=request.POST.get('mix_id'), user=request.user).first()
-            if user_mix:
-                user_mix.name = request.POST.get('mix_name', '').strip() or user_mix.name
-                image_url_input = request.POST.get('mix_image', '').strip()
-                
-                # Prioritize file upload, fallback to URL
-                if 'mix_image_upload' in request.FILES:
-                    user_mix.image_upload = request.FILES['mix_image_upload']
-                elif image_url_input and image_url_input != user_mix.image_url:
-                    error_msg = process_mix_image_url(image_url_input, user_mix)
-                    if error_msg:
-                        messages.warning(request, f"Mix updated, but new artwork failed: {error_msg}")
-
-                selected_ids = request.POST.getlist('podcasts')
-                if selected_ids: 
-                    user_mix.selected_podcasts.set(selected_ids)
+        for key_bytes in play_keys:
+            hits = redis_client.get(key_bytes)
+            if hits:
+                key_str = key_bytes.decode('utf-8')
+                clean_key = key_str.split('analytics:play:')[-1]
+                parts = clean_key.split(':')
+                if len(parts) == 3:
+                    e_id, pod_id = int(parts[1]), int(parts[2])
+                    if Podcast.objects.filter(id=pod_id, network=tenant_profile.network).exists():
+                        live_play_hits += int(hits)
+                        pending_episode_ids.add(e_id)
+                        podcast_hits[pod_id] += int(hits)
                     
-                user_mix.save()
-                cache.delete(f"mix_feed_{user_mix.unique_id}")
-                messages.success(request, f"Mix '{user_mix.name}' updated successfully!")
-            return redirect('user_feeds')
-
-        if request.method == 'POST' and 'delete_mix' in request.POST:
-            mix_id = request.POST.get('mix_id')
-            logger.info(f"User {request.user.username} is deleting mix ID: {mix_id}")
-            user_mix = UserMix.objects.filter(id=mix_id, user=request.user).first()
-            if user_mix:
-                cache.delete(f"mix_feed_{user_mix.unique_id}")
-                user_mix.delete()
-                logger.debug(f"Mix ID {mix_id} successfully deleted.")
-                messages.success(request, "Mix deleted successfully.")
-            return redirect('user_feeds')
-
-    # 2. Determine target networks for display and THEME
-    if selected_networks:
-        target_networks = user_networks if 'all' in selected_networks else user_networks.filter(slug__in=selected_networks)
-        
-        # --- THEME LOGIC FIX ---
-        if len(selected_networks) == 1 and 'all' not in selected_networks:
-            current_view_network = get_object_or_404(Network, slug=selected_networks[0])
-        else:
-            current_view_network = request.network
-    else:
-        target_networks = [request.network]
-        current_view_network = request.network
-
-    # 3. Build Feed Data (Shows public feeds for guests)
-    feed_data = []
-    for podcast in Podcast.objects.filter(network__in=target_networks).select_related('network', 'required_tier'):
-        req_cents = podcast.required_tier.minimum_cents if podcast.required_tier else 0
-        camp_id = str(podcast.network.patreon_campaign_id)
-        user_cents = active_pledges.get(camp_id, 0)
-        
-        is_owner = request.user.is_authenticated and podcast.network.owners.filter(id=request.user.id).exists()
-        has_access = is_owner or ((user_cents >= req_cents) and (req_cents > 0) and (profile is not None))
-        
-        # visibility logic: If logged in, ALWAYS give the unique feed so it can upgrade/downgrade dynamically.
-        if profile is not None:
-            raw_url = reverse('custom_feed') + f"?auth={profile.feed_token}&show={podcast.slug}&network={podcast.network.slug}"
-            feed_data.append({'is_network_mix': False, 'podcast': podcast, 'has_access': has_access, 'req_dollars': req_cents/100, 'feed_url': request.build_absolute_uri(raw_url)})
-        elif req_cents == 0 or podcast.public_feed_url:
-            # Guest visitors get the public URL
-            raw_url = reverse('public_feed', args=[podcast.slug]) 
-            feed_data.append({'is_network_mix': False, 'podcast': podcast, 'has_access': False, 'req_dollars': req_cents/100, 'feed_url': request.build_absolute_uri(raw_url)})
-
-    # === NEW: INJECT NETWORK MIXES INTO "YOUR FEEDS" ===
-    from .models import NetworkMix
-    network_mixes = NetworkMix.objects.filter(network__in=target_networks).select_related('network', 'required_tier')
-    for nmix in network_mixes:
-        mix_req_cents = nmix.required_tier.minimum_cents if nmix.required_tier else 0
-        camp_id = str(nmix.network.patreon_campaign_id)
-        user_cents = active_pledges.get(camp_id, 0) if profile else 0
-        
-        is_owner = request.user.is_authenticated and nmix.network.owners.filter(id=request.user.id).exists()
-        has_access = is_owner or ((user_cents >= mix_req_cents) and (profile is not None))
-        
-        if profile:
-            raw_url = reverse('network_mix_feed', args=[nmix.network.slug, nmix.slug]) + f"?auth={profile.feed_token}"
-        else:
-            raw_url = reverse('network_mix_feed', args=[nmix.network.slug, nmix.slug])
-            
-        feed_data.append({
-            'is_network_mix': True,
-            'mix': nmix,
-            'has_access': has_access,
-            'req_dollars': mix_req_cents / 100,
-            'feed_url': request.build_absolute_uri(raw_url)
-        })
-
-    # Sort feed_data: Network Mixes first (0), then Podcasts (1). Sorted alphabetically within each group.
-    feed_data = sorted(feed_data, key=lambda x: (
-        0 if x.get('is_network_mix') else 1,
-        x['mix'].name.lower() if x.get('is_network_mix') else x['podcast'].title.lower()
-    ))
-
-    # Fix modal podcast list (include all supported networks)
-    available_podcasts = []
-    if request.user.is_authenticated:
-        for p in Podcast.objects.filter(network__in=user_networks).select_related('network', 'required_tier'):
-            available_podcasts.append({'podcast': p, 'has_access': (active_pledges.get(str(p.network.patreon_campaign_id), 0) >= (p.required_tier.minimum_cents if p.required_tier else 0))})
-
-    user_mixes = UserMix.objects.filter(user=request.user, network=request.network) if request.user.is_authenticated else []
-    mix_data = [{'mix': m, 'feed_url': request.build_absolute_uri(reverse('mix_feed', args=[m.unique_id]))} for m in user_mixes]
-
-    context = {
-        'profile': profile, 'dollars': total_dollars, 'feed_data': feed_data,
-        'available_podcasts': available_podcasts, 'mix_data': mix_data,
-        'user_networks': user_networks, 'selected_networks': selected_networks or [request.network.slug],
-        'current_network': current_view_network, # <--- Fix applied here
-    }
-    return render(request, 'pod_manager/user_feeds.html', context)
-
-def generate_custom_feed(request):
-    feed_token = request.GET.get('auth')
-    podcast_slug = request.GET.get('show')
-    network_slug = request.GET.get('network')
-
-    logger.info(f"Custom feed requested: show='{podcast_slug}', network='{network_slug}'")
-
-    if not feed_token or not podcast_slug:
-        logger.warning("Custom feed request rejected: Missing auth or show parameters.")
-        return HttpResponseForbidden("Missing authentication or show parameters.")
-
-    if network_slug:
-        podcast = get_object_or_404(Podcast, slug=podcast_slug, network__slug=network_slug)
-    else:
-        podcast = get_object_or_404(Podcast, slug=podcast_slug, network=request.network)
-
-    auth_data = get_and_buffer_profile_auth(feed_token)
-    if not auth_data:
-        logger.warning(f"Invalid or missing token received: {feed_token}")
-        return HttpResponseForbidden("Invalid authentication token format.")
-
-    active_pledges = auth_data['active_pledges']
-    owned_networks = auth_data.get('owned_network_ids', [])
-    
-    required_cents = podcast.required_tier.minimum_cents if podcast.required_tier else 0
-    camp_id = str(podcast.network.patreon_campaign_id)
-    user_cents = active_pledges.get(camp_id, 0)
-    
-    is_owner = podcast.network.id in owned_networks
-    has_access = is_owner or (user_cents >= required_cents)
-
-    version = cache.get(f"podcast_cache_version_{podcast.id}", 1)
-    cache_key = f"xml_feed_{version}_{auth_data['feed_token']}_{podcast.slug}_{has_access}"
-    xml_output = cache.get(cache_key)
-
-    if xml_output:
-        logger.debug(f"Cache HIT for custom feed: {cache_key}")
-    else:
-        logger.debug(f"Cache MISS for custom feed: {cache_key}. Generating XML...")
-        episodes = podcast.episodes.all().order_by('-pub_date')[:2000]
-        
-        p = PodgenPodcast(
-            name=f"{podcast.title} for {auth_data['first_name']}",
-            description=f"Personalized feed for {auth_data['first_name']}.",
-            website=podcast.network.website_url or "https://example.com",
-            explicit=True,
-            image=podcast.image_url or podcast.network.default_image_url or "https://example.com/logo.png",
-            authors=[Person(name=podcast.network.name, email="hosts@baldmove.com")],
-            owner=Person(name=podcast.network.name, email="hosts@baldmove.com"),
-            withhold_from_itunes=True,
-        )
-
-        for ep in episodes:
-            if not ep.audio_url_subscriber and not ep.audio_url_public:
-                continue
-
-            audio_url = request.build_absolute_uri(reverse('play_episode', args=[ep.id])) + f"?auth={auth_data['feed_token']}"
-
-            assembled_desc = ep.clean_description
-            footer_parts = []
-            
-            if has_access:
-                if podcast.show_footer_private: footer_parts.append(podcast.show_footer_private)
-                if podcast.network.global_footer_private: footer_parts.append(podcast.network.global_footer_private)
-            else:
-                if podcast.show_footer_public: footer_parts.append(podcast.show_footer_public)
-                if podcast.network.global_footer_public: footer_parts.append(podcast.network.global_footer_public)
-
-            if footer_parts:
-                assembled_desc += "<br><br>" + "<br><br>".join(footer_parts)
-
-            p.episodes.append(PodgenEpisode(
-                title=ep.title,
-                media=Media(url=audio_url, size=0, type="audio/mpeg", duration=parse_duration(ep.duration)),
-                id=ep.guid_public or ep.guid_private or str(ep.id),
-                publication_date=ep.pub_date,
-                summary=assembled_desc, 
-            ))
-   
-        raw_xml = p.rss_str()
-        feed_type = 'private' if has_access else 'public'
-        xml_output = inject_rss_extensions(request, raw_xml, episodes, default_feed_type=feed_type)
-        timeout_seconds = podcast.network.feed_cache_minutes * 60
-        cache.set(cache_key, xml_output, timeout=timeout_seconds)
-        logger.debug(f"Successfully generated and cached custom feed: {cache_key}")
-
-    rss_cache_key = f"analytics:rss:{auth_data['id']}"
-    try:
-        cache.incr(rss_cache_key)
-    except ValueError:
-        cache.set(rss_cache_key, 1, timeout=172800)
-
-    return HttpResponse(xml_output, content_type='application/rss+xml')
-
-def generate_public_feed(request, podcast_slug):
-    network_slug = request.GET.get('network')
-    logger.info(f"Public feed requested: show='{podcast_slug}', network='{network_slug}'")
-    
-    if network_slug:
-        podcast = get_object_or_404(Podcast, slug=podcast_slug, network__slug=network_slug)
-    else:
-        podcast = get_object_or_404(Podcast, slug=podcast_slug, network=request.network)
-
-    version = cache.get(f"podcast_cache_version_{podcast.id}", 1)
-    cache_key = f"xml_feed_public_{version}_{podcast.slug}"
-    xml_output = cache.get(cache_key)
-
-    if xml_output:
-        logger.debug(f"Cache HIT for public feed: {cache_key}")
-    else:
-        logger.debug(f"Cache MISS for public feed: {cache_key}. Generating XML...")
-        episodes = podcast.episodes.all().order_by('-pub_date')[:500]
-        
-        p = PodgenPodcast(
-            name=podcast.title,
-            description=f"Public feed for {podcast.title}.",
-            website=podcast.network.website_url or "https://example.com",
-            explicit=True,
-            image=podcast.image_url or podcast.network.default_image_url or "https://example.com/logo.png",
-            authors=[Person(name=podcast.network.name, email="hosts@baldmove.com")],
-            owner=Person(name=podcast.network.name, email="hosts@baldmove.com"),
-            withhold_from_itunes=True,
-        )
-
-        for ep in episodes:
-            if not ep.audio_url_public:
-                continue
+        if pending_episode_ids:
+            episodes = Episode.objects.filter(id__in=pending_episode_ids)
+            for ep in episodes:
+                live_hours += parse_duration_to_hours(ep.duration)
                 
-            audio_url = request.build_absolute_uri(reverse('play_episode', args=[ep.id]))
-                
-            assembled_desc = ep.clean_description
+        if podcast_hits:
+            top_pod_id = max(podcast_hits, key=podcast_hits.get)
+            obsession_pod = Podcast.objects.filter(id=top_pod_id).first()
+            if obsession_pod:
+                live_obsession_title = obsession_pod.title
 
-            p.episodes.append(PodgenEpisode(
-                title=ep.title,
-                # Use the new router URL
-                media=Media(url=audio_url, size=0, type="audio/mpeg", duration=parse_duration(ep.duration)),
-                id=ep.guid_public or ep.guid_private or str(ep.id),
-                publication_date=ep.pub_date,
-                summary=assembled_desc, 
-            ))
-            
-        raw_xml = p.rss_str()
-        xml_output = inject_rss_extensions(request, raw_xml, episodes, default_feed_type='public')
-        timeout_seconds = podcast.network.feed_cache_minutes * 60
-        cache.set(cache_key, xml_output, timeout=timeout_seconds)
-        logger.debug(f"Successfully generated and cached public feed: {cache_key}")
-
-    return HttpResponse(xml_output, content_type='application/rss+xml')
-
-def generate_mix_feed(request, unique_id):
-    logger.info(f"Custom Mix feed requested: unique_id='{unique_id}'")
-    cache_key = f"mix_feed_{unique_id}"
-    feed_xml = cache.get(cache_key)
-
-    if feed_xml:
-        logger.debug(f"Cache HIT for mix feed: {cache_key}")
-    else:
-        logger.debug(f"Cache MISS for mix feed: {cache_key}. Generating XML...")
-        user_mix = get_object_or_404(UserMix.objects.select_related('user__patron_profile'), unique_id=unique_id, is_active=True)
-        
-        auth_data = get_and_buffer_profile_auth(user_mix.user.patron_profile.feed_token)
-        active_pledges = auth_data['active_pledges'] if auth_data else {}
-        
-        selected_podcasts = user_mix.selected_podcasts.select_related('required_tier', 'network').all()
-        
-        owned_networks = auth_data.get('owned_network_ids', []) if auth_data else []
-        access_map = {}
-        for podcast in selected_podcasts:
-            req_cents = podcast.required_tier.minimum_cents if podcast.required_tier else 0
-            camp_id = str(podcast.network.patreon_campaign_id)
-            
-            is_owner = podcast.network.id in owned_networks
-            has_access = is_owner or (active_pledges.get(camp_id, 0) >= req_cents)
-            access_map[podcast.id] = has_access
-            logger.debug(f"Mix Feed Access Check: {auth_data['first_name']} -> {podcast.title}: {has_access}")
-                
-        episodes = Episode.objects.filter(podcast__in=selected_podcasts).select_related('podcast', 'podcast__network').order_by('-pub_date')[:500]
-        
-        if user_mix.display_image: image_url = request.build_absolute_uri(user_mix.display_image)
-        else: image_url = request.build_absolute_uri(user_mix.network.default_image_url)
-
-        feed = PodgenPodcast(
-            name=user_mix.name,
-            description=f"A custom blended podcast feed generated by Vecto for {user_mix.user.first_name}.",
-            website=request.build_absolute_uri('/'),
-            explicit=False,
-            image=image_url,
-            withhold_from_itunes=True,
-            authors=[Person(name=podcast.network.name, email="hosts@baldmove.com")],
-            owner=Person(name=podcast.network.name, email="hosts@baldmove.com"),
-        )
-        
-        for ep in episodes:
-            has_access = access_map.get(ep.podcast_id, False)
-            
-            if not ep.audio_url_subscriber and not ep.audio_url_public:
-                continue
-                
-            audio_url = request.build_absolute_uri(reverse('play_episode', args=[ep.id])) + f"?auth={auth_data['feed_token']}"
-
-            display_title = f"[{ep.podcast.title}] {ep.title}"
-            
-            assembled_desc = ep.clean_description or ep.raw_description
-            footer_parts = []
-            
-            if has_access:
-                if ep.podcast.show_footer_private: footer_parts.append(ep.podcast.show_footer_private)
-                if ep.podcast.network.global_footer_private: footer_parts.append(ep.podcast.network.global_footer_private)
-            else:
-                if ep.podcast.show_footer_public: footer_parts.append(ep.podcast.show_footer_public)
-                if ep.podcast.network.global_footer_public: footer_parts.append(ep.podcast.network.global_footer_public)
-            
-            if footer_parts:
-                assembled_desc += "<br><br>" + "<br><br>".join(footer_parts)
-
-            feed.episodes.append(PodgenEpisode(
-                id=ep.guid_public or ep.guid_private or str(ep.id),
-                title=display_title,
-                summary=assembled_desc, 
-                publication_date=ep.pub_date,
-                media=Media(url=audio_url, size=0, type="audio/mpeg", duration=parse_duration(ep.duration))
-            ))
-            
-        raw_xml = feed.rss_str()
-        feed_xml = inject_rss_extensions(request, raw_xml, episodes, access_map=access_map) 
-        cache.set(cache_key, feed_xml, 300)
-        logger.debug(f"Successfully generated and cached mix feed: {cache_key}")
-        
-    rss_cache_key = f"analytics:rss:{auth_data['id']}"
-    try:
-        cache.incr(rss_cache_key)
-    except ValueError:
-        cache.set(rss_cache_key, 1, timeout=172800)
-
-    return HttpResponse(feed_xml, content_type='application/rss+xml')
-
-def generate_network_mix_feed(request, network_slug, mix_slug):
-    logger.info(f"Network Mix feed requested: network='{network_slug}', mix='{mix_slug}'")
-    network_mix = get_object_or_404(NetworkMix, slug=mix_slug, network__slug=network_slug)
-    
-    feed_token = request.GET.get('auth')
-    profile = None
-    active_pledges = {}
-    
-    owned_networks = []
-    if feed_token:
-        auth_data = get_and_buffer_profile_auth(feed_token)
-        if auth_data:
-            active_pledges = auth_data['active_pledges']
-            owned_networks = auth_data.get('owned_network_ids', [])
-        else:
-            logger.warning(f"Invalid or missing token received for network mix: {feed_token}")
-
-    mix_req_cents = network_mix.required_tier.minimum_cents if network_mix.required_tier else 0
-    camp_id = str(network_mix.network.patreon_campaign_id)
-    user_cents = active_pledges.get(camp_id, 0)
-    
-    is_owner = network_mix.network.id in owned_networks
-    user_meets_mix_tier = is_owner or (mix_req_cents == 0) or (user_cents >= mix_req_cents)
-
-    cache_key = f"network_mix_{network_mix.unique_id}_{feed_token}"
-    feed_xml = cache.get(cache_key)
-
-    if feed_xml:
-        logger.debug(f"Cache HIT for network mix: {cache_key}")
-    else:
-        logger.debug(f"Cache MISS for network mix: {cache_key}. Generating XML...")
-        selected_podcasts = network_mix.selected_podcasts.select_related('required_tier', 'network').all()
-        
-        access_map = {}
-        for podcast in selected_podcasts:
-            req_cents = podcast.required_tier.minimum_cents if podcast.required_tier else 0
-            access_map[podcast.id] = user_meets_mix_tier and (user_cents >= req_cents)
-                
-        episodes = Episode.objects.filter(podcast__in=selected_podcasts).select_related('podcast', 'podcast__network').order_by('-pub_date')[:5000]
-        
-        image_url = request.build_absolute_uri(network_mix.display_image) if network_mix.display_image else request.build_absolute_uri(network_mix.network.default_image_url)
-
-        from podgen import Podcast as PodgenPodcast, Episode as PodgenEpisode, Media, Person
-        from django.utils.dateparse import parse_duration
-
-        feed = PodgenPodcast(
-            name=network_mix.name,
-            description=f"A curated network mix by {network_mix.network.name}.",
-            website=network_mix.network.website_url or request.build_absolute_uri('/'),
-            explicit=False,
-            image=image_url,
-            withhold_from_itunes=True,
-            authors=[Person(name=network_mix.network.name, email="hosts@example.com")],
-            owner=Person(name=network_mix.network.name, email="hosts@example.com"),
-        )
-        
-        for ep in episodes:
-            has_access = access_map.get(ep.podcast_id, False)
-            
-            if not has_access and not ep.audio_url_public:
-                continue
-                
-            audio_url = request.build_absolute_uri(reverse('play_episode', args=[ep.id]))
-            if feed_token:
-                audio_url += f"?auth={feed_token}"
-
-            display_title = f"[{ep.podcast.title}] {ep.title}"
-            
-            audio_banner = ""
-            if ep.audio_url_subscriber and ep.audio_url_public and ep.audio_url_subscriber != ep.audio_url_public:
-                if has_access:
-                    audio_banner = "Premium: "
-                else:
-                    audio_banner = "Standard: "
-            elif not ep.audio_url_public:
-                audio_banner = "Premium Exclusive: "
-
-            assembled_desc = audio_banner + (ep.clean_description or ep.raw_description)
-            
-            footer_parts = []
-            if has_access:
-                if ep.podcast.show_footer_private: footer_parts.append(ep.podcast.show_footer_private)
-                if ep.podcast.network.global_footer_private: footer_parts.append(ep.podcast.network.global_footer_private)
-            else:
-                if ep.podcast.show_footer_public: footer_parts.append(ep.podcast.show_footer_public)
-                if ep.podcast.network.global_footer_public: footer_parts.append(ep.podcast.network.global_footer_public)
-            
-            if footer_parts:
-                assembled_desc += "<br><br>" + "<br><br>".join(footer_parts)
-
-            ep_duration = parse_duration(ep.duration) if ep.duration else None
-
-            feed.episodes.append(PodgenEpisode(
-                id=ep.guid_public or ep.guid_private or str(ep.id),
-                title=display_title,
-                summary=assembled_desc, 
-                publication_date=ep.pub_date,
-                media=Media(url=audio_url, size=0, type="audio/mpeg", duration=ep_duration)
-            ))
-            
-        raw_xml = feed.rss_str()
-        from .views import inject_rss_extensions
-        feed_xml = inject_rss_extensions(request, raw_xml, episodes, access_map=access_map) 
-        cache.set(cache_key, feed_xml, 300)
-        
-    return HttpResponse(feed_xml, content_type='application/rss+xml')
-
-@csrf_exempt
-def patreon_webhook(request):
-    logger.debug("Received incoming Patreon webhook request.")
-    if request.method != 'POST':
-        logger.warning(f"Webhook rejected: Invalid HTTP method {request.method}")
-        return HttpResponse("Method not allowed", status=405)
-
-    signature = request.headers.get('X-Patreon-Signature')
-    if not signature:
-        logger.warning("Webhook rejected: Missing X-Patreon-Signature header.")
-        return HttpResponseForbidden("Missing signature")
-        
-    secret = settings.PATREON_WEBHOOK_SECRET.encode('utf-8')
-    expected_signature = hmac.new(secret, request.body, hashlib.md5).hexdigest()
-    
-    if not hmac.compare_digest(expected_signature, signature):
-        logger.warning(f"Webhook rejected: Invalid signature. Expected {expected_signature}, got {signature}")
-        return HttpResponseForbidden("Invalid signature")
-
-    logger.debug("Webhook signature verified successfully.")
-
-    try:
-        data = json.loads(request.body)
-        member_data = data.get('data', {})
-        
-        user_relationship = member_data.get('relationships', {}).get('user', {}).get('data', {})
-        if not user_relationship or user_relationship.get('type') != 'user':
-            logger.error("Webhook payload missing user relationship data.")
-            return HttpResponse("Could not find user relationship in webhook.", status=400)
-            
-        patreon_user_id = user_relationship.get('id')
-        if not patreon_user_id:
-            logger.error("Webhook payload missing Patreon User ID.")
-            return HttpResponse("Missing user ID in webhook.", status=400)
-
-        logger.info(f"Processing webhook for Patreon User ID: {patreon_user_id}")
-
-        with transaction.atomic():
-            profile = PatronProfile.objects.select_for_update().get(patreon_id=patreon_user_id)
-
-            attributes = member_data.get('attributes', {})
-            new_cents = attributes.get('currently_entitled_amount_cents', 0)
-            status = attributes.get('patron_status') 
-
-            final_amount = new_cents if status == 'active_patron' else 0
-            logger.debug(f"Parsed Webhook Data - Status: {status}, Cents: {new_cents}, Final Amount: {final_amount}")
-            
-            campaign_relationship = member_data.get('relationships', {}).get('campaign', {}).get('data', {})
-            campaign_id = str(campaign_relationship.get('id', ''))
-            
-            # Verify the campaign actually belongs to a Vecto network
-            is_vecto_campaign = Network.objects.filter(patreon_campaign_id=campaign_id).exists()
-            
-            if campaign_id and is_vecto_campaign:
-                active_pledges = profile.active_pledges or {}
-                
-                if final_amount > 0:
-                    active_pledges[campaign_id] = final_amount
-                elif campaign_id in active_pledges:
-                    # Delete the key to save space if the pledge was cancelled
-                    del active_pledges[campaign_id]
-                    
-                profile.active_pledges = active_pledges
-                profile.save()
-                logger.info(f"Webhook Success: Updated {profile.user.email} on Campaign {campaign_id}.")
-            elif not is_vecto_campaign:
-                logger.info(f"Webhook Ignored: Campaign {campaign_id} does not belong to any Vecto network.")
-            else:
-                logger.warning(f"Webhook processed for {patreon_user_id}, but no campaign ID was found.")
-                
-        return HttpResponse("Success", status=200)
-        
-    except PatronProfile.DoesNotExist:
-        logger.warning(f"Webhook skipped: Patreon User ID {patreon_user_id} does not exist in local database.")
-        return HttpResponse("User has not logged in via OAuth yet.", status=200)
-
-    except (ValueError, KeyError, AttributeError) as e:
-        logger.error(f"Error parsing webhook JSON payload: {str(e)}", exc_info=True)
-        return HttpResponse("Error processing webhook payload.", status=400)
-    
     except Exception as e:
-        logger.error(f"Critical error processing webhook: {str(e)}", exc_info=True)
-        return HttpResponse("Error", status=500)
-
-def sync_network_patrons(network):
-    """
-    Fetches all members for a campaign and updates local PatronProfiles.
-    Also revokes access for local patrons no longer present in the Patreon member list.
-    """
-    logger.debug(f"--- Starting COMPLETE Sync for Network: {network.name} ---")
-
-    if not network.patreon_creator_access_token or not network.patreon_campaign_id:
-        return 0, "Network is not properly linked to Patreon."
-
-    campaign_id_str = str(network.patreon_campaign_id)
-    base_url = f"https://www.patreon.com/api/oauth2/v2/campaigns/{campaign_id_str}/members"
-    params = {
-        "include": "user",
-        "fields[member]": "patron_status,currently_entitled_amount_cents",
-        "fields[user]": "email",
-        "page[count]": 100
+        logger.error(f"Failed to fetch live stats from Redis: {e}")
+        
+    return {
+        'playback_hits': live_play_hits,
+        'hours_accessed': round(live_hours, 2),
+        'streak_days': live_streak_days, 
+        'streak_weeks': live_streak_weeks,
+        'obsession_title': live_obsession_title
     }
-    headers = {'Authorization': f'Bearer {network.patreon_creator_access_token}'}
+
+def invalidate_show_cache(show_id: int):
+    version_key = f"podcast_cache_version_{show_id}"
+    try:
+        cache.incr(version_key)
+    except ValueError:
+        cache.set(version_key, 1, timeout=None)
+
+def refresh_patreon_token(network):
+    if not network.patreon_creator_refresh_token: return False
+
+    token_url = "https://www.patreon.com/api/oauth2/token"
+    data = {
+        'grant_type': 'refresh_token',
+        'refresh_token': network.patreon_creator_refresh_token,
+        'client_id': settings.PATREON_CLIENT_ID,
+        'client_secret': settings.PATREON_CLIENT_SECRET,
+    }
     
-    updated_count = 0
-    seen_patreon_ids = set() # Track everyone currently on Patreon for this campaign
-    url = f"{base_url}?{urllib.parse.urlencode(params)}"
-
-    # 1. Iterate through all active/historical members on Patreon
-    while url:
-        logger.debug(f"[SYNC] Fetching Patreon URL: {url}")
-        res = requests.get(url, headers=headers)
-        
-        # --- THE DIAGNOSTIC LOG ---
-        logger.debug(f"[SYNC] Raw HTTP Status Code received: {res.status_code}")
-        
-        # --- Handle 401 Unauthorized (Expired Token) ---
-        # We also check if the text '401' is in the response just in case Patreon sends a 403
-        if res.status_code == 401 or "Unauthorized" in res.text:
-            logger.warning(f"[SYNC] Access Token rejected! Attempting auto-refresh...")
-            
-            refresh_success = refresh_patreon_token(network)
-            logger.debug(f"[SYNC] Auto-refresh returned: {refresh_success}")
-            
-            if refresh_success:
-                logger.debug("[SYNC] Applying new access token to headers and retrying the same URL...")
-                headers['Authorization'] = f'Bearer {network.patreon_creator_access_token}'
-                continue 
-            else:
-                logger.error("[SYNC] Refresh failed. Aborting sync.")
-                network.patreon_sync_enabled = False
-                network.save()
-                return updated_count, "Patreon authorization permanently expired. Please re-link your Patreon campaign in settings."
-        
-        # --- Handle 429 Rate Limits Gracefully ---
-        if res.status_code == 429:
-            retry_after = int(res.headers.get('Retry-After', 5))
-            logger.warning(f"[SYNC] Rate Limit hit. Pausing for {retry_after}s.")
-            time.sleep(retry_after)
-            continue 
-            
-        if res.status_code != 200:
-            logger.error(f"[SYNC] Unhandled Patreon API Error ({res.status_code}): {res.text}")
-            return updated_count, f"Patreon API Error: {res.text}"
-        
-        data = res.json()
-        members = data.get('data', [])
-        included = {i['id']: i for i in data.get('included', []) if i['type'] == 'user'}
-
-        for member in members:
-            attrs = member.get('attributes', {})
-            rel_user = member.get('relationships', {}).get('user', {}).get('data', {})
-            
-            if not rel_user:
-                continue
-                
-            patreon_id = rel_user['id']
-            seen_patreon_ids.add(patreon_id) # Mark as present
-            
-            user_data = included.get(patreon_id, {})
-            email = user_data.get('attributes', {}).get('email')
-
-            # Match local profile
-            profile = PatronProfile.objects.filter(patreon_id=patreon_id).first()
-            if not profile and email:
-                profile = PatronProfile.objects.filter(user__email=email).first()
-
-            if profile:
-                status = attrs.get('patron_status')
-                cents = attrs.get('currently_entitled_amount_cents', 0)
-                final_amount = cents if status == 'active_patron' else 0
-                
-                active_pledges = profile.active_pledges or {}
-                active_pledges[campaign_id_str] = final_amount
-                profile.active_pledges = active_pledges
-                profile.save()
-                updated_count += 1
-
-        url = data.get('links', {}).get('next')
-        
-        if url:
-            time.sleep(0.5)
-
-    # 2. Cleanup: Revoke access for anyone NOT seen in the API response
-    # Find local profiles that currently have this campaign ID in their JSON data
-    stale_profiles = PatronProfile.objects.filter(
-        active_pledges__has_key=campaign_id_str
-    ).exclude(
-        patreon_id__in=seen_patreon_ids
-    )
-
-    revoked_count = 0
-    for profile in stale_profiles:
-        active_pledges = profile.active_pledges or {}
-        if active_pledges.get(campaign_id_str, 0) > 0:
-            logger.info(f"Revoking access for {profile.user.email}: Not found in Patreon member list.")
-            active_pledges[campaign_id_str] = 0
-            profile.active_pledges = active_pledges
-            profile.save()
-            revoked_count += 1
-
-    logger.info(f"--- Sync Complete. Updated: {updated_count} | Revoked: {revoked_count} ---")
-    return updated_count, None
-
-def play_episode(request, episode_id):
-    logger.info(f"[ROUTER] Request received for episode_id: {episode_id}")
-    ep = get_object_or_404(Episode.objects.select_related('podcast', 'podcast__network', 'podcast__required_tier'), id=episode_id)
-    feed_token = request.GET.get('auth')
-    
-    logger.debug(f"[ROUTER] Episode: '{ep.title}' | Auth Token Provided: {bool(feed_token)}")
-    
-    # 1. Evaluate their pledge status on the fly using Redis
-    has_access = False
-    if feed_token:
-        auth_data = get_and_buffer_profile_auth(feed_token)
-        if auth_data:
-            owned_networks = auth_data.get('owned_network_ids', [])
-            is_owner = ep.podcast.network.id in owned_networks
-            
-            req_cents = ep.podcast.required_tier.minimum_cents if ep.podcast.required_tier else 0
-            camp_id = str(ep.podcast.network.patreon_campaign_id)
-            user_cents = auth_data['active_pledges'].get(camp_id, 0)
-            has_access = is_owner or (user_cents >= req_cents)
-            if has_access:
-                # Key format: analytics:play:{profile_id}:{episode_id}:{podcast_id}
-                cache_key = f"analytics:play:{auth_data['id']}:{ep.id}:{ep.podcast_id}"
-                try:
-                    cache.incr(cache_key)
-                except ValueError:
-                    cache.set(cache_key, 1, timeout=172800)
-            logger.info(f"[ROUTER] User: {auth_data['email']} | Has: {user_cents}¢ | Needs: {req_cents}¢ | Access Granted: {has_access}")
-        else:
-            logger.warning(f"[ROUTER] Invalid auth token provided: {feed_token}")
-    else:
-        logger.info("[ROUTER] No auth token provided. Defaulting to public access.")
-            
-    # 2. Route to the correct audio file
-    target_url = ep.audio_url_subscriber if (has_access and ep.audio_url_subscriber) else ep.audio_url_public
-    
-    if not target_url:
-        logger.error(f"[ROUTER] CRITICAL: No audio file found for episode {episode_id} (Access: {has_access})")
-        raise Http404("Audio file not found.")
-        
-    logger.info(f"[ROUTER] Redirecting to: {target_url}")
-        
-    # 3. Use 302 Temporary Redirect so podcast apps evaluate it EVERY time they press play
-    response = HttpResponseRedirect(target_url)
-    response['Cache-Control'] = 'no-cache, no-store, must-revalidate'
-    return response
+    try:
+        res = requests.post(token_url, data=data, timeout=10)
+        if res.status_code == 200:
+            tokens = res.json()
+            network.patreon_creator_access_token = tokens['access_token']
+            if 'refresh_token' in tokens: network.patreon_creator_refresh_token = tokens['refresh_token']
+            network.save()
+            return True
+        return False
+    except Exception:
+        return False
 
 def traefik_config_api(request):
-    # Security: Require a token so only Traefik can read this endpoint
-    # You can set this token to any secure string you want
     expected_token = getattr(settings, 'TRAEFIK_API_TOKEN', None)
-    if request.GET.get('token') != expected_token:
-        return HttpResponseForbidden("Unauthorized access.")
+    if request.GET.get('token') != expected_token: return HttpResponseForbidden("Unauthorized access.")
 
     routers = {}
-
-    # Fetch all networks that have a custom domain explicitly set
     networks = Network.objects.exclude(custom_domain__isnull=True).exclude(custom_domain__exact='')
 
     for network in networks:
-        # Router names must be unique. We use the network ID to guarantee this.
-        router_name = f"custom-domain-{network.id}"
-
-        routers[router_name] = {
+        routers[f"custom-domain-{network.id}"] = {
             "rule": f"Host(`{network.custom_domain}`)",
             "entryPoints": ["https"], 
             "service": "vecto-service@file",
-            "tls": {
-                # Force these external domains to use the HTTP-01 challenge
-                "certResolver": "http_resolver" 
-            }
+            "tls": {"certResolver": "http_resolver"}
         }
 
-    # Traefik expects this exact nested JSON structure
-    traefik_json = {
-        "http": {
-            "routers": routers
-        }
-    }
-
-    return JsonResponse(traefik_json)
-
-@login_required(login_url='/login/')
-def submit_episode_edit(request, episode_id):
-    if request.method != 'POST':
-        return HttpResponseForbidden("Only POST allowed")
-        
-    ep = get_object_or_404(Episode, id=episode_id)
-    payload_str = request.POST.get('payload')
-    
-    if not payload_str:
-        messages.error(request, "Payload missing. Could not submit edit.")
-        return redirect('episode_detail', episode_id=ep.id)
-        
-    try:
-        suggested_data = json.loads(payload_str)
-        profile = request.user.patron_profile
-        network = ep.podcast.network
-        
-        # 1. Snapshot original state
-        original_data = {
-            "description": ep.clean_description,
-            "tags": ep.tags or [],
-            "chapters": ep.chapters_public or []
-        }
-        
-        is_first = not EpisodeEditSuggestion.objects.filter(episode=ep, status='approved').exists()
-        
-        # 2. THE AUTO-APPROVE ENGINE
-        is_trusted = profile.trust_score >= network.auto_approve_trust_threshold
-        final_status = 'approved' if is_trusted else 'pending'
-        
-        # 3. Create the suggestion record
-        EpisodeEditSuggestion.objects.create(
-            episode=ep, user=request.user, suggested_data=suggested_data,
-            original_data=original_data, status=final_status, is_first_responder=is_first,
-            resolved_at=timezone.now() if is_trusted else None
-        )
-        
-        # 4. Apply instantly if trusted
-        if is_trusted:
-            ep.clean_description = suggested_data.get('description', ep.clean_description)
-            ep.tags = suggested_data.get('tags', ep.tags)
-            ep.chapters_public = suggested_data.get('chapters', ep.chapters_public)
-            ep.save()
-            
-            # Reward User (+5 Trust, ceiling at 100)
-            profile.trust_score += 5
-            
-            # Increment Gamification Stats (Counting ALL chapters)
-            if suggested_data.get('chapters') != original_data.get('chapters'): 
-                profile.edits_chapters += len(suggested_data.get('chapters', []))
-            if suggested_data.get('tags') != original_data.get('tags'): 
-                profile.edits_tags += 1
-            if suggested_data.get('description') != original_data.get('description'): 
-                profile.edits_descriptions += 1
-                
-            if is_first: profile.first_responder_count += 1
-            profile.save()
-            
-            messages.success(request, "Your trust score is high enough that your edit was approved and applied instantly. Thank you!")
-        else:
-            messages.success(request, "Your edit has been submitted to the archivists for review. Thank you for contributing!")
-        
-    except json.JSONDecodeError:
-        messages.error(request, "Failed to parse edit payload. Please try again.")
-    except Exception as e:
-        logger.error(f"Error saving edit suggestion: {e}")
-        messages.error(request, "An internal error occurred while saving your edit.")
-        
-    return redirect('episode_detail', episode_id=ep.id)
-
-# ==========================================
-# BACKGROUND QUEUE & IMPORT STREAMING
-# ==========================================
+    return JsonResponse({"http": {"routers": routers}})
 
 @login_required(login_url='/login/')
 def stream_feed_import(request, show_id):
@@ -2293,24 +1248,17 @@ def stream_feed_import(request, show_id):
         cache.set(task_id, "data: [QUEUED] Waiting for Celery worker...\n\n", timeout=3600)
         task_ingest_feed.delay(show_id)
 
-    # By making this async, Hypercorn can stream it instantly without buffering!
     async def event_stream():
         last_length = 0
         while True:
-            # We use Django's native async .aget() instead of .get()
             logs = await cache.aget(task_id, "")
-            
             if len(logs) > last_length:
                 new_logs = logs[last_length:]
                 yield new_logs
                 last_length = len(logs)
-                
                 if "[DONE]" in new_logs:
-                    logger.debug(f"Stream complete for task {task_id}. Closing connection.")
-                    await cache.adelete(task_id) # async delete
+                    await cache.adelete(task_id)
                     break
-                    
-            # Awaitable sleep gives control back to the server so it doesn't freeze
             await asyncio.sleep(0.5)
 
     return StreamingHttpResponse(event_stream(), content_type='text/event-stream')

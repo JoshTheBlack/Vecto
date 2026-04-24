@@ -3,7 +3,7 @@ from django.http import Http404
 from django.shortcuts import render
 from django.contrib.auth.models import User
 from django.utils.deprecation import MiddlewareMixin
-from .models import Network
+from .models import Network, NetworkMembership
 
 logger = logging.getLogger(__name__)
 
@@ -13,7 +13,6 @@ class NetworkMiddleware:
 
     def __call__(self, request):
         if request.path.startswith('/api/') or request.path.startswith('/admin/') or request.path.startswith('/static/'):
-            # Just pass the request through safely without attaching a network
             return self.get_response(request)
         host = request.get_host().split(':')[0] # Remove port if present
         logger.debug(f"Incoming request for host: '{host}' | Path: {request.path}")
@@ -21,11 +20,18 @@ class NetworkMiddleware:
         # 1. Attempt to find a network by custom domain
         network = Network.objects.filter(custom_domain=host).first()
         request.network = network
+        request.tenant_profile = None # <-- Default to None for guests
         
         if network:
             logger.debug(f"Matched host '{host}' to Network: {network.name} ({network.slug})")
+            
+            if hasattr(request, 'user') and request.user.is_authenticated:
+                request.tenant_profile = NetworkMembership.objects.filter(
+                    user=request.user, 
+                    network=network
+                ).first()
         
-        # 2. Strict Fallback Handling (Prevent Domain Bleed)
+        # 2. Strict Fallback Handling
         if not network:
             path = request.path
             logger.debug(f"No matching network found for host '{host}'. Evaluating fallback rules.")
@@ -41,15 +47,12 @@ class NetworkMiddleware:
                 path.startswith('/media')):
                 logger.debug(f"Allowing whitelisted path without network: {path}")
                 pass
-                
-            # Serve the fancy Vecto landing page on the root URL
             elif path == '/':
                 logger.info(f"Serving Vecto landing page for unknown host: {host}")
                 return render(request, 'pod_manager/vecto_landing.html')
                 
             # If an unknown domain tries to access anything else, hard 404.
             else:
-                logger.warning(f"Blocked access to {path} on unknown host: {host}. Raising 404.")
                 raise Http404("Tenant not found. No network is configured for this domain.")
 
         return self.get_response(request)

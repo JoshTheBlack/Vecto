@@ -89,6 +89,65 @@
         box-shadow: 0 0 15px rgba(0, 0, 0, 0.2);
         color: var(--vecto-primary);
     }
+    /* Skill Tree Aesthetics */
+    .skill-tree-section { margin-bottom: 3rem; }
+    .skill-tree-title {
+        font-size: 1rem;
+        font-weight: bold;
+        text-transform: uppercase;
+        color: var(--vecto-surface-muted);
+        border-bottom: 1px dashed rgba(0,0,0,0.1);
+        margin-bottom: 1rem;
+        padding-bottom: 0.5rem;
+    }
+    .skill-tree-path {
+        position: relative;
+        display: flex;
+        justify-content: space-between;
+        align-items: flex-start;
+        margin-bottom: 2rem;
+    }
+    .skill-tree-line {
+        position: absolute;
+        top: 22px; /* Centers the line behind 45px badges */
+        left: 5%;
+        right: 5%;
+        height: 4px;
+        background-color: rgba(0, 0, 0, 0.1);
+        z-index: 0;
+        border-radius: 2px;
+    }
+    .skill-node {
+        position: relative;
+        z-index: 1;
+        width: 18%; /* Fits 5 nodes perfectly */
+        text-align: center;
+    }
+    .badge-icon-sm {
+        width: 45px;
+        height: 45px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 1.3rem;
+        border-radius: 50%;
+        background-color: var(--vecto-surface-bg); /* Masks the line behind it */
+        border: 2px solid var(--bs-border-color);
+        margin: 0 auto 0.5rem auto;
+        opacity: 0.4;
+        filter: grayscale(100%);
+        transition: all 0.3s ease;
+    }
+    .badge-icon-sm.unlocked {
+        opacity: 1;
+        filter: grayscale(0%);
+        border-color: var(--vecto-primary);
+        box-shadow: 0 0 10px rgba(0, 0, 0, 0.2);
+        color: var(--vecto-primary);
+        background-color: rgba(0,0,0,0.05);
+    }
+    .badge-title { font-size: 0.75rem; font-weight: bold; line-height: 1.1; margin-bottom: 2px; }
+    .badge-req { font-size: 0.65rem; color: var(--vecto-surface-muted); line-height: 1.1; }
 </style>
 
 <div class="container py-4">
@@ -207,42 +266,256 @@
                 </div>
 
                 <div class="mt-5">
-                    <h3 class="section-title">Badge Inventory</h3>
+                    <h3 class="section-title">The Archivist's Guild (Contribution Trees)</h3>
                     
-                    <div class="row text-center g-3">
-                        <div class="col-6 col-md-3">
-                            <div class="badge-icon {% if level >= 1 %}unlocked{% endif %}">
-                                <i class="bi bi-shield"></i>
+                    <div class="skill-tree-section">
+                        <div class="skill-tree-title">Overall Approval Path</div>
+                        <div class="skill-tree-path">
+                            <div class="skill-tree-line"></div>
+                            <div class="skill-node">
+                                <div class="badge-icon-sm {% if total_approved >= 1 %}unlocked{% endif %}"><i class="bi bi-shield"></i></div>
+                                <div class="badge-title">Initiate</div><div class="badge-req">1 Edit</div>
                             </div>
-                            <div class="fw-bold small">Initiate</div>
-                            <div style="font-size: 0.7rem;" class="text-surface-muted">Submit 1 Edit</div>
-                        </div>
-                        
-                        <div class="col-6 col-md-3">
-                            <div class="badge-icon {% if level >= 2 %}unlocked{% endif %}">
-                                <i class="bi bi-compass"></i>
+                            <div class="skill-node">
+                                <div class="badge-icon-sm {% if total_approved >= 25 %}unlocked{% endif %}"><i class="bi bi-compass"></i></div>
+                                <div class="badge-title">Scout</div><div class="badge-req">25 Edits</div>
                             </div>
-                            <div class="fw-bold small">Scout</div>
-                            <div style="font-size: 0.7rem;" class="text-surface-muted">1 Approved Edit</div>
-                        </div>
-                        
-                        <div class="col-6 col-md-3">
-                            <div class="badge-icon {% if level >= 3 %}unlocked{% endif %}">
-                                <i class="bi bi-journal-bookmark-fill"></i>
+                            <div class="skill-node">
+                                <div class="badge-icon-sm {% if total_approved >= 100 %}unlocked{% endif %}"><i class="bi bi-journal-bookmark-fill"></i></div>
+                                <div class="badge-title">Archivist</div><div class="badge-req">100 Edits</div>
                             </div>
-                            <div class="fw-bold small">Archivist</div>
-                            <div style="font-size: 0.7rem;" class="text-surface-muted">10 Approved Edits</div>
-                        </div>
-                        
-                        <div class="col-6 col-md-3">
-                            <div class="badge-icon {% if level >= 4 %}unlocked{% endif %}">
-                                <i class="bi bi-gem"></i>
+                            <div class="skill-node">
+                                <div class="badge-icon-sm {% if total_approved >= 500 %}unlocked{% endif %}"><i class="bi bi-gem"></i></div>
+                                <div class="badge-title">Grand Archivist</div><div class="badge-req">500 Edits</div>
                             </div>
-                            <div class="fw-bold small">Grand Archivist</div>
-                            <div style="font-size: 0.7rem;" class="text-surface-muted">50 Approved Edits</div>
+                            <div class="skill-node">
+                                <div class="badge-icon-sm {% if total_approved >= 1000 %}unlocked{% endif %}"><i class="bi bi-bank"></i></div>
+                                <div class="badge-title">Keeper of the Tome</div><div class="badge-req">1,000 Edits</div>
+                            </div>
                         </div>
                     </div>
-                </div>
+
+                    <div class="skill-tree-section">
+                        <div class="skill-tree-title">Cartography Path</div>
+                        <div class="skill-tree-path">
+                            <div class="skill-tree-line"></div>
+                            <div class="skill-node">
+                                <div class="badge-icon-sm {% if profile.edits_chapters >= 1 %}unlocked{% endif %}"><i class="bi bi-signpost"></i></div>
+                                <div class="badge-title">Wayfinder</div><div class="badge-req">1 Chapter</div>
+                            </div>
+                            <div class="skill-node">
+                                <div class="badge-icon-sm {% if profile.edits_chapters >= 10 %}unlocked{% endif %}"><i class="bi bi-signpost-split"></i></div>
+                                <div class="badge-title">Navigator</div><div class="badge-req">10 Chapters</div>
+                            </div>
+                            <div class="skill-node">
+                                <div class="badge-icon-sm {% if profile.edits_chapters >= 50 %}unlocked{% endif %}"><i class="bi bi-map"></i></div>
+                                <div class="badge-title">Cartographer</div><div class="badge-req">50 Chapters</div>
+                            </div>
+                            <div class="skill-node">
+                                <div class="badge-icon-sm {% if profile.edits_chapters >= 100 %}unlocked{% endif %}"><i class="bi bi-map-fill"></i></div>
+                                <div class="badge-title">Pathfinder</div><div class="badge-req">100 Chapters</div>
+                            </div>
+                            <div class="skill-node">
+                                <div class="badge-icon-sm {% if profile.edits_chapters >= 500 %}unlocked{% endif %}"><i class="bi bi-globe-americas"></i></div>
+                                <div class="badge-title">World Walker</div><div class="badge-req">500 Chapters</div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="skill-tree-section">
+                        <div class="skill-tree-title">Lexicography Path</div>
+                        <div class="skill-tree-path">
+                            <div class="skill-tree-line"></div>
+                            <div class="skill-node">
+                                <div class="badge-icon-sm {% if profile.edits_tags >= 1 %}unlocked{% endif %}"><i class="bi bi-tag"></i></div>
+                                <div class="badge-title">Sorter</div><div class="badge-req">1 Tag</div>
+                            </div>
+                            <div class="skill-node">
+                                <div class="badge-icon-sm {% if profile.edits_tags >= 10 %}unlocked{% endif %}"><i class="bi bi-tags"></i></div>
+                                <div class="badge-title">Indexer</div><div class="badge-req">10 Tags</div>
+                            </div>
+                            <div class="skill-node">
+                                <div class="badge-icon-sm {% if profile.edits_tags >= 50 %}unlocked{% endif %}"><i class="bi bi-tags-fill"></i></div>
+                                <div class="badge-title">Lexicographer</div><div class="badge-req">50 Tags</div>
+                            </div>
+                            <div class="skill-node">
+                                <div class="badge-icon-sm {% if profile.edits_tags >= 100 %}unlocked{% endif %}"><i class="bi bi-collection-fill"></i></div>
+                                <div class="badge-title">Cataloger</div><div class="badge-req">100 Tags</div>
+                            </div>
+                            <div class="skill-node">
+                                <div class="badge-icon-sm {% if profile.edits_tags >= 500 %}unlocked{% endif %}"><i class="bi bi-archive-fill"></i></div>
+                                <div class="badge-title">The Great Index</div><div class="badge-req">500 Tags</div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="skill-tree-section">
+                        <div class="skill-tree-title">Scribe Path</div>
+                        <div class="skill-tree-path">
+                            <div class="skill-tree-line"></div>
+                            <div class="skill-node">
+                                <div class="badge-icon-sm {% if profile.edits_descriptions >= 1 %}unlocked{% endif %}"><i class="bi bi-pencil"></i></div>
+                                <div class="badge-title">Note-Taker</div><div class="badge-req">1 Desc</div>
+                            </div>
+                            <div class="skill-node">
+                                <div class="badge-icon-sm {% if profile.edits_descriptions >= 10 %}unlocked{% endif %}"><i class="bi bi-pencil-fill"></i></div>
+                                <div class="badge-title">Chronicler</div><div class="badge-req">10 Descs</div>
+                            </div>
+                            <div class="skill-node">
+                                <div class="badge-icon-sm {% if profile.edits_descriptions >= 50 %}unlocked{% endif %}"><i class="bi bi-pen-fill"></i></div>
+                                <div class="badge-title">Scribe</div><div class="badge-req">50 Descs</div>
+                            </div>
+                            <div class="skill-node">
+                                <div class="badge-icon-sm {% if profile.edits_descriptions >= 100 %}unlocked{% endif %}"><i class="bi bi-book"></i></div>
+                                <div class="badge-title">Loremaster</div><div class="badge-req">100 Descs</div>
+                            </div>
+                            <div class="skill-node">
+                                <div class="badge-icon-sm {% if profile.edits_descriptions >= 500 %}unlocked{% endif %}"><i class="bi bi-book-fill"></i></div>
+                                <div class="badge-title">Historian</div><div class="badge-req">500 Descs</div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="skill-tree-section">
+                        <div class="skill-tree-title">Specialist Path</div>
+                        <div class="skill-tree-path">
+                            <div class="skill-tree-line" style="left: 9%; width: 61.5%;"></div>
+                            
+                            <div class="skill-node">
+                                <div class="badge-icon-sm {% if profile.first_responder_count >= 1 %}unlocked{% endif %}"><i class="bi bi-eye"></i></div>
+                                <div class="badge-title">Watcher</div><div class="badge-req">1 First Edit</div>
+                            </div>
+                            <div class="skill-node">
+                                <div class="badge-icon-sm {% if profile.first_responder_count >= 5 %}unlocked{% endif %}"><i class="bi bi-eye-fill"></i></div>
+                                <div class="badge-title">Sentinel</div><div class="badge-req">5 First Edits</div>
+                            </div>
+                            <div class="skill-node">
+                                <div class="badge-icon-sm {% if profile.first_responder_count >= 10 %}unlocked{% endif %}"><i class="bi bi-lightning-charge"></i></div>
+                                <div class="badge-title">Vanguard</div><div class="badge-req">10 First Edits</div>
+                            </div>
+                            <div class="skill-node">
+                                <div class="badge-icon-sm {% if profile.first_responder_count >= 25 %}unlocked{% endif %}"><i class="bi bi-lightning-charge-fill"></i></div>
+                                <div class="badge-title">First Shield</div><div class="badge-req">25 First Edits</div>
+                            </div>
+                            <div class="skill-node">
+                                <div class="badge-icon-sm {% if total_approved >= 50 and profile.trust_score == 100 %}unlocked{% endif %} text-warning border-warning"><i class="bi bi-star-fill"></i></div>
+                                <div class="badge-title">Perfectionist</div><div class="badge-req">50 Edits & 100 Trust</div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <h3 class="section-title mt-5">The Listener's Journey (Activity Trees)</h3>
+
+                    <div class="skill-tree-section">
+                        <div class="skill-tree-title">Endurance Path</div>
+                        <div class="skill-tree-path">
+                            <div class="skill-tree-line"></div>
+                            <div class="skill-node">
+                                <div class="badge-icon-sm {% if live_stats.hours_accessed >= 10 %}unlocked{% endif %}"><i class="bi bi-earbuds"></i></div>
+                                <div class="badge-title">Listener</div><div class="badge-req">10 Hours</div>
+                            </div>
+                            <div class="skill-node">
+                                <div class="badge-icon-sm {% if live_stats.hours_accessed >= 24 %}unlocked{% endif %}"><i class="bi bi-car-front-fill"></i></div>
+                                <div class="badge-title">Commuter</div><div class="badge-req">24 Hours</div>
+                            </div>
+                            <div class="skill-node">
+                                <div class="badge-icon-sm {% if live_stats.hours_accessed >= 100 %}unlocked{% endif %}"><i class="bi bi-bus-front-fill"></i></div>
+                                <div class="badge-title">Road Tripper</div><div class="badge-req">100 Hours</div>
+                            </div>
+                            <div class="skill-node">
+                                <div class="badge-icon-sm {% if live_stats.hours_accessed >= 500 %}unlocked{% endif %}"><i class="bi bi-airplane-fill"></i></div>
+                                <div class="badge-title">Voyager</div><div class="badge-req">500 Hours</div>
+                            </div>
+                            <div class="skill-node">
+                                <div class="badge-icon-sm {% if live_stats.hours_accessed >= 1000 %}unlocked{% endif %}"><i class="bi bi-hourglass-bottom"></i></div>
+                                <div class="badge-title">Time Lord</div><div class="badge-req">1,000 Hours</div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="skill-tree-section">
+                        <div class="skill-tree-title">Activity Path</div>
+                        <div class="skill-tree-path">
+                            <div class="skill-tree-line"></div>
+                            <div class="skill-node">
+                                <div class="badge-icon-sm {% if live_stats.playback_hits >= 10 %}unlocked{% endif %}"><i class="bi bi-play"></i></div>
+                                <div class="badge-title">Tuned In</div><div class="badge-req">10 Plays</div>
+                            </div>
+                            <div class="skill-node">
+                                <div class="badge-icon-sm {% if live_stats.playback_hits >= 50 %}unlocked{% endif %}"><i class="bi bi-play-fill"></i></div>
+                                <div class="badge-title">Regular</div><div class="badge-req">50 Plays</div>
+                            </div>
+                            <div class="skill-node">
+                                <div class="badge-icon-sm {% if live_stats.playback_hits >= 100 %}unlocked{% endif %}"><i class="bi bi-play-circle-fill"></i></div>
+                                <div class="badge-title">Frequent Flyer</div><div class="badge-req">100 Plays</div>
+                            </div>
+                            <div class="skill-node">
+                                <div class="badge-icon-sm {% if live_stats.playback_hits >= 500 %}unlocked{% endif %}"><i class="bi bi-speaker-fill"></i></div>
+                                <div class="badge-title">Superfan</div><div class="badge-req">500 Plays</div>
+                            </div>
+                            <div class="skill-node">
+                                <div class="badge-icon-sm {% if live_stats.playback_hits >= 2000 %}unlocked{% endif %}"><i class="bi bi-broadcast"></i></div>
+                                <div class="badge-title">The Oracle</div><div class="badge-req">2,000 Plays</div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="skill-tree-section">
+                        <div class="skill-tree-title">Devotion Path</div>
+                        <div class="skill-tree-path">
+                            <div class="skill-tree-line" style="left: 9%; width: 41%;"></div>
+                            <div class="skill-tree-line" style="left: 70.5%; width: 20.5%;"></div>
+                            
+                            <div class="skill-node">
+                                <div class="badge-icon-sm {% if live_stats.streak_days >= 3 %}unlocked{% endif %}"><i class="bi bi-stars"></i></div>
+                                <div class="badge-title">Spark</div><div class="badge-req">3-Day Streak</div>
+                            </div>
+                            <div class="skill-node">
+                                <div class="badge-icon-sm {% if live_stats.streak_days >= 7 %}unlocked{% endif %}"><i class="bi bi-fire"></i></div>
+                                <div class="badge-title">Flame</div><div class="badge-req">7-Day Streak</div>
+                            </div>
+                            <div class="skill-node">
+                                <div class="badge-icon-sm {% if live_stats.streak_days >= 30 %}unlocked{% endif %}"><i class="bi bi-brightness-high-fill"></i></div>
+                                <div class="badge-title">Inferno</div><div class="badge-req">30-Day Streak</div>
+                            </div>
+                            <div class="skill-node">
+                                <div class="badge-icon-sm {% if live_stats.streak_weeks >= 4 %}unlocked{% endif %}"><i class="bi bi-calendar2-check"></i></div>
+                                <div class="badge-title">Routine</div><div class="badge-req">4-Week Streak</div>
+                            </div>
+                            <div class="skill-node">
+                                <div class="badge-icon-sm {% if live_stats.streak_weeks >= 52 %}unlocked{% endif %}"><i class="bi bi-infinity"></i></div>
+                                <div class="badge-title">Unbroken</div><div class="badge-req">52-Week Streak</div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="skill-tree-section">
+                        <div class="skill-tree-title">Vanguard Path</div>
+                        <div class="skill-tree-path">
+                            <div class="skill-tree-line" style="left: 29.5%; width: 61.5%;"></div>
+                            
+                            <div class="skill-node">
+                                <div class="badge-icon-sm {% if account_age_years != None and account_age_years >= 5 %}unlocked{% endif %}"><i class="bi bi-tree-fill"></i></div>
+                                <div class="badge-title">The Elder</div><div class="badge-req">5+ Years Old</div>
+                            </div>
+                            <div class="skill-node">
+                                <div class="badge-icon-sm {% if joined_after_launch_days != None and joined_after_launch_days <= 365 %}unlocked{% endif %}"><i class="bi bi-award-fill"></i></div>
+                                <div class="badge-title">Year One</div><div class="badge-req">First Year</div>
+                            </div>
+                            <div class="skill-node">
+                                <div class="badge-icon-sm {% if joined_after_launch_days != None and joined_after_launch_days <= 180 %}unlocked{% endif %}"><i class="bi bi-flag-fill"></i></div>
+                                <div class="badge-title">Pioneer</div><div class="badge-req">First 6 Months</div>
+                            </div>
+                            <div class="skill-node">
+                                <div class="badge-icon-sm {% if joined_after_launch_days != None and joined_after_launch_days <= 30 %}unlocked{% endif %}"><i class="bi bi-rocket-fill"></i></div>
+                                <div class="badge-title">Early Adopter</div><div class="badge-req">First Month</div>
+                            </div>
+                            <div class="skill-node">
+                                <div class="badge-icon-sm {% if joined_after_launch_days != None and joined_after_launch_days <= 7 %}unlocked{% endif %}"><i class="bi bi-1-circle-fill"></i></div>
+                                <div class="badge-title">Day One</div><div class="badge-req">First Week</div>
+                            </div>
+                        </div>
+                    </div>
 
             </div>
         </div>

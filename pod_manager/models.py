@@ -80,6 +80,7 @@ class Network(models.Model):
     patreon_sync_enabled = models.BooleanField(default=False)
     patreon_creator_access_token = EncryptedCharField(max_length=500, blank=True, null=True)
     patreon_creator_refresh_token = EncryptedCharField(max_length=500, blank=True, null=True)
+    patreon_campaign_created_at = models.DateTimeField(blank=True, null=True, help_text="The date the creator launched their Patreon campaign.")
     website_url = models.URLField(blank=True, help_text="e.g., https://yournetwork.com")
     default_image_url = models.URLField(blank=True, help_text="Fallback logo for RSS feeds")
     ignored_title_tags = models.TextField(blank=True, help_text="Comma-separated list of tags to strip during import (e.g., '(ad-free), premium')")
@@ -122,6 +123,7 @@ class PatreonTier(models.Model):
     network = models.ForeignKey(Network, on_delete=models.CASCADE, related_name='tiers')
     name = models.CharField(max_length=100, help_text="e.g., 'In Association With'")
     minimum_cents = models.IntegerField(help_text="e.g., 600 for $6.00")
+    checkout_url = models.URLField(max_length=500, blank=True, null=True)
 
     is_default = models.BooleanField(default=False, help_text="Automatically assign to new podcasts.")
 
@@ -305,40 +307,47 @@ class UserMix(models.Model):
 class PatronProfile(models.Model):
     user = models.OneToOneField(User, on_delete=models.CASCADE, related_name='patron_profile')
     patreon_id = models.CharField(max_length=50, unique=True)
-    pledge_amount_cents = models.IntegerField(default=0)
-    active_pledges = models.JSONField(default=dict, blank=True)
     profile_image_url = models.URLField(max_length=500, null=True, blank=True)
     discord_id = models.CharField(max_length=100, null=True, blank=True)
-    
+
     last_sync = models.DateTimeField(auto_now=True)
     feed_token = models.UUIDField(default=uuid.uuid4, editable=False, unique=True)
     last_active = models.DateTimeField(auto_now_add=True)
+    
+    def __str__(self):
+        return f"{self.user.email} - Profile"
 
-    # --- Support Duration ---
-    patreon_join_dates = models.JSONField(default=dict, blank=True)
-
-    # --- Gamification: Consumption Stats ---
+class NetworkMembership(models.Model):
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='network_memberships')
+    network = models.ForeignKey(Network, on_delete=models.CASCADE, related_name='memberships')
+    
+    # Patreon Fields
+    patreon_join_date = models.DateTimeField(null=True, blank=True)
+    patreon_pledge_cents = models.IntegerField(default=0)
+    is_active_patron = models.BooleanField(default=False)
+    
+    # Gamification & Stats
+    trust_score = models.IntegerField(default=100)
     total_playback_hits = models.IntegerField(default=0)
     total_hours_accessed = models.FloatField(default=0.0)
-    current_obsession = models.ForeignKey('Podcast', on_delete=models.SET_NULL, null=True, blank=True, related_name='obsessed_fans')
-    
-    # --- Gamification: Streaks ---
     streak_days = models.IntegerField(default=0)
     streak_weeks = models.IntegerField(default=0)
     last_playback_date = models.DateField(null=True, blank=True)
     last_play_week = models.IntegerField(null=True, blank=True)
+    current_obsession = models.ForeignKey('Podcast', null=True, blank=True, on_delete=models.SET_NULL)
     
-    # --- Gamification: Contribution & Safety ---
+    # Contribution Tracking
     edits_chapters = models.IntegerField(default=0)
     edits_tags = models.IntegerField(default=0)
     edits_descriptions = models.IntegerField(default=0)
     first_responder_count = models.IntegerField(default=0)
-    edits_rejected = models.IntegerField(default=0)
-    trust_score = models.IntegerField(default=0)
+
+    class Meta:
+        unique_together = ('user', 'network')
 
     def __str__(self):
-        return f"{self.user.email} - Profile"
-    
+        return f"{self.user.username} - {self.network.name}"
+
 @receiver(post_delete, sender=UserMix)
 def auto_delete_file_on_delete(sender, instance, **kwargs):
     """

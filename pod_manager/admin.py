@@ -6,7 +6,7 @@ from django.contrib.auth.models import User
 from django.db.models import Q, F, BooleanField, ExpressionWrapper
 from django.utils.html import format_html, mark_safe
 from django.urls import reverse
-from .models import Network, PatreonTier, Podcast, Episode, UserMix, PatronProfile, EpisodeEditSuggestion
+from .models import Network, PatreonTier, Podcast, Episode, UserMix, PatronProfile, EpisodeEditSuggestion, NetworkMembership
 
 class S3SubscriberAudioFilter(SimpleListFilter):
     title = 'S3 Hosted Audio (Affected)'
@@ -28,9 +28,21 @@ class S3SubscriberAudioFilter(SimpleListFilter):
     
 @admin.register(Network)
 class NetworkAdmin(admin.ModelAdmin):
-    list_display = ('name', 'slug')
-    search_fields = ('name',)
+    list_display = ('name', 'slug', 'custom_domain', 'patreon_sync_enabled')
+    search_fields = ('name', 'slug', 'custom_domain')
+    list_filter = ('patreon_sync_enabled',)
     filter_horizontal = ('owners',)
+
+@admin.register(NetworkMembership)
+class NetworkMembershipAdmin(admin.ModelAdmin):
+    list_display = ('user', 'network', 'is_active_patron', 'pledge_dollars', 'trust_score')
+    search_fields = ('user__username', 'user__email', 'network__name')
+    # Filter by Network and Patron Status!
+    list_filter = ('network', 'is_active_patron')
+    
+    def pledge_dollars(self, obj):
+        return f"${obj.patreon_pledge_cents / 100:.2f}"
+    pledge_dollars.short_description = "Pledge Amount"
 
 @admin.register(Episode)
 class EpisodeAdmin(admin.ModelAdmin):
@@ -70,16 +82,9 @@ class EpisodeAdmin(admin.ModelAdmin):
 
 @admin.register(PatronProfile)
 class PatronProfileAdmin(admin.ModelAdmin):
-    list_display = ('user', 'patreon_id', 'get_combined_pledge_cents', 'last_sync')
+    list_display = ('user', 'patreon_id', 'last_sync')
     search_fields = ('user__username', 'user__email', 'patreon_id')
 
-    def get_combined_pledge_cents(self, obj):
-        """Sums up all campaign pledges from the active_pledges JSON field."""
-        if not obj.active_pledges:
-            return 0
-        return sum(obj.active_pledges.values())
-    
-    get_combined_pledge_cents.short_description = 'Pledge Amount Cents'
 
 class PatronProfileInline(admin.StackedInline):
     model = PatronProfile
@@ -198,26 +203,33 @@ class CustomUserAdmin(BaseUserAdmin):
         
     impersonate_action.short_description = 'Impersonate User'
 
- 
-admin.site.register(PatreonTier)
-admin.site.register(Podcast)
+@admin.register(PatreonTier)
+class PatreonTierAdmin(admin.ModelAdmin):
+    list_display = ('name', 'network', 'tier_dollars')
+    list_filter = ('network',)
+    search_fields = ('name', 'network__name')
+
+    def tier_dollars(self, obj):
+        return f"${obj.minimum_cents / 100:.2f}"
+    tier_dollars.short_description = "Minimum Pledge"
+
+@admin.register(Podcast)
+class PodcastAdmin(admin.ModelAdmin):
+    list_display = ('title', 'network', 'required_tier')
+    # Filter podcasts by Network and what Tier they require!
+    list_filter = ('network', 'required_tier')
+    search_fields = ('title', 'slug')
+
 admin.site.register(UserMix)
+
+
 
 @admin.register(EpisodeEditSuggestion)
 class EpisodeEditSuggestionAdmin(admin.ModelAdmin):
-    # What shows up in the main list view
-    list_display = ('episode', 'user', 'status', 'is_first_responder', 'created_at')
-    
-    # Adds a sidebar to filter by pending/approved or first responders
-    list_filter = ('status', 'is_first_responder', 'created_at')
-    
-    # Adds a search bar to find specific users or episodes
+    list_display = ('episode', 'user', 'status', 'is_first_responder', 'created_at', 'resolved_at')
+    list_filter = ('status', 'is_first_responder', 'created_at', 'episode__podcast__network')
     search_fields = ('episode__title', 'user__username', 'user__email')
-    
-    # Protects the timestamps from accidental editing
     readonly_fields = ('created_at', 'resolved_at')
-    
-    # Organizes the detail page layout
     fieldsets = (
         ('Reference', {
             'fields': ('episode', 'user', 'status', 'is_first_responder')

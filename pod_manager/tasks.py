@@ -70,7 +70,8 @@ def task_generate_monthly_invoices():
     thirty_days_ago = timezone.now() - timedelta(days=30)
 
     for network in networks:
-        # Dynamically count users (Active + Lapsed bandwidth users)
+        # Changed to query the new NetworkMembership model directly
+        from .models import NetworkMembership
         active_count = NetworkMembership.objects.filter(
             network=network,
             is_active_patron=True,
@@ -105,6 +106,123 @@ def task_generate_monthly_invoices():
         
         logger.info(f"Generated invoice for {network.name}: ${total_due}")
 
+
+@shared_task
+def sweep_analytics_buffer():
+    import redis
+    from django.conf import settings
+    from collections import defaultdict
+    from .models import NetworkMembership, PatronProfile, Podcast, Episode
+    
+    logger.info("Starting Multi-Tenant Analytics Buffer Sweep...")
+    
+    cache_backend = settings.CACHES['default'].get('BACKEND', '').lower()
+    if 'locmem' in cache_backend or 'dummy' in cache_backend:
+        logger.info("Local memory cache detected, skipping Redis sweep.")
+        return
+
+    redis_url = settings.CACHES['default']['LOCATION']
+    redis_client = redis.from_url(redis_url)
+    
+    # We bypass Django's cache module specifically because of prefixing bugs
+    play_keys = redis_client.keys("*analytics:play:*")
+    
+    if not play_keys:
+        logger.info("No analytics keys found. Sweep complete.")
+        return
+
+    raw_play_data = []
+    profile_ids = set()
+    podcast_ids = set()
+    episode_ids = set()
+    keys_to_delete = []
+
+    # 1. Sweep and Parse Redis Keys
+    for key_bytes in play_keys:
+        key_str = key_bytes.decode('utf-8')
+        hits = redis_client.get(key_bytes)
+        
+        if hits:
+            clean_key = key_str.split('analytics:play:')[-1]
+            parts = clean_key.split(':')
+            if len(parts) == 3:
+                p_id, e_id, pod_id = int(parts[0]), int(parts[1]), int(parts[2])
+                raw_play_data.append({'p_id': p_id, 'e_id': e_id, 'pod_id': pod_id, 'hits': int(hits)})
+                profile_ids.add(p_id)
+                episode_ids.add(e_id)
+                podcast_ids.add(pod_id)
+                
+        keys_to_delete.append(key_bytes)
+
+    # 2. Build Lookup Dictionaries to route data to the correct Network
+    profile_to_user = dict(PatronProfile.objects.filter(id__in=profile_ids).values_list('id', 'user_id'))
+    podcast_to_network = dict(Podcast.objects.filter(id__in=podcast_ids).values_list('id', 'network_id'))
+    episodes = {e.id: e for e in Episode.objects.filter(id__in=episode_ids)}
+
+    # Structure: (user_id, network_id) -> { play_hits, episodes_played, podcast_hits }
+    membership_updates = defaultdict(lambda: {
+        'play_hits': 0, 'episodes_played': set(), 'podcast_hits': defaultdict(int)
+    })
+
+    # 3. Route Hits to the correct User/Network pair
+    for data in raw_play_data:
+        user_id = profile_to_user.get(data['p_id'])
+        network_id = podcast_to_network.get(data['pod_id'])
+        
+        if user_id and network_id:
+            mem_key = (user_id, network_id)
+            membership_updates[mem_key]['play_hits'] += data['hits']
+            membership_updates[mem_key]['episodes_played'].add(data['e_id'])
+            membership_updates[mem_key]['podcast_hits'][data['pod_id']] += data['hits']
+
+    today = timezone.now().date()
+    current_iso_week = today.isocalendar()[1]
+    memberships_to_save = []
+
+    # 4. Apply Gamification Math to NetworkMembership
+    for (user_id, network_id), data in membership_updates.items():
+        membership, _ = NetworkMembership.objects.get_or_create(user_id=user_id, network_id=network_id)
+        
+        membership.total_playback_hits = (membership.total_playback_hits or 0) + data['play_hits']
+        
+        hours_gained = 0.0
+        for e_id in data['episodes_played']:
+            if e_id in episodes:
+                hours_gained += parse_duration_to_hours(episodes[e_id].duration)
+        membership.total_hours_accessed = (membership.total_hours_accessed or 0.0) + hours_gained
+        
+        if data['play_hits'] > 0:
+            if membership.last_playback_date == today - timedelta(days=1):
+                membership.streak_days = (membership.streak_days or 0) + 1
+            elif membership.last_playback_date != today:
+                membership.streak_days = 1 
+            membership.last_playback_date = today
+            
+            if membership.last_play_week == current_iso_week - 1:
+                membership.streak_weeks = (membership.streak_weeks or 0) + 1
+            elif membership.last_play_week != current_iso_week:
+                membership.streak_weeks = 1 
+            membership.last_play_week = current_iso_week
+
+        if data['podcast_hits']:
+            top_podcast_id = max(data['podcast_hits'], key=data['podcast_hits'].get)
+            membership.current_obsession_id = top_podcast_id
+
+        memberships_to_save.append(membership)
+
+    # 5. Bulk write back to Postgres
+    if memberships_to_save:
+        NetworkMembership.objects.bulk_update(
+            memberships_to_save, 
+            ['total_playback_hits', 'total_hours_accessed', 'streak_days', 'streak_weeks', 'last_playback_date', 'last_play_week', 'current_obsession_id']
+        )
+
+    # 6. Clear Redis Buffer
+    if keys_to_delete:
+        redis_client.delete(*keys_to_delete)
+        
+    logger.info(f"Sweep complete. Updated {len(memberships_to_save)} Network Memberships.")
+    
 @shared_task
 def task_sync_network_patrons(network_id):
     from pod_manager.views import sync_network_patrons
@@ -199,8 +317,7 @@ def parse_duration_to_hours(duration_str):
     except ValueError:
         return 0.0
 
-@shared_task
-def sweep_analytics_buffer():
+
     logger.info("Starting Multi-Tenant Analytics Buffer Sweep...")
     
     # Connect directly to Redis

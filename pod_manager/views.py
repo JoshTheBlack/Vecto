@@ -351,7 +351,7 @@ def _handle_inbox_action(request, current_network, action):
         edit.resolved_at = timezone.now()
         edit.save()
 
-        membership.trust_score = min(100, membership.trust_score + 5)
+        membership.trust_score = membership.trust_score + 5
         if edit.suggested_data.get('chapters') != edit.original_data.get('chapters'): membership.edits_chapters += len(edit.suggested_data.get('chapters', []))
         if edit.suggested_data.get('tags') != edit.original_data.get('tags'): membership.edits_tags += 1
         if edit.suggested_data.get('description') != edit.original_data.get('description'): membership.edits_descriptions += 1
@@ -389,6 +389,40 @@ def _handle_rollback(request, current_network, action):
         if edit.is_first_responder: membership.first_responder_count = max(0, membership.first_responder_count - 1)
         membership.save()
         messages.success(request, "Edit rolled back and user penalized.")
+
+    elif action == 'bulk_rollback':
+        spammer_id = request.POST.get('spammer_id')
+        spammer = get_object_or_404(User, id=spammer_id)
+        membership, _ = NetworkMembership.objects.get_or_create(user=spammer, network=current_network)
+        
+        approved_edits = EpisodeEditSuggestion.objects.filter(
+            user=spammer, 
+            episode__podcast__network=current_network, 
+            status='approved'
+        )
+        
+        count = 0
+        for edit in approved_edits:
+            ep = edit.episode
+            ep.clean_description = edit.original_data.get('description', ep.clean_description)
+            ep.tags = edit.original_data.get('tags', ep.tags)
+            ep.chapters_public = edit.original_data.get('chapters', ep.chapters_public)
+            ep.save()
+
+            edit.status = 'rolled_back'
+            edit.resolved_at = timezone.now()
+            edit.save()
+            count += 1
+            
+        # Nuke their stats for this network
+        membership.trust_score = 0
+        membership.edits_chapters = 0
+        membership.edits_tags = 0
+        membership.edits_descriptions = 0
+        membership.first_responder_count = 0
+        membership.save()
+        
+        messages.success(request, f"Bulk rollback complete. Reverted {count} edits and dropped trust score to 0.")
 
 @login_required(login_url='/login/')
 def creator_settings(request):
@@ -909,7 +943,7 @@ def submit_episode_edit(request, episode_id):
             ep.chapters_public = suggested_data.get('chapters', ep.chapters_public)
             ep.save()
             
-            membership.trust_score = min(100, membership.trust_score + 5)
+            membership.trust_score = membership.trust_score + 5
             if suggested_data.get('chapters') != original_data.get('chapters'): membership.edits_chapters += len(suggested_data.get('chapters', []))
             if suggested_data.get('tags') != original_data.get('tags'): membership.edits_tags += 1
             if suggested_data.get('description') != original_data.get('description'): membership.edits_descriptions += 1

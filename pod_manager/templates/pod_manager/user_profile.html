@@ -108,8 +108,8 @@
             </div>
             
             <div class="text-end small text-surface-muted">
-                <div><strong>Current Obsession:</strong> <span style="color: var(--vecto-surface-text);">{{ profile.current_obsession.title|default:"Wandering Adventurer" }}</span></div>
-                <div><strong>Account Vintage:</strong> <span style="color: var(--vecto-surface-text);">{{ profile.patreon_join_date|date:"F Y"|default:"Unknown Origins" }}</span></div>
+                <div><strong>Current Obsession:</strong> <span style="color: var(--vecto-surface-text);">{{ live_stats.obsession_title }}</span></div>
+                <div><strong>Account Vintage:</strong> <span style="color: var(--vecto-surface-text);">{{ account_vintage|date:"F Y"|default:"Unknown Origins" }}</span></div>
             </div>
         </div>
 

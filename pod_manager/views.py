@@ -50,28 +50,43 @@ logger = logging.getLogger(__name__)
 
 def get_live_user_stats(profile):
     import redis
+    import logging
+    from django.conf import settings
+    from django.utils import timezone
+    from datetime import timedelta
+    from collections import defaultdict
+    from .models import Episode, Podcast
+    from .tasks import parse_duration_to_hours
     
+    logger = logging.getLogger(__name__)
+
     # 1. Start with the permanent DB values
     live_play_hits = profile.total_playback_hits or 0
     live_hours = profile.total_hours_accessed or 0.0
+    live_streak_days = profile.streak_days or 0
+    live_streak_weeks = profile.streak_weeks or 0
+    live_obsession_title = profile.current_obsession.title if profile.current_obsession else "Wandering Adventurer"
     
-    # 2. Check if we are in a local dev environment without Redis
+    today = timezone.now().date()
+    current_iso_week = today.isocalendar()[1]
+
+    # 2. Check for Local IDE bypass
     cache_backend = settings.CACHES['default'].get('BACKEND', '').lower()
     if 'locmem' in cache_backend or 'dummy' in cache_backend:
         return {
-            'playback_hits': live_play_hits,
-            'hours_accessed': round(live_hours, 2),
-            'streak_days': profile.streak_days, 
-            'streak_weeks': profile.streak_weeks,
+            'playback_hits': live_play_hits, 'hours_accessed': round(live_hours, 2),
+            'streak_days': live_streak_days, 'streak_weeks': live_streak_weeks,
+            'obsession_title': live_obsession_title
         }
         
-    # 3. If Redis is available, proceed with live buffer calculation
+    # 3. Live Redis Projection
     try:
         redis_url = settings.CACHES['default']['LOCATION']
         redis_client = redis.from_url(redis_url)
         
         play_keys = redis_client.keys(f"*analytics:play:{profile.id}:*")
         pending_episode_ids = set()
+        podcast_hits = defaultdict(int)
         
         for key_bytes in play_keys:
             hits = redis_client.get(key_bytes)
@@ -82,24 +97,46 @@ def get_live_user_stats(profile):
                 clean_key = key_str.split('analytics:play:')[-1]
                 parts = clean_key.split(':')
                 if len(parts) == 3:
-                    e_id = int(parts[1])
+                    e_id, pod_id = int(parts[1]), int(parts[2])
                     pending_episode_ids.add(e_id)
+                    podcast_hits[pod_id] += int(hits)
                     
         if pending_episode_ids:
             episodes = Episode.objects.filter(id__in=pending_episode_ids)
             for ep in episodes:
                 live_hours += parse_duration_to_hours(ep.duration)
                 
+        # PROJECT STREAKS
+        if play_keys:
+            if profile.last_playback_date != today:
+                if profile.last_playback_date == today - timedelta(days=1):
+                    live_streak_days += 1
+                else:
+                    live_streak_days = 1
+
+            if profile.last_play_week != current_iso_week:
+                if profile.last_play_week == current_iso_week - 1:
+                    live_streak_weeks += 1
+                else:
+                    live_streak_weeks = 1
+                    
+        # PROJECT OBSESSION
+        if podcast_hits:
+            top_pod_id = max(podcast_hits, key=podcast_hits.get)
+            obsession_pod = Podcast.objects.filter(id=top_pod_id).first()
+            if obsession_pod:
+                live_obsession_title = obsession_pod.title
+
     except Exception as e:
         logger.error(f"Failed to fetch live stats from Redis: {e}")
-        # If Redis connection fails, fail gracefully and return base stats
         pass
         
     return {
         'playback_hits': live_play_hits,
         'hours_accessed': round(live_hours, 2),
-        'streak_days': profile.streak_days, 
-        'streak_weeks': profile.streak_weeks,
+        'streak_days': live_streak_days, 
+        'streak_weeks': live_streak_weeks,
+        'obsession_title': live_obsession_title
     }
 
 def get_and_buffer_profile_auth(feed_token):
@@ -410,8 +447,6 @@ def _sync_patron_profile(user, user_data, included_data):
 
     profile.active_pledges = active_pledges
     profile.patreon_join_dates = join_dates
-    if earliest_start:
-        profile.patreon_join_date = earliest_start 
     
     profile.last_active = timezone.now()
     profile.save()
@@ -543,52 +578,65 @@ def stop_impersonation(request):
 # USER-FACING VIEWS
 # ==========================================
 
+from django.utils import timezone
+from .models import EpisodeEditSuggestion # Make sure this is imported at the top of your file
+
 @login_required(login_url='/login/')
 def user_profile(request):
-    profile = request.user.patron_profile
+    from django.utils import timezone
+    from .models import EpisodeEditSuggestion
+    
+    profile = getattr(request.user, 'patron_profile', None)
     
     if not profile:
         pass
 
-    # Calculate Total Approved Edits (Sum of granular stats)
-    total_approved = profile.edits_chapters + profile.edits_tags + profile.edits_descriptions
+    # --- NETWORK-SPECIFIC ACCOUNT VINTAGE ---
+    account_vintage = None
+    if profile and profile.patreon_join_dates and hasattr(request, 'network') and request.network.patreon_campaign_id:
+        # The JSON keys are stored as strings, so we must cast the campaign ID to a string
+        campaign_id_str = str(request.network.patreon_campaign_id)
+        date_str = profile.patreon_join_dates.get(campaign_id_str)
+        
+        if date_str:
+            try:
+                account_vintage = timezone.datetime.fromisoformat(date_str.replace('Z', '+00:00'))
+            except Exception:
+                pass
+    # ----------------------------------------
+
+    # Calculate Total Approved Edits based on actual submissions
+    total_approved = EpisodeEditSuggestion.objects.filter(user=request.user, status='approved').count()
     
     # Determine Character Level & Title
     level = 0
-    title = "Commoner" # Hasn't done anything yet
-    
-    live_stats = get_live_user_stats(profile)
-
-    # Check if they have submitted at least one edit (Pending or otherwise)
-    has_submitted = EpisodeEditSuggestion.objects.filter(user=request.user).exists()
+    title = "Commoner"
     
     if total_approved >= 100:
         level = 4
         title = "Grand Archivist"
+        next_level_goal = 100
+        progress_percent = 100
     elif total_approved >= 50:
         level = 3
         title = "Archivist"
+        next_level_goal = 100
+        progress_percent = (total_approved / 100) * 100
     elif total_approved >= 10:
         level = 2
         title = "Scout"
-    elif has_submitted:
-        level = 1
-        title = "Initiate"
-
-    # Calculate Progress to Next Level
-    progress_percent = 0
-    next_level_goal = 0
-    if level == 1:
-        next_level_goal = 1
-        progress_percent = (total_approved / 1) * 100
-    elif level == 2:
-        next_level_goal = 10
-        progress_percent = (total_approved / 10) * 100
-    elif level == 3:
         next_level_goal = 50
         progress_percent = (total_approved / 50) * 100
-    elif level == 4:
-        progress_percent = 100 # Max Level
+    elif total_approved >= 1:
+        level = 1
+        title = "Initiate"
+        next_level_goal = 10
+        progress_percent = (total_approved / 10) * 100
+    else:
+        next_level_goal = 1
+        progress_percent = 0
+
+    live_stats = get_live_user_stats(profile)
 
     context = {
         'profile': profile,
@@ -598,6 +646,7 @@ def user_profile(request):
         'next_level_goal': next_level_goal,
         'progress_percent': min(progress_percent, 100),
         'live_stats': live_stats,
+        'account_vintage': account_vintage, 
     }
     return render(request, 'pod_manager/user_profile.html', context)
 

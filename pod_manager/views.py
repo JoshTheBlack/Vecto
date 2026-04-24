@@ -34,11 +34,11 @@ from django.urls import reverse
 from django.utils import timezone
 from datetime import timedelta
 from django.views.decorators.csrf import csrf_exempt
-from podgen import Podcast as PodgenPodcast, Episode as PodgenEpisode, Media, Person, Category
+from podgen import Podcast as PodgenPodcast, Episode as PodgenEpisode, Media, Person
 from lxml import etree
 
 from .models import PatronProfile, Podcast, Episode, Network, PatreonTier, UserMix, NetworkMix, EpisodeEditSuggestion
-from .tasks import task_ingest_feed
+from .tasks import task_ingest_feed, parse_duration_to_hours
 
 warnings.filterwarnings("ignore", message=".*Image URL must end with.*")
 warnings.filterwarnings("ignore", message=".*Size is set to 0.*")
@@ -47,6 +47,60 @@ logger = logging.getLogger(__name__)
 # ==========================================
 # HELPER FUNCTIONS
 # ==========================================
+
+def get_live_user_stats(profile):
+    import redis
+    
+    # 1. Start with the permanent DB values
+    live_play_hits = profile.total_playback_hits or 0
+    live_hours = profile.total_hours_accessed or 0.0
+    
+    # 2. Check if we are in a local dev environment without Redis
+    cache_backend = settings.CACHES['default'].get('BACKEND', '').lower()
+    if 'locmem' in cache_backend or 'dummy' in cache_backend:
+        return {
+            'playback_hits': live_play_hits,
+            'hours_accessed': round(live_hours, 2),
+            'streak_days': profile.streak_days, 
+            'streak_weeks': profile.streak_weeks,
+        }
+        
+    # 3. If Redis is available, proceed with live buffer calculation
+    try:
+        redis_url = settings.CACHES['default']['LOCATION']
+        redis_client = redis.from_url(redis_url)
+        
+        play_keys = redis_client.keys(f"*analytics:play:{profile.id}:*")
+        pending_episode_ids = set()
+        
+        for key_bytes in play_keys:
+            hits = redis_client.get(key_bytes)
+            if hits:
+                live_play_hits += int(hits)
+                
+                key_str = key_bytes.decode('utf-8')
+                clean_key = key_str.split('analytics:play:')[-1]
+                parts = clean_key.split(':')
+                if len(parts) == 3:
+                    e_id = int(parts[1])
+                    pending_episode_ids.add(e_id)
+                    
+        if pending_episode_ids:
+            episodes = Episode.objects.filter(id__in=pending_episode_ids)
+            for ep in episodes:
+                live_hours += parse_duration_to_hours(ep.duration)
+                
+    except Exception as e:
+        logger.error(f"Failed to fetch live stats from Redis: {e}")
+        # If Redis connection fails, fail gracefully and return base stats
+        pass
+        
+    return {
+        'playback_hits': live_play_hits,
+        'hours_accessed': round(live_hours, 2),
+        'streak_days': profile.streak_days, 
+        'streak_weeks': profile.streak_weeks,
+    }
 
 def get_and_buffer_profile_auth(feed_token):
     """
@@ -493,6 +547,9 @@ def stop_impersonation(request):
 def user_profile(request):
     profile = request.user.patron_profile
     
+    if not profile:
+        pass
+
     # Calculate Total Approved Edits (Sum of granular stats)
     total_approved = profile.edits_chapters + profile.edits_tags + profile.edits_descriptions
     
@@ -500,16 +557,18 @@ def user_profile(request):
     level = 0
     title = "Commoner" # Hasn't done anything yet
     
+    live_stats = get_live_user_stats(profile)
+
     # Check if they have submitted at least one edit (Pending or otherwise)
     has_submitted = EpisodeEditSuggestion.objects.filter(user=request.user).exists()
     
-    if total_approved >= 50:
+    if total_approved >= 100:
         level = 4
         title = "Grand Archivist"
-    elif total_approved >= 10:
+    elif total_approved >= 50:
         level = 3
         title = "Archivist"
-    elif total_approved >= 1:
+    elif total_approved >= 10:
         level = 2
         title = "Scout"
     elif has_submitted:
@@ -538,6 +597,7 @@ def user_profile(request):
         'title': title,
         'next_level_goal': next_level_goal,
         'progress_percent': min(progress_percent, 100),
+        'live_stats': live_stats,
     }
     return render(request, 'pod_manager/user_profile.html', context)
 

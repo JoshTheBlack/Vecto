@@ -127,13 +127,13 @@
 
                     <div class="stat-box">
                         <div class="stat-box-label">Endurance</div>
-                        <div class="stat-box-value">{{ profile.total_hours_accessed|floatformat:0 }}</div>
+                        <div class="stat-box-value">{{ live_stats.hours_accessed|floatformat:0 }}</div>
                         <div class="stat-box-sub pb-2 px-2">Hours Accessed</div>
                     </div>
 
                     <div class="stat-box">
                         <div class="stat-box-label">Activity</div>
-                        <div class="stat-box-value">{{ profile.total_playback_hits }}</div>
+                        <div class="stat-box-value">{{ live_stats.playback_hits }}</div>
                         <div class="stat-box-sub pb-2 px-2">Episodes Played</div>
                     </div>
 
@@ -189,7 +189,7 @@
                                 <i class="bi bi-fire text-danger fs-3 me-3"></i>
                                 <div>
                                     <div class="fw-bold">Daily Ritual</div>
-                                    <div class="small text-surface-muted">Current active daily listening streak: <span class="text-accent fw-bold">{{ profile.streak_days }} Days</span></div>
+                                    <div class="small text-surface-muted">Current active daily listening streak: <span class="text-accent fw-bold">{{ live_stats.streak_days }} Days</span></div>
                                 </div>
                             </div>
                         </div>
@@ -199,7 +199,7 @@
                                 <i class="bi bi-calendar2-week text-info fs-3 me-3"></i>
                                 <div>
                                     <div class="fw-bold">Weekly Devotion</div>
-                                    <div class="small text-surface-muted">Current active weekly listening streak: <span class="text-accent fw-bold">{{ profile.streak_weeks }} Weeks</span></div>
+                                    <div class="small text-surface-muted">Current active weekly listening streak: <span class="text-accent fw-bold">{{ live_stats.streak_weeks }} Weeks</span></div>
                                 </div>
                             </div>
                         </div>

@@ -26,4 +26,8 @@ app.conf.beat_schedule = {
         'task': 'pod_manager.tasks.task_sync_last_active_timestamps',
         'schedule': crontab(minute=0), 
     },
+    'sweep-analytics-hourly': {
+        'task': 'pod_manager.tasks.sweep_analytics_buffer',
+        'schedule': crontab(minute=0),
+    },
 }

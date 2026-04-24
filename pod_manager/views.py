@@ -226,6 +226,142 @@ def refresh_patreon_token(network):
     except Exception as e:
         logger.error(f"[AUTO-HEAL] CRITICAL ERROR during refresh request: {str(e)}")
         return False
+
+# ==========================================
+# PATREON OAUTH HELPER FUNCTIONS
+# ==========================================
+
+def _exchange_patreon_token(code, redirect_uri):
+    """Exchanges the OAuth code for Patreon access and refresh tokens."""
+    token_url = "https://www.patreon.com/api/oauth2/token"
+    data = {
+        "code": code,
+        "grant_type": "authorization_code",
+        "client_id": settings.PATREON_CLIENT_ID,
+        "client_secret": settings.PATREON_CLIENT_SECRET,
+        "redirect_uri": redirect_uri,
+    }
+    res = requests.post(token_url, data=data, timeout=10)
+    if res.status_code != 200:
+        logger.error(f"Patreon token exchange failed: {res.text}")
+        return None, HttpResponse(f"Failed to get token: {res.text}", status=400)
+    return res.json(), None
+
+def _link_creator_campaign(request, network_id, access_token, refresh_token):
+    """Handles the flow when a creator links their Patreon to a Vecto Network."""
+    logger.info(f"Linking Patreon Campaign to Network ID {network_id} for user {request.user.username}")
+    network = get_object_or_404(Network, id=network_id)
+    
+    headers = {"Authorization": f"Bearer {access_token}"}
+    camp_res = requests.get("https://www.patreon.com/api/oauth2/v2/campaigns", headers=headers, timeout=10)
+    
+    if camp_res.status_code == 200:
+        camp_data = camp_res.json().get('data', [])
+        if camp_data:
+            campaign_id = camp_data[0]['id']
+            network.patreon_campaign_id = campaign_id
+            network.patreon_sync_enabled = True
+            network.patreon_creator_access_token = access_token
+            network.patreon_creator_refresh_token = refresh_token
+            network.save()
+            
+            messages.success(request, f"Successfully linked Patreon Campaign {campaign_id}!")
+            threading.Thread(target=sync_network_patrons, args=(network,), daemon=True).start()
+        else:
+            messages.warning(request, "Linked, but no campaigns found on your Patreon account.")
+    else:
+        logger.error(f"Failed to fetch campaigns during linking: {camp_res.text}")
+        messages.error(request, "Failed to fetch your campaigns from Patreon.")
+        
+    return redirect('creator_settings')
+
+def _fetch_patreon_identity(access_token):
+    """Fetches the user's identity, images, and active memberships from Patreon."""
+    headers = {"Authorization": f"Bearer {access_token}"}
+    identity_url = (
+        "https://www.patreon.com/api/oauth2/v2/identity"
+        "?include=memberships.campaign"
+        "&fields[user]=email,first_name,last_name,image_url,social_connections"
+        "&fields[member]=patron_status,currently_entitled_amount_cents,pledge_relationship_start"
+    )
+    res = requests.get(identity_url, headers=headers, timeout=10)
+    if res.status_code != 200:
+        logger.error(f"Failed to fetch user identity: {res.text}")
+        return None, HttpResponse("Failed to fetch user info", status=400)
+    return res.json(), None
+
+def _sync_patron_profile(user, user_data, included_data):
+    """Synchronizes local PatronProfile metadata and active pledges with Patreon data."""
+    patreon_id = user_data.get('id')
+    attributes = user_data.get('attributes', {})
+    image_url = attributes.get('image_url')
+    
+    socials = attributes.get('social_connections', {}) or {}
+    discord_info = socials.get('discord') or {}
+    discord_user_id = discord_info.get('user_id') if discord_info else None
+
+    # Get or Create Profile
+    profile, p_created = PatronProfile.objects.get_or_create(user=user, defaults={
+        'patreon_id': patreon_id,
+        'profile_image_url': image_url,
+        'discord_id': discord_user_id
+    })
+    
+    if not p_created:
+        profile.profile_image_url = image_url
+        profile.discord_id = discord_user_id
+        if profile.patreon_id != patreon_id:
+            logger.warning(f"Updating Patreon ID for {user.email} to {patreon_id}")
+            profile.patreon_id = patreon_id
+
+    # Sync Pledges
+    known_campaign_ids = set(Network.objects.exclude(patreon_campaign_id__isnull=True).exclude(patreon_campaign_id='').values_list('patreon_campaign_id', flat=True))
+    active_pledges = profile.active_pledges or {}
+    join_dates = profile.patreon_join_dates or {}
+    seen_campaigns = set()
+    earliest_start = None  
+    
+    for item in included_data:
+        if item.get('type') == 'member':
+            attrs = item.get('attributes', {})
+            campaign_data = item.get('relationships', {}).get('campaign', {}).get('data', {})
+            
+            if campaign_data:
+                campaign_id = str(campaign_data.get('id'))
+                if campaign_id in known_campaign_ids:
+                    seen_campaigns.add(campaign_id)
+                    
+                    if attrs.get('patron_status') == 'active_patron':
+                        cents = attrs.get('currently_entitled_amount_cents', 0)
+                        active_pledges[campaign_id] = cents
+                        
+                        start_date_str = attrs.get('pledge_relationship_start')
+                        if start_date_str:
+                            join_dates[campaign_id] = start_date_str
+                            try:
+                                current_dt = timezone.datetime.fromisoformat(start_date_str.replace('Z', '+00:00'))
+                                if not earliest_start or current_dt < earliest_start:
+                                    earliest_start = current_dt
+                            except Exception:
+                                pass
+                    elif campaign_id in active_pledges:
+                        del active_pledges[campaign_id]
+
+    # Cleanup missing campaigns
+    for old_campaign in list(active_pledges.keys()):
+        if old_campaign not in seen_campaigns:
+            del active_pledges[old_campaign]
+            if old_campaign in join_dates:
+                del join_dates[old_campaign]
+
+    profile.active_pledges = active_pledges
+    profile.patreon_join_dates = join_dates
+    if earliest_start:
+        profile.patreon_join_date = earliest_start 
+    
+    profile.last_active = timezone.now()
+    profile.save()
+    return profile
     
 # ==========================================
 # OAUTH AUTHENTICATION
@@ -268,175 +404,46 @@ def patreon_callback(request):
         logger.warning("Patreon callback failed: No authorization code provided.")
         return HttpResponse("No code provided by Patreon", status=400)
 
-    dynamic_redirect_uri = request.build_absolute_uri('/oauth/patreon/callback')
-
-    token_url = "https://www.patreon.com/api/oauth2/token"
-    data = {
-        "code": code,
-        "grant_type": "authorization_code",
-        "client_id": settings.PATREON_CLIENT_ID,
-        "client_secret": settings.PATREON_CLIENT_SECRET,
-        "redirect_uri": dynamic_redirect_uri,
-    }
-
     try:
-        logger.debug("Attempting to exchange authorization code for access token...")
-        res = requests.post(token_url, data=data, timeout=10)
-        if res.status_code != 200:
-            logger.error(f"Patreon token exchange failed: {res.text}")
-            return HttpResponse(f"Failed to get token: {res.text}", status=400)
-            
-        token_data = res.json()
+        # 1. Exchange Code for Tokens
+        dynamic_redirect_uri = request.build_absolute_uri('/oauth/patreon/callback')
+        token_data, error_response = _exchange_patreon_token(code, dynamic_redirect_uri)
+        if error_response: return error_response
+
         access_token = token_data['access_token']
         refresh_token = token_data['refresh_token']
         logger.debug("Token exchange successful.")
         
-        # If this was initiated from the Creator Settings page to link a campaign
+        # 2. Creator Linking Flow (Early Exit)
         if state_network_id and request.user.is_authenticated:
-            logger.info(f"Linking Patreon Campaign to Network ID {state_network_id} for user {request.user.username}")
-            network = get_object_or_404(Network, id=state_network_id)
-            
-            headers = {"Authorization": f"Bearer {access_token}"}
-            camp_res = requests.get("https://www.patreon.com/api/oauth2/v2/campaigns", headers=headers, timeout=10)
-            
-            if camp_res.status_code == 200:
-                camp_data = camp_res.json().get('data', [])
-                if camp_data:
-                    campaign_id = camp_data[0]['id']
-                    network.patreon_campaign_id = campaign_id
-                    network.patreon_sync_enabled = True
-                    network.patreon_creator_access_token = access_token
-                    network.patreon_creator_refresh_token = refresh_token
-                    network.save()
-                    
-                    messages.success(request, f"Successfully linked Patreon Campaign {campaign_id}!")
-                    logger.info(f"Successfully linked Campaign ID {campaign_id} to Network {network.name}")
-                    
-                    # Fire off an initial sync
-                    threading.Thread(target=sync_network_patrons, args=(network,), daemon=True).start()
-                else:
-                    logger.warning("Patreon linked, but no campaigns were found for this creator.")
-                    messages.warning(request, "Linked, but no campaigns found on your Patreon account.")
-            else:
-                logger.error(f"Failed to fetch campaigns during linking: {camp_res.text}")
-                messages.error(request, "Failed to fetch your campaigns from Patreon.")
-                
-            return redirect('creator_settings')
+            return _link_creator_campaign(request, state_network_id, access_token, refresh_token)
 
-        # Normal User Login Flow
-        logger.debug("Fetching user identity and memberships from Patreon...")
-        headers = {"Authorization": f"Bearer {access_token}"}
+        # 3. Fetch User Identity
+        payload, error_response = _fetch_patreon_identity(access_token)
+        if error_response: return error_response
         
-        # Include memberships and campaign relationships to get pledge amounts
-        identity_url = (
-            "https://www.patreon.com/api/oauth2/v2/identity"
-            "?include=memberships.campaign"
-            "&fields[user]=email,first_name,last_name"
-            "&fields[member]=patron_status,currently_entitled_amount_cents,pledge_relationship_start"
-        )
-        user_res = requests.get(identity_url, headers=headers, timeout=10)
-        
-        if user_res.status_code != 200:
-            logger.error(f"Failed to fetch user identity: {user_res.text}")
-            return HttpResponse("Failed to fetch user info", status=400)
-            
-        payload = user_res.json()
         user_data = payload.get('data', {})
         included_data = payload.get('included', [])
-        
-        patreon_id = user_data.get('id')
         email = user_data.get('attributes', {}).get('email')
-        first_name = user_data.get('attributes', {}).get('first_name', '')
-        last_name = user_data.get('attributes', {}).get('last_name', '')
 
         if not email:
             logger.error("Patreon identity response did not include an email address.")
             return HttpResponse("Patreon did not provide an email address.", status=400)
 
-        # Get or Create User
+        # 4. Get or Create Base User
         user, created = User.objects.get_or_create(username=email, defaults={
             'email': email,
-            'first_name': first_name,
-            'last_name': last_name
+            'first_name': user_data.get('attributes', {}).get('first_name', ''),
+            'last_name': user_data.get('attributes', {}).get('last_name', '')
         })
-        
-        if created:
-            logger.info(f"Created new local User account for {email}")
+        if created: logger.info(f"Created new local User account for {email}")
 
-        # Get or Create Patron Profile
-        profile, p_created = PatronProfile.objects.get_or_create(user=user, defaults={
-            'patreon_id': patreon_id
-        })
-        
-        if not p_created and profile.patreon_id != patreon_id:
-            logger.warning(f"Updating existing Patreon ID for {email} from {profile.patreon_id} to {patreon_id}")
-            profile.patreon_id = patreon_id
+        # 5. Sync Vecto Profile and Pledges
+        _sync_patron_profile(user, user_data, included_data)
 
-        known_campaign_ids = set(Network.objects.exclude(patreon_campaign_id__isnull=True).exclude(patreon_campaign_id='').values_list('patreon_campaign_id', flat=True))
-        
-        # --- SYNC PLEDGES AND DATES ---
-        active_pledges = profile.active_pledges or {}
-        join_dates = profile.patreon_join_dates or {}
-        seen_campaigns = set()
-        earliest_start = None  # To calculate overall Account Vintage
-        
-        for item in included_data:
-            if item.get('type') == 'member':
-                attrs = item.get('attributes', {})
-                rels = item.get('relationships', {})
-                
-                status = attrs.get('patron_status')
-                cents = attrs.get('currently_entitled_amount_cents', 0)
-                start_date_str = attrs.get('pledge_relationship_start')
-                
-                campaign_data = rels.get('campaign', {}).get('data', {})
-                if campaign_data:
-                    campaign_id = str(campaign_data.get('id'))
-                    
-                    # SECURITY: Only process campaigns linked to Vecto networks
-                    if campaign_id in known_campaign_ids:
-                        seen_campaigns.add(campaign_id)
-                        
-                        if status == 'active_patron':
-                            active_pledges[campaign_id] = cents
-                            
-                            # Log and store the specific start date for this network
-                            if start_date_str:
-                                join_dates[campaign_id] = start_date_str
-                                logger.info(f"Vecto Match: ID {campaign_id} | Pledge: ${cents/100} | Since: {start_date_str}")
-                                
-                                # Track earliest date for global profile vintage
-                                try:
-                                    current_dt = timezone.datetime.fromisoformat(start_date_str.replace('Z', '+00:00'))
-                                    if not earliest_start or current_dt < earliest_start:
-                                        earliest_start = current_dt
-                                except Exception as dt_err:
-                                    logger.warning(f"Failed to parse date {start_date_str}: {dt_err}")
-
-                        elif campaign_id in active_pledges:
-                            # User is no longer active for this specific Vecto campaign
-                            del active_pledges[campaign_id]
-
-        # Cleanup: Remove old campaigns the user dropped or that left Vecto
-        for old_campaign in list(active_pledges.keys()):
-            if old_campaign not in seen_campaigns:
-                del active_pledges[old_campaign]
-                if old_campaign in join_dates:
-                    del join_dates[old_campaign]
-
-        # Finalize Profile Data
-        profile.active_pledges = active_pledges
-        profile.patreon_join_dates = join_dates
-        if earliest_start:
-            profile.patreon_join_date = earliest_start # Single date for "Pioneer" status
-            logger.info(f"Global Account Vintage for {email}: {earliest_start}")
-        
-        profile.last_active = timezone.now()
-        profile.save()
-
+        # 6. Finalize Login
         login(request, user)
         logger.info(f"User {email} successfully logged in via Patreon and pledges synced.")
-        
         return redirect('home')
 
     except Exception as e:

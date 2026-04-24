@@ -307,6 +307,8 @@ class PatronProfile(models.Model):
     patreon_id = models.CharField(max_length=50, unique=True)
     pledge_amount_cents = models.IntegerField(default=0)
     active_pledges = models.JSONField(default=dict, blank=True)
+    profile_image_url = models.URLField(max_length=500, null=True, blank=True)
+    discord_id = models.CharField(max_length=100, null=True, blank=True)
     
     last_sync = models.DateTimeField(auto_now=True)
     feed_token = models.UUIDField(default=uuid.uuid4, editable=False, unique=True)

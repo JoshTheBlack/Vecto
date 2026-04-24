@@ -21,7 +21,7 @@ urlpatterns = [
     # Auth & API Routes
     path('admin/', admin.site.urls),
     path('login/', views.patreon_login, name='patreon_login'),
-    path('logout/', LogoutView.as_view(), name='logout'),
+    path('logout/', views.logout_view, name='logout'),
     path('oauth/patreon/callback', views.patreon_callback, name='patreon_callback'),
     path('patreon/callback/webhook/', views.patreon_webhook, name='patreon_webhook'),
     path('api/traefik-config/', views.traefik_config_api, name='traefik_config_api'),

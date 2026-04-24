@@ -34,6 +34,7 @@ class NetworkMiddleware:
             if (path.startswith('/admin') or 
                 path.startswith('/creator') or 
                 path.startswith('/login') or 
+                path.startswith('/logout') or
                 path.startswith('/oauth') or 
                 path.startswith('/patreon') or 
                 path.startswith('/static') or 

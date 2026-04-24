@@ -2079,7 +2079,7 @@ def traefik_config_api(request):
         routers[router_name] = {
             "rule": f"Host(`{network.custom_domain}`)",
             "entryPoints": ["https"], 
-            "service": "vecto-service",
+            "service": "vecto-service@file",
             "tls": {
                 # Force these external domains to use the HTTP-01 challenge
                 "certResolver": "http_resolver" 

@@ -36,7 +36,7 @@ from podgen import Podcast as PodgenPodcast, Episode as PodgenEpisode, Media, Pe
 from lxml import etree
 
 from .models import PatronProfile, NetworkMembership, Podcast, Episode, Network, PatreonTier, UserMix, NetworkMix, EpisodeEditSuggestion
-from .tasks import task_ingest_feed
+from .tasks import task_ingest_feed, task_rebuild_episode_fragments, task_rebuild_podcast_fragments
 
 warnings.filterwarnings("ignore", message=".*Image URL must end with.*")
 warnings.filterwarnings("ignore", message=".*Size is set to 0.*")
@@ -112,26 +112,32 @@ def process_mix_image_url(image_url, mix_instance):
 # ==========================================
 
 class RSSFeedBuilder:
-    def __init__(self, request, title, description, image_url, network, feed_type='private'):
-        self.request = request
+    def __init__(self, base_url, title, description, image_url, network, feed_type='private'):
+        # Strip trailing slashes to prevent double-slashing when concatenating URLs
+        self.base_url = base_url.rstrip('/') 
         self.feed_type = feed_type
         self.network = network
         self.episodes_data = [] 
         
+        safe_description = description or network.summary or f"{title} on {network.name}."
+        
         self.feed = PodgenPodcast(
             name=title,
-            description=description,
-            website=network.website_url or request.build_absolute_uri('/'),
+            description=safe_description,
+            website=network.website_url or self.base_url,
             explicit=True,
             image=image_url or network.default_image_url or "https://example.com/logo.png",
-            authors=[Person(name=network.name, email="hosts@example.com")],
-            owner=Person(name=network.name, email="hosts@example.com"),
+            authors=[Person(name=network.name, email=network.contact_email or "hosts@example.com")],
+            owner=Person(name=network.name, email=network.contact_email or "hosts@example.com"),
             withhold_from_itunes=True,
         )
 
-    def add_episode(self, episode, target_audio_url, has_access, display_title=None):
+    def add_episode(self, episode, has_access, display_title=None):
         desc = _build_episode_description(episode, has_access)
         self.episodes_data.append(episode)
+        
+        # Build the URL internally with the universal placeholder
+        target_audio_url = f"{self.base_url}{reverse('play_episode', args=[episode.id])}?auth=__VECTO_AUTH_TOKEN__"
         
         self.feed.episodes.append(PodgenEpisode(
             id=episode.guid_public or episode.guid_private or str(episode.id),
@@ -167,7 +173,8 @@ class RSSFeedBuilder:
                 ftype = 'private' if ep_access else 'public'
                 
                 if ep.chapters_private or ep.chapters_public:
-                    chapter_url = self.request.build_absolute_uri(reverse('episode_chapters', args=[ep.id, ftype]))
+                    # Swap request object for base_url
+                    chapter_url = f"{self.base_url}{reverse('episode_chapters', args=[ep.id, ftype])}"
                     chap_elem = etree.SubElement(item, f'{{{podcast_ns}}}chapters')
                     chap_elem.set('url', chapter_url)
                     
@@ -185,7 +192,7 @@ class RSSFeedBuilder:
             final_xml = final_xml.replace('<rss ', f'<rss xmlns:podcast="{podcast_ns}" ', 1)
             
         return final_xml
-
+    
 # ==========================================
 # 3. PATREON SYNC ENGINE (MULTI-TENANT)
 # ==========================================
@@ -357,6 +364,7 @@ def _handle_inbox_action(request, current_network, action):
         ep.clean_description = edit.suggested_data.get('description', ep.clean_description)
         ep.tags = edit.suggested_data.get('tags', ep.tags)
         ep.chapters_public = edit.suggested_data.get('chapters', ep.chapters_public)
+        ep.is_metadata_locked = True
         ep.save()
 
         edit.status = 'approved'
@@ -370,6 +378,9 @@ def _handle_inbox_action(request, current_network, action):
         if edit.is_first_responder: membership.first_responder_count += 1
         membership.save()
         messages.success(request, "Edit approved. User rewarded +5 Trust.")
+
+        base_url = request.build_absolute_uri('/')[:-1]
+        task_rebuild_episode_fragments.delay(ep.id, base_url)
 
     elif action == 'reject_edit':
         edit.status = 'rejected'
@@ -389,6 +400,9 @@ def _handle_rollback(request, current_network, action):
         ep.tags = edit.original_data.get('tags', ep.tags)
         ep.chapters_public = edit.original_data.get('chapters', ep.chapters_public)
         ep.save()
+
+        base_url = request.build_absolute_uri('/')[:-1]
+        task_rebuild_episode_fragments.delay(ep.id, base_url)
 
         edit.status = 'rolled_back'
         edit.resolved_at = timezone.now()
@@ -413,6 +427,8 @@ def _handle_rollback(request, current_network, action):
             status='approved'
         )
         
+        base_url = request.build_absolute_uri('/')[:-1]
+                                                   
         count = 0
         for edit in approved_edits:
             ep = edit.episode
@@ -420,6 +436,8 @@ def _handle_rollback(request, current_network, action):
             ep.tags = edit.original_data.get('tags', ep.tags)
             ep.chapters_public = edit.original_data.get('chapters', ep.chapters_public)
             ep.save()
+
+            task_rebuild_episode_fragments.delay(ep.id, base_url)
 
             edit.status = 'rolled_back'
             edit.resolved_at = timezone.now()
@@ -473,6 +491,10 @@ def creator_settings(request):
             current_network.save()
             messages.success(request, f"{current_network.name} settings saved successfully!")
 
+            base_url = request.build_absolute_uri('/')[:-1]
+            for pod in current_network.podcasts.all():
+                task_rebuild_podcast_fragments.delay(pod.id, base_url)
+
         elif action == 'update_show':
             show_id = request.POST.get('show_id')
             show = get_object_or_404(Podcast, id=show_id, network=current_network)
@@ -485,6 +507,9 @@ def creator_settings(request):
             show.show_footer_private = request.POST.get('show_footer_private', '')
             show.save()
             messages.success(request, f"{show.title} updated successfully!")
+
+            base_url = request.build_absolute_uri('/')[:-1]
+            task_rebuild_podcast_fragments.delay(pod.id, base_url)
 
         elif action == 'add_show':
             title = request.POST.get('title')
@@ -513,11 +538,13 @@ def creator_settings(request):
                 pub_ep.match_reason = "Manual Merge (Merge Desk)"
                 pub_ep.save()
                 priv_ep.delete()
+                base_url = request.build_absolute_uri('/')[:-1]
+                task_rebuild_episode_fragments.delay(pub_ep.id, base_url)
                 messages.success(request, f"Successfully merged '{priv_ep.title}' into '{pub_ep.title}'.")
 
         elif action == 'split_episode':
             ep = Episode.objects.get(id=request.POST.get('episode_id'), podcast__network=current_network)
-            Episode.objects.create(
+            new_ep = Episode.objects.create(
                 podcast=ep.podcast, title=ep.title, pub_date=ep.pub_date,
                 raw_description=ep.raw_description, clean_description=ep.clean_description,
                 duration=ep.duration, link=ep.link, tags=ep.tags,
@@ -529,6 +556,9 @@ def creator_settings(request):
             ep.chapters_private = None
             ep.match_reason = "Manually Unpaired"
             ep.save()
+            base_url = request.build_absolute_uri('/')[:-1]
+            task_rebuild_episode_fragments.delay(ep.id, base_url)
+            task_rebuild_episode_fragments.delay(new_ep.id, base_url)
             messages.success(request, f"Successfully split '{ep.title}'.")
         
         return redirect(f"{reverse('creator_settings')}?network={current_network.slug}")
@@ -681,13 +711,15 @@ def user_feeds(request):
             mix.image_url = request.POST.get('mix_image', '') or mix.image_url
             if 'mix_image_upload' in request.FILES:
                 mix.image_upload = request.FILES['mix_image_upload']
-                
+            cache.delete(f"mix_feed_master_{mix.unique_id}")    
             mix.selected_podcasts.set(request.POST.getlist('podcasts'))
             mix.save()
+
             messages.success(request, "Mix updated successfully!")
 
         elif request.POST.get('delete_mix'):
             mix = get_object_or_404(UserMix, id=request.POST.get('mix_id'), user=request.user, network=request.network)
+            cache.delete(f"mix_feed_master_{mix.unique_id}")
             mix.delete()
             messages.warning(request, "Custom mix deleted.")
 
@@ -815,8 +847,50 @@ def episode_chapters(request, episode_id, feed_type):
     response["Access-Control-Allow-Origin"] = "*"
     return response
 
+def get_or_build_feed_shell(podcast, base_url, has_access):
+    """Caches the top-level RSS metadata (Header and Footer) without any episodes."""
+    feed_type = 'private' if has_access else 'public'
+    cache_key = f"feed_shell_{feed_type}_{podcast.id}"
+    shell = cache.get(cache_key)
+    if shell: return shell
+
+    title = f"{podcast.title} (Private)" if has_access else podcast.title
+    builder = RSSFeedBuilder(base_url, title, podcast.description or "", podcast.image_url, podcast.network, feed_type)
+    raw_xml = builder.render()
+    
+    # Split the XML to grab everything before the closing </channel> tag
+    header = raw_xml.split('</channel>')[0]
+    footer = "</channel></rss>"
+    
+    shell = (header, footer)
+    cache.set(cache_key, shell, timeout=604800) # 7 Days
+    return shell
+
+def get_or_build_episode_fragment(episode, base_url, has_access):
+    """Caches a single <item>...</item> block."""
+    feed_type = 'private' if has_access else 'public'
+    cache_key = f"ep_frag_{feed_type}_{episode.id}"
+    fragment = cache.get(cache_key)
+    if fragment: return fragment
+
+    # Build a temporary shell to render just this one episode
+    builder = RSSFeedBuilder(base_url, "Temp", "Temp", "", episode.podcast.network, feed_type)
+    builder.add_episode(episode, has_access)
+    raw_xml = builder.render(access_map={episode.podcast_id: has_access})
+    
+    # Extract just the <item> block
+    try:
+        start = raw_xml.index('<item>')
+        end = raw_xml.index('</item>') + 7
+        fragment = raw_xml[start:end]
+    except ValueError:
+        fragment = ""
+        
+    cache.set(cache_key, fragment, timeout=604800) # 7 Days
+    return fragment
+
 # ==========================================
-# 6. RSS FEED ROUTES
+# 6. RSS FEED ROUTES (FRAGMENT ASSEMBLY)
 # ==========================================
 
 def generate_custom_feed(request):
@@ -825,97 +899,129 @@ def generate_custom_feed(request):
     profile = get_object_or_404(PatronProfile, feed_token=feed_token)
     has_access, _ = _evaluate_access(profile.user, podcast, podcast.network)
 
-    version = cache.get(f"podcast_cache_version_{podcast.id}", 1)
-    cache_key = f"xml_feed_{version}_{feed_token}_{podcast.slug}_{has_access}"
-    xml_output = cache.get(cache_key)
-
-    if not xml_output:
-        builder = RSSFeedBuilder(request, f"{podcast.title} for {profile.user.first_name}", f"Personalized feed.", podcast.image_url, podcast.network)
+    base_url = request.build_absolute_uri('/')[:-1]
+    header, footer = get_or_build_feed_shell(podcast, base_url, has_access)
+    
+    # Get valid episodes
+    episodes = [ep for ep in podcast.episodes.all().order_by('-pub_date')[:1000] if ep.has_public_audio or ep.is_premium]
+    if not has_access: episodes = [ep for ep in episodes if ep.has_public_audio]
         
-        for ep in podcast.episodes.all().order_by('-pub_date')[:2000]:
-            if not ep.has_public_audio and not ep.is_premium: continue
-            audio_url = request.build_absolute_uri(reverse('play_episode', args=[ep.id])) + f"?auth={feed_token}"
-            builder.add_episode(ep, audio_url, has_access)
-            
-        xml_output = builder.render()
-        cache.set(cache_key, xml_output, timeout=podcast.network.feed_cache_minutes * 60)
+    feed_type = 'private' if has_access else 'public'
+    cache_keys = [f"ep_frag_{feed_type}_{ep.id}" for ep in episodes]
+    
+    # Bulk fetch fragments from Redis
+    fragments_dict = cache.get_many(cache_keys)
+    
+    # Assemble missing fragments inline if cache missed
+    items_xml = ""
+    for i, ep in enumerate(episodes):
+        frag = fragments_dict.get(cache_keys[i])
+        if not frag: frag = get_or_build_episode_fragment(ep, base_url, has_access)
+        items_xml += frag
+        
+    final_xml = header + items_xml + footer
+    final_xml = final_xml.replace('__VECTO_AUTH_TOKEN__', str(profile.feed_token))
+    
+    analytics_key = f"analytics:rss:{profile.id}"
+    if cache.get(analytics_key): cache.incr(analytics_key)
+    else: cache.set(analytics_key, 1, timeout=172800)
 
-    cache.incr(f"analytics:rss:{profile.id}") if cache.get(f"analytics:rss:{profile.id}") else cache.set(f"analytics:rss:{profile.id}", 1, 172800)
-    return HttpResponse(xml_output, content_type='application/rss+xml')
+    return HttpResponse(final_xml, content_type='application/rss+xml')
 
 def generate_public_feed(request, podcast_slug):
     podcast = get_object_or_404(Podcast, slug=podcast_slug, network=request.network)
-    version = cache.get(f"podcast_cache_version_{podcast.id}", 1)
-    cache_key = f"xml_feed_public_{version}_{podcast.slug}"
-    xml_output = cache.get(cache_key)
+    base_url = request.build_absolute_uri('/')[:-1]
+    
+    header, footer = get_or_build_feed_shell(podcast, base_url, False)
+    episodes = [ep for ep in podcast.episodes.all().order_by('-pub_date')[:500] if ep.has_public_audio]
+    
+    cache_keys = [f"ep_frag_public_{ep.id}" for ep in episodes]
+    fragments_dict = cache.get_many(cache_keys)
+    
+    items_xml = ""
+    for i, ep in enumerate(episodes):
+        frag = fragments_dict.get(cache_keys[i])
+        if not frag: frag = get_or_build_episode_fragment(ep, base_url, False)
+        items_xml += frag
 
-    if not xml_output:
-        builder = RSSFeedBuilder(request, podcast.title, "Public feed.", podcast.image_url, podcast.network, feed_type='public')
-        
-        for ep in podcast.episodes.all().order_by('-pub_date')[:500]:
-            if not ep.has_public_audio: continue
-            audio_url = request.build_absolute_uri(reverse('play_episode', args=[ep.id]))
-            builder.add_episode(ep, audio_url, False)
-            
-        xml_output = builder.render()
-        cache.set(cache_key, xml_output, timeout=podcast.network.feed_cache_minutes * 60)
-
-    return HttpResponse(xml_output, content_type='application/rss+xml')
+    final_xml = header + items_xml + footer
+    return HttpResponse(final_xml, content_type='application/rss+xml')
 
 def generate_mix_feed(request, unique_id):
     user_mix = get_object_or_404(UserMix.objects.select_related('user__patron_profile'), unique_id=unique_id, is_active=True)
-    cache_key = f"mix_feed_{unique_id}"
-    xml_output = cache.get(cache_key)
-
-    if not xml_output:
-        builder = RSSFeedBuilder(request, user_mix.name, f"Custom blended feed for {user_mix.user.first_name}.", user_mix.display_image or user_mix.network.default_image_url, user_mix.network)
+    base_url = request.build_absolute_uri('/')[:-1]
+    
+    # Generate mix shell on the fly (lightweight)
+    builder = RSSFeedBuilder(base_url, user_mix.name, f"Custom blended feed for {user_mix.user.first_name}.", user_mix.display_image or user_mix.network.default_image_url, user_mix.network)
+    raw_xml = builder.render()
+    header, footer = raw_xml.split('</channel>')[0], "</channel></rss>"
+    
+    episodes = Episode.objects.filter(podcast__in=user_mix.selected_podcasts.all()).select_related('podcast', 'podcast__network').order_by('-pub_date')[:500]
+    
+    keys_and_eps = []
+    for ep in episodes:
+        if not ep.has_public_audio and not ep.is_premium: continue
+        ep_has_access, _ = _evaluate_access(user_mix.user, ep.podcast, ep.podcast.network)
+        feed_type = 'private' if ep_has_access else 'public'
+        keys_and_eps.append((f"ep_frag_{feed_type}_{ep.id}", ep, ep_has_access))
         
-        for ep in Episode.objects.filter(podcast__in=user_mix.selected_podcasts.all()).select_related('podcast', 'podcast__network').order_by('-pub_date')[:500]:
-            if not ep.has_public_audio and not ep.is_premium: continue
-            has_access, _ = _evaluate_access(user_mix.user, ep.podcast, ep.podcast.network)
-            audio_url = request.build_absolute_uri(reverse('play_episode', args=[ep.id])) + f"?auth={user_mix.user.patron_profile.feed_token}"
-            builder.add_episode(ep, audio_url, has_access, display_title=f"[{ep.podcast.title}] {ep.title}")
-            
-        xml_output = builder.render()
-        cache.set(cache_key, xml_output, 300)
+    fragments_dict = cache.get_many([k[0] for k in keys_and_eps])
+    
+    items_xml = ""
+    for key, ep, ep_has_access in keys_and_eps:
+        frag = fragments_dict.get(key)
+        if not frag: frag = get_or_build_episode_fragment(ep, base_url, ep_has_access)
+        
+        # Inject Podcast Title into episode title for mix context
+        frag = frag.replace('<title>', f'<title>[{ep.podcast.title}] ', 1)
+        items_xml += frag
 
-    return HttpResponse(xml_output, content_type='application/rss+xml')
+    final_xml = header + items_xml + footer
+    final_xml = final_xml.replace('__VECTO_AUTH_TOKEN__', str(user_mix.user.patron_profile.feed_token))
+    return HttpResponse(final_xml, content_type='application/rss+xml')
 
 def generate_network_mix_feed(request, network_slug, mix_slug):
     network_mix = get_object_or_404(NetworkMix, slug=mix_slug, network__slug=network_slug)
     feed_token = request.GET.get('auth')
-    
     profile = PatronProfile.objects.filter(feed_token=feed_token).first() if feed_token else None
     user = profile.user if profile else request.user
     
     mix_req_cents = network_mix.required_tier.minimum_cents if network_mix.required_tier else 0
     mix_membership = NetworkMembership.objects.filter(user=user, network=network_mix.network).first() if user.is_authenticated else None
     user_cents = mix_membership.patreon_pledge_cents if mix_membership else 0
-    
     is_owner = network_mix.network.owners.filter(id=user.id).exists() if user.is_authenticated else False
     user_meets_mix_tier = is_owner or (mix_req_cents == 0) or (user_cents >= mix_req_cents)
 
-    cache_key = f"network_mix_{network_mix.unique_id}_{feed_token}"
-    xml_output = cache.get(cache_key)
+    base_url = request.build_absolute_uri('/')[:-1]
+    builder = RSSFeedBuilder(base_url, network_mix.name, f"A curated network mix by {network_mix.network.name}.", network_mix.display_image or network_mix.network.default_image_url, network_mix.network)
+    raw_xml = builder.render()
+    header, footer = raw_xml.split('</channel>')[0], "</channel></rss>"
+    
+    episodes = Episode.objects.filter(podcast__in=network_mix.selected_podcasts.all()).select_related('podcast', 'podcast__network').order_by('-pub_date')[:5000]
+    
+    keys_and_eps = []
+    for ep in episodes:
+        ep_has_access, _ = _evaluate_access(user, ep.podcast, ep.podcast.network)
+        total_access = user_meets_mix_tier and ep_has_access
+        if not total_access and not ep.audio_url_public: continue
+        
+        feed_type = 'private' if total_access else 'public'
+        keys_and_eps.append((f"ep_frag_{feed_type}_{ep.id}", ep, total_access))
 
-    if not xml_output:
-        builder = RSSFeedBuilder(request, network_mix.name, f"A curated network mix by {network_mix.network.name}.", network_mix.display_image or network_mix.network.default_image_url, network_mix.network)
-        
-        for ep in Episode.objects.filter(podcast__in=network_mix.selected_podcasts.all()).select_related('podcast', 'podcast__network').order_by('-pub_date')[:5000]:
-            ep_has_access, _ = _evaluate_access(user, ep.podcast, ep.podcast.network)
-            total_access = user_meets_mix_tier and ep_has_access
-            
-            if not total_access and not ep.audio_url_public: continue
-            
-            audio_url = request.build_absolute_uri(reverse('play_episode', args=[ep.id]))
-            if feed_token: audio_url += f"?auth={feed_token}"
-            
-            builder.add_episode(ep, audio_url, total_access, display_title=f"[{ep.podcast.title}] {ep.title}")
-            
-        xml_output = builder.render()
-        cache.set(cache_key, xml_output, 300)
-        
-    return HttpResponse(xml_output, content_type='application/rss+xml')
+    fragments_dict = cache.get_many([k[0] for k in keys_and_eps])
+    
+    items_xml = ""
+    for key, ep, total_access in keys_and_eps:
+        frag = fragments_dict.get(key)
+        if not frag: frag = get_or_build_episode_fragment(ep, base_url, total_access)
+        frag = frag.replace('<title>', f'<title>[{ep.podcast.title}] ', 1)
+        items_xml += frag
+
+    final_xml = header + items_xml + footer
+    if feed_token: final_xml = final_xml.replace('__VECTO_AUTH_TOKEN__', str(feed_token))
+    else: final_xml = final_xml.replace('?auth=__VECTO_AUTH_TOKEN__', '') 
+
+    return HttpResponse(final_xml, content_type='application/rss+xml')
 
 def play_episode(request, episode_id):
     ep = get_object_or_404(Episode.objects.select_related('podcast', 'podcast__network'), id=episode_id)
@@ -1020,8 +1126,12 @@ def submit_episode_edit(request, episode_id):
             ep.clean_description = suggested_data.get('description', ep.clean_description)
             ep.tags = suggested_data.get('tags', ep.tags)
             ep.chapters_public = suggested_data.get('chapters', ep.chapters_public)
+            ep.is_metadata_locked = True
             ep.save()
             
+            base_url = request.build_absolute_uri('/')[:-1]
+            task_rebuild_episode_fragments.delay(ep.id, base_url)
+
             membership.trust_score = membership.trust_score + 5
             if suggested_data.get('chapters') != original_data.get('chapters'): membership.edits_chapters += len(suggested_data.get('chapters', []))
             if suggested_data.get('tags') != original_data.get('tags'): membership.edits_tags += 1

@@ -285,3 +285,69 @@ def task_sync_last_active_timestamps():
     
     if keys_to_delete:
         redis_client.delete(*keys_to_delete)
+
+@shared_task
+def task_generate_master_feeds(podcast_id, base_url):
+    # Import locally to avoid circular dependencies with tasks on boot
+    from pod_manager.views import RSSFeedBuilder 
+    
+    try:
+        podcast = Podcast.objects.get(id=podcast_id)
+        logger.info(f"Generating Master Feeds for {podcast.title}...")
+        
+        # 1. Build and Cache the Premium Master (7 Day Timeout)
+        premium_builder = RSSFeedBuilder(base_url, podcast.slug, feed_type='private')
+        premium_xml = premium_builder.render()
+        cache.set(f"master_feed_premium_{podcast.id}", premium_xml, timeout=604800)
+        
+        # 2. Build and Cache the Public Master (7 Day Timeout)
+        public_builder = RSSFeedBuilder(base_url, podcast.slug, feed_type='public')
+        public_xml = public_builder.render()
+        cache.set(f"master_feed_public_{podcast.id}", public_xml, timeout=604800)
+        
+        logger.info(f"Successfully cached Master Feeds for {podcast.title}.")
+        
+    except Podcast.DoesNotExist:
+        logger.error(f"Podcast {podcast_id} not found for master feed generation.")
+    except Exception as e:
+        logger.error(f"Failed to generate master feeds for {podcast_id}: {str(e)}")
+
+@shared_task
+def task_rebuild_episode_fragments(episode_id, base_url):
+    """Rebuilds just a single episode (Fast). Used for Inbox Approvals."""
+    from pod_manager.views import get_or_build_episode_fragment
+    try:
+        ep = Episode.objects.get(id=episode_id)
+        cache.delete(f"ep_frag_public_{ep.id}")
+        cache.delete(f"ep_frag_private_{ep.id}")
+        
+        # Pre-warm the cache immediately
+        get_or_build_episode_fragment(ep, base_url, False)
+        if ep.is_premium:
+            get_or_build_episode_fragment(ep, base_url, True)
+    except Episode.DoesNotExist:
+        pass
+
+@shared_task
+def task_rebuild_podcast_fragments(podcast_id, base_url):
+    """Rebuilds all fragments for a show (Heavy). Used for Footer Updates."""
+    from pod_manager.views import get_or_build_feed_shell, get_or_build_episode_fragment
+    try:
+        pod = Podcast.objects.get(id=podcast_id)
+        
+        # Rebuild Shell
+        cache.delete(f"feed_shell_public_{pod.id}")
+        cache.delete(f"feed_shell_private_{pod.id}")
+        get_or_build_feed_shell(pod, base_url, False)
+        get_or_build_feed_shell(pod, base_url, True)
+        
+        # Rebuild All Episode Fragments
+        for ep in pod.episodes.all():
+            cache.delete(f"ep_frag_public_{ep.id}")
+            cache.delete(f"ep_frag_private_{ep.id}")
+            get_or_build_episode_fragment(ep, base_url, False)
+            if ep.is_premium:
+                get_or_build_episode_fragment(ep, base_url, True)
+                
+    except Podcast.DoesNotExist:
+        pass

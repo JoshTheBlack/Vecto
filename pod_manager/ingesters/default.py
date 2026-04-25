@@ -7,11 +7,10 @@ import hashlib
 import logging
 from datetime import datetime
 from urllib.parse import urlparse
-from django.utils.dateparse import parse_datetime
 from django.utils.timezone import make_aware
 from django.conf import settings
-from email.utils import parsedate_to_datetime
 from pod_manager.models import Podcast, Episode
+from pod_manager.tasks import task_rebuild_episode_fragments
 from difflib import SequenceMatcher
 from bs4 import BeautifulSoup
 
@@ -265,6 +264,15 @@ def commit_episode(podcast, pub_entry, sub_entry, match_reason, stdout, enhancer
         enhancer(episode, pub_entry, sub_entry, is_new, stdout)
 
     episode.save()
+
+    network = podcast.network
+    if network.custom_domain:
+        base_url = f"https://{network.custom_domain}".rstrip('/')
+    else:
+        # Fallback for local dev or networks without a custom domain
+        base_url = getattr(settings, 'SITE_URL', 'http://localhost:8000').rstrip('/')
+
+    task_rebuild_episode_fragments.delay(episode.id, base_url)
     
     status = "Created" if is_new else ("Updated [LOCKED]" if episode.is_metadata_locked else "Updated")
     stdout.write(f"  -> [{status}] {episode.title}")

@@ -3,7 +3,7 @@ from django.contrib import admin
 from django.contrib.admin import SimpleListFilter
 from django.contrib.auth.admin import UserAdmin as BaseUserAdmin
 from django.contrib.auth.models import User
-from django.db.models import Q, F, BooleanField, ExpressionWrapper
+from django.db.models import Q, F, BooleanField, ExpressionWrapper, Sum
 from django.utils.html import format_html, mark_safe
 from django.urls import reverse
 from .models import Network, PatreonTier, Podcast, Episode, UserMix, PatronProfile, EpisodeEditSuggestion, NetworkMembership
@@ -183,13 +183,17 @@ class CustomUserAdmin(BaseUserAdmin):
     list_display = BaseUserAdmin.list_display + ('get_total_pledge_display', 'impersonate_action')
 
     # --- Column 1: Patreon Pledge ---
-    def get_total_pledge_display(self, instance):
-        if hasattr(instance, 'patron_profile') and instance.patron_profile.active_pledges:
-            total_cents = sum(instance.patron_profile.active_pledges.values())
-            return f"${total_cents / 100:.2f}"
-        return "$0.00"
+    def get_total_pledge_display(self, obj):
+        total_cents = NetworkMembership.objects.filter(
+            user=obj, 
+            is_active_patron=True
+        ).aggregate(
+            total=Sum('patreon_pledge_cents')
+        )['total'] or 0
+        
+        return f"${total_cents / 100:.2f}"
     
-    get_total_pledge_display.short_description = 'Total Pledge'
+    get_total_pledge_display.short_description = 'Total Network Pledge'
 
     # --- Column 2: Impersonation ---
     def impersonate_action(self, obj):

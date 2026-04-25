@@ -75,6 +75,7 @@ class Network(models.Model):
     owners = models.ManyToManyField(User, related_name="owned_networks", blank=True, help_text="Users who have admin access to this network's settings.")
     theme_config = models.JSONField(default=default_theme_config, blank=True)
     custom_domain = models.CharField(max_length=255, unique=True, blank=True, null=True, db_index=True)
+    contact_email = models.EmailField(default="hosts@example.com", help_text="The official contact email displayed in RSS feeds for podcatcher verification.")
     
     patreon_campaign_id = models.CharField(max_length=100, blank=True, help_text="The numeric ID of the Patreon Campaign")
     patreon_sync_enabled = models.BooleanField(default=False)
@@ -105,7 +106,7 @@ class Network(models.Model):
     banner_image_url = models.URLField(max_length=500, blank=True, null=True) # Maps to image_url
     patreon_url = models.URLField(max_length=500, blank=True, null=True)
     discord_server_id = models.CharField(max_length=100, blank=True, null=True)
-    
+
     auto_approve_trust_threshold = models.IntegerField(
         default=80, 
         help_text="Users with a trust score equal to or above this number bypass the review inbox. (Set to 101 to disable auto-approve)."
@@ -155,6 +156,7 @@ class Podcast(models.Model):
     network = models.ForeignKey(Network, on_delete=models.CASCADE, related_name='podcasts')
     title = models.TextField()
     slug = models.SlugField()
+    description = models.TextField(blank=True, null=True, help_text="The main description for the podcast feed.")
     
     public_feed_url = models.URLField(max_length=2000, blank=True, null=True)
     subscriber_feed_url = models.URLField(max_length=2000, blank=True, null=True)

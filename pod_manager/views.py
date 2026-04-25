@@ -493,7 +493,7 @@ def creator_settings(request):
 
             base_url = request.build_absolute_uri('/')[:-1]
             for pod in current_network.podcasts.all():
-                task_rebuild_podcast_fragments.delay(pod.id, base_url)
+                task_rebuild_podcast_fragments.delay(show.id, base_url)
 
         elif action == 'update_show':
             show_id = request.POST.get('show_id')

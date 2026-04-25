@@ -10,7 +10,7 @@ from urllib.parse import urlparse
 from django.utils.timezone import make_aware
 from django.conf import settings
 from pod_manager.models import Podcast, Episode
-from pod_manager.tasks import task_rebuild_episode_fragments, task_rebuild_podcast_fragments
+from pod_manager.tasks import task_rebuild_episode_fragments, task_rebuild_podcast_shell
 from difflib import SequenceMatcher
 from bs4 import BeautifulSoup
 
@@ -361,7 +361,7 @@ def run_ingest(podcast, stdout, enhancer=None):
         else:
             base_url = getattr(settings, 'SITE_URL', 'http://localhost:8000').rstrip('/')
             
-        task_rebuild_podcast_fragments.delay(podcast.id, base_url)
+        task_rebuild_podcast_shell.delay(podcast.id, base_url)
 
     private_pool = {}
     unmatched_private_audios = set()

@@ -10,7 +10,7 @@ from urllib.parse import urlparse
 from django.utils.timezone import make_aware
 from django.conf import settings
 from pod_manager.models import Podcast, Episode
-from pod_manager.tasks import task_rebuild_episode_fragments
+from pod_manager.tasks import task_rebuild_episode_fragments, task_rebuild_podcast_fragments
 from difflib import SequenceMatcher
 from bs4 import BeautifulSoup
 
@@ -297,6 +297,7 @@ def run_ingest(podcast, stdout, enhancer=None):
     # 3. Dynamic Title & Artwork Extraction
     feed_image = ""
     feed_title = ""
+    feed_description = ""
     source_data = public_data if public_data else sub_data
     
     if source_data and hasattr(source_data, 'feed'):
@@ -308,6 +309,11 @@ def run_ingest(podcast, stdout, enhancer=None):
             
         # Title extraction
         feed_title = source_data.feed.get('title', '')
+
+        # Description extraction
+        feed_description = source_data.feed.get('description', '')
+        if not feed_description:
+            feed_description = source_data.feed.get('summary', '')
 
     needs_save = False
 
@@ -337,9 +343,25 @@ def run_ingest(podcast, stdout, enhancer=None):
         stdout.write(f"  [Artwork Captured]: {feed_image}")
         needs_save = True
 
+    # Process and Update Description
+    if feed_description:
+        clean_desc = feed_description.strip()
+        if clean_desc and podcast.description != clean_desc:
+            logger.info(f"Updating podcast description for {podcast.title}")
+            podcast.description = clean_desc
+            stdout.write("  [Description Updated]")
+            needs_save = True
+
     # Save the database record only once if anything changed
     if needs_save:
         podcast.save()
+        network = podcast.network
+        if network.custom_domain:
+            base_url = f"https://{network.custom_domain}".rstrip('/')
+        else:
+            base_url = getattr(settings, 'SITE_URL', 'http://localhost:8000').rstrip('/')
+            
+        task_rebuild_podcast_fragments.delay(podcast.id, base_url)
 
     private_pool = {}
     unmatched_private_audios = set()

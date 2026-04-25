@@ -170,9 +170,21 @@ class RSSFeedBuilder:
                     chapter_url = self.request.build_absolute_uri(reverse('episode_chapters', args=[ep.id, ftype]))
                     chap_elem = etree.SubElement(item, f'{{{podcast_ns}}}chapters')
                     chap_elem.set('url', chapter_url)
-                    chap_elem.set('type', 'application/json')
                     
-        return etree.tostring(root, encoding='utf-8', xml_declaration=True).decode('utf-8')
+                    # Updated to the official Podcasting 2.0 MIME type requirement
+                    chap_elem.set('type', 'application/json+chapters')
+                    
+        # 1. Convert the lxml tree back into a raw string
+        final_xml = etree.tostring(root, encoding='utf-8', xml_declaration=True).decode('utf-8')
+        
+        # 2. Strip the inline namespace lxml tried to force onto the child tags
+        final_xml = final_xml.replace(f' xmlns:podcast="{podcast_ns}"', '')
+        
+        # 3. Force it into the root <rss> tag exactly where PocketCasts expects it
+        if 'xmlns:podcast' not in final_xml:
+            final_xml = final_xml.replace('<rss ', f'<rss xmlns:podcast="{podcast_ns}" ', 1)
+            
+        return final_xml
 
 # ==========================================
 # 3. PATREON SYNC ENGINE (MULTI-TENANT)
@@ -782,7 +794,24 @@ def episode_chapters(request, episode_id, feed_type):
     ep = get_object_or_404(Episode, id=episode_id)
     data = ep.chapters_public or ep.chapters_private if feed_type == 'public' else ep.chapters_private or ep.chapters_public
     if not data: raise Http404("Chapters not found.")
-    response = JsonResponse(data)
+    
+    # Check if the DB holds a raw legacy list or the new dict format
+    if isinstance(data, list):
+        payload = {
+            "version": "1.2.0",
+            "chapters": data
+        }
+    elif isinstance(data, dict):
+        payload = data
+        # Inject the mandatory version string if the database object lacks it
+        if "version" not in payload:
+            payload["version"] = "1.2.0"
+        if "chapters" not in payload:
+            payload["chapters"] = []
+    else:
+        raise Http404("Invalid chapter format in database.")
+        
+    response = JsonResponse(payload, safe=False)
     response["Access-Control-Allow-Origin"] = "*"
     return response
 
@@ -922,6 +951,56 @@ def submit_episode_edit(request, episode_id):
         
     try:
         suggested_data = json.loads(payload_str)
+        
+        # --- STRICT CHAPTER & LOCATION SANITIZATION ---
+        raw_chapters_input = suggested_data.get('chapters', [])
+        
+        # Detect if the payload came in as a dict (waypoints enabled) or list
+        is_dict_format = isinstance(raw_chapters_input, dict)
+        raw_chap_list = raw_chapters_input.get('chapters', []) if is_dict_format else raw_chapters_input
+        waypoints_enabled = raw_chapters_input.get('waypoints', False) if is_dict_format else False
+
+        clean_chapters = []
+        for chap in raw_chap_list:
+            if 'startTime' in chap and 'title' in chap:
+                try:
+                    c = {
+                        "startTime": float(chap['startTime']),
+                        "title": str(chap['title']).strip()
+                    }
+                    if 'endTime' in chap and chap['endTime'] not in [None, ""]:
+                        c['endTime'] = float(chap['endTime'])
+                    if 'url' in chap and str(chap['url']).startswith('http'):
+                        c['url'] = str(chap['url']).strip()
+                    if 'img' in chap and str(chap['img']).startswith('http'):
+                        c['img'] = str(chap['img']).strip()
+                    
+                    # Explicitly store toc if set to false
+                    if 'toc' in chap and chap['toc'] is False:
+                        c['toc'] = False
+                        
+                    # Location object tagging
+                    if 'location' in chap and isinstance(chap['location'], dict):
+                        loc = chap['location']
+                        if 'name' in loc and 'geo' in loc:
+                            c_loc = {
+                                "name": str(loc['name']).strip(),
+                                "geo": str(loc['geo']).strip()
+                            }
+                            if 'osm' in loc and loc['osm']:
+                                c_loc['osm'] = str(loc['osm']).strip()
+                            c['location'] = c_loc
+
+                    clean_chapters.append(c)
+                except ValueError:
+                    pass 
+
+        # Package the validated data back into the shape the DB expects
+        if waypoints_enabled:
+            suggested_data['chapters'] = {"waypoints": True, "chapters": clean_chapters}
+        else:
+            suggested_data['chapters'] = clean_chapters
+
         network = ep.podcast.network
         membership, _ = NetworkMembership.objects.get_or_create(user=request.user, network=network)
         

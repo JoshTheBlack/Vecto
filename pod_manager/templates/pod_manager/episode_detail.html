@@ -282,31 +282,83 @@
             return seconds;
         }
 
-        window.addChapterRow = function(startTime = 0, title = "", url = "") {
+        // Parse existing data correctly (in case the DB holds the new dictionary format)
+        let chaptersList = Array.isArray(existingChapters) ? existingChapters : (existingChapters.chapters || []);
+        let existingWaypoints = !Array.isArray(existingChapters) && existingChapters.waypoints ? true : false;
+
+        // 1. Inject Global Waypoints Toggle
+        if (!document.getElementById('globalWaypointsWrapper')) {
+            const wpWrapper = document.createElement('div');
+            wpWrapper.id = 'globalWaypointsWrapper';
+            wpWrapper.className = 'form-check form-switch mb-3 p-3 bg-dark rounded border border-secondary';
+            wpWrapper.innerHTML = `
+                <input class="form-check-input ms-1" type="checkbox" role="switch" id="globalWaypoints" ${existingWaypoints ? 'checked' : ''}>
+                <label class="form-check-label ms-2 fw-bold text-light" for="globalWaypoints">Enable Waypoints <small class="text-muted fw-normal">(Connects locations into a route map)</small></label>
+            `;
+            chapterContainer.parentNode.insertBefore(wpWrapper, chapterContainer);
+        }
+
+        window.addChapterRow = function(startTime = 0, endTime = "", title = "", url = "", img = "", toc = true, location = null) {
             const row = document.createElement('div');
-            row.className = 'row g-2 align-items-center mb-2 chapter-row p-1 rounded';
+            row.className = 'row g-2 align-items-center mb-3 chapter-row p-3 rounded bg-dark border border-secondary';
+
+            const locName = location ? (location.name || "") : "";
+            const locGeo = location ? (location.geo || "") : "";
+            const locOsm = location ? (location.osm || "") : "";
+
             row.innerHTML = `
                 <div class="col-md-2">
+                    <label class="form-label small text-muted mb-1">Start Time</label>
                     <input type="text" class="form-control form-control-sm bg-black text-light border-secondary chap-time" placeholder="00:00:00" value="${formatTime(startTime)}">
                 </div>
-                <div class="col-md-4">
-                    <input type="text" class="form-control form-control-sm bg-black text-light border-secondary chap-title" placeholder="Chapter Title" value="${title}">
+                <div class="col-md-2">
+                    <label class="form-label small text-muted mb-1">End Time</label>
+                    <input type="text" class="form-control form-control-sm bg-black text-light border-secondary chap-endtime" placeholder="Optional" value="${endTime ? formatTime(endTime) : ''}">
                 </div>
-                <div class="col-md-5">
-                    <input type="text" class="form-control form-control-sm bg-black text-light border-secondary chap-url" placeholder="Optional URL/Link" value="${url}">
+                <div class="col-md-6">
+                    <label class="form-label small text-muted mb-1">Chapter Title</label>
+                    <input type="text" class="form-control form-control-sm bg-black text-light border-secondary chap-title" placeholder="Required" value="${title}">
                 </div>
-                <div class="col-md-1 text-end">
-                    <button type="button" class="btn btn-sm btn-outline-danger" onclick="this.closest('.chapter-row').remove()"><i class="bi bi-trash"></i></button>
+                <div class="col-md-2 text-end mt-4 d-flex justify-content-end gap-2">
+                    <button type="button" class="btn btn-sm btn-outline-info" title="Toggle Location" onclick="this.closest('.chapter-row').querySelector('.location-fields').classList.toggle('d-none')"><i class="bi bi-geo-alt"></i></button>
+                    <button type="button" class="btn btn-sm btn-outline-danger" title="Remove Chapter" onclick="this.closest('.chapter-row').remove()"><i class="bi bi-trash"></i></button>
+                </div>
+
+                <div class="col-md-5 mt-2">
+                    <input type="url" class="form-control form-control-sm bg-black text-light border-secondary chap-url" placeholder="Optional Link URL (https://...)" value="${url}">
+                </div>
+                <div class="col-md-5 mt-2">
+                    <input type="url" class="form-control form-control-sm bg-black text-light border-secondary chap-img" placeholder="Optional Image URL (https://...)" value="${img}">
+                </div>
+                <div class="col-md-2 mt-2 d-flex align-items-center">
+                    <div class="form-check form-switch ms-2 mt-1">
+                        <input class="form-check-input chap-toc" type="checkbox" role="switch" ${toc !== false ? 'checked' : ''}>
+                        <label class="form-check-label small text-muted">Visible (TOC)</label>
+                    </div>
+                </div>
+
+                <div class="col-12 mt-2 location-fields ${(locName || locGeo) ? '' : 'd-none'}">
+                    <div class="p-2 border border-info rounded bg-black d-flex gap-2">
+                        <div class="flex-grow-1">
+                            <input type="text" class="form-control form-control-sm bg-dark text-light border-secondary chap-loc-name" placeholder="Location Name (e.g. Elmyr, Atlanta)" value="${locName}">
+                        </div>
+                        <div class="flex-grow-1">
+                            <input type="text" class="form-control form-control-sm bg-dark text-light border-secondary chap-loc-geo" placeholder="GeoURI (e.g. geo:33.7653,-84.3494)" value="${locGeo}">
+                        </div>
+                        <div class="flex-grow-1">
+                            <input type="text" class="form-control form-control-sm bg-dark text-light border-secondary chap-loc-osm" placeholder="OSM URL (Optional)" value="${locOsm}">
+                        </div>
+                    </div>
                 </div>
             `;
             chapterContainer.appendChild(row);
         }
 
         // Initialize rows
-        if (existingChapters.length > 0) {
-            existingChapters.forEach(c => addChapterRow(c.startTime, c.title, c.url || ""));
+        if (chaptersList.length > 0) {
+            chaptersList.forEach(c => addChapterRow(c.startTime, c.endTime, c.title, c.url || "", c.img || "", c.toc, c.location));
         } else {
-            addChapterRow(); // Spawn a default blank row
+            addChapterRow();
         }
 
         // --- 4. PACKAGE DATA ON SUBMIT ---
@@ -315,29 +367,64 @@
                 const tagsInput = document.getElementById('editTags').value;
                 const tagsArray = tagsInput.split(',').map(t => t.trim()).filter(t => t);
                 const descInput = quill.root.innerHTML;
-                
-                const chapters = [];
+
+                const chaptersArray = [];
                 document.querySelectorAll('.chapter-row').forEach(row => {
                     const timeStr = row.querySelector('.chap-time').value;
+                    const endTimeStr = row.querySelector('.chap-endtime').value.trim();
                     const title = row.querySelector('.chap-title').value.trim();
                     const url = row.querySelector('.chap-url').value.trim();
-                    
-                    if (title) { // Only save if a title was actually entered
+                    const img = row.querySelector('.chap-img').value.trim();
+                    const toc = row.querySelector('.chap-toc').checked;
+
+                    const locName = row.querySelector('.chap-loc-name').value.trim();
+                    const locGeo = row.querySelector('.chap-loc-geo').value.trim();
+                    const locOsm = row.querySelector('.chap-loc-osm').value.trim();
+
+                    if (title && timeStr) {
                         const chap = { startTime: parseTime(timeStr), title: title };
-                        if (url) chap.url = url;
-                        chapters.push(chap);
+
+                        if (endTimeStr) {
+                            const parsedEnd = parseTime(endTimeStr);
+                            if (parsedEnd > chap.startTime) chap.endTime = parsedEnd;
+                        }
+
+                        if (url && url.startsWith('http')) chap.url = url;
+                        if (img && img.startsWith('http')) chap.img = img;
+
+                        // Only explicitly define toc if it is false (spec defaults to true)
+                        if (!toc) chap.toc = false;
+
+                        // Only add location object if both mandatory fields are present
+                        if (locName && locGeo) {
+                            chap.location = { name: locName, geo: locGeo };
+                            if (locOsm) chap.location.osm = locOsm;
+                        }
+
+                        chaptersArray.push(chap);
                     }
                 });
 
-                // Sort chapters chronologically
-                chapters.sort((a, b) => a.startTime - b.startTime);
+                chaptersArray.sort((a, b) => a.startTime - b.startTime);
+
+                // Build Final Payload Object
+                let finalChaptersPayload = chaptersArray;
+                const isWaypointsEnabled = document.getElementById('globalWaypoints').checked;
+
+                // If waypoints is checked, wrap the array in a root dict
+                if (isWaypointsEnabled) {
+                    finalChaptersPayload = {
+                        waypoints: true,
+                        chapters: chaptersArray
+                    };
+                }
 
                 const finalPayload = {
                     description: descInput,
                     tags: tagsArray,
-                    chapters: chapters
+                    chapters: finalChaptersPayload
                 };
-                
+
                 payloadInput.value = JSON.stringify(finalPayload);
             });
         }

@@ -102,11 +102,13 @@ class BillingPresenceMiddleware:
         self.get_response = get_response
 
     def __call__(self, request):
-        response = self.get_response(request)
-        
-        if request.user.is_authenticated and hasattr(request, 'network') and request.network:
+        # 1. WAY IN: Drop the billing flag immediately
+        if hasattr(request, 'user') and request.user.is_authenticated and hasattr(request, 'network') and request.network:
             if not request.path.startswith('/static/') and not request.path.startswith('/admin/'):
                 billing_key = f"billing:active:{request.network.id}:{request.user.id}:{timezone.now().strftime('%Y-%m-%d')}"
                 cache.set(billing_key, 1, timeout=172800)
-                    
+                logger.debug(f"BILLING MIDDLEWARE FIRED FOR USER {request.user.id}")
+
+        # 2. Process the view
+        response = self.get_response(request)
         return response

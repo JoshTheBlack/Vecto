@@ -243,7 +243,7 @@ def sweep_analytics_buffer():
     # ==========================================
     # NEW: BILLING PRESENCE SWEEP
     # ==========================================
-    active_keys = redis_client.keys("billing:active:*:*:*")
+    active_keys = redis_client.keys("*billing:active:*:*:*")
     billing_updates = []
     seen_memberships = set()
     

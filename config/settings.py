@@ -126,6 +126,7 @@ MIDDLEWARE = [
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
     'pod_manager.middleware.ImpersonationMiddleware',
     'pod_manager.middleware.NetworkMiddleware', 
+    'pod_manager.middleware.BillingPresenceMiddleware', 
 ]
 
 ROOT_URLCONF = 'config.urls'

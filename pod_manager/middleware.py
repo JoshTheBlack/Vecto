@@ -1,7 +1,9 @@
 import logging
+from django.core.cache import cache
 from django.http import Http404
 from django.shortcuts import render
 from django.contrib.auth.models import User
+from django.utils import timezone
 from django.utils.deprecation import MiddlewareMixin
 from .models import Network, NetworkMembership
 
@@ -94,3 +96,17 @@ class ImpersonationMiddleware(MiddlewareMixin):
                 
             except User.DoesNotExist:
                 del request.session['impersonated_user_id']
+
+class BillingPresenceMiddleware:
+    def __init__(self, get_response):
+        self.get_response = get_response
+
+    def __call__(self, request):
+        response = self.get_response(request)
+        
+        if request.user.is_authenticated and hasattr(request, 'network') and request.network:
+            if not request.path.startswith('/static/') and not request.path.startswith('/admin/'):
+                billing_key = f"billing:active:{request.network.id}:{request.user.id}:{timezone.now().strftime('%Y-%m-%d')}"
+                cache.set(billing_key, 1, timeout=172800)
+                    
+        return response

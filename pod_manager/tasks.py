@@ -80,26 +80,43 @@ def task_ingest_feed(show_id):
 def task_generate_monthly_invoices():
     logger.info("Starting monthly invoice generation...")
     networks = Network.objects.filter(patreon_sync_enabled=True)
-    thirty_days_ago = timezone.now() - timedelta(days=30)
+    thirty_days_ago_date = (timezone.now() - timedelta(days=30)).date()
 
     for network in networks:
-        active_count = NetworkMembership.objects.filter(
+        # 1. Query Active Patrons
+        active_patrons_count = NetworkMembership.objects.filter(
             network=network,
             is_active_patron=True,
-            user__patron_profile__last_active__gte=thirty_days_ago
+            last_active_date__gte=thirty_days_ago_date
         ).count()
 
-        active_user_cost = network.per_user_cost * active_count
-        total_due = network.base_cost + active_user_cost
+        # 2. Query Active Former/Free Listeners
+        active_former_count = NetworkMembership.objects.filter(
+            network=network,
+            is_active_patron=False,
+            last_active_date__gte=thirty_days_ago_date
+        ).count()
+
+        total_active_count = active_patrons_count + active_former_count
+
+        # Future-proof math: Currently both use the same multiplier
+        active_patron_cost = network.per_user_cost * active_patrons_count
+        active_former_cost = network.per_user_cost * active_former_count
+        
+        total_due = network.base_cost + active_patron_cost + active_former_cost
 
         if total_due <= 0:
             logger.info(f"Skipping invoice for {network.name} (Total Due: $0.00)")
             continue
 
+        # Pass the separated counts and costs to the HTML template
         html_string = render_to_string('pod_manager/invoice_template.html', {
             'network': network,
-            'active_count': active_count,
-            'active_user_cost': active_user_cost,
+            'active_patrons_count': active_patrons_count,
+            'active_former_count': active_former_count,
+            'total_active_count': total_active_count,
+            'active_patron_cost': active_patron_cost,
+            'active_former_cost': active_former_cost,
             'total_due': total_due,
             'date': timezone.now()
         })
@@ -111,11 +128,12 @@ def task_generate_monthly_invoices():
         else:
             pdf_bytes = pdfkit.from_string(html_string, False)
 
-        invoice = Invoice(network=network, amount_due=total_due, active_user_count=active_count)
+        # Record the combined total in the database for tracking
+        invoice = Invoice(network=network, amount_due=total_due, active_user_count=total_active_count)
         filename = f"{network.slug}_invoice_{timezone.now().strftime('%Y_%m')}.pdf"
         invoice.pdf_file.save(filename, ContentFile(pdf_bytes))
         
-        logger.info(f"Generated invoice for {network.name}: ${total_due}")
+        logger.info(f"Generated invoice for {network.name}: ${total_due} ({active_patrons_count} Patrons, {active_former_count} Former)")
 
 @shared_task
 def sweep_analytics_buffer():
@@ -219,6 +237,46 @@ def sweep_analytics_buffer():
         redis_client.delete(*keys_to_delete)
         
     logger.info(f"Sweep complete. Updated {len(memberships_to_save)} Network Memberships.")
+
+    # ... [Existing gamification bulk update code remains exactly as is] ...
+
+    # ==========================================
+    # NEW: BILLING PRESENCE SWEEP
+    # ==========================================
+    active_keys = redis_client.keys("billing:active:*:*:*")
+    billing_updates = []
+    seen_memberships = set()
+    
+    if active_keys:
+        for key_bytes in active_keys:
+            key_str = key_bytes.decode('utf-8')
+            parts = key_str.split(':')
+            
+            if len(parts) == 5:
+                net_id = int(parts[2])
+                user_id = int(parts[3])
+                date_str = parts[4]
+                
+                # Prevent querying the same membership multiple times if multiple days are cached
+                mem_key = (net_id, user_id)
+                if mem_key not in seen_memberships:
+                    mem = NetworkMembership.objects.filter(network_id=net_id, user_id=user_id).first()
+                    if mem:
+                        mem.last_active_date = date_str
+                        billing_updates.append(mem)
+                    seen_memberships.add(mem_key)
+                        
+        if billing_updates:
+            NetworkMembership.objects.bulk_update(billing_updates, ['last_active_date'])
+            logger.info(f"Updated {len(billing_updates)} billing presence timestamps.")
+            
+        redis_client.delete(*active_keys)
+        
+    # Finally, delete the old gamification keys
+    if keys_to_delete:
+        redis_client.delete(*keys_to_delete)
+        
+    logger.info("Sweep complete.")
     
 @shared_task
 def task_sync_network_patrons(network_id):
@@ -243,48 +301,6 @@ def task_sync_all_networks():
 def task_clean_mix_images():
     logger.info("Running nightly sweep of orphaned mix images.")
     call_command('clean_mix_images')
-
-@shared_task
-def task_sync_last_active_timestamps():
-    if 'locmem' in settings.CACHES['default']['BACKEND'].lower():
-        logger.info("Local memory cache detected, skipping Redis sweep.")
-        return
-
-    redis_url = settings.CACHES['default']['LOCATION']
-    redis_client = redis.from_url(redis_url)
-    
-    keys = redis_client.keys("*buffer_last_active_*")
-    if not keys:
-        logger.info("No active timestamps to sync.")
-        return
-
-    profiles_to_update = []
-    keys_to_delete = []
-
-    for key_bytes in keys:
-        key_str = key_bytes.decode('utf-8')
-        clean_key = key_str.split('buffer_last_active_')[-1]
-        
-        try:
-            profile_id = int(clean_key)
-            last_active_time = cache.get(f"buffer_last_active_{profile_id}")
-            
-            if last_active_time:
-                profile = PatronProfile(id=profile_id)
-                profile.last_active = last_active_time
-                profiles_to_update.append(profile)
-                keys_to_delete.append(key_str) 
-                
-        except (ValueError, TypeError):
-            continue
-
-    if profiles_to_update:
-        PatronProfile.objects.bulk_update(profiles_to_update, ['last_active'])
-        logger.info(f"Successfully bulk-updated {len(profiles_to_update)} user activity timestamps.")
-
-    
-    if keys_to_delete:
-        redis_client.delete(*keys_to_delete)
 
 @shared_task
 def task_rebuild_episode_fragments(episode_id, base_url):

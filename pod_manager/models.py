@@ -322,7 +322,6 @@ class PatronProfile(models.Model):
 
     last_sync = models.DateTimeField(auto_now=True)
     feed_token = models.UUIDField(default=uuid.uuid4, editable=False, unique=True)
-    last_active = models.DateTimeField(auto_now_add=True)
     
     def __str__(self):
         return f"{self.user.email} - Profile"
@@ -336,6 +335,9 @@ class NetworkMembership(models.Model):
     patreon_pledge_cents = models.IntegerField(default=0)
     is_active_patron = models.BooleanField(default=False)
     
+    # Billing Presence Tracker ---
+    last_active_date = models.DateField(null=True, blank=True, db_index=True, help_text="The last date this user interacted with this network's web or RSS properties.")
+
     # Gamification & Stats
     trust_score = models.IntegerField(default=100)
     total_playback_hits = models.IntegerField(default=0)
@@ -460,27 +462,6 @@ class EpisodeEditSuggestion(models.Model):
 
     def __str__(self):
         return f"Edit by {self.user.username} for {self.episode.title} ({self.status})"
-
-class FeedAnalytics(models.Model):
-    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='feed_analytics')
-    network = models.ForeignKey(Network, on_delete=models.CASCADE, related_name='analytics')
-    # Nullable because a User Mix feed isn't tied to a single podcast
-    podcast = models.ForeignKey(Podcast, on_delete=models.CASCADE, null=True, blank=True, related_name='analytics')
-    
-    date = models.DateField()
-    rss_hits = models.IntegerField(default=0)
-    playback_hits = models.IntegerField(default=0)
-
-    class Meta:
-        # Ensure we only have one row per user, per show, per day
-        unique_together = ('user', 'network', 'podcast', 'date')
-        indexes = [
-            models.Index(fields=['date', 'network']),
-            models.Index(fields=['user', 'date']),
-        ]
-
-    def __str__(self):
-        return f"{self.user.username} - {self.date} - RSS: {self.rss_hits} | Plays: {self.playback_hits}"
 
 @receiver(post_delete, sender=NetworkMix)
 def auto_delete_file_on_delete_network_mix(sender, instance, **kwargs):

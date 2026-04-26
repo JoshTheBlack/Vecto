@@ -198,60 +198,91 @@ class RSSFeedBuilder:
 # ==========================================
 
 def _sync_patron_profile(user, user_data, included_data, current_network=None):
+    logger.info(f"[_sync_patron_profile] Starting sync for user: {user.email} (ID: {user.id})")
+    
     patreon_id = user_data.get('id')
     attributes = user_data.get('attributes', {})
+    logger.debug(f"[_sync_patron_profile] Extracted Patreon ID: {patreon_id}")
     
     # 1. Update Global Profile
-    profile, _ = PatronProfile.objects.get_or_create(user=user, defaults={'patreon_id': patreon_id})
+    profile, created = PatronProfile.objects.get_or_create(user=user, defaults={'patreon_id': patreon_id})
+    logger.debug(f"[_sync_patron_profile] PatronProfile created: {created}")
+    
     profile.profile_image_url = attributes.get('image_url')
     socials = attributes.get('social_connections', {}) or {}
     discord_info = socials.get('discord') or {}
     profile.discord_id = discord_info.get('user_id') if discord_info else None
     profile.last_active = timezone.now()
-    if profile.patreon_id != patreon_id: profile.patreon_id = patreon_id
+    if profile.patreon_id != patreon_id: 
+        profile.patreon_id = patreon_id
     profile.save()
+    logger.info("[_sync_patron_profile] Global profile saved successfully.")
 
     # Even if they pay $0, they are now a registered free listener on this network.
     if current_network:
-        NetworkMembership.objects.get_or_create(user=user, network=current_network)
+        _, mem_created = NetworkMembership.objects.get_or_create(user=user, network=current_network)
+        logger.info(f"[_sync_patron_profile] Default NetworkMembership for '{current_network.name}' ensured (Created: {mem_created}).")
 
-    known_campaigns = {str(n.patreon_campaign_id): n for n in Network.objects.exclude(patreon_campaign_id__isnull=True)}
+    # FIX INCLUDED: Exclude empty strings to prevent dictionary overwrite bugs!
+    known_campaigns = {str(n.patreon_campaign_id): n for n in Network.objects.exclude(patreon_campaign_id__isnull=True).exclude(patreon_campaign_id__exact='')}
+    logger.info(f"[_sync_patron_profile] Known campaigns loaded: {list(known_campaigns.keys())}")
+    
     seen_campaigns = set()
+    logger.debug(f"[_sync_patron_profile] Scanning {len(included_data)} items in included_data...")
     
     for item in included_data:
         if item.get('type') == 'member':
             attrs = item.get('attributes', {})
             campaign_data = item.get('relationships', {}).get('campaign', {}).get('data', {})
             
+            logger.debug(f"[_sync_patron_profile] Found 'member' item. Status: '{attrs.get('patron_status')}', Cents: {attrs.get('currently_entitled_amount_cents')}")
+            
             if campaign_data:
                 campaign_id = str(campaign_data.get('id'))
+                logger.debug(f"[_sync_patron_profile] Member item is attached to Campaign ID: {campaign_id}")
+                
                 if campaign_id in known_campaigns:
                     seen_campaigns.add(campaign_id)
                     network = known_campaigns[campaign_id]
+                    logger.info(f"[_sync_patron_profile] Campaign MATCH! Mapping to Network: '{network.name}'")
                     
-                    membership, _ = NetworkMembership.objects.get_or_create(user=user, network=network)
+                    membership, mem_created = NetworkMembership.objects.get_or_create(user=user, network=network)
                     
                     if attrs.get('patron_status') == 'active_patron':
-                        membership.patreon_pledge_cents = attrs.get('currently_entitled_amount_cents', 0)
+                        cents = attrs.get('currently_entitled_amount_cents', 0)
+                        logger.info(f"[_sync_patron_profile] Applying ACTIVE pledge to '{network.name}': {cents} cents.")
+                        membership.patreon_pledge_cents = cents
                         membership.is_active_patron = True
                         
                         start_date_str = attrs.get('pledge_relationship_start')
                         if start_date_str:
                             try:
                                 membership.patreon_join_date = timezone.datetime.fromisoformat(start_date_str.replace('Z', '+00:00'))
-                            except Exception: pass
+                            except Exception as e: 
+                                logger.error(f"[_sync_patron_profile] Date parsing failed: {e}")
                     else:
+                        logger.info(f"[_sync_patron_profile] Patron status is '{attrs.get('patron_status')}'. Setting {network.name} pledge to 0.")
                         membership.patreon_pledge_cents = 0
                         membership.is_active_patron = False
                         
                     membership.save()
+                else:
+                    logger.warning(f"[_sync_patron_profile] Ignoring member item: Campaign ID '{campaign_id}' is NOT in our database.")
+            else:
+                logger.warning("[_sync_patron_profile] Ignoring member item: No campaign relationship data found.")
 
+    logger.info(f"[_sync_patron_profile] Checking for stale memberships. Seen campaigns: {list(seen_campaigns)}")
+    
+    # Check if the user has any active memberships that were NOT confirmed in this API response
     for mem in NetworkMembership.objects.filter(user=user, is_active_patron=True):
-        if str(mem.network.patreon_campaign_id) not in seen_campaigns:
+        camp_id = str(mem.network.patreon_campaign_id)
+        if camp_id not in seen_campaigns:
+            logger.info(f"[_sync_patron_profile] REVOKING stale membership for '{mem.network.name}' (Campaign ID '{camp_id}' was not in API response).")
             mem.is_active_patron = False
             mem.patreon_pledge_cents = 0
             mem.save()
 
+    logger.info("[_sync_patron_profile] Sync complete.")
     return profile
 
 def sync_network_patrons(network):
@@ -923,8 +954,9 @@ def generate_custom_feed(request):
     final_xml = final_xml.replace('__VECTO_AUTH_TOKEN__', str(profile.feed_token))
     
     analytics_key = f"analytics:rss:{profile.id}"
-    if cache.get(analytics_key): cache.incr(analytics_key)
-    else: cache.set(analytics_key, 1, timeout=172800)
+    cache.incr(analytics_key) if cache.get(analytics_key) else cache.set(analytics_key, 1, timeout=172800)
+    billing_key = f"billing:active:{podcast.network_id}:{profile.user_id}:{timezone.now().strftime('%Y-%m-%d')}"
+    cache.set(billing_key, 1, timeout=172800)
 
     return HttpResponse(final_xml, content_type='application/rss+xml')
 
@@ -978,6 +1010,16 @@ def generate_mix_feed(request, unique_id):
 
     final_xml = header + items_xml + footer
     final_xml = final_xml.replace('__VECTO_AUTH_TOKEN__', str(user_mix.user.patron_profile.feed_token))
+    
+    # Get all distinct network IDs attached to the podcasts in this mix
+    today_str = timezone.now().strftime('%Y-%m-%d')
+    network_ids = set(user_mix.selected_podcasts.values_list('network_id', flat=True))
+    
+    for net_id in network_ids:
+        billing_key = f"billing:active:{net_id}:{user_mix.user.id}:{today_str}"
+        cache.set(billing_key, 1, timeout=172800)
+    # ==========================================
+
     return HttpResponse(final_xml, content_type='application/rss+xml')
 
 def generate_network_mix_feed(request, network_slug, mix_slug):
@@ -1020,7 +1062,9 @@ def generate_network_mix_feed(request, network_slug, mix_slug):
     final_xml = header + items_xml + footer
     if feed_token: final_xml = final_xml.replace('__VECTO_AUTH_TOKEN__', str(feed_token))
     else: final_xml = final_xml.replace('?auth=__VECTO_AUTH_TOKEN__', '') 
-
+    if user and user.is_authenticated:
+        billing_key = f"billing:active:{network_mix.network_id}:{user.id}:{timezone.now().strftime('%Y-%m-%d')}"
+        cache.set(billing_key, 1, timeout=172800)
     return HttpResponse(final_xml, content_type='application/rss+xml')
 
 def play_episode(request, episode_id):
@@ -1035,6 +1079,8 @@ def play_episode(request, episode_id):
             if has_access:
                 ck = f"analytics:play:{profile.id}:{ep.id}:{ep.podcast_id}"
                 cache.incr(ck) if cache.get(ck) else cache.set(ck, 1, 172800)
+                billing_key = f"billing:active:{ep.podcast.network_id}:{profile.user_id}:{timezone.now().strftime('%Y-%m-%d')}"
+                cache.set(billing_key, 1, timeout=172800)
             
     target_url = ep.audio_url_subscriber if (has_access and ep.audio_url_subscriber) else ep.audio_url_public
     if not target_url: raise Http404("Audio file not found.")

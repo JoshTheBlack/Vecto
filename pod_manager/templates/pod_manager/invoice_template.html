@@ -7,7 +7,7 @@
         .invoice-details { margin-top: 40px; }
         table { width: 100%; border-collapse: collapse; margin-top: 20px; }
         th, td { padding: 12px; text-align: left; border-bottom: 1px solid #ddd; }
-        .total-row { font-weight: bold; font-size: 1.2em; border-top: 2px solid #333; }
+        .total-row td { font-weight: bold; font-size: 1.2em; border-top: 2px solid #333; border-bottom: none; }
         .no-tax { color: #666; font-size: 0.9em; margin-top: 30px; font-style: italic; }
     </style>
 </head>
@@ -34,20 +34,34 @@
                 <tr>
                     <td>Platform Base Fee</td>
                     <td>1</td>
-                    <td>${{ network.base_cost }}</td>
-                    <td>${{ network.base_cost }}</td>
+                    <td>${{ network.base_cost|floatformat:2 }}</td>
+                    <td>${{ network.base_cost|floatformat:2 }}</td>
                 </tr>
+
+                {% if active_patrons_count > 0 %}
                 <tr>
-                    <td>Active Listeners (30-Day Active)</td>
-                    <td>{{ active_count }}</td>
-                    <td>${{ network.per_user_cost }}</td>
-                    <td>${{ active_user_cost }}</td>
+                    <td>Active Patrons (30-Day Active)</td>
+                    <td>{{ active_patrons_count }}</td>
+                    <td>${{ network.per_user_cost|floatformat:2 }}</td>
+                    <td>${{ active_patron_cost|floatformat:2 }}</td>
                 </tr>
+                {% endif %}
+
+                {% if active_former_count > 0 %}
+                <tr>
+                    <td>Active Former Patrons (30-Day Active)</td>
+                    <td>{{ active_former_count }}</td>
+                    <td>${{ network.per_user_cost|floatformat:2 }}</td>
+                    <td>${{ active_former_cost|floatformat:2 }}</td>
+                </tr>
+                {% endif %}
+            </tbody>
+            <tfoot>
                 <tr class="total-row">
                     <td colspan="3" style="text-align: right;">Total Due:</td>
-                    <td>${{ total_due }}</td>
+                    <td>${{ total_due|floatformat:2 }}</td>
                 </tr>
-            </tbody>
+            </tfoot>
         </table>
     </div>
 

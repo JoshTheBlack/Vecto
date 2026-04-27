@@ -2,6 +2,7 @@ import uuid, os, base64, logging
 from decimal import Decimal
 from django.db import models
 from django.contrib.auth.models import User
+from django.core.cache import cache
 from django.core.files.base import ContentFile
 from django.core.files.storage import FileSystemStorage
 from django.db.models.signals import post_delete
@@ -121,6 +122,19 @@ class Network(models.Model):
     # Billing Configuration
     base_cost = models.DecimalField(max_digits=10, decimal_places=2, default=Decimal('0.00'), help_text="Flat monthly platform fee")
     per_user_cost = models.DecimalField(max_digits=10, decimal_places=2, default=Decimal('0.00'), help_text="Cost per active 30-day patron")
+
+    def save(self, *args, **kwargs):
+        super().save(*args, **kwargs)
+        
+        # Automatically invalidate podcast shells when the network is updated 
+        # (Catches changes made via the Django /admin panel)
+        try:
+            from django.core.cache import cache
+            for pod in self.podcasts.all():
+                cache.delete(f"feed_shell_public_{pod.id}")
+                cache.delete(f"feed_shell_private_{pod.id}")
+        except Exception as e:
+            pass # Failsafe during initial migrations or empty DBs
 
     def __str__(self):
         return self.name

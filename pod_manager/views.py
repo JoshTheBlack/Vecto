@@ -918,6 +918,25 @@ def user_feeds(request):
     feed_data = []
     available_podcasts = []
     
+    # PROCESS NETWORK MIXES FIRST (So they group at the top of the UI)
+    network_mixes = NetworkMix.objects.filter(network=request.network)
+    for mix in network_mixes:
+        mix_req_cents = mix.required_tier.minimum_cents if mix.required_tier else 0
+        user_cents = tenant_profile.patreon_pledge_cents if tenant_profile else 0
+        is_owner = request.network.owners.filter(id=request.user.id).exists() if request.user.is_authenticated else False
+        
+        mix.has_access = is_owner or (mix_req_cents == 0) or (user_cents >= mix_req_cents)
+        mix.feed_url = request.build_absolute_uri(reverse('network_mix_feed', args=[request.network.slug, mix.slug])) + (f"?auth={profile.feed_token}" if profile else "")
+        
+        # FIX: Append to feed_data so the HTML template can actually render it!
+        feed_data.append({
+            'is_network_mix': True, 
+            'mix': mix, 
+            'has_access': mix.has_access, 
+            'feed_url': mix.feed_url
+        })
+
+    # PROCESS STANDARD PODCASTS
     for podcast in Podcast.objects.filter(network=request.network).select_related('network', 'required_tier'):
         has_access, is_owner = _evaluate_access(request.user, podcast, request.network)
         
@@ -934,22 +953,12 @@ def user_feeds(request):
             feed_data.append({'is_network_mix': False, 'podcast': podcast, 'has_access': False, 'feed_url': request.build_absolute_uri(raw_url)})
 
     user_mixes = UserMix.objects.filter(user=request.user, network=request.network, is_active=True).prefetch_related('selected_podcasts') if request.user.is_authenticated else []
-    
-    network_mixes = NetworkMix.objects.filter(network=request.network)
-    for mix in network_mixes:
-        mix_req_cents = mix.required_tier.minimum_cents if mix.required_tier else 0
-        user_cents = tenant_profile.patreon_pledge_cents if tenant_profile else 0
-        is_owner = request.network.owners.filter(id=request.user.id).exists() if request.user.is_authenticated else False
-        
-        mix.has_access = is_owner or (mix_req_cents == 0) or (user_cents >= mix_req_cents)
-        mix.feed_url = request.build_absolute_uri(reverse('network_mix_feed', args=[request.network.slug, mix.slug])) + (f"?auth={profile.feed_token}" if profile else "")
 
     context = {
         'profile': profile, 
         'tenant_profile': tenant_profile, 
         'feed_data': feed_data,
         'user_mixes': user_mixes,
-        'network_mixes': network_mixes,
         'current_network': request.network,
         'available_podcasts': available_podcasts
     }

@@ -33,6 +33,61 @@
     .nav-tabs .nav-link.active { border-bottom-color: transparent !important; }
     .chapter-row { transition: all 0.2s ease-in-out; }
     .chapter-row:hover { background-color: rgba(255, 255, 255, 0.05); }
+
+    /* ---- TAG PILL INPUT (matches inbox tab) ---- */
+    .tag-input-wrapper {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.4rem;
+        align-items: center;
+        padding: 0.5rem;
+        border: 1px solid var(--bs-secondary);
+        border-radius: 0.375rem;
+        background-color: #212529; /* bg-dark */
+        min-height: 2.75rem;
+        cursor: text;
+    }
+    .tag-input-wrapper:focus-within {
+        border-color: var(--bs-warning);
+        box-shadow: 0 0 0 0.2rem rgba(255, 193, 7, 0.15);
+    }
+    .tag-input-wrapper .tag-input-field {
+        flex: 1 1 8rem;
+        min-width: 6rem;
+        border: 0;
+        outline: 0;
+        background: transparent;
+        color: #f8f9fa;
+        padding: 0.15rem 0.25rem;
+        font-size: 0.95rem;
+    }
+    .tag-input-wrapper .tag-input-field::placeholder {
+        color: rgba(248, 249, 250, 0.4);
+    }
+    .tag-pill {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.4rem;
+        padding: 0.3rem 0.7rem;
+        border: 1px solid var(--bs-secondary);
+        border-radius: 999px;
+        background-color: rgba(255, 255, 255, 0.06);
+        color: #f8f9fa;
+        font-size: 0.875rem;
+        line-height: 1.2;
+    }
+    .tag-pill .tag-remove {
+        background: none;
+        border: 0;
+        color: #f8f9fa;
+        opacity: 0.5;
+        cursor: pointer;
+        padding: 0;
+        font-weight: bold;
+        line-height: 1;
+        font-size: 1rem;
+    }
+    .tag-pill .tag-remove:hover { opacity: 1; color: #dc3545; }
 </style>
 
 <nav aria-label="breadcrumb" class="mb-4">
@@ -174,20 +229,26 @@
                         
                         <div class="row mb-4">
                             <div class="col-12 mb-3">
-                                <label class="form-label text-light fw-bold">Tags (Comma Separated)</label>
-                                <input type="text" class="form-control bg-dark text-light border-secondary" id="editTags" value="{{ ep.tags|join:', ' }}">
-                            </div>
-                            <div class="col-12">
-                                <label class="form-label text-light fw-bold">Clean Description</label>
-                                <div id="editDescContainer" class="bg-dark text-light">
-                                    {{ ep.clean_description|default:ep.raw_description|safe }}
+                                <label class="form-label text-light fw-bold">Tags <small class="text-muted fw-normal">(press Enter or comma to add)</small></label>
+                                <div id="editTagsWrapper" class="tag-input-wrapper">
+                                    <input type="text" class="tag-input-field" placeholder="Type a tag, press Enter…">
                                 </div>
+                                {{ ep.tags|default_if_none:""|json_script:"existing-tags" }}
                             </div>
                         </div>
 
-                        <div class="mb-4">
-                            <label class="form-label text-light fw-bold mb-2">Chapters / Timestamps</label>
-                            
+                        <div class="mb-5">
+                            <label class="form-label text-light fw-bold">Clean Description</label>
+                            <div id="editDescContainer" class="bg-dark text-light">
+                                {{ ep.clean_description|default:ep.raw_description|safe }}
+                            </div>
+                        </div>
+
+                        <div class="mb-4 pt-3 border-top border-secondary">
+                            <h5 class="text-light fw-bold mb-3">
+                                <i class="bi bi-list-ol text-warning me-1"></i> Chapters / Timestamps
+                            </h5>
+
                             <div class="bg-dark border border-secondary rounded p-3 mb-3" id="chapterContainer">
                                 </div>
                             
@@ -286,16 +347,18 @@
         let chaptersList = Array.isArray(existingChapters) ? existingChapters : (existingChapters.chapters || []);
         let existingWaypoints = !Array.isArray(existingChapters) && existingChapters.waypoints ? true : false;
 
-        // 1. Inject Global Waypoints Toggle
+        // 1. Inject Global Waypoints Toggle (as the first row INSIDE the chapter container,
+        //    so it visually belongs to the Chapters section rather than sitting between the
+        //    description and chapters as a separate-looking box).
         if (!document.getElementById('globalWaypointsWrapper')) {
             const wpWrapper = document.createElement('div');
             wpWrapper.id = 'globalWaypointsWrapper';
-            wpWrapper.className = 'form-check form-switch mb-3 p-3 bg-dark rounded border border-secondary';
+            wpWrapper.className = 'form-check form-switch pb-3 mb-3 border-bottom border-secondary';
             wpWrapper.innerHTML = `
                 <input class="form-check-input ms-1" type="checkbox" role="switch" id="globalWaypoints" ${existingWaypoints ? 'checked' : ''}>
                 <label class="form-check-label ms-2 fw-bold text-light" for="globalWaypoints">Enable Waypoints <small class="text-muted fw-normal">(Connects locations into a route map)</small></label>
             `;
-            chapterContainer.parentNode.insertBefore(wpWrapper, chapterContainer);
+            chapterContainer.insertBefore(wpWrapper, chapterContainer.firstChild);
         }
 
         window.addChapterRow = function(startTime = 0, endTime = "", title = "", url = "", img = "", toc = true, location = null) {
@@ -361,11 +424,76 @@
             addChapterRow();
         }
 
+        // --- 3.5. TAG PILL WIDGET ---
+        const tagWrapper = document.getElementById('editTagsWrapper');
+        const tagInputField = tagWrapper ? tagWrapper.querySelector('.tag-input-field') : null;
+
+        let currentTags = [];
+        try {
+            const raw = document.getElementById('existing-tags');
+            if (raw && raw.textContent.trim()) {
+                const parsed = JSON.parse(raw.textContent);
+                if (Array.isArray(parsed)) currentTags = parsed.map(String);
+            }
+        } catch (e) {
+            console.warn('Could not parse existing tags', e);
+        }
+
+        function renderTagPills() {
+            // Remove every pill (keep the input field at the end)
+            tagWrapper.querySelectorAll('.tag-pill').forEach(p => p.remove());
+            currentTags.forEach((tag, idx) => {
+                const pill = document.createElement('span');
+                pill.className = 'tag-pill';
+                pill.innerHTML = '<span class="tag-text"></span><button type="button" class="tag-remove" aria-label="Remove tag">&times;</button>';
+                pill.querySelector('.tag-text').textContent = tag;
+                pill.querySelector('.tag-remove').addEventListener('click', () => {
+                    currentTags.splice(idx, 1);
+                    renderTagPills();
+                });
+                tagWrapper.insertBefore(pill, tagInputField);
+            });
+        }
+
+        function commitPendingTagInput() {
+            if (!tagInputField) return;
+            const raw = tagInputField.value.trim().replace(/,$/, '').trim();
+            if (!raw) return;
+            // Allow comma-separated bulk paste
+            raw.split(',').map(t => t.trim()).filter(Boolean).forEach(t => {
+                if (!currentTags.includes(t)) currentTags.push(t);
+            });
+            tagInputField.value = '';
+            renderTagPills();
+        }
+
+        if (tagInputField) {
+            tagInputField.addEventListener('keydown', (e) => {
+                if (e.key === 'Enter' || e.key === ',') {
+                    e.preventDefault();
+                    commitPendingTagInput();
+                } else if (e.key === 'Backspace' && tagInputField.value === '' && currentTags.length) {
+                    currentTags.pop();
+                    renderTagPills();
+                }
+            });
+            tagInputField.addEventListener('blur', commitPendingTagInput);
+        }
+        if (tagWrapper) {
+            tagWrapper.addEventListener('click', (e) => {
+                // Clicking empty wrapper space focuses the typing input
+                if (e.target === tagWrapper && tagInputField) tagInputField.focus();
+            });
+        }
+
+        renderTagPills();
+
         // --- 4. PACKAGE DATA ON SUBMIT ---
         if (form) {
             form.addEventListener('submit', (e) => {
-                const tagsInput = document.getElementById('editTags').value;
-                const tagsArray = tagsInput.split(',').map(t => t.trim()).filter(t => t);
+                // Commit any pending typed-but-not-Enter'd tag before serializing
+                commitPendingTagInput();
+                const tagsArray = currentTags.slice();
                 const descInput = quill.root.innerHTML;
 
                 const chaptersArray = [];

@@ -80,37 +80,144 @@
                             
                             <div class="diff-box">
                                 <strong class="small d-block mb-2" style="color: var(--vecto-surface-muted);">TAGS</strong>
-                                <div class="diff-tags-original">{{ edit.original_data.tags|join:", "|default:"<em style='opacity:0.5;'>None</em>" }}</div>
+                                <div class="diff-tags-original audit-tag-pill-list">
+                                    {% for tag in edit.original_data.tags %}
+                                        <span class="audit-tag-pill" data-tag="{{ tag }}">{{ tag }}</span>
+                                    {% empty %}
+                                        <em style="opacity:0.5;">None</em>
+                                    {% endfor %}
+                                </div>
                             </div>
                             <div class="diff-box">
                                 <strong class="small d-block mb-2" style="color: var(--vecto-surface-muted);">TAGS</strong>
-                                <div class="diff-tags-suggested">{{ edit.suggested_data.tags|join:", "|default:"<em style='opacity:0.5;'>None</em>" }}</div>
+                                <div class="diff-tags-suggested audit-tag-pill-list">
+                                    {% for tag in edit.suggested_data.tags %}
+                                        <span class="audit-tag-pill" data-tag="{{ tag }}">{{ tag }}</span>
+                                    {% empty %}
+                                        <em style="opacity:0.5;">None</em>
+                                    {% endfor %}
+                                </div>
                             </div>
 
+                            {% with orig_chap_data=edit.original_data.chapters|default_if_none:"" %}
+                            {% with sugg_chap_data=edit.suggested_data.chapters|default_if_none:"" %}
+                            {% with orig_chap_list=orig_chap_data.chapters|default:orig_chap_data %}
+                            {% with sugg_chap_list=sugg_chap_data.chapters|default:sugg_chap_data %}
+
                             <div class="diff-box">
-                                <strong class="small d-block mb-2" style="color: var(--vecto-surface-muted);">CHAPTERS ({{ edit.original_data.chapters|length }})</strong>
-                                <div>
-                                    {% for chap in edit.original_data.chapters %}
-                                        <div class="{% if chap not in edit.suggested_data.chapters %}text-danger fw-bold bg-danger bg-opacity-10 px-1 rounded{% endif %} mb-1">
-                                            [{{ chap.startTime }}s] {{ chap.title }}
+                                <strong class="small d-block mb-2" style="color: var(--vecto-surface-muted);">CHAPTERS ({{ orig_chap_list|length }})</strong>
+                                {% for chap in orig_chap_list %}
+                                    <div class="audit-chapter-row {% if chap not in sugg_chap_list %}chapter-removed{% endif %}">
+                                        <div class="row g-2 align-items-center">
+                                            <div class="col-md-4">
+                                                <label class="form-label small text-surface-muted mb-1">Start</label>
+                                                <input type="text" class="form-control form-control-sm" value="{{ chap.startTime|default:0 }}s" disabled>
+                                            </div>
+                                            <div class="col-md-4">
+                                                <label class="form-label small text-surface-muted mb-1">End</label>
+                                                <input type="text" class="form-control form-control-sm" value="{% if chap.endTime %}{{ chap.endTime }}s{% endif %}" disabled>
+                                            </div>
+                                            <div class="col-md-4">
+                                                <label class="form-label small text-surface-muted mb-1">TOC</label>
+                                                <div class="form-check form-switch ms-1 mt-1">
+                                                    <input class="form-check-input" type="checkbox" role="switch" {% if chap.toc != False %}checked{% endif %} disabled>
+                                                </div>
+                                            </div>
+                                            <div class="col-12 mt-2">
+                                                <label class="form-label small text-surface-muted mb-1">Title</label>
+                                                <input type="text" class="form-control form-control-sm" value="{{ chap.title|default:'' }}" disabled>
+                                            </div>
+                                            {% if chap.url %}
+                                            <div class="col-md-6 mt-2">
+                                                <input type="url" class="form-control form-control-sm" value="{{ chap.url }}" disabled>
+                                            </div>
+                                            {% endif %}
+                                            {% if chap.img %}
+                                            <div class="col-md-6 mt-2">
+                                                <input type="url" class="form-control form-control-sm" value="{{ chap.img }}" disabled>
+                                            </div>
+                                            {% endif %}
+                                            {% if chap.location.name or chap.location.geo %}
+                                            <div class="col-12 mt-2">
+                                                <div class="p-2 border rounded d-flex gap-2 flex-wrap" style="border-color: var(--bs-border-color) !important;">
+                                                    <div class="flex-grow-1" style="min-width: 10rem;">
+                                                        <input type="text" class="form-control form-control-sm" value="{{ chap.location.name|default:'' }}" placeholder="Location Name" disabled>
+                                                    </div>
+                                                    <div class="flex-grow-1" style="min-width: 10rem;">
+                                                        <input type="text" class="form-control form-control-sm" value="{{ chap.location.geo|default:'' }}" placeholder="GeoURI" disabled>
+                                                    </div>
+                                                    {% if chap.location.osm %}
+                                                    <div class="flex-grow-1" style="min-width: 10rem;">
+                                                        <input type="text" class="form-control form-control-sm" value="{{ chap.location.osm }}" placeholder="OSM URL" disabled>
+                                                    </div>
+                                                    {% endif %}
+                                                </div>
+                                            </div>
+                                            {% endif %}
                                         </div>
-                                    {% empty %}
-                                        <em style='opacity:0.5;'>No chapters</em>
-                                    {% endfor %}
-                                </div>
+                                    </div>
+                                {% empty %}
+                                    <em style="opacity:0.5;">No chapters</em>
+                                {% endfor %}
                             </div>
                             <div class="diff-box">
-                                <strong class="small d-block mb-2" style="color: var(--vecto-surface-muted);">CHAPTERS ({{ edit.suggested_data.chapters|length }})</strong>
-                                <div>
-                                    {% for chap in edit.suggested_data.chapters %}
-                                        <div class="{% if chap not in edit.original_data.chapters %}text-success fw-bold bg-success bg-opacity-10 px-1 rounded{% endif %} mb-1">
-                                            [{{ chap.startTime }}s] {{ chap.title }}
+                                <strong class="small d-block mb-2" style="color: var(--vecto-surface-muted);">CHAPTERS ({{ sugg_chap_list|length }})</strong>
+                                {% for chap in sugg_chap_list %}
+                                    <div class="audit-chapter-row {% if chap not in orig_chap_list %}chapter-added{% endif %}">
+                                        <div class="row g-2 align-items-center">
+                                            <div class="col-md-4">
+                                                <label class="form-label small text-surface-muted mb-1">Start</label>
+                                                <input type="text" class="form-control form-control-sm" value="{{ chap.startTime|default:0 }}s" disabled>
+                                            </div>
+                                            <div class="col-md-4">
+                                                <label class="form-label small text-surface-muted mb-1">End</label>
+                                                <input type="text" class="form-control form-control-sm" value="{% if chap.endTime %}{{ chap.endTime }}s{% endif %}" disabled>
+                                            </div>
+                                            <div class="col-md-4">
+                                                <label class="form-label small text-surface-muted mb-1">TOC</label>
+                                                <div class="form-check form-switch ms-1 mt-1">
+                                                    <input class="form-check-input" type="checkbox" role="switch" {% if chap.toc != False %}checked{% endif %} disabled>
+                                                </div>
+                                            </div>
+                                            <div class="col-12 mt-2">
+                                                <label class="form-label small text-surface-muted mb-1">Title</label>
+                                                <input type="text" class="form-control form-control-sm" value="{{ chap.title|default:'' }}" disabled>
+                                            </div>
+                                            {% if chap.url %}
+                                            <div class="col-md-6 mt-2">
+                                                <input type="url" class="form-control form-control-sm" value="{{ chap.url }}" disabled>
+                                            </div>
+                                            {% endif %}
+                                            {% if chap.img %}
+                                            <div class="col-md-6 mt-2">
+                                                <input type="url" class="form-control form-control-sm" value="{{ chap.img }}" disabled>
+                                            </div>
+                                            {% endif %}
+                                            {% if chap.location.name or chap.location.geo %}
+                                            <div class="col-12 mt-2">
+                                                <div class="p-2 border rounded d-flex gap-2 flex-wrap" style="border-color: var(--bs-border-color) !important;">
+                                                    <div class="flex-grow-1" style="min-width: 10rem;">
+                                                        <input type="text" class="form-control form-control-sm" value="{{ chap.location.name|default:'' }}" placeholder="Location Name" disabled>
+                                                    </div>
+                                                    <div class="flex-grow-1" style="min-width: 10rem;">
+                                                        <input type="text" class="form-control form-control-sm" value="{{ chap.location.geo|default:'' }}" placeholder="GeoURI" disabled>
+                                                    </div>
+                                                    {% if chap.location.osm %}
+                                                    <div class="flex-grow-1" style="min-width: 10rem;">
+                                                        <input type="text" class="form-control form-control-sm" value="{{ chap.location.osm }}" placeholder="OSM URL" disabled>
+                                                    </div>
+                                                    {% endif %}
+                                                </div>
+                                            </div>
+                                            {% endif %}
                                         </div>
-                                    {% empty %}
-                                        <em style='opacity:0.5;'>No chapters</em>
-                                    {% endfor %}
-                                </div>
+                                    </div>
+                                {% empty %}
+                                    <em style="opacity:0.5;">No chapters</em>
+                                {% endfor %}
                             </div>
+
+                            {% endwith %}{% endwith %}{% endwith %}{% endwith %}
 
                             <div class="diff-box">
                                 <strong class="small d-block mb-2" style="color: var(--vecto-surface-muted);">DESCRIPTION</strong>
@@ -187,6 +294,64 @@
     {% endif %}
 </div>
 
+<style>
+    /* Audit log: tag pills (read-only, no remove buttons) and diff highlights. */
+    .audit-tag-pill-list {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.4rem;
+        align-items: center;
+    }
+    .audit-tag-pill {
+        display: inline-block;
+        padding: 0.25rem 0.6rem;
+        border: 1px solid var(--bs-border-color);
+        border-radius: 999px;
+        background-color: rgba(128, 128, 128, 0.12);
+        font-size: 0.85rem;
+        line-height: 1.2;
+        color: var(--vecto-surface-text);
+    }
+    .audit-tag-pill.tag-added {
+        background-color: rgba(25, 135, 84, 0.25);
+        border-color: rgba(25, 135, 84, 0.6);
+    }
+    .audit-tag-pill.tag-removed {
+        background-color: rgba(220, 53, 69, 0.25);
+        border-color: rgba(220, 53, 69, 0.6);
+        text-decoration: line-through;
+        opacity: 0.85;
+    }
+
+    /* ---- Chapter rows on the audit log (read-only, mirrors inbox style) ---- */
+    .audit-chapter-row {
+        background-color: rgba(0, 0, 0, 0.15);
+        border: 1px solid var(--bs-border-color);
+        border-radius: var(--bs-border-radius);
+        padding: 0.75rem;
+        margin-bottom: 0.6rem;
+    }
+    .audit-chapter-row .form-control,
+    .audit-chapter-row .form-control-sm {
+        background-color: var(--vecto-surface-bg);
+        color: var(--vecto-surface-text);
+        border-color: var(--bs-border-color);
+    }
+    /* Disabled inputs lose default browser dim — keep them readable. */
+    .audit-chapter-row input[disabled],
+    .audit-chapter-row .form-check-input[disabled] {
+        opacity: 0.85;
+    }
+    .audit-chapter-row.chapter-added {
+        background-color: rgba(25, 135, 84, 0.15);
+        border-color: rgba(25, 135, 84, 0.6);
+    }
+    .audit-chapter-row.chapter-removed {
+        background-color: rgba(220, 53, 69, 0.15);
+        border-color: rgba(220, 53, 69, 0.6);
+    }
+</style>
+
 <script src="https://cdn.jsdelivr.net/npm/diff@5.2.0/dist/diff.min.js"></script>
 <script>
     document.addEventListener("DOMContentLoaded", function() {
@@ -195,45 +360,94 @@
             return;
         }
 
-        document.querySelectorAll('.diff-wrapper').forEach(wrapper => {
-            function processSplitDiff(origSelector, suggSelector) {
-                const origEl = wrapper.querySelector(origSelector);
-                const suggEl = wrapper.querySelector(suggSelector);
-                
-                if (origEl && suggEl && !suggEl.hasAttribute('data-diffed')) {
-                    const origText = origEl.innerHTML;
-                    const suggText = suggEl.innerHTML;
+        // CRITICAL: scope to #auditAccordion. Other tabs (inbox especially)
+        // share the .diff-wrapper / .diff-desc-* class names, and a document-
+        // wide query would mangle their content.
+        const auditAccordion = document.getElementById('auditAccordion');
+        if (!auditAccordion) return;
 
-                    if (origText.trim() !== suggText.trim()) {
-                        // diffWordsWithSpace protects HTML boundaries perfectly
-                        const diff = Diff.diffWordsWithSpace(origText, suggText);
+        function escapeHtml(s) {
+            return String(s == null ? "" : s)
+                .replace(/&/g, "&amp;")
+                .replace(/</g, "&lt;")
+                .replace(/>/g, "&gt;")
+                .replace(/"/g, "&quot;");
+        }
 
-                        let leftHtml = '';
-                        let rightHtml = '';
-
-                        diff.forEach((part) => {
-                            if (part.added) {
-                                // Added: Show ONLY on the Right in Green
-                                rightHtml += `<span style="background-color: rgba(25, 135, 84, 0.4); color: #fff; border-radius: 3px; padding: 0 2px;">${part.value}</span>`;
-                            } else if (part.removed) {
-                                // Removed: Show ONLY on the Left in Red (with strikethrough)
-                                leftHtml += `<span style="background-color: rgba(220, 53, 69, 0.4); color: #fff; text-decoration: line-through; border-radius: 3px; padding: 0 2px;">${part.value}</span>`;
-                            } else {
-                                // Unchanged: Show normally on both sides
-                                leftHtml += part.value;
-                                rightHtml += part.value;
-                            }
-                        });
-
-                        origEl.innerHTML = leftHtml;
-                        suggEl.innerHTML = rightHtml;
-                    }
-                    suggEl.setAttribute('data-diffed', 'true');
+        // Diff TWO PLAIN-TEXT STRINGS (never raw HTML — that produces malformed
+        // markup like <p<span ...> when chunks of tags get split). Returns
+        // sanitized HTML strings with highlight spans wrapping inserted/removed
+        // text fragments.
+        function diffTextToHtml(origText, suggText) {
+            const parts = Diff.diffWordsWithSpace(origText, suggText);
+            let leftHtml = '';
+            let rightHtml = '';
+            parts.forEach(part => {
+                const safe = escapeHtml(part.value);
+                if (part.added) {
+                    rightHtml += `<span style="background-color: rgba(25, 135, 84, 0.4); color: #fff; border-radius: 3px; padding: 0 2px;">${safe}</span>`;
+                } else if (part.removed) {
+                    leftHtml += `<span style="background-color: rgba(220, 53, 69, 0.4); color: #fff; text-decoration: line-through; border-radius: 3px; padding: 0 2px;">${safe}</span>`;
+                } else {
+                    leftHtml += safe;
+                    rightHtml += safe;
                 }
+            });
+            return { leftHtml, rightHtml };
+        }
+
+        auditAccordion.querySelectorAll('.diff-wrapper').forEach(wrapper => {
+            // ---- TAGS: per-pill diff. Each tag is a discrete <span> with
+            // data-tag="<value>". An original pill not in the suggested set
+            // gets the .tag-removed class; a suggested pill not in the
+            // original set gets .tag-added. We never touch the markup
+            // structure — only add/remove classes.
+            const tagsOrig = wrapper.querySelector('.diff-tags-original');
+            const tagsSugg = wrapper.querySelector('.diff-tags-suggested');
+            if (tagsOrig && tagsSugg && !tagsSugg.hasAttribute('data-diffed')) {
+                const origTags = Array.from(tagsOrig.querySelectorAll('.audit-tag-pill'))
+                    .map(el => el.getAttribute('data-tag'));
+                const suggTags = Array.from(tagsSugg.querySelectorAll('.audit-tag-pill'))
+                    .map(el => el.getAttribute('data-tag'));
+                const origSet = new Set(origTags);
+                const suggSet = new Set(suggTags);
+
+                tagsOrig.querySelectorAll('.audit-tag-pill').forEach(pill => {
+                    if (!suggSet.has(pill.getAttribute('data-tag'))) {
+                        pill.classList.add('tag-removed');
+                    }
+                });
+                tagsSugg.querySelectorAll('.audit-tag-pill').forEach(pill => {
+                    if (!origSet.has(pill.getAttribute('data-tag'))) {
+                        pill.classList.add('tag-added');
+                    }
+                });
+                tagsSugg.setAttribute('data-diffed', 'true');
             }
 
-            processSplitDiff('.diff-tags-original', '.diff-tags-suggested');
-            processSplitDiff('.diff-desc-original', '.diff-desc-suggested');
+            // ---- DESCRIPTION: text-content diff with highlight spans.
+            // We diff visible text only and replace innerHTML with
+            // sanitized fragments — original HTML formatting (links,
+            // paragraph styling) is dropped in this read-only audit view
+            // in exchange for guaranteed-correct word-level diffs that
+            // can never produce malformed markup. white-space: pre-wrap
+            // preserves line breaks visually.
+            const descOrig = wrapper.querySelector('.diff-desc-original');
+            const descSugg = wrapper.querySelector('.diff-desc-suggested');
+            if (descOrig && descSugg && !descSugg.hasAttribute('data-diffed')) {
+                const origText = descOrig.textContent;
+                const suggText = descSugg.textContent;
+                if (origText.trim() !== suggText.trim()) {
+                    const { leftHtml, rightHtml } = diffTextToHtml(origText, suggText);
+                    descOrig.innerHTML = `<div style="white-space: pre-wrap;">${leftHtml}</div>`;
+                    descSugg.innerHTML = `<div style="white-space: pre-wrap;">${rightHtml}</div>`;
+                }
+                descSugg.setAttribute('data-diffed', 'true');
+            }
+
+            // CHAPTERS are already diff-highlighted at template render time
+            // by template logic that toggles a Bootstrap class when a chapter
+            // is missing from the other side's list. No JS needed here.
         });
     });
 </script>

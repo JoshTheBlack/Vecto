@@ -392,9 +392,71 @@ def _handle_inbox_action(request, current_network, action):
 
     if action == 'approve_edit':
         ep = edit.episode
-        ep.clean_description = edit.suggested_data.get('description', ep.clean_description)
-        ep.tags = edit.suggested_data.get('tags', ep.tags)
-        ep.chapters_public = edit.suggested_data.get('chapters', ep.chapters_public)
+        points = 0
+        
+        # 1. PROCESS DESCRIPTION
+        if request.POST.get('approve_description') == 'on':
+            new_desc = request.POST.get('edited_description', '').strip()
+            if new_desc and new_desc != edit.original_data.get('description'):
+                ep.clean_description = new_desc
+                edit.suggested_data['description'] = new_desc  # Update for Audit Log
+                points += 1
+                membership.edits_descriptions += 1
+
+        # 2. PROCESS TAGS (From the Pill UI JSON payload)
+        if request.POST.get('approve_tags') == 'on':
+            raw_tags = request.POST.get('edited_tags', '[]')
+            try:
+                new_tags = json.loads(raw_tags)
+                old_tags = edit.original_data.get('tags') or [] # Fallback to empty list if None
+                
+                if isinstance(new_tags, list) and new_tags != old_tags:
+                    ep.tags = new_tags
+                    edit.suggested_data['tags'] = new_tags  # Update for Audit Log
+                    points += 1 # Base point for approving the section
+                    
+                    # Subtracting the old set from the new set isolates strictly new additions
+                    new_additions_count = len(set(new_tags) - set(old_tags))
+                    if new_additions_count > 0:
+                        membership.edits_tags += new_additions_count
+                        
+            except Exception as e:
+                logger.error(f"Failed to parse tags from inbox: {e}")
+
+        # 3. PROCESS CHAPTERS (From your existing visual builder payload)
+        if request.POST.get('approve_chapters') == 'on':
+            raw_chapters = request.POST.get('edited_chapters', '')
+            if raw_chapters:
+                try:
+                    new_chapters = json.loads(raw_chapters)
+                    if new_chapters != edit.original_data.get('chapters'):
+                        ep.chapters_public = new_chapters
+                        edit.suggested_data['chapters'] = new_chapters  # Update for Audit Log
+                        points += 1
+                        
+                        # Tally chapter counts dynamically based on format
+                        if isinstance(new_chapters, dict):
+                            membership.edits_chapters += len(new_chapters.get('chapters', []))
+                        elif isinstance(new_chapters, list):
+                            membership.edits_chapters += len(new_chapters)
+                except Exception as e:
+                    logger.error(f"Failed to parse chapters from inbox: {e}")
+
+        # --- THE ZERO-APPROVAL TRAP ---
+        if points == 0:
+            edit.status = 'rejected'
+            edit.resolved_at = timezone.now()
+            edit.save()
+            membership.trust_score = max(0, membership.trust_score - 2)
+            membership.save()
+            messages.warning(request, "No sections selected for approval. Edit converted to rejection. User penalized -2 Trust.")
+            return
+
+        # --- PERFECT SWEEP BONUS ---
+        if points == 3:
+            points += 2
+
+        # Lock metadata and finalize approval
         ep.is_metadata_locked = True
         ep.save()
 
@@ -402,13 +464,12 @@ def _handle_inbox_action(request, current_network, action):
         edit.resolved_at = timezone.now()
         edit.save()
 
-        membership.trust_score = membership.trust_score + 5
-        if edit.suggested_data.get('chapters') != edit.original_data.get('chapters'): membership.edits_chapters += len(edit.suggested_data.get('chapters', []))
-        if edit.suggested_data.get('tags') != edit.original_data.get('tags'): membership.edits_tags += 1
-        if edit.suggested_data.get('description') != edit.original_data.get('description'): membership.edits_descriptions += 1
-        if edit.is_first_responder: membership.first_responder_count += 1
+        membership.trust_score += points
+        if edit.is_first_responder: 
+            membership.first_responder_count += 1
         membership.save()
-        messages.success(request, "Edit approved. User rewarded +5 Trust.")
+        
+        messages.success(request, f"Partial edit approved! User awarded +{points} Trust Score.")
 
         base_url = request.build_absolute_uri('/')[:-1]
         task_rebuild_episode_fragments.delay(ep.id, base_url)
@@ -419,7 +480,7 @@ def _handle_inbox_action(request, current_network, action):
         edit.save()
         membership.trust_score = max(0, membership.trust_score - 2)
         membership.save()
-        messages.warning(request, "Edit rejected. User penalized.")
+        messages.warning(request, "Edit rejected. User penalized -2 Trust.")
 
 def _handle_rollback(request, current_network, action):
     if action == 'rollback_single_edit':

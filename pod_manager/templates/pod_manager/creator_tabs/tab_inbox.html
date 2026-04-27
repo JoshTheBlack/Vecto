@@ -1,5 +1,11 @@
 <style>
-    /* CSS Grid forces the Left and Right columns to stretch and match row heights perfectly */
+    /* ============================================================
+       INBOX DIFF GRID
+       CSS Grid auto-stretches each row to the tallest cell, so
+       left and right containers always match height without any
+       overflow / scrollbar tricks. Children must NOT set fixed
+       heights or overflow:auto — they grow to fit their content.
+       ============================================================ */
     .diff-grid {
         display: grid;
         grid-template-columns: 1fr 1fr;
@@ -10,14 +16,171 @@
         .diff-grid { grid-template-columns: 1fr; }
     }
     .diff-box {
-        background-color: rgba(128, 128, 128, 0.08); /* Neutral shading for light/dark mode */
+        background-color: rgba(128, 128, 128, 0.08);
         border: 1px solid var(--bs-border-color);
         padding: 1rem;
         border-radius: var(--bs-border-radius);
+        display: flex;
+        flex-direction: column;
+        min-width: 0;            /* prevents grid blowout on long words/URLs */
+        overflow: visible;       /* never clip — let row grow */
     }
+    .diff-box-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 0.5rem;
+        gap: 0.5rem;
+    }
+    .diff-box-header .form-check {
+        margin-bottom: 0;
+        padding-left: 2.25em;
+    }
+
+    /* Chapters section spans both columns of .diff-grid and runs its own
+       internal 2-col grid so each chapter index aligns left↔right. */
+    .diff-box-fullwidth {
+        grid-column: 1 / -1;
+    }
+    .chapters-pair-grid {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        column-gap: 1rem;
+        row-gap: 0.6rem;
+        align-items: stretch;       /* each row pair stretches to the tallest cell */
+    }
+    @media (max-width: 768px) {
+        .chapters-pair-grid { grid-template-columns: 1fr; }
+    }
+    /* Inside the pair-grid, the left/right "headers" should look like
+       diff-box-header (label inline, switch on the right). */
+    .chapters-pair-header-left,
+    .chapters-pair-header-right {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 0.5rem;
+    }
+
     .accordion-button:not(.collapsed) {
         background-color: rgba(128, 128, 128, 0.05) !important;
         color: var(--vecto-surface-text) !important;
+    }
+
+    /* ---- TAG PILLS ---- */
+    .tag-pill-list {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.4rem;
+        align-items: center;
+    }
+    .tag-pill {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.35rem;
+        padding: 0.25rem 0.6rem;
+        border: 1px solid var(--bs-border-color);
+        border-radius: 999px;
+        background-color: rgba(128,128,128,0.12);
+        font-size: 0.85rem;
+        line-height: 1.2;
+        color: var(--vecto-surface-text);
+    }
+    .tag-pill .tag-remove {
+        cursor: pointer;
+        opacity: 0.6;
+        font-weight: bold;
+        line-height: 1;
+        background: none;
+        border: 0;
+        color: inherit;
+        padding: 0 0.1rem;
+    }
+    .tag-pill .tag-remove:hover { opacity: 1; color: #dc3545; }
+    .tag-pill.tag-added {
+        background-color: rgba(25, 135, 84, 0.25);
+        border-color: rgba(25, 135, 84, 0.6);
+    }
+    .tag-pill.tag-removed {
+        background-color: rgba(220, 53, 69, 0.25);
+        border-color: rgba(220, 53, 69, 0.6);
+        text-decoration: line-through;
+        opacity: 0.85;
+    }
+    .tag-input-wrapper {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.4rem;
+        align-items: center;
+        padding: 0.4rem;
+        border: 1px solid var(--bs-border-color);
+        border-radius: var(--bs-border-radius);
+        background-color: var(--vecto-surface-bg);
+        min-height: 2.5rem;
+    }
+    .tag-input-wrapper input.tag-input-field {
+        flex: 1 1 8rem;
+        border: 0;
+        outline: 0;
+        background: transparent;
+        color: var(--vecto-surface-text);
+        min-width: 6rem;
+        padding: 0.15rem 0.25rem;
+        font-size: 0.9rem;
+    }
+
+    /* ---- CHAPTER ROWS (mirror the episode_detail editor) ---- */
+    .inbox-chapter-row {
+        background-color: rgba(0,0,0,0.15);
+        border: 1px solid var(--bs-border-color);
+        border-radius: var(--bs-border-radius);
+        padding: 0.75rem;
+        /* Stretch to fill its grid cell so paired rows match height. */
+        display: flex;
+        flex-direction: column;
+        height: 100%;
+    }
+    /* When chapters are stacked outside a pair-grid (legacy code paths) */
+    .inbox-chapter-row + .inbox-chapter-row { margin-top: 0.6rem; }
+    .inbox-chapter-row .form-control,
+    .inbox-chapter-row .form-control-sm {
+        background-color: var(--vecto-surface-bg);
+        color: var(--vecto-surface-text);
+        border-color: var(--bs-border-color);
+    }
+    .inbox-chapter-row.chapter-added {
+        background-color: rgba(25, 135, 84, 0.15);
+        border-color: rgba(25, 135, 84, 0.6);
+    }
+    .inbox-chapter-row.chapter-removed {
+        background-color: rgba(220, 53, 69, 0.15);
+        border-color: rgba(220, 53, 69, 0.6);
+    }
+    .inbox-chapter-row .chapter-row-controls { display: flex; gap: 0.25rem; justify-content: flex-end; }
+
+    /* Description editor — contenteditable div, no Quill. */
+    .inbox-desc-readonly {
+        min-height: 6rem;
+    }
+    .inbox-desc-editable {
+        min-height: 8rem;
+        padding: 0.75rem;
+        border: 1px solid var(--bs-border-color);
+        border-radius: var(--bs-border-radius);
+        background-color: var(--vecto-surface-bg);
+        color: var(--vecto-surface-text);
+        outline: none;
+    }
+    .inbox-desc-editable:focus {
+        border-color: rgba(25, 135, 84, 0.6);
+        box-shadow: 0 0 0 0.15rem rgba(25, 135, 84, 0.15);
+    }
+
+    /* Disable native form-control look on read-only chapter inputs */
+    .inbox-chapter-row.readonly input,
+    .inbox-chapter-row.readonly .form-check-input {
+        pointer-events: none;
+        opacity: 0.85;
     }
 </style>
 
@@ -43,7 +206,7 @@
     {% else %}
         <div class="accordion" id="inboxAccordion">
             {% for edit in pending_edits %}
-            
+
             <div class="accordion-item mb-3 shadow-sm" style="background-color: var(--vecto-surface-bg); border: 1px solid var(--bs-border-color); border-radius: var(--bs-border-radius); overflow: hidden;">
                 <h2 class="accordion-header" id="heading{{ edit.id }}">
                     <button class="accordion-button collapsed py-3" type="button" data-bs-toggle="collapse" data-bs-target="#collapse{{ edit.id }}" style="background-color: transparent; color: var(--vecto-surface-text); box-shadow: none;">
@@ -61,65 +224,143 @@
                     </button>
                 </h2>
                 <div id="collapse{{ edit.id }}" class="accordion-collapse collapse" data-bs-parent="#inboxAccordion">
-                    <div class="accordion-body diff-wrapper" style="background-color: var(--vecto-surface-bg); border-top: 1px solid var(--bs-border-color);">
-                        
-                        <div class="row g-0 mb-3">
-                            <div class="col-md-6 p-2 border-end" style="border-color: var(--bs-border-color) !important;">
-                                <h6 class="text-danger fw-bold mb-0"><i class="bi bi-clock-history"></i> Previous Data</h6>
-                            </div>
-                            <div class="col-md-6 p-2 ps-3">
-                                <h6 class="text-success fw-bold mb-0"><i class="bi bi-check-circle"></i> Suggested Edit</h6>
-                            </div>
-                        </div>
+                    <div class="accordion-body diff-wrapper"
+                         data-edit-id="{{ edit.id }}"
+                         style="background-color: var(--vecto-surface-bg); border-top: 1px solid var(--bs-border-color);">
 
-                        <div class="diff-grid">
-                            
-                            <div class="diff-box">
-                                <strong class="small d-block mb-2" style="color: var(--vecto-surface-muted);">TAGS</strong>
-                                <div class="diff-tags-original">{{ edit.original_data.tags|join:", "|default:"<em style='opacity:0.5;'>None</em>" }}</div>
-                            </div>
-                            <div class="diff-box">
-                                <strong class="small d-block mb-2" style="color: var(--vecto-surface-muted);">TAGS</strong>
-                                <div class="diff-tags-suggested">{{ edit.suggested_data.tags|join:", "|default:"<em style='opacity:0.5;'>None</em>" }}</div>
-                            </div>
+                        {# JSON payloads for JS. json_script emits a properly XSS-escaped script tag. Per-edit ids are built below with simple with-blocks (one assignment each). #}
+                        {% with edit_id_str=edit.id|stringformat:"s" %}
+                            {% with tag_orig_id="orig-tags-"|add:edit_id_str %}
+                                {{ edit.original_data.tags|default_if_none:""|json_script:tag_orig_id }}
+                            {% endwith %}
+                            {% with tag_sugg_id="sugg-tags-"|add:edit_id_str %}
+                                {{ edit.suggested_data.tags|default_if_none:""|json_script:tag_sugg_id }}
+                            {% endwith %}
+                            {% with chap_orig_id="orig-chapters-"|add:edit_id_str %}
+                                {{ edit.original_data.chapters|default_if_none:""|json_script:chap_orig_id }}
+                            {% endwith %}
+                            {% with chap_sugg_id="sugg-chapters-"|add:edit_id_str %}
+                                {{ edit.suggested_data.chapters|default_if_none:""|json_script:chap_sugg_id }}
+                            {% endwith %}
+                        {% endwith %}
 
-                            <div class="diff-box">
-                                <strong class="small d-block mb-2" style="color: var(--vecto-surface-muted);">CHAPTERS ({{ edit.original_data.chapters|length }})</strong>
-                                <div>
-                                    {% for chap in edit.original_data.chapters %}
-                                        <div class="{% if chap not in edit.suggested_data.chapters %}text-danger fw-bold bg-danger bg-opacity-10 px-1 rounded{% endif %} mb-1">
-                                            [{{ chap.startTime }}s] {{ chap.title }}
-                                        </div>
-                                    {% empty %}
-                                        <em style='opacity:0.5;'>No chapters</em>
-                                    {% endfor %}
+                        {# Single APPROVE form: wraps every editable field plus per-section toggles. The id is set so the submit button (which lives outside the form, see footer) can target it via the HTML5 form="..." attribute. #}
+                        <form method="POST" id="approveForm{{ edit.id }}" class="inbox-approve-form" data-edit-id="{{ edit.id }}">
+                            {% csrf_token %}
+                            <input type="hidden" name="action" value="approve_edit">
+                            <input type="hidden" name="edit_id" value="{{ edit.id }}">
+                            <input type="hidden" name="network_id" value="{{ current_network.id }}">
+                            <input type="hidden" name="current_tab" value="inbox">
+
+                            {# Hidden payload fields populated on submit by JS #}
+                            <input type="hidden" name="edited_tags" class="hidden-edited-tags" value="">
+                            <input type="hidden" name="edited_chapters" class="hidden-edited-chapters" value="">
+                            <input type="hidden" name="edited_description" class="hidden-edited-description" value="">
+
+                            <div class="row g-0 mb-3">
+                                <div class="col-md-6 p-2 border-end" style="border-color: var(--bs-border-color) !important;">
+                                    <h6 class="text-danger fw-bold mb-0"><i class="bi bi-clock-history"></i> Previous Data</h6>
                                 </div>
-                            </div>
-                            <div class="diff-box">
-                                <strong class="small d-block mb-2" style="color: var(--vecto-surface-muted);">CHAPTERS ({{ edit.suggested_data.chapters|length }})</strong>
-                                <div>
-                                    {% for chap in edit.suggested_data.chapters %}
-                                        <div class="{% if chap not in edit.original_data.chapters %}text-success fw-bold bg-success bg-opacity-10 px-1 rounded{% endif %} mb-1">
-                                            [{{ chap.startTime }}s] {{ chap.title }}
-                                        </div>
-                                    {% empty %}
-                                        <em style='opacity:0.5;'>No chapters</em>
-                                    {% endfor %}
+                                <div class="col-md-6 p-2 ps-3">
+                                    <h6 class="text-success fw-bold mb-0"><i class="bi bi-check-circle"></i> Suggested Edit</h6>
                                 </div>
                             </div>
 
-                            <div class="diff-box">
-                                <strong class="small d-block mb-2" style="color: var(--vecto-surface-muted);">DESCRIPTION</strong>
-                                <div class="diff-desc-original">{{ edit.original_data.description|safe }}</div>
-                            </div>
-                            <div class="diff-box">
-                                <strong class="small d-block mb-2" style="color: var(--vecto-surface-muted);">DESCRIPTION</strong>
-                                <div class="diff-desc-suggested">{{ edit.suggested_data.description|safe }}</div>
-                            </div>
+                            <div class="diff-grid">
 
-                        </div>
+                                {# ---------------- TAGS ---------------- #}
+                                <div class="diff-box">
+                                    <div class="diff-box-header">
+                                        <strong class="small" style="color: var(--vecto-surface-muted);">TAGS</strong>
+                                    </div>
+                                    <div class="tag-pill-list tags-original-render"></div>
+                                </div>
+                                <div class="diff-box">
+                                    <div class="diff-box-header">
+                                        <strong class="small" style="color: var(--vecto-surface-muted);">TAGS</strong>
+                                        <div class="form-check form-switch">
+                                            <input class="form-check-input" type="checkbox" role="switch"
+                                                   id="approveTags{{ edit.id }}"
+                                                   name="approve_tags" checked>
+                                            <label class="form-check-label small" for="approveTags{{ edit.id }}">Approve</label>
+                                        </div>
+                                    </div>
+                                    <div class="tag-input-wrapper tags-suggested-input">
+                                        <input type="text" class="tag-input-field" placeholder="Type a tag, press Enter…">
+                                    </div>
+                                </div>
 
-                        <div class="mt-4 pt-3 border-top d-flex justify-content-between align-items-center" style="border-color: var(--bs-border-color) !important;">
+                                {# ---------------- CHAPTERS (pair-aligned, full-width grid) ---------------- #}
+                                <div class="diff-box diff-box-fullwidth chapters-section">
+                                    <div class="chapters-pair-grid">
+                                        {# Header row: left + right titles #}
+                                        <div class="diff-box-header chapters-pair-header-left">
+                                            <strong class="small" style="color: var(--vecto-surface-muted);">
+                                                CHAPTERS (<span class="orig-chap-count">0</span>)
+                                            </strong>
+                                        </div>
+                                        <div class="diff-box-header chapters-pair-header-right">
+                                            <strong class="small" style="color: var(--vecto-surface-muted);">
+                                                CHAPTERS (<span class="sugg-chap-count">0</span>)
+                                            </strong>
+                                            <div class="form-check form-switch">
+                                                <input class="form-check-input" type="checkbox" role="switch"
+                                                       id="approveChapters{{ edit.id }}"
+                                                       name="approve_chapters" checked>
+                                                <label class="form-check-label small" for="approveChapters{{ edit.id }}">Approve</label>
+                                            </div>
+                                        </div>
+
+                                        {# Sub-header row: empty on left, waypoints toggle on right #}
+                                        <div></div>
+                                        <div class="form-check form-switch mb-2">
+                                            <input class="form-check-input chapters-waypoints-toggle" type="checkbox" role="switch"
+                                                   id="waypoints{{ edit.id }}">
+                                            <label class="form-check-label small" for="waypoints{{ edit.id }}">
+                                                Enable Waypoints <span class="text-surface-muted">(connects locations into a route map)</span>
+                                            </label>
+                                        </div>
+
+                                        {# JS appends paired (left, right) cells here directly into the parent grid, inserted before this anchor element. #}
+                                        <div class="chapters-pair-rows-anchor" data-anchor="true" style="display:none;"></div>
+
+                                        {# Footer row: empty on left, Add Chapter button on right #}
+                                        <div></div>
+                                        <div>
+                                            <button type="button" class="btn btn-sm btn-outline-success w-100 mt-2 add-chapter-btn">
+                                                <i class="bi bi-plus-lg"></i> Add Chapter
+                                            </button>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                {# ---------------- DESCRIPTION ---------------- #}
+                                <div class="diff-box">
+                                    <div class="diff-box-header">
+                                        <strong class="small" style="color: var(--vecto-surface-muted);">DESCRIPTION</strong>
+                                    </div>
+                                    <div class="diff-desc-original inbox-desc-readonly">{{ edit.original_data.description|default:""|safe }}</div>
+                                </div>
+                                <div class="diff-box">
+                                    <div class="diff-box-header">
+                                        <strong class="small" style="color: var(--vecto-surface-muted);">DESCRIPTION</strong>
+                                        <div class="form-check form-switch">
+                                            <input class="form-check-input" type="checkbox" role="switch"
+                                                   id="approveDesc{{ edit.id }}"
+                                                   name="approve_description" checked>
+                                            <label class="form-check-label small" for="approveDesc{{ edit.id }}">Approve</label>
+                                        </div>
+                                    </div>
+                                    <div class="diff-desc-suggested inbox-desc-editable" contenteditable="true">{{ edit.suggested_data.description|default:""|safe }}</div>
+                                </div>
+
+                            </div>
+                        </form>
+
+                        {# Footer actions: the Approve form's submit lives outside the form via the form attribute, so Reject and Bulk Rollback can stay as their own forms (HTML disallows nested forms). #}
+                        <div class="mt-4 pt-3 border-top d-flex justify-content-between align-items-center flex-wrap gap-2"
+                             style="border-color: var(--bs-border-color) !important;">
+
                             <form method="POST" class="d-inline" onsubmit="return confirm('WARNING: This will revert EVERY approved edit this user has ever made on this network, and drop their trust score to 0. Proceed?');">
                                 {% csrf_token %}
                                 <input type="hidden" name="action" value="bulk_rollback">
@@ -143,16 +384,10 @@
                                     </button>
                                 </form>
 
-                                <form method="POST" class="d-inline">
-                                    {% csrf_token %}
-                                    <input type="hidden" name="action" value="approve_edit">
-                                    <input type="hidden" name="edit_id" value="{{ edit.id }}">
-                                    <input type="hidden" name="network_id" value="{{ current_network.id }}">
-                                    <input type="hidden" name="current_tab" value="inbox">
-                                    <button type="submit" class="btn btn-success">
-                                        <i class="bi bi-check-lg"></i> Approve & Apply
-                                    </button>
-                                </form>
+                                {# Submit-button-outside-form, attached via HTML5 `form` attribute. #}
+                                <button type="submit" form="approveForm{{ edit.id }}" class="btn btn-success approve-submit-btn" data-edit-id="{{ edit.id }}">
+                                    <i class="bi bi-check-lg"></i> Approve & Apply
+                                </button>
                             </div>
                         </div>
 
@@ -162,55 +397,500 @@
             {% endfor %}
         </div>
     {% endif %}
-</div> 
+</div>
 
+
+{# ---------------- LIBRARIES ---------------- #}
 <script src="https://cdn.jsdelivr.net/npm/diff@5.2.0/dist/diff.min.js"></script>
+
 <script>
-    document.addEventListener("DOMContentLoaded", function() {
-        if (typeof Diff === 'undefined') {
-            console.error("Diff library failed to load from CDN.");
+(function () {
+    "use strict";
+
+    // ============================================================
+    // Helpers
+    // ============================================================
+    function readJSON(elId, fallback) {
+        const el = document.getElementById(elId);
+        if (!el) return fallback;
+        try {
+            const txt = el.textContent.trim();
+            if (!txt) return fallback;
+            return JSON.parse(txt);
+        } catch (e) {
+            console.error("JSON parse failed for #" + elId, e);
+            return fallback;
+        }
+    }
+
+    function formatTime(totalSeconds) {
+        const n = Number(totalSeconds) || 0;
+        const h = Math.floor(n / 3600).toString().padStart(2, '0');
+        const m = Math.floor((n % 3600) / 60).toString().padStart(2, '0');
+        const s = Math.floor(n % 60).toString().padStart(2, '0');
+        return `${h}:${m}:${s}`;
+    }
+    function parseTime(timeStr) {
+        const parts = String(timeStr || "").split(':').reverse();
+        let seconds = 0;
+        if (parts[0]) seconds += parseInt(parts[0], 10) || 0;
+        if (parts[1]) seconds += (parseInt(parts[1], 10) || 0) * 60;
+        if (parts[2]) seconds += (parseInt(parts[2], 10) || 0) * 3600;
+        return seconds;
+    }
+    // Stable JSON for chapter equality checks (key-sorted)
+    function chapKey(c) {
+        if (!c) return "";
+        const o = {
+            startTime: Number(c.startTime) || 0,
+            endTime: c.endTime != null ? Number(c.endTime) : null,
+            title: (c.title || "").trim(),
+            url: c.url || "",
+            img: c.img || "",
+            toc: c.toc !== false,
+            location: c.location ? {
+                name: (c.location.name || "").trim(),
+                geo: (c.location.geo || "").trim(),
+                osm: (c.location.osm || "").trim()
+            } : null
+        };
+        return JSON.stringify(o);
+    }
+    function chaptersAsList(raw) {
+        if (Array.isArray(raw)) return { list: raw, waypoints: false };
+        if (raw && typeof raw === "object" && Array.isArray(raw.chapters)) {
+            return { list: raw.chapters, waypoints: !!raw.waypoints };
+        }
+        return { list: [], waypoints: false };
+    }
+    function escapeHtml(s) {
+        return String(s == null ? "" : s)
+            .replace(/&/g, "&amp;")
+            .replace(/</g, "&lt;")
+            .replace(/>/g, "&gt;")
+            .replace(/"/g, "&quot;");
+    }
+
+    // ============================================================
+    // Tag pill widgets
+    // ============================================================
+    function renderOriginalTags(container, originalTags, suggestedTags) {
+        const suggestedSet = new Set(suggestedTags.map(t => String(t)));
+        container.innerHTML = "";
+        if (!originalTags.length) {
+            container.innerHTML = '<em style="opacity:0.5;">None</em>';
             return;
         }
+        originalTags.forEach(tag => {
+            const removed = !suggestedSet.has(String(tag));
+            const pill = document.createElement('span');
+            pill.className = 'tag-pill' + (removed ? ' tag-removed' : '');
+            pill.textContent = String(tag);
+            container.appendChild(pill);
+        });
+    }
 
-        document.querySelectorAll('.diff-wrapper').forEach(wrapper => {
-            function processSplitDiff(origSelector, suggSelector) {
-                const origEl = wrapper.querySelector(origSelector);
-                const suggEl = wrapper.querySelector(suggSelector);
-                
-                if (origEl && suggEl && !suggEl.hasAttribute('data-diffed')) {
-                    const origText = origEl.innerHTML;
-                    const suggText = suggEl.innerHTML;
+    function setupSuggestedTagInput(wrapper, originalTags, suggestedTags, hiddenInput) {
+        const originalSet = new Set(originalTags.map(t => String(t)));
+        const inputField = wrapper.querySelector('.tag-input-field');
+        let tags = suggestedTags.slice();
 
-                    if (origText.trim() !== suggText.trim()) {
-                        // diffWordsWithSpace protects HTML boundaries perfectly
-                        const diff = Diff.diffWordsWithSpace(origText, suggText);
+        function syncHidden() {
+            hiddenInput.value = JSON.stringify(tags);
+        }
+        function rerender() {
+            // Remove every pill (keep the input field)
+            wrapper.querySelectorAll('.tag-pill').forEach(p => p.remove());
+            tags.forEach((tag, idx) => {
+                const isAdded = !originalSet.has(String(tag));
+                const pill = document.createElement('span');
+                pill.className = 'tag-pill' + (isAdded ? ' tag-added' : '');
+                pill.innerHTML = `<span class="tag-text"></span><button type="button" class="tag-remove" aria-label="Remove tag">&times;</button>`;
+                pill.querySelector('.tag-text').textContent = String(tag);
+                pill.querySelector('.tag-remove').addEventListener('click', () => {
+                    tags.splice(idx, 1);
+                    rerender();
+                    syncHidden();
+                });
+                wrapper.insertBefore(pill, inputField);
+            });
+            syncHidden();
+        }
 
-                        let leftHtml = '';
-                        let rightHtml = '';
+        function addTagFromInput() {
+            const raw = inputField.value.trim().replace(/,$/, "").trim();
+            if (!raw) return;
+            // Allow comma-separated bulk paste
+            raw.split(',').map(t => t.trim()).filter(Boolean).forEach(t => {
+                if (!tags.includes(t)) tags.push(t);
+            });
+            inputField.value = "";
+            rerender();
+        }
 
-                        diff.forEach((part) => {
-                            if (part.added) {
-                                // Added: Show ONLY on the Right in Green
-                                rightHtml += `<span style="background-color: rgba(25, 135, 84, 0.4); color: #fff; border-radius: 3px; padding: 0 2px;">${part.value}</span>`;
-                            } else if (part.removed) {
-                                // Removed: Show ONLY on the Left in Red (with strikethrough)
-                                leftHtml += `<span style="background-color: rgba(220, 53, 69, 0.4); color: #fff; text-decoration: line-through; border-radius: 3px; padding: 0 2px;">${part.value}</span>`;
-                            } else {
-                                // Unchanged: Show normally on both sides
-                                leftHtml += part.value;
-                                rightHtml += part.value;
-                            }
-                        });
+        inputField.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter' || e.key === ',') {
+                e.preventDefault();
+                addTagFromInput();
+            } else if (e.key === 'Backspace' && inputField.value === '' && tags.length) {
+                tags.pop();
+                rerender();
+            }
+        });
+        inputField.addEventListener('blur', addTagFromInput);
+        wrapper.addEventListener('click', (e) => {
+            // Clicking empty space focuses input
+            if (e.target === wrapper) inputField.focus();
+        });
 
-                        origEl.innerHTML = leftHtml;
-                        suggEl.innerHTML = rightHtml;
+        rerender();
+        return {
+            getTags: () => tags.slice(),
+            commitPending: addTagFromInput
+        };
+    }
+
+    // ============================================================
+    // Chapter rows (mirrors episode_detail.html addChapterRow)
+    // ============================================================
+    function buildChapterRowHTML(c, opts) {
+        const readonly = !!opts.readonly;
+        const startTimeStr = formatTime(c.startTime);
+        const endTimeStr = c.endTime != null && c.endTime !== "" ? formatTime(c.endTime) : "";
+        const title = escapeHtml(c.title || "");
+        const url = escapeHtml(c.url || "");
+        const img = escapeHtml(c.img || "");
+        const toc = c.toc !== false;
+        const loc = c.location || null;
+        const locName = escapeHtml(loc ? (loc.name || "") : "");
+        const locGeo = escapeHtml(loc ? (loc.geo || "") : "");
+        const locOsm = escapeHtml(loc ? (loc.osm || "") : "");
+        const locVisible = !!(loc && (loc.name || loc.geo));
+        const dis = readonly ? "disabled" : "";
+
+        const controls = readonly
+            ? ""
+            : `
+                <button type="button" class="btn btn-sm btn-outline-info chap-toggle-loc" title="Toggle Location"><i class="bi bi-geo-alt"></i></button>
+                <button type="button" class="btn btn-sm btn-outline-danger chap-remove" title="Remove Chapter"><i class="bi bi-trash"></i></button>
+            `;
+
+        return `
+            <div class="row g-2 align-items-center">
+                <div class="col-md-3">
+                    <label class="form-label small text-surface-muted mb-1">Start Time</label>
+                    <input type="text" class="form-control form-control-sm chap-time" placeholder="00:00:00" value="${startTimeStr}" ${dis}>
+                </div>
+                <div class="col-md-3">
+                    <label class="form-label small text-surface-muted mb-1">End Time</label>
+                    <input type="text" class="form-control form-control-sm chap-endtime" placeholder="Optional" value="${endTimeStr}" ${dis}>
+                </div>
+                <div class="col-md-6">
+                    <label class="form-label small text-surface-muted mb-1">Chapter Title</label>
+                    <input type="text" class="form-control form-control-sm chap-title" placeholder="Required" value="${title}" ${dis}>
+                </div>
+
+                <div class="col-md-5 mt-2">
+                    <input type="url" class="form-control form-control-sm chap-url" placeholder="Optional Link URL (https://…)" value="${url}" ${dis}>
+                </div>
+                <div class="col-md-5 mt-2">
+                    <input type="url" class="form-control form-control-sm chap-img" placeholder="Optional Image URL (https://…)" value="${img}" ${dis}>
+                </div>
+                <div class="col-md-2 mt-2 d-flex align-items-center justify-content-between">
+                    <div class="form-check form-switch ms-1 mt-1">
+                        <input class="form-check-input chap-toc" type="checkbox" role="switch" ${toc ? 'checked' : ''} ${dis}>
+                        <label class="form-check-label small text-surface-muted">TOC</label>
+                    </div>
+                </div>
+
+                ${readonly ? "" : `<div class="col-12 mt-2 chapter-row-controls">${controls}</div>`}
+
+                <div class="col-12 mt-2 location-fields ${locVisible ? '' : 'd-none'}">
+                    <div class="p-2 border rounded d-flex gap-2 flex-wrap" style="border-color: var(--bs-border-color) !important;">
+                        <div class="flex-grow-1" style="min-width: 12rem;">
+                            <input type="text" class="form-control form-control-sm chap-loc-name" placeholder="Location Name (e.g. Elmyr, Atlanta)" value="${locName}" ${dis}>
+                        </div>
+                        <div class="flex-grow-1" style="min-width: 12rem;">
+                            <input type="text" class="form-control form-control-sm chap-loc-geo" placeholder="GeoURI (e.g. geo:33.7653,-84.3494)" value="${locGeo}" ${dis}>
+                        </div>
+                        <div class="flex-grow-1" style="min-width: 12rem;">
+                            <input type="text" class="form-control form-control-sm chap-loc-osm" placeholder="OSM URL (Optional)" value="${locOsm}" ${dis}>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        `;
+    }
+
+    function buildChapterRowElement(chapter, opts) {
+        const row = document.createElement('div');
+        row.className = 'inbox-chapter-row' + (opts.readonly ? ' readonly' : '');
+        if (opts.diffClass) row.classList.add(opts.diffClass);
+        row.innerHTML = buildChapterRowHTML(chapter || {}, opts);
+
+        if (!opts.readonly) {
+            const removeBtn = row.querySelector('.chap-remove');
+            if (removeBtn) {
+                removeBtn.addEventListener('click', () => {
+                    // In the pair-grid, every editable row has a paired left cell
+                    // immediately preceding it. Remove both so alignment stays intact.
+                    const prev = row.previousElementSibling;
+                    if (prev && prev.classList && prev.classList.contains('inbox-chapter-row')) {
+                        prev.remove();
                     }
-                    suggEl.setAttribute('data-diffed', 'true');
+                    row.remove();
+                });
+            }
+            const locToggle = row.querySelector('.chap-toggle-loc');
+            if (locToggle) {
+                locToggle.addEventListener('click', () => {
+                    row.querySelector('.location-fields').classList.toggle('d-none');
+                });
+            }
+        }
+        return row;
+    }
+
+    // Back-compat wrapper used by any legacy paths (none currently, but kept for safety)
+    function appendChapterRow(container, chapter, opts) {
+        const row = buildChapterRowElement(chapter, opts);
+        container.appendChild(row);
+        return row;
+    }
+
+    function collectChaptersFromContainer(container) {
+        const out = [];
+        // Pair-grid contains both readonly (left) and editable (right) rows.
+        // Only the editable, non-placeholder ones contribute to the saved chapter list.
+        container.querySelectorAll('.inbox-chapter-row').forEach(row => {
+            if (row.classList.contains('readonly')) return;
+            if (row.classList.contains('chapter-placeholder')) return;
+            const timeStr = row.querySelector('.chap-time').value;
+            const endTimeStr = row.querySelector('.chap-endtime').value.trim();
+            const title = row.querySelector('.chap-title').value.trim();
+            const url = row.querySelector('.chap-url').value.trim();
+            const img = row.querySelector('.chap-img').value.trim();
+            const toc = row.querySelector('.chap-toc').checked;
+            const locName = row.querySelector('.chap-loc-name').value.trim();
+            const locGeo = row.querySelector('.chap-loc-geo').value.trim();
+            const locOsm = row.querySelector('.chap-loc-osm').value.trim();
+
+            if (title && timeStr) {
+                const chap = { startTime: parseTime(timeStr), title: title };
+                if (endTimeStr) {
+                    const parsedEnd = parseTime(endTimeStr);
+                    if (parsedEnd > chap.startTime) chap.endTime = parsedEnd;
                 }
+                if (url && url.startsWith('http')) chap.url = url;
+                if (img && img.startsWith('http')) chap.img = img;
+                if (!toc) chap.toc = false;
+                if (locName && locGeo) {
+                    chap.location = { name: locName, geo: locGeo };
+                    if (locOsm) chap.location.osm = locOsm;
+                }
+                out.push(chap);
+            }
+        });
+        out.sort((a, b) => a.startTime - b.startTime);
+        return out;
+    }
+
+    // ============================================================
+    // Description: no diff highlighting on either side.
+    // Mutating innerHTML by string-diffing rich HTML produces corrupt
+    // markup (spans break across tags, link attributes get split, etc.),
+    // and applying Quill background-color formatting on the right would
+    // persist the highlight into the saved description on submit.
+    // Both sides render clean rendered HTML — the side-by-side layout
+    // already makes changes obvious.
+    // ============================================================
+
+    // ============================================================
+    // Wire up each accordion item
+    // ============================================================
+    function initEdit(wrapper) {
+        const editId = wrapper.getAttribute('data-edit-id');
+        if (!editId || wrapper.dataset.initialized === '1') return;
+        wrapper.dataset.initialized = '1';
+
+        const origTags = readJSON('orig-tags-' + editId, []) || [];
+        const suggTags = readJSON('sugg-tags-' + editId, []) || [];
+        const origChaptersRaw = readJSON('orig-chapters-' + editId, []) || [];
+        const suggChaptersRaw = readJSON('sugg-chapters-' + editId, []) || [];
+
+        const origChapters = chaptersAsList(origChaptersRaw);
+        const suggChapters = chaptersAsList(suggChaptersRaw);
+
+        // ---- TAGS ----
+        const tagsLeft = wrapper.querySelector('.tags-original-render');
+        const tagsRightWrapper = wrapper.querySelector('.tags-suggested-input');
+        const hiddenTagsInput = wrapper.querySelector('.hidden-edited-tags');
+        renderOriginalTags(tagsLeft, origTags, suggTags);
+        const tagWidget = setupSuggestedTagInput(tagsRightWrapper, origTags, suggTags, hiddenTagsInput);
+        // Default the Tags approve toggle off if the tag sets are identical.
+        const tagsChanged =
+            origTags.length !== suggTags.length ||
+            origTags.some(t => !suggTags.includes(t)) ||
+            suggTags.some(t => !origTags.includes(t));
+        const approveTagsCheckbox = wrapper.querySelector('input[name="approve_tags"]');
+        if (approveTagsCheckbox) approveTagsCheckbox.checked = tagsChanged;
+
+        // ---- CHAPTERS (paired insertion into the shared 2-col grid) ----
+        const pairGrid = wrapper.querySelector('.chapters-pair-grid');
+        const pairAnchor = wrapper.querySelector('.chapters-pair-rows-anchor');
+        const origCountEl = wrapper.querySelector('.orig-chap-count');
+        const suggCountEl = wrapper.querySelector('.sugg-chap-count');
+        const wpToggle = wrapper.querySelector('.chapters-waypoints-toggle');
+        wpToggle.checked = suggChapters.waypoints;
+
+        origCountEl.textContent = origChapters.list.length;
+        suggCountEl.textContent = suggChapters.list.length;
+
+        // Diff sets — used for color-coding by index.
+        const suggKeySet = new Set(suggChapters.list.map(chapKey));
+        const origKeySet = new Set(origChapters.list.map(chapKey));
+        // Default the Chapters approve toggle off if the chapter sets are identical
+        // AND the waypoints flag matches.
+        let chaptersChanged = origChapters.list.length !== suggChapters.list.length
+            || origChapters.waypoints !== suggChapters.waypoints;
+        if (!chaptersChanged) {
+            for (const k of suggKeySet) {
+                if (!origKeySet.has(k)) { chaptersChanged = true; break; }
+            }
+        }
+        if (!chaptersChanged) {
+            for (const k of origKeySet) {
+                if (!suggKeySet.has(k)) { chaptersChanged = true; break; }
+            }
+        }
+        const approveChaptersCheckbox = wrapper.querySelector('input[name="approve_chapters"]');
+        if (approveChaptersCheckbox) approveChaptersCheckbox.checked = chaptersChanged;
+
+        // Build pairs by index. The longer side governs how many rows render.
+        // Missing-on-left  → empty placeholder cell on left, "added" green on right
+        // Missing-on-right → "removed" red on left, empty placeholder cell on right
+        // Both present + identical → unhighlighted both sides
+        // Both present + differ    → red on left, green on right
+        const maxLen = Math.max(origChapters.list.length, suggChapters.list.length);
+
+        function makePlaceholder(label) {
+            const el = document.createElement('div');
+            el.className = 'inbox-chapter-row chapter-placeholder';
+            el.style.opacity = '0.4';
+            el.style.display = 'flex';
+            el.style.alignItems = 'center';
+            el.style.justifyContent = 'center';
+            el.style.fontStyle = 'italic';
+            el.textContent = label || '— no chapter at this position —';
+            return el;
+        }
+
+        // Insert paired rows in order, before the (display:none) anchor.
+        // Each pair is two consecutive grid items so they share a grid row.
+        for (let i = 0; i < maxLen; i++) {
+            const origC = origChapters.list[i];
+            const suggC = suggChapters.list[i];
+
+            // LEFT cell (read-only, original)
+            let leftCell;
+            if (!origC) {
+                leftCell = makePlaceholder();
+            } else {
+                const removed = !suggKeySet.has(chapKey(origC));
+                leftCell = buildChapterRowElement(origC, {
+                    readonly: true,
+                    diffClass: removed ? 'chapter-removed' : null
+                });
             }
 
-            processSplitDiff('.diff-tags-original', '.diff-tags-suggested');
-            processSplitDiff('.diff-desc-original', '.diff-desc-suggested');
+            // RIGHT cell (editable, suggested)
+            let rightCell;
+            if (!suggC) {
+                rightCell = makePlaceholder();
+            } else {
+                const added = !origKeySet.has(chapKey(suggC));
+                rightCell = buildChapterRowElement(suggC, {
+                    readonly: false,
+                    diffClass: added ? 'chapter-added' : null
+                });
+            }
+
+            pairGrid.insertBefore(leftCell, pairAnchor);
+            pairGrid.insertBefore(rightCell, pairAnchor);
+        }
+
+        // If no chapters anywhere, show one placeholder pair.
+        if (maxLen === 0) {
+            pairGrid.insertBefore(makePlaceholder('No chapters'), pairAnchor);
+            pairGrid.insertBefore(makePlaceholder('No chapters'), pairAnchor);
+        }
+
+        const addBtn = wrapper.querySelector('.add-chapter-btn');
+        addBtn.addEventListener('click', () => {
+            // Clear any "No chapters" placeholders first when adding the first real chapter.
+            const placeholders = pairGrid.querySelectorAll('.chapter-placeholder');
+            const realRows = pairGrid.querySelectorAll('.inbox-chapter-row:not(.chapter-placeholder)');
+            if (realRows.length === 0) {
+                placeholders.forEach(p => p.remove());
+            }
+            // Add a placeholder on the left + new editable row on the right.
+            pairGrid.insertBefore(makePlaceholder(), pairAnchor);
+            pairGrid.insertBefore(
+                buildChapterRowElement({ startTime: 0, title: "", toc: true }, { readonly: false }),
+                pairAnchor
+            );
+        });
+
+        // ---- DESCRIPTION ----
+        // Left: clean read-only div. Right: contenteditable div (no Quill).
+        // This avoids Quill's clipboard converter which mangles HTML on init
+        // (markdown link syntax, stray ">" from </p> boundaries, etc.).
+        const descRightHost = wrapper.querySelector('.diff-desc-suggested');
+
+        // ---- FORM SUBMIT ----
+        const form = wrapper.querySelector('.inbox-approve-form');
+        const descLeftHost = wrapper.querySelector('.diff-desc-original');
+        // Default the Description approve toggle off if the rendered HTML matches.
+        // We compare innerHTML rather than textContent so a formatting-only change
+        // (e.g., bold added) still counts as a change worth approving.
+        const descChanged = descLeftHost && descRightHost
+            && descLeftHost.innerHTML.trim() !== descRightHost.innerHTML.trim();
+        const approveDescCheckbox = wrapper.querySelector('input[name="approve_description"]');
+        if (approveDescCheckbox) approveDescCheckbox.checked = !!descChanged;
+        
+        form.addEventListener('submit', () => {
+            // 1. Tags
+            tagWidget.commitPending();
+            wrapper.querySelector('.hidden-edited-tags').value = JSON.stringify(tagWidget.getTags());
+
+            // 2. Chapters — read editable rows from the shared pair-grid
+            const chaptersList = collectChaptersFromContainer(pairGrid);
+            const payload = wpToggle.checked
+                ? { waypoints: true, chapters: chaptersList }
+                : chaptersList;
+            wrapper.querySelector('.hidden-edited-chapters').value = JSON.stringify(payload);
+
+            // 3. Description — read directly from the contenteditable div
+            wrapper.querySelector('.hidden-edited-description').value = descRightHost.innerHTML;
+        });
+    }
+
+    // ============================================================
+    // Lazy init when the accordion item is opened. Also init any
+    // already-expanded items on DOM ready.
+    // ============================================================
+    function initVisible() {
+        document.querySelectorAll('#inboxAccordion .accordion-collapse.show .diff-wrapper').forEach(initEdit);
+    }
+
+    document.addEventListener('DOMContentLoaded', () => {
+        initVisible();
+        document.querySelectorAll('#inboxAccordion .accordion-collapse').forEach(coll => {
+            coll.addEventListener('show.bs.collapse', () => {
+                const wrapper = coll.querySelector('.diff-wrapper');
+                if (wrapper) initEdit(wrapper);
+            });
         });
     });
+})();
 </script>

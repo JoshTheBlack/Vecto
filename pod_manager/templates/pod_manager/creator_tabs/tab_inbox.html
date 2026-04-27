@@ -1,66 +1,108 @@
 <style>
     /* ============================================================
-       INBOX DIFF GRID
-       CSS Grid auto-stretches each row to the tallest cell, so
-       left and right containers always match height without any
-       overflow / scrollbar tricks. Children must NOT set fixed
-       heights or overflow:auto — they grow to fit their content.
+       INBOX DIFF LAYOUT — section-based, conflict-aware
+       Each section (tags / chapters / description) is its own
+       independent block. By default, sections render in 2-column
+       layout (Original | Suggested). When the server detects that
+       the live episode field has drifted from the user's submission-
+       time snapshot, the section gains the .conflicted class, which
+       expands it to a 3-column layout (Original | Current | Suggested)
+       with a "CHANGED" warning badge.
        ============================================================ */
-    .diff-grid {
-        display: grid;
-        grid-template-columns: 1fr 1fr;
-        gap: 1rem;
-        color: var(--vecto-surface-text);
-    }
-    @media (max-width: 768px) {
-        .diff-grid { grid-template-columns: 1fr; }
-    }
-    .diff-box {
-        background-color: rgba(128, 128, 128, 0.08);
-        border: 1px solid var(--bs-border-color);
+    .diff-section {
+        margin-bottom: 1.25rem;
         padding: 1rem;
+        background-color: rgba(128, 128, 128, 0.05);
+        border: 1px solid var(--bs-border-color);
         border-radius: var(--bs-border-radius);
-        display: flex;
-        flex-direction: column;
-        min-width: 0;            /* prevents grid blowout on long words/URLs */
-        overflow: visible;       /* never clip — let row grow */
     }
-    .diff-box-header {
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-        margin-bottom: 0.5rem;
-        gap: 0.5rem;
-    }
-    .diff-box-header .form-check {
-        margin-bottom: 0;
-        padding-left: 2.25em;
+    .diff-section.conflicted {
+        border-color: rgba(255, 193, 7, 0.5);
+        background-color: rgba(255, 193, 7, 0.04);
     }
 
-    /* Chapters section spans both columns of .diff-grid and runs its own
-       internal 2-col grid so each chapter index aligns left↔right. */
-    .diff-box-fullwidth {
-        grid-column: 1 / -1;
-    }
-    .chapters-pair-grid {
+    /* The internal grid. Two columns by default; three when conflicted. */
+    .diff-section-grid {
         display: grid;
         grid-template-columns: 1fr 1fr;
         column-gap: 1rem;
         row-gap: 0.6rem;
-        align-items: stretch;       /* each row pair stretches to the tallest cell */
+        align-items: stretch;
+    }
+    .diff-section.conflicted .diff-section-grid {
+        grid-template-columns: 1fr 1fr 1fr;
     }
     @media (max-width: 768px) {
-        .chapters-pair-grid { grid-template-columns: 1fr; }
+        .diff-section-grid,
+        .diff-section.conflicted .diff-section-grid {
+            grid-template-columns: 1fr;
+        }
     }
-    /* Inside the pair-grid, the left/right "headers" should look like
-       diff-box-header (label inline, switch on the right). */
-    .chapters-pair-header-left,
-    .chapters-pair-header-right {
+
+    /* The three column types. Current is hidden in non-conflicted mode. */
+    .diff-cell {
+        background-color: rgba(128, 128, 128, 0.08);
+        border: 1px solid var(--bs-border-color);
+        padding: 0.75rem;
+        border-radius: var(--bs-border-radius);
         display: flex;
-        justify-content: space-between;
+        flex-direction: column;
+        min-width: 0;
+        overflow: visible;
+    }
+    .diff-section:not(.conflicted) .diff-cell-current {
+        display: none;
+    }
+    .diff-section.conflicted .diff-cell-current {
+        background-color: rgba(255, 193, 7, 0.08);
+        border-color: rgba(255, 193, 7, 0.4);
+    }
+
+    /* Visual indicator on the suggested cell when its content differs from the
+       original. Used by the description section since we don't apply per-word
+       highlights inside an editable contenteditable div (those would corrupt
+       the saved HTML). The class is toggled at JS init time. */
+    .diff-cell.diff-cell-changed {
+        border-left: 3px solid rgba(25, 135, 84, 0.7);
+        background-color: rgba(25, 135, 84, 0.06);
+    }
+
+    .diff-cell-header {
+        display: flex;
         align-items: center;
         gap: 0.5rem;
+        margin-bottom: 0.5rem;
+        flex-wrap: wrap;
     }
+    .diff-cell-header .form-check {
+        margin-bottom: 0;
+        margin-left: auto;
+        padding-left: 2.25em;
+    }
+
+    .conflict-badge {
+        font-size: 0.65rem;
+        background-color: rgba(255, 193, 7, 0.25);
+        color: #ffc107;
+        border: 1px solid rgba(255, 193, 7, 0.5);
+        padding: 0.15rem 0.4rem;
+        letter-spacing: 0.05em;
+    }
+
+    /* Chapters section uses the same grid pattern but with paired/triplet
+       chapter rows interleaved in the grid flow. JS inserts cells before
+       the anchor element. The header cells in the chapters grid don't get
+       the .diff-cell visual treatment (they're column titles, not content
+       boxes); chapter rows themselves carry their own .inbox-chapter-row
+       background/border styling. */
+    .diff-section[data-section="chapters"]:not(.conflicted) .chapters-pair-header-current,
+    .diff-section[data-section="chapters"]:not(.conflicted) .chapters-pair-current-only {
+        display: none;
+    }
+
+    /* When the chapters section is conflicted, JS will switch from
+       inserting pairs (orig|sugg) to inserting triplets (orig|curr|sugg).
+       The grid template above (1fr 1fr 1fr in .conflicted) handles layout. */
 
     .accordion-button:not(.collapsed) {
         background-color: rgba(128, 128, 128, 0.05) !important;
@@ -135,12 +177,10 @@
         border: 1px solid var(--bs-border-color);
         border-radius: var(--bs-border-radius);
         padding: 0.75rem;
-        /* Stretch to fill its grid cell so paired rows match height. */
         display: flex;
         flex-direction: column;
         height: 100%;
     }
-    /* When chapters are stacked outside a pair-grid (legacy code paths) */
     .inbox-chapter-row + .inbox-chapter-row { margin-top: 0.6rem; }
     .inbox-chapter-row .form-control,
     .inbox-chapter-row .form-control-sm {
@@ -155,6 +195,10 @@
     .inbox-chapter-row.chapter-removed {
         background-color: rgba(220, 53, 69, 0.15);
         border-color: rgba(220, 53, 69, 0.6);
+    }
+    .inbox-chapter-row.chapter-current {
+        background-color: rgba(255, 193, 7, 0.12);
+        border-color: rgba(255, 193, 7, 0.4);
     }
     .inbox-chapter-row .chapter-row-controls { display: flex; gap: 0.25rem; justify-content: flex-end; }
 
@@ -242,6 +286,9 @@
                             {% with chap_sugg_id="sugg-chapters-"|add:edit_id_str %}
                                 {{ edit.suggested_data.chapters|default_if_none:""|json_script:chap_sugg_id }}
                             {% endwith %}
+                            {% with chap_curr_id="curr-chapters-"|add:edit_id_str %}
+                                {{ edit.current_chapters|default_if_none:""|json_script:chap_curr_id }}
+                            {% endwith %}
                         {% endwith %}
 
                         {# Single APPROVE form: wraps every editable field plus per-section toggles. The id is set so the submit button (which lives outside the form, see footer) can target it via the HTML5 form="..." attribute. #}
@@ -257,103 +304,137 @@
                             <input type="hidden" name="edited_chapters" class="hidden-edited-chapters" value="">
                             <input type="hidden" name="edited_description" class="hidden-edited-description" value="">
 
-                            <div class="row g-0 mb-3">
-                                <div class="col-md-6 p-2 border-end" style="border-color: var(--bs-border-color) !important;">
-                                    <h6 class="text-danger fw-bold mb-0"><i class="bi bi-clock-history"></i> Previous Data</h6>
-                                </div>
-                                <div class="col-md-6 p-2 ps-3">
-                                    <h6 class="text-success fw-bold mb-0"><i class="bi bi-check-circle"></i> Suggested Edit</h6>
+                            {# Each section renders independently as a stacking block. When .conflicted is present, the section shows three columns (Original / Current / Suggested); otherwise two (Original / Suggested). Server-side flags on the edit (tags_conflict / chapters_conflict / desc_conflict) decide which mode each section is in. #}
+
+                            {# ============== TAGS ============== #}
+                            <div class="diff-section{% if edit.tags_conflict %} conflicted{% endif %}"
+                                 data-section="tags">
+
+                                <div class="diff-section-grid">
+                                    <div class="diff-cell diff-cell-original">
+                                        <div class="diff-cell-header">
+                                            <strong class="small text-danger"><i class="bi bi-clock-history"></i> Original Tags</strong>
+                                        </div>
+                                        <div class="tag-pill-list tags-original-render"></div>
+                                    </div>
+
+                                    <div class="diff-cell diff-cell-current">
+                                        <div class="diff-cell-header">
+                                            <strong class="small text-warning"><i class="bi bi-exclamation-triangle"></i> Current Tags</strong>
+                                            <span class="badge ms-2 conflict-badge" title="Episode tags changed since this edit was submitted">CHANGED</span>
+                                        </div>
+                                        <div class="tag-pill-list tags-current-render">
+                                            {% for tag in edit.current_tags %}
+                                                <span class="tag-pill">{{ tag }}</span>
+                                            {% empty %}
+                                                <em style="opacity:0.5;">None</em>
+                                            {% endfor %}
+                                        </div>
+                                    </div>
+
+                                    <div class="diff-cell diff-cell-suggested">
+                                        <div class="diff-cell-header">
+                                            <strong class="small text-success"><i class="bi bi-check-circle"></i> Suggested Tags</strong>
+                                            <div class="form-check form-switch ms-auto">
+                                                <input class="form-check-input" type="checkbox" role="switch"
+                                                       id="approveTags{{ edit.id }}"
+                                                       name="approve_tags" checked>
+                                                <label class="form-check-label small" for="approveTags{{ edit.id }}">Approve</label>
+                                            </div>
+                                        </div>
+                                        <div class="tag-input-wrapper tags-suggested-input">
+                                            <input type="text" class="tag-input-field" placeholder="Type a tag, press Enter…">
+                                        </div>
+                                    </div>
                                 </div>
                             </div>
 
-                            <div class="diff-grid">
+                            {# ============== CHAPTERS ============== #}
+                            <div class="diff-section{% if edit.chapters_conflict %} conflicted{% endif %}"
+                                 data-section="chapters">
 
-                                {# ---------------- TAGS ---------------- #}
-                                <div class="diff-box">
-                                    <div class="diff-box-header">
-                                        <strong class="small" style="color: var(--vecto-surface-muted);">TAGS</strong>
+                                <div class="diff-section-grid chapters-pair-grid">
+                                    <div class="diff-cell-header chapters-pair-header-original">
+                                        <strong class="small text-danger"><i class="bi bi-clock-history"></i>
+                                            Original Chapters (<span class="orig-chap-count">0</span>)
+                                        </strong>
                                     </div>
-                                    <div class="tag-pill-list tags-original-render"></div>
-                                </div>
-                                <div class="diff-box">
-                                    <div class="diff-box-header">
-                                        <strong class="small" style="color: var(--vecto-surface-muted);">TAGS</strong>
-                                        <div class="form-check form-switch">
+                                    <div class="diff-cell-header chapters-pair-header-current">
+                                        <strong class="small text-warning"><i class="bi bi-exclamation-triangle"></i>
+                                            Current Chapters (<span class="curr-chap-count">0</span>)
+                                        </strong>
+                                        <span class="badge ms-2 conflict-badge">CHANGED</span>
+                                    </div>
+                                    <div class="diff-cell-header chapters-pair-header-suggested">
+                                        <strong class="small text-success"><i class="bi bi-check-circle"></i>
+                                            Suggested Chapters (<span class="sugg-chap-count">0</span>)
+                                        </strong>
+                                        <div class="form-check form-switch ms-auto">
                                             <input class="form-check-input" type="checkbox" role="switch"
-                                                   id="approveTags{{ edit.id }}"
-                                                   name="approve_tags" checked>
-                                            <label class="form-check-label small" for="approveTags{{ edit.id }}">Approve</label>
+                                                   id="approveChapters{{ edit.id }}"
+                                                   name="approve_chapters" checked>
+                                            <label class="form-check-label small" for="approveChapters{{ edit.id }}">Approve</label>
                                         </div>
                                     </div>
-                                    <div class="tag-input-wrapper tags-suggested-input">
-                                        <input type="text" class="tag-input-field" placeholder="Type a tag, press Enter…">
+
+                                    {# Sub-header row: empty cells under original/current, waypoints under suggested. The second empty (under "current") is hidden in non-conflicted 2-col mode so the waypoints toggle stays under the Suggested column. #}
+                                    <div></div>
+                                    <div class="chapters-pair-current-only"></div>
+                                    <div class="form-check form-switch mb-2">
+                                        <input class="form-check-input chapters-waypoints-toggle" type="checkbox" role="switch"
+                                               id="waypoints{{ edit.id }}">
+                                        <label class="form-check-label small" for="waypoints{{ edit.id }}">
+                                            Enable Waypoints <span class="text-surface-muted">(connects locations into a route map)</span>
+                                        </label>
+                                    </div>
+
+                                    {# Anchor: JS inserts paired or triplet chapter rows here. #}
+                                    <div class="chapters-pair-rows-anchor" data-anchor="true" style="display:none;"></div>
+
+                                    {# Footer row: empty cells under original/current, Add button under suggested. Same column-count adjustment as the sub-header row. #}
+                                    <div></div>
+                                    <div class="chapters-pair-current-only"></div>
+                                    <div>
+                                        <button type="button" class="btn btn-sm btn-outline-success w-100 mt-2 add-chapter-btn">
+                                            <i class="bi bi-plus-lg"></i> Add Chapter
+                                        </button>
                                     </div>
                                 </div>
+                            </div>
 
-                                {# ---------------- CHAPTERS (pair-aligned, full-width grid) ---------------- #}
-                                <div class="diff-box diff-box-fullwidth chapters-section">
-                                    <div class="chapters-pair-grid">
-                                        {# Header row: left + right titles #}
-                                        <div class="diff-box-header chapters-pair-header-left">
-                                            <strong class="small" style="color: var(--vecto-surface-muted);">
-                                                CHAPTERS (<span class="orig-chap-count">0</span>)
-                                            </strong>
+                            {# ============== DESCRIPTION ============== #}
+                            <div class="diff-section{% if edit.desc_conflict %} conflicted{% endif %}"
+                                 data-section="description">
+
+                                <div class="diff-section-grid">
+                                    <div class="diff-cell diff-cell-original">
+                                        <div class="diff-cell-header">
+                                            <strong class="small text-danger"><i class="bi bi-clock-history"></i> Original Description</strong>
                                         </div>
-                                        <div class="diff-box-header chapters-pair-header-right">
-                                            <strong class="small" style="color: var(--vecto-surface-muted);">
-                                                CHAPTERS (<span class="sugg-chap-count">0</span>)
-                                            </strong>
-                                            <div class="form-check form-switch">
+                                        <div class="diff-desc-original inbox-desc-readonly">{{ edit.original_data.description|default:""|safe }}</div>
+                                    </div>
+
+                                    <div class="diff-cell diff-cell-current">
+                                        <div class="diff-cell-header">
+                                            <strong class="small text-warning"><i class="bi bi-exclamation-triangle"></i> Current Description</strong>
+                                            <span class="badge ms-2 conflict-badge">CHANGED</span>
+                                        </div>
+                                        <div class="diff-desc-current inbox-desc-readonly">{{ edit.current_description|default:""|safe }}</div>
+                                    </div>
+
+                                    <div class="diff-cell diff-cell-suggested">
+                                        <div class="diff-cell-header">
+                                            <strong class="small text-success"><i class="bi bi-check-circle"></i> Suggested Description</strong>
+                                            <div class="form-check form-switch ms-auto">
                                                 <input class="form-check-input" type="checkbox" role="switch"
-                                                       id="approveChapters{{ edit.id }}"
-                                                       name="approve_chapters" checked>
-                                                <label class="form-check-label small" for="approveChapters{{ edit.id }}">Approve</label>
+                                                       id="approveDesc{{ edit.id }}"
+                                                       name="approve_description" checked>
+                                                <label class="form-check-label small" for="approveDesc{{ edit.id }}">Approve</label>
                                             </div>
                                         </div>
-
-                                        {# Sub-header row: empty on left, waypoints toggle on right #}
-                                        <div></div>
-                                        <div class="form-check form-switch mb-2">
-                                            <input class="form-check-input chapters-waypoints-toggle" type="checkbox" role="switch"
-                                                   id="waypoints{{ edit.id }}">
-                                            <label class="form-check-label small" for="waypoints{{ edit.id }}">
-                                                Enable Waypoints <span class="text-surface-muted">(connects locations into a route map)</span>
-                                            </label>
-                                        </div>
-
-                                        {# JS appends paired (left, right) cells here directly into the parent grid, inserted before this anchor element. #}
-                                        <div class="chapters-pair-rows-anchor" data-anchor="true" style="display:none;"></div>
-
-                                        {# Footer row: empty on left, Add Chapter button on right #}
-                                        <div></div>
-                                        <div>
-                                            <button type="button" class="btn btn-sm btn-outline-success w-100 mt-2 add-chapter-btn">
-                                                <i class="bi bi-plus-lg"></i> Add Chapter
-                                            </button>
-                                        </div>
+                                        <div class="diff-desc-suggested inbox-desc-editable" contenteditable="true">{{ edit.suggested_data.description|default:""|safe }}</div>
                                     </div>
                                 </div>
-
-                                {# ---------------- DESCRIPTION ---------------- #}
-                                <div class="diff-box">
-                                    <div class="diff-box-header">
-                                        <strong class="small" style="color: var(--vecto-surface-muted);">DESCRIPTION</strong>
-                                    </div>
-                                    <div class="diff-desc-original inbox-desc-readonly">{{ edit.original_data.description|default:""|safe }}</div>
-                                </div>
-                                <div class="diff-box">
-                                    <div class="diff-box-header">
-                                        <strong class="small" style="color: var(--vecto-surface-muted);">DESCRIPTION</strong>
-                                        <div class="form-check form-switch">
-                                            <input class="form-check-input" type="checkbox" role="switch"
-                                                   id="approveDesc{{ edit.id }}"
-                                                   name="approve_description" checked>
-                                            <label class="form-check-label small" for="approveDesc{{ edit.id }}">Approve</label>
-                                        </div>
-                                    </div>
-                                    <div class="diff-desc-suggested inbox-desc-editable" contenteditable="true">{{ edit.suggested_data.description|default:""|safe }}</div>
-                                </div>
-
                             </div>
                         </form>
 
@@ -632,11 +713,23 @@
             const removeBtn = row.querySelector('.chap-remove');
             if (removeBtn) {
                 removeBtn.addEventListener('click', () => {
-                    // In the pair-grid, every editable row has a paired left cell
-                    // immediately preceding it. Remove both so alignment stays intact.
-                    const prev = row.previousElementSibling;
-                    if (prev && prev.classList && prev.classList.contains('inbox-chapter-row')) {
-                        prev.remove();
+                    // Remove the N-1 row cells that precede this editable row in
+                    // the same grid row. cellsPerRow is 2 in pair mode (orig|sugg)
+                    // and 3 in triplet mode (orig|curr|sugg). The siblings we want
+                    // to remove are .inbox-chapter-row elements only — placeholder
+                    // cells share that class so they're caught too. Stop walking
+                    // backward as soon as we hit something that isn't a chapter
+                    // row (e.g., the anchor or a header), or once we've removed
+                    // cellsPerRow - 1 cells.
+                    const cellsPerRow = opts.cellsPerRow || 2;
+                    let prev = row.previousElementSibling;
+                    let removed = 0;
+                    while (prev && removed < cellsPerRow - 1) {
+                        if (!prev.classList || !prev.classList.contains('inbox-chapter-row')) break;
+                        const toRemove = prev;
+                        prev = prev.previousElementSibling;
+                        toRemove.remove();
+                        removed += 1;
                     }
                     row.remove();
                 });
@@ -727,51 +820,64 @@
         const hiddenTagsInput = wrapper.querySelector('.hidden-edited-tags');
         renderOriginalTags(tagsLeft, origTags, suggTags);
         const tagWidget = setupSuggestedTagInput(tagsRightWrapper, origTags, suggTags, hiddenTagsInput);
-        // Default the Tags approve toggle off if the tag sets are identical.
-        const tagsChanged =
-            origTags.length !== suggTags.length ||
-            origTags.some(t => !suggTags.includes(t)) ||
-            suggTags.some(t => !origTags.includes(t));
-        const approveTagsCheckbox = wrapper.querySelector('input[name="approve_tags"]');
-        if (approveTagsCheckbox) approveTagsCheckbox.checked = tagsChanged;
 
-        // ---- CHAPTERS (paired insertion into the shared 2-col grid) ----
+        // Current-tags pills (server-rendered), if the tags section is in
+        // conflicted mode. We don't apply tag-added/removed coloring on the
+        // current column — the diff lives between original and suggested,
+        // not between current and anything; the current column is just
+        // "what's actually live now" for context.
+
+        // Auto-uncheck the Tags approve toggle if EITHER:
+        //   (a) suggested == original (no actual change to approve), OR
+        //   (b) the section is flagged conflicted by the server (admin should
+        //       acknowledge that current state has drifted before approving).
+        // Admin can always re-check to force.
+        const tagsChanged =
+            origTags.length !== suggTags.length
+            || origTags.some(t => !suggTags.includes(t))
+            || suggTags.some(t => !origTags.includes(t));
+        const tagsSection = wrapper.querySelector('.diff-section[data-section="tags"]');
+        const tagsConflicted = tagsSection && tagsSection.classList.contains('conflicted');
+        const approveTagsCb = wrapper.querySelector('input[name="approve_tags"]');
+        if (approveTagsCb) {
+            approveTagsCb.checked = tagsChanged && !tagsConflicted;
+        }
+
+        // ---- CHAPTERS ----
+        // The chapters section's outer container can be in 2-col (.diff-section
+        // without .conflicted) or 3-col (.diff-section.conflicted) mode. JS
+        // inserts pairs (orig|sugg) or triplets (orig|curr|sugg) accordingly.
+        const chaptersSection = wrapper.querySelector('.diff-section[data-section="chapters"]');
+        const chaptersConflicted = chaptersSection && chaptersSection.classList.contains('conflicted');
+        const cellsPerRow = chaptersConflicted ? 3 : 2;
+
         const pairGrid = wrapper.querySelector('.chapters-pair-grid');
         const pairAnchor = wrapper.querySelector('.chapters-pair-rows-anchor');
         const origCountEl = wrapper.querySelector('.orig-chap-count');
+        const currCountEl = wrapper.querySelector('.curr-chap-count');
         const suggCountEl = wrapper.querySelector('.sugg-chap-count');
         const wpToggle = wrapper.querySelector('.chapters-waypoints-toggle');
         wpToggle.checked = suggChapters.waypoints;
 
+        const currChaptersRaw = readJSON('curr-chapters-' + editId, []) || [];
+        const currChapters = chaptersAsList(currChaptersRaw);
+
         origCountEl.textContent = origChapters.list.length;
         suggCountEl.textContent = suggChapters.list.length;
+        if (currCountEl) currCountEl.textContent = currChapters.list.length;
 
         // Diff sets — used for color-coding by index.
         const suggKeySet = new Set(suggChapters.list.map(chapKey));
         const origKeySet = new Set(origChapters.list.map(chapKey));
-        // Default the Chapters approve toggle off if the chapter sets are identical
-        // AND the waypoints flag matches.
-        let chaptersChanged = origChapters.list.length !== suggChapters.list.length
-            || origChapters.waypoints !== suggChapters.waypoints;
-        if (!chaptersChanged) {
-            for (const k of suggKeySet) {
-                if (!origKeySet.has(k)) { chaptersChanged = true; break; }
-            }
-        }
-        if (!chaptersChanged) {
-            for (const k of origKeySet) {
-                if (!suggKeySet.has(k)) { chaptersChanged = true; break; }
-            }
-        }
-        const approveChaptersCheckbox = wrapper.querySelector('input[name="approve_chapters"]');
-        if (approveChaptersCheckbox) approveChaptersCheckbox.checked = chaptersChanged;
 
-        // Build pairs by index. The longer side governs how many rows render.
-        // Missing-on-left  → empty placeholder cell on left, "added" green on right
-        // Missing-on-right → "removed" red on left, empty placeholder cell on right
-        // Both present + identical → unhighlighted both sides
-        // Both present + differ    → red on left, green on right
-        const maxLen = Math.max(origChapters.list.length, suggChapters.list.length);
+        // Build pairs/triplets by index. The longest column governs how many
+        // grid rows render. Missing entries on a side render as a faded
+        // placeholder cell so alignment stays intact.
+        const maxLen = Math.max(
+            origChapters.list.length,
+            suggChapters.list.length,
+            chaptersConflicted ? currChapters.list.length : 0
+        );
 
         function makePlaceholder(label) {
             const el = document.createElement('div');
@@ -785,79 +891,132 @@
             return el;
         }
 
-        // Insert paired rows in order, before the (display:none) anchor.
-        // Each pair is two consecutive grid items so they share a grid row.
         for (let i = 0; i < maxLen; i++) {
             const origC = origChapters.list[i];
             const suggC = suggChapters.list[i];
+            const currC = currChapters.list[i];
 
-            // LEFT cell (read-only, original)
-            let leftCell;
+            // ORIGINAL cell (read-only)
+            let origCell;
             if (!origC) {
-                leftCell = makePlaceholder();
+                origCell = makePlaceholder();
             } else {
                 const removed = !suggKeySet.has(chapKey(origC));
-                leftCell = buildChapterRowElement(origC, {
+                origCell = buildChapterRowElement(origC, {
                     readonly: true,
                     diffClass: removed ? 'chapter-removed' : null
                 });
             }
+            pairGrid.insertBefore(origCell, pairAnchor);
 
-            // RIGHT cell (editable, suggested)
-            let rightCell;
-            if (!suggC) {
-                rightCell = makePlaceholder();
-            } else {
-                const added = !origKeySet.has(chapKey(suggC));
-                rightCell = buildChapterRowElement(suggC, {
-                    readonly: false,
-                    diffClass: added ? 'chapter-added' : null
-                });
+            // CURRENT cell (read-only) — only inserted when chapters section is conflicted
+            if (chaptersConflicted) {
+                let currCell;
+                if (!currC) {
+                    currCell = makePlaceholder();
+                } else {
+                    currCell = buildChapterRowElement(currC, {
+                        readonly: true,
+                        diffClass: 'chapter-current'
+                    });
+                }
+                pairGrid.insertBefore(currCell, pairAnchor);
             }
 
-            pairGrid.insertBefore(leftCell, pairAnchor);
-            pairGrid.insertBefore(rightCell, pairAnchor);
+            // SUGGESTED cell (editable)
+            let suggCell;
+            if (!suggC) {
+                suggCell = makePlaceholder();
+            } else {
+                const added = !origKeySet.has(chapKey(suggC));
+                suggCell = buildChapterRowElement(suggC, {
+                    readonly: false,
+                    diffClass: added ? 'chapter-added' : null,
+                    cellsPerRow: cellsPerRow
+                });
+            }
+            pairGrid.insertBefore(suggCell, pairAnchor);
         }
 
-        // If no chapters anywhere, show one placeholder pair.
+        // If no chapters anywhere, show one placeholder row (one per column).
         if (maxLen === 0) {
-            pairGrid.insertBefore(makePlaceholder('No chapters'), pairAnchor);
-            pairGrid.insertBefore(makePlaceholder('No chapters'), pairAnchor);
+            for (let i = 0; i < cellsPerRow; i++) {
+                pairGrid.insertBefore(makePlaceholder('No chapters'), pairAnchor);
+            }
         }
 
         const addBtn = wrapper.querySelector('.add-chapter-btn');
         addBtn.addEventListener('click', () => {
-            // Clear any "No chapters" placeholders first when adding the first real chapter.
-            const placeholders = pairGrid.querySelectorAll('.chapter-placeholder');
+            // Clear "No chapters" placeholders if this is the first real row.
             const realRows = pairGrid.querySelectorAll('.inbox-chapter-row:not(.chapter-placeholder)');
             if (realRows.length === 0) {
-                placeholders.forEach(p => p.remove());
+                pairGrid.querySelectorAll('.chapter-placeholder').forEach(p => p.remove());
             }
-            // Add a placeholder on the left + new editable row on the right.
-            pairGrid.insertBefore(makePlaceholder(), pairAnchor);
+            // Add cellsPerRow cells: (cellsPerRow - 1) placeholders, then a new editable row.
+            for (let i = 0; i < cellsPerRow - 1; i++) {
+                pairGrid.insertBefore(makePlaceholder(), pairAnchor);
+            }
             pairGrid.insertBefore(
-                buildChapterRowElement({ startTime: 0, title: "", toc: true }, { readonly: false }),
+                buildChapterRowElement(
+                    { startTime: 0, title: "", toc: true },
+                    { readonly: false, cellsPerRow: cellsPerRow }
+                ),
                 pairAnchor
             );
         });
+
+        // Auto-uncheck Chapters approve toggle if EITHER no actual change
+        // exists OR the section is conflicted.
+        let chaptersChanged = origChapters.list.length !== suggChapters.list.length
+            || origChapters.waypoints !== suggChapters.waypoints;
+        if (!chaptersChanged) {
+            for (const k of suggKeySet) {
+                if (!origKeySet.has(k)) { chaptersChanged = true; break; }
+            }
+        }
+        if (!chaptersChanged) {
+            for (const k of origKeySet) {
+                if (!suggKeySet.has(k)) { chaptersChanged = true; break; }
+            }
+        }
+        const approveChaptersCb = wrapper.querySelector('input[name="approve_chapters"]');
+        if (approveChaptersCb) {
+            approveChaptersCb.checked = chaptersChanged && !chaptersConflicted;
+        }
 
         // ---- DESCRIPTION ----
         // Left: clean read-only div. Right: contenteditable div (no Quill).
         // This avoids Quill's clipboard converter which mangles HTML on init
         // (markdown link syntax, stray ">" from </p> boundaries, etc.).
         const descRightHost = wrapper.querySelector('.diff-desc-suggested');
+        const descLeftHost = wrapper.querySelector('.diff-desc-original');
+
+        // Auto-uncheck Description approve toggle if EITHER no actual change
+        // exists OR the section is conflicted. innerHTML comparison so a
+        // formatting-only change (bold added, etc.) still counts as a change.
+        const descChanged = descLeftHost && descRightHost
+            && descLeftHost.innerHTML.trim() !== descRightHost.innerHTML.trim();
+        const descSection = wrapper.querySelector('.diff-section[data-section="description"]');
+        const descConflicted = descSection && descSection.classList.contains('conflicted');
+        const approveDescCb = wrapper.querySelector('input[name="approve_description"]');
+        if (approveDescCb) {
+            approveDescCb.checked = !!descChanged && !descConflicted;
+        }
+
+        // Mark the suggested cell visually if its content differs from the
+        // original. Container-level indicator only — we don't try to highlight
+        // individual changed words inside an editable rich-text region because
+        // (a) the per-word highlight markup persists into saved HTML on submit,
+        // and (b) HTML-string diffing splits across tag boundaries and produces
+        // malformed markup. Container border keeps both problems away.
+        if (descChanged) {
+            const suggCell = descSection && descSection.querySelector('.diff-cell-suggested');
+            if (suggCell) suggCell.classList.add('diff-cell-changed');
+        }
 
         // ---- FORM SUBMIT ----
         const form = wrapper.querySelector('.inbox-approve-form');
-        const descLeftHost = wrapper.querySelector('.diff-desc-original');
-        // Default the Description approve toggle off if the rendered HTML matches.
-        // We compare innerHTML rather than textContent so a formatting-only change
-        // (e.g., bold added) still counts as a change worth approving.
-        const descChanged = descLeftHost && descRightHost
-            && descLeftHost.innerHTML.trim() !== descRightHost.innerHTML.trim();
-        const approveDescCheckbox = wrapper.querySelector('input[name="approve_description"]');
-        if (approveDescCheckbox) approveDescCheckbox.checked = !!descChanged;
-        
+
         form.addEventListener('submit', () => {
             // 1. Tags
             tagWidget.commitPending();

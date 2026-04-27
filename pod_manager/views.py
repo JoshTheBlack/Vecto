@@ -393,48 +393,81 @@ def _handle_inbox_action(request, current_network, action):
     if action == 'approve_edit':
         ep = edit.episode
         points = 0
-        
+
+        # Snapshot the live episode state RIGHT NOW, before any field is touched.
+        # This becomes the new edit.original_data after approval, so single-edit
+        # rollback restores the actual pre-approval state — not the user's
+        # potentially-stale submission-time snapshot. Captured up front so that
+        # field-by-field rewrites below don't pollute the snapshot mid-flight.
+        pre_approval_snapshot = {
+            'description': ep.clean_description or '',
+            'tags': list(ep.tags or []),
+            'chapters': ep.chapters_public if ep.chapters_public is not None else [],
+        }
+        # User's submission-time snapshot, used to compute deltas (what the user
+        # *intended* to add/remove). Falls back to current state when missing so
+        # delta math degenerates safely to "no-op" for absent sections.
+        user_snapshot = edit.original_data or {}
+
         # 1. PROCESS DESCRIPTION
+        # Whole-string replacement. The admin's checked toggle is acknowledgment
+        # of any conflict that was visible in the inbox.
         if request.POST.get('approve_description') == 'on':
             new_desc = request.POST.get('edited_description', '').strip()
-            if new_desc and new_desc != edit.original_data.get('description'):
+            if new_desc and new_desc != pre_approval_snapshot['description']:
                 ep.clean_description = new_desc
                 edit.suggested_data['description'] = new_desc  # Update for Audit Log
                 points += 1
                 membership.edits_descriptions += 1
 
-        # 2. PROCESS TAGS (From the Pill UI JSON payload)
+        # 2. PROCESS TAGS — set-delta merge.
+        # Compute the user's intent as additions/removals relative to *their*
+        # original_data snapshot. Apply that delta to the *current* episode tags,
+        # preserving any tags added by other edits approved in the interim.
+        # Order: keep current order; append new additions in the order the user
+        # supplied them; drop removals.
         if request.POST.get('approve_tags') == 'on':
             raw_tags = request.POST.get('edited_tags', '[]')
             try:
-                new_tags = json.loads(raw_tags)
-                old_tags = edit.original_data.get('tags') or [] # Fallback to empty list if None
-                
-                if isinstance(new_tags, list) and new_tags != old_tags:
-                    ep.tags = new_tags
-                    edit.suggested_data['tags'] = new_tags  # Update for Audit Log
-                    points += 1 # Base point for approving the section
-                    
-                    # Subtracting the old set from the new set isolates strictly new additions
-                    new_additions_count = len(set(new_tags) - set(old_tags))
-                    if new_additions_count > 0:
-                        membership.edits_tags += new_additions_count
-                        
+                user_intended_tags = json.loads(raw_tags)
+                user_baseline_tags = user_snapshot.get('tags') or []
+
+                if isinstance(user_intended_tags, list):
+                    added = [t for t in user_intended_tags if t not in user_baseline_tags]
+                    removed = set(user_baseline_tags) - set(user_intended_tags)
+
+                    current_list = list(ep.tags or [])
+                    merged = [t for t in current_list if t not in removed]
+                    for t in added:
+                        if t not in merged:
+                            merged.append(t)
+
+                    if merged != current_list:
+                        ep.tags = merged
+                        edit.suggested_data['tags'] = merged  # Update for Audit Log
+                        points += 1
+
+                        # Trust score reflects net new additions only.
+                        if added:
+                            membership.edits_tags += len(added)
             except Exception as e:
                 logger.error(f"Failed to parse tags from inbox: {e}")
 
-        # 3. PROCESS CHAPTERS (From your existing visual builder payload)
+        # 3. PROCESS CHAPTERS — full replacement (order-sensitive, can't merge cleanly).
+        # The admin's checked toggle is acknowledgment of any conflict warning
+        # the inbox showed. We compare against the pre-approval snapshot to
+        # decide whether anything actually changed.
         if request.POST.get('approve_chapters') == 'on':
             raw_chapters = request.POST.get('edited_chapters', '')
             if raw_chapters:
                 try:
                     new_chapters = json.loads(raw_chapters)
-                    if new_chapters != edit.original_data.get('chapters'):
+                    if new_chapters != pre_approval_snapshot['chapters']:
                         ep.chapters_public = new_chapters
                         edit.suggested_data['chapters'] = new_chapters  # Update for Audit Log
                         points += 1
-                        
-                        # Tally chapter counts dynamically based on format
+
+                        # Tally chapter counts dynamically based on format.
                         if isinstance(new_chapters, dict):
                             membership.edits_chapters += len(new_chapters.get('chapters', []))
                         elif isinstance(new_chapters, list):
@@ -460,15 +493,22 @@ def _handle_inbox_action(request, current_network, action):
         ep.is_metadata_locked = True
         ep.save()
 
+        # Rewrite original_data to the pre-approval snapshot we captured above.
+        # This makes single-edit rollback restore the state that existed right
+        # before this approval, regardless of when the user originally submitted.
+        # All three fields are stored even if only some were approved — fields
+        # we didn't change still need a faithful pre-approval value so that
+        # rollback restores the *whole* episode to the pre-approval state.
+        edit.original_data = pre_approval_snapshot
         edit.status = 'approved'
         edit.resolved_at = timezone.now()
         edit.save()
 
         membership.trust_score += points
-        if edit.is_first_responder: 
+        if edit.is_first_responder:
             membership.first_responder_count += 1
         membership.save()
-        
+
         messages.success(request, f"Partial edit approved! User awarded +{points} Trust Score.")
 
         base_url = request.build_absolute_uri('/')[:-1]
@@ -486,7 +526,30 @@ def _handle_rollback(request, current_network, action):
     if action == 'rollback_single_edit':
         edit = get_object_or_404(EpisodeEditSuggestion, id=request.POST.get('edit_id'), episode__podcast__network=current_network, status='approved')
         membership, _ = NetworkMembership.objects.get_or_create(user=edit.user, network=current_network)
-        
+
+        # Block when newer approved edits exist on the same episode. Rolling back
+        # this edit's `original_data` would restore a state that pre-dates those
+        # approvals, silently undoing them. The admin must roll those forward
+        # first (or accept that they're already obsolete and the rollback isn't
+        # needed).
+        newer_approved = EpisodeEditSuggestion.objects.filter(
+            episode=edit.episode,
+            status='approved',
+            resolved_at__gt=edit.resolved_at,
+        ).select_related('user').order_by('resolved_at')
+
+        if newer_approved.exists():
+            blockers = ", ".join(
+                f"#{e.id} by {e.user.username}" for e in newer_approved[:5]
+            )
+            extra = "" if newer_approved.count() <= 5 else f" (and {newer_approved.count() - 5} more)"
+            messages.error(
+                request,
+                f"Cannot roll back edit #{edit.id}: later approved edits exist on this episode "
+                f"({blockers}{extra}). Roll those back first, or leave this edit in place."
+            )
+            return
+
         ep = edit.episode
         ep.clean_description = edit.original_data.get('description', ep.clean_description)
         ep.tags = edit.original_data.get('tags', ep.tags)
@@ -662,12 +725,46 @@ def creator_settings(request):
         episode_count=Count('episodes', distinct=True)
     ).order_by(Lower('clean_title'))
 
-    # 2. Inbox (Pending Edits with Multi-Tenant Trust Scores)
-    pending_edits = EpisodeEditSuggestion.objects.filter(episode__podcast__network=current_network, status='pending').select_related('episode', 'user')
+    # 2. Inbox (Pending Edits with Multi-Tenant Trust Scores + Conflict Detection)
+    pending_edits = EpisodeEditSuggestion.objects.filter(
+        episode__podcast__network=current_network, status='pending'
+    ).select_related('episode', 'user')
+
     user_ids = [e.user_id for e in pending_edits]
     memberships = {m.user_id: m for m in NetworkMembership.objects.filter(user_id__in=user_ids, network=current_network)}
+
     for edit in pending_edits:
         edit.membership = memberships.get(edit.user_id)
+
+        # Per-section conflict detection: did the live episode field change since
+        # this edit was submitted? Computation runs entirely in Python on data
+        # already loaded by select_related — no extra DB hits per edit. Each
+        # `*_conflict` flag becomes True when the user's `original_data` snapshot
+        # disagrees with the current episode field, meaning some other approval
+        # has landed in the interim and the admin should review the 3-column view.
+        ep = edit.episode
+        orig = edit.original_data or {}
+
+        # Tags: compare as sets — listing order is not semantically meaningful.
+        current_tags = ep.tags or []
+        snapshot_tags = orig.get('tags') or []
+        edit.tags_conflict = set(current_tags) != set(snapshot_tags)
+        edit.current_tags = current_tags
+
+        # Chapters: compare as deserialized Python objects. Both list and
+        # {waypoints, chapters: [...]} shapes compare correctly via ==.
+        current_chapters = ep.chapters_public or []
+        snapshot_chapters = orig.get('chapters') or []
+        edit.chapters_conflict = current_chapters != snapshot_chapters
+        edit.current_chapters = current_chapters
+
+        # Description: HTML string equality. May produce occasional false
+        # positives if the renderer re-serialized whitespace, but never a false
+        # negative — when in doubt the admin sees the warning.
+        current_desc = ep.clean_description or ''
+        snapshot_desc = orig.get('description') or ''
+        edit.desc_conflict = current_desc != snapshot_desc
+        edit.current_description = current_desc
 
     # 3. Merge Desk (Unpaired & Matched Episodes)
     merge_view = request.GET.get('merge_view', 'orphans')

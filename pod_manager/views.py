@@ -1125,7 +1125,9 @@ def generate_custom_feed(request):
     billing_key = f"billing:active:{podcast.network_id}:{profile.user_id}:{timezone.now().strftime('%Y-%m-%d')}"
     cache.set(billing_key, 1, timeout=172800)
 
-    return HttpResponse(final_xml, content_type='application/rss+xml')
+    response = HttpResponse(final_xml, content_type='application/rss+xml')
+    response['Access-Control-Allow-Origin'] = '*'
+    return response
 
 def generate_public_feed(request, podcast_slug):
     podcast = get_object_or_404(Podcast, slug=podcast_slug, network=request.network)

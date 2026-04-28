@@ -11,6 +11,9 @@ import asyncio
 import threading
 import time
 import urllib.parse
+import re
+import html
+from email.utils import format_datetime
 
 import requests
 from django.conf import settings
@@ -25,7 +28,7 @@ from django.core.paginator import Paginator
 from django.db import transaction
 from django.db.models import Q, F, Case, When, CharField, Max, Count
 from django.db.models.functions import Substr, Lower
-from django.http import JsonResponse, HttpResponse, HttpResponseForbidden, StreamingHttpResponse, Http404, HttpResponseRedirect
+from django.http import JsonResponse, HttpResponse, HttpResponseForbidden, StreamingHttpResponse, Http404, HttpResponseRedirect, HttpResponseNotModified
 from django.shortcuts import redirect, get_object_or_404, render
 from django.urls import reverse
 from django.utils import timezone
@@ -152,6 +155,9 @@ class RSSFeedBuilder:
 
     def render(self, access_map=None):
         raw_xml = self.feed.rss_str()
+
+        if 'xmlns:podcast=' not in raw_xml:
+            raw_xml = raw_xml.replace('<rss ', '<rss xmlns:podcast="https://podcastindex.org/namespace/1.0" ', 1)
         
         tag_map = {str(ep.guid_public or ep.guid_private or ep.id): ep for ep in self.episodes_data}
         if not tag_map: return raw_xml
@@ -900,7 +906,7 @@ def user_feeds(request):
             mix.image_url = request.POST.get('mix_image', '') or mix.image_url
             if 'mix_image_upload' in request.FILES:
                 mix.image_upload = request.FILES['mix_image_upload']
-            cache.delete(f"mix_feed_master_{mix.unique_id}")    
+            cache.delete(f"shell_user_mix_{mix.id}")   
             mix.selected_podcasts.set(request.POST.getlist('podcasts'))
             mix.save()
 
@@ -908,7 +914,7 @@ def user_feeds(request):
 
         elif request.POST.get('delete_mix'):
             mix = get_object_or_404(UserMix, id=request.POST.get('mix_id'), user=request.user, network=request.network)
-            cache.delete(f"mix_feed_master_{mix.unique_id}")
+            cache.delete(f"shell_user_mix_{mix.id}")
             mix.delete()
             messages.warning(request, "Custom mix deleted.")
 
@@ -1069,20 +1075,18 @@ def get_or_build_episode_fragment(episode, base_url, has_access):
     feed_type = 'private' if has_access else 'public'
     cache_key = f"ep_frag_{feed_type}_{episode.id}"
     fragment = cache.get(cache_key)
-    if fragment: return fragment
+    
+    # FIX 1: Check for None explicitly so we don't infinitely rebuild empty strings
+    if fragment is not None: return fragment
 
     # Build a temporary shell to render just this one episode
     builder = RSSFeedBuilder(base_url, "Temp", "Temp", "", episode.podcast.network, feed_type)
     builder.add_episode(episode, has_access)
     raw_xml = builder.render(access_map={episode.podcast_id: has_access})
     
-    # Extract just the <item> block
-    try:
-        start = raw_xml.index('<item>')
-        end = raw_xml.index('</item>') + 7
-        fragment = raw_xml[start:end]
-    except ValueError:
-        fragment = ""
+    # FIX 2: Use robust regex to extract the item block, ignoring whitespace/attributes
+    match = re.search(r'(<item.*?>.*?</item>)', raw_xml, re.DOTALL | re.IGNORECASE)
+    fragment = match.group(1) if match else ""
         
     cache.set(cache_key, fragment, timeout=604800) # 7 Days
     return fragment
@@ -1114,7 +1118,7 @@ def generate_custom_feed(request):
     items_xml = ""
     for i, ep in enumerate(episodes):
         frag = fragments_dict.get(cache_keys[i])
-        if not frag: frag = get_or_build_episode_fragment(ep, base_url, has_access)
+        if frag is None: frag = get_or_build_episode_fragment(ep, base_url, has_access)
         items_xml += frag
         
     final_xml = header + items_xml + footer
@@ -1125,8 +1129,22 @@ def generate_custom_feed(request):
     billing_key = f"billing:active:{podcast.network_id}:{profile.user_id}:{timezone.now().strftime('%Y-%m-%d')}"
     cache.set(billing_key, 1, timeout=172800)
 
-    response = HttpResponse(final_xml, content_type='application/rss+xml')
+    xml_bytes = final_xml.encode('utf-8')
+    etag = f'"{hashlib.md5(xml_bytes).hexdigest()}"'
+    
+    if request.META.get('HTTP_IF_NONE_MATCH') == etag:
+        logger.info(f"[ETag MATCH] {request.path} | Served: 0 bytes")
+        response = HttpResponseNotModified()
+        response['Access-Control-Allow-Origin'] = '*'
+        return response
+
+    response = HttpResponse(xml_bytes, content_type='application/xml')
+    response['ETag'] = etag
+    response['Cache-Control'] = 'public, max-age=0, must-revalidate'
     response['Access-Control-Allow-Origin'] = '*'
+    
+    size_mb = len(xml_bytes) / (1024 * 1024)
+    logger.info(f"[ETag MISS] {request.path} | New Hash: {etag} | Served: {size_mb:.2f} MB")
     return response
 
 def generate_public_feed(request, podcast_slug):
@@ -1142,23 +1160,51 @@ def generate_public_feed(request, podcast_slug):
     items_xml = ""
     for i, ep in enumerate(episodes):
         frag = fragments_dict.get(cache_keys[i])
-        if not frag: frag = get_or_build_episode_fragment(ep, base_url, False)
+        if frag is None: frag = get_or_build_episode_fragment(ep, base_url, False)
         items_xml += frag
 
     final_xml = header + items_xml + footer
-    return HttpResponse(final_xml, content_type='application/rss+xml')
+    
+    xml_bytes = final_xml.encode('utf-8')
+    etag = f'"{hashlib.md5(xml_bytes).hexdigest()}"'
+    
+    if request.META.get('HTTP_IF_NONE_MATCH') == etag:
+        logger.info(f"[ETag MATCH] {request.path} | Served: 0 bytes")
+        response = HttpResponseNotModified()
+        response['Access-Control-Allow-Origin'] = '*'
+        return response
+
+    response = HttpResponse(xml_bytes, content_type='application/xml')
+    response['ETag'] = etag
+    response['Cache-Control'] = 'public, max-age=0, must-revalidate'
+    response['Access-Control-Allow-Origin'] = '*'
+    
+    size_mb = len(xml_bytes) / (1024 * 1024)
+    logger.info(f"[ETag MISS] {request.path} | New Hash: {etag} | Served: {size_mb:.2f} MB")
+    return response
 
 def generate_mix_feed(request, unique_id):
     user_mix = get_object_or_404(UserMix.objects.select_related('user__patron_profile'), unique_id=unique_id, is_active=True)
     base_url = request.build_absolute_uri('/')[:-1]
+    cache_key = f"shell_user_mix_{user_mix.id}"
+    shell = cache.get(cache_key)
     
-    # Generate mix shell on the fly (lightweight)
-    builder = RSSFeedBuilder(base_url, user_mix.name, f"Custom blended feed for {user_mix.user.first_name}.", user_mix.display_image or user_mix.network.default_image_url, user_mix.network)
-    raw_xml = builder.render()
-    header, footer = raw_xml.split('</channel>')[0], "</channel></rss>"
+    if not shell:
+        # Generate mix shell on the fly (lightweight)
+        builder = RSSFeedBuilder(base_url, user_mix.name, f"Custom blended feed for {user_mix.user.first_name}.", user_mix.display_image or user_mix.network.default_image_url, user_mix.network)
+        raw_xml = builder.render()
+        shell = (raw_xml.split('</channel>')[0], "</channel></rss>")
+        cache.set(cache_key, shell, timeout=None)
+        
+    header, footer = shell
     
     episodes = Episode.objects.filter(podcast__in=user_mix.selected_podcasts.all()).select_related('podcast', 'podcast__network').order_by('-pub_date')[:500]
-    
+    if episodes:
+        # Get the exact RFC-2822 formatted string of the newest episode
+        latest_date_str = format_datetime(episodes[0].pub_date)
+        # Swap it into the cached header
+        header = re.sub(r'<lastBuildDate>.*?</lastBuildDate>', f'<lastBuildDate>{latest_date_str}</lastBuildDate>', header)
+
     keys_and_eps = []
     for ep in episodes:
         if not ep.has_public_audio and not ep.is_premium: continue
@@ -1171,10 +1217,11 @@ def generate_mix_feed(request, unique_id):
     items_xml = ""
     for key, ep, ep_has_access in keys_and_eps:
         frag = fragments_dict.get(key)
-        if not frag: frag = get_or_build_episode_fragment(ep, base_url, ep_has_access)
+        if frag is None: frag = get_or_build_episode_fragment(ep, base_url, ep_has_access)
         
         # Inject Podcast Title into episode title for mix context
-        frag = frag.replace('<title>', f'<title>[{ep.podcast.title}] ', 1)
+        safe_title = html.escape(ep.podcast.title)
+        frag = frag.replace('<title>', f'<title>[{safe_title}] ', 1)
         items_xml += frag
 
     final_xml = header + items_xml + footer
@@ -1189,7 +1236,23 @@ def generate_mix_feed(request, unique_id):
         cache.set(billing_key, 1, timeout=172800)
     # ==========================================
 
-    return HttpResponse(final_xml, content_type='application/rss+xml')
+    xml_bytes = final_xml.encode('utf-8')
+    etag = f'"{hashlib.md5(xml_bytes).hexdigest()}"'
+    
+    if request.META.get('HTTP_IF_NONE_MATCH') == etag:
+        logger.info(f"[ETag MATCH] {request.path} | Served: 0 bytes")
+        response = HttpResponseNotModified()
+        response['Access-Control-Allow-Origin'] = '*'
+        return response
+
+    response = HttpResponse(xml_bytes, content_type='application/xml')
+    response['ETag'] = etag
+    response['Cache-Control'] = 'public, max-age=0, must-revalidate'
+    response['Access-Control-Allow-Origin'] = '*'
+    
+    size_mb = len(xml_bytes) / (1024 * 1024)
+    logger.info(f"[ETag MISS] {request.path} | New Hash: {etag} | Served: {size_mb:.2f} MB")
+    return response
 
 def generate_network_mix_feed(request, network_slug, mix_slug):
     network_mix = get_object_or_404(NetworkMix, slug=mix_slug, network__slug=network_slug)
@@ -1204,12 +1267,24 @@ def generate_network_mix_feed(request, network_slug, mix_slug):
     user_meets_mix_tier = is_owner or (mix_req_cents == 0) or (user_cents >= mix_req_cents)
 
     base_url = request.build_absolute_uri('/')[:-1]
-    builder = RSSFeedBuilder(base_url, network_mix.name, f"A curated network mix by {network_mix.network.name}.", network_mix.display_image or network_mix.network.default_image_url, network_mix.network)
-    raw_xml = builder.render()
-    header, footer = raw_xml.split('</channel>')[0], "</channel></rss>"
+    cache_key = f"shell_net_mix_{network_mix.id}"
+    shell = cache.get(cache_key)
+    
+    if not shell:
+        builder = RSSFeedBuilder(base_url, network_mix.name, f"A curated network mix by {network_mix.network.name}.", network_mix.display_image or network_mix.network.default_image_url, network_mix.network)
+        raw_xml = builder.render()
+        shell = (raw_xml.split('</channel>')[0], "</channel></rss>")
+        cache.set(cache_key, shell, timeout=None)
+        
+    header, footer = shell
     
     episodes = Episode.objects.filter(podcast__in=network_mix.selected_podcasts.all()).select_related('podcast', 'podcast__network').order_by('-pub_date')[:5000]
-    
+    if episodes:
+        # Get the exact RFC-2822 formatted string of the newest episode
+        latest_date_str = format_datetime(episodes[0].pub_date)
+        # Swap it into the cached header
+        header = re.sub(r'<lastBuildDate>.*?</lastBuildDate>', f'<lastBuildDate>{latest_date_str}</lastBuildDate>', header)
+
     keys_and_eps = []
     for ep in episodes:
         ep_has_access, _ = _evaluate_access(user, ep.podcast, ep.podcast.network)
@@ -1224,8 +1299,9 @@ def generate_network_mix_feed(request, network_slug, mix_slug):
     items_xml = ""
     for key, ep, total_access in keys_and_eps:
         frag = fragments_dict.get(key)
-        if not frag: frag = get_or_build_episode_fragment(ep, base_url, total_access)
-        frag = frag.replace('<title>', f'<title>[{ep.podcast.title}] ', 1)
+        if frag is None: frag = get_or_build_episode_fragment(ep, base_url, total_access)
+        safe_title = html.escape(ep.podcast.title)
+        frag = frag.replace('<title>', f'<title>[{safe_title}] ', 1)
         items_xml += frag
 
     final_xml = header + items_xml + footer
@@ -1234,7 +1310,36 @@ def generate_network_mix_feed(request, network_slug, mix_slug):
     if user and user.is_authenticated:
         billing_key = f"billing:active:{network_mix.network_id}:{user.id}:{timezone.now().strftime('%Y-%m-%d')}"
         cache.set(billing_key, 1, timeout=172800)
-    return HttpResponse(final_xml, content_type='application/rss+xml')
+    
+    xml_bytes = final_xml.encode('utf-8')
+
+    # --- 2. Generate the ETag ---
+    # The HTTP spec requires ETags to be wrapped in double quotes.
+    etag = f'"{hashlib.md5(xml_bytes).hexdigest()}"'
+    
+    # --- 3. Check the Client's Request ---
+    # The client sends their saved ETag in the 'If-None-Match' header
+    client_etag = request.META.get('HTTP_IF_NONE_MATCH')
+    
+    if client_etag == etag:
+        # The client has the exact same file. Send a 304 and 0 bytes.
+        logger.info(f"[ETag MATCH] {request.path} | Saved Client downloading XML | Served: 0 bytes")
+        
+        response = HttpResponseNotModified()
+        response['Access-Control-Allow-Origin'] = '*'
+        return response
+
+    # --- 4. The Client needs the new file (or it's their first time) ---
+    response = HttpResponse(xml_bytes, content_type='application/xml')
+    response['ETag'] = etag
+    response['Cache-Control'] = 'public, max-age=0, must-revalidate'
+    response['Access-Control-Allow-Origin'] = '*'
+    
+    # Calculate the size of the payload we are about to send (in Megabytes)
+    size_mb = len(xml_bytes) / (1024 * 1024)
+    logger.info(f"[ETag MISS] {request.path} | New Hash: {etag} | Served: {size_mb:.2f} MB")
+    
+    return response
 
 def play_episode(request, episode_id):
     ep = get_object_or_404(Episode.objects.select_related('podcast', 'podcast__network'), id=episode_id)

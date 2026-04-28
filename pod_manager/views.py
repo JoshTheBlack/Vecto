@@ -1164,7 +1164,7 @@ def generate_public_feed(request, podcast_slug):
         items_xml += frag
 
     final_xml = header + items_xml + footer
-    
+    final_xml = final_xml.replace('?auth=__VECTO_AUTH_TOKEN__', '')
     xml_bytes = final_xml.encode('utf-8')
     etag = f'"{hashlib.md5(xml_bytes).hexdigest()}"'
     

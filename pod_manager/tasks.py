@@ -370,12 +370,15 @@ def task_send_magic_link(email, magic_link):
 
 @shared_task
 def task_generate_s3_reports():
-    """Runs the S3 Report generation script in the background to prevent web-worker timeouts."""
+    """Runs the S3 Report generation script in the background."""
+    logger.info("\n\n=======================================================")
+    logger.info("⚙️ [CELERY WORKER] Task Picked Up! Running S3 Script...")
     try:
-        logger.info("Starting background S3 report generation...")
         call_command('generate_s3_report')
-        logger.info("S3 reports successfully generated.")
+        logger.info("✅ [CELERY WORKER] Task Completed Successfully! Files saved to /media.")
+        logger.info("=======================================================\n")
         return "Success"
     except Exception as e:
-        logger.error(f"Failed to generate S3 reports in background: {e}")
+        logger.error(f"❌ [CELERY WORKER] Task FAILED: {e}")
+        logger.info("=======================================================\n")
         return f"Failed: {e}"

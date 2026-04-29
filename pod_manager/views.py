@@ -803,20 +803,25 @@ def creator_settings(request):
                     task_rebuild_episode_fragments.delay(int(ep_id), base_url)
 
             elif action == 'generate_s3_report':
-                from pod_manager.tasks import task_generate_s3_reports
-                
-                # Dispatch to Celery instantly without waiting
-                task_generate_s3_reports.delay()
-                
-                messages.success(request, "Report generation started in the background! Please wait a few moments and refresh this page to download the updated files.")
-                
-                # Stay on the current tab
-                target_tab = request.GET.get('tab', '')
-                redirect_url = f"{reverse('creator_settings')}?network={current_network.slug}"
-                if target_tab:
-                    redirect_url += f"&tab={target_tab}"
+                    logger.info("\n\n=======================================================")
+                    logger.info("🚀 [DIAGNOSTIC] ACTION CAUGHT: generate_s3_report button clicked!")
                     
-                return redirect(redirect_url)
+                    try:
+                        from pod_manager.tasks import task_generate_s3_reports
+                        logger.info("✅ [DIAGNOSTIC] Task imported successfully. Dispatching to Celery...")
+                        
+                        result = task_generate_s3_reports.delay()
+                        logger.info(f"📦 [DIAGNOSTIC] Task Dispatched to Redis! Task ID: {result.id}")
+                        logger.info("=======================================================\n")
+                        
+                        messages.success(request, "Report generation started! Please wait a few moments and refresh this page.")
+                    except Exception as e:
+                        logger.error(f"❌ [DIAGNOSTIC] Failed to dispatch task: {e}")
+                        messages.error(request, f"Task dispatch error: {e}")
+                        
+                    # Stay on the current tab
+                    target_tab = request.GET.get('tab', 'sync')
+                    return redirect(f"{reverse('creator_settings')}?network={current_network.slug}&tab={target_tab}")
         
         target_tab = request.GET.get('tab', '')
         redirect_url = f"{reverse('creator_settings')}?network={current_network.slug}"

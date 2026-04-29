@@ -89,9 +89,9 @@
 
                             <div class="diff-box">
                                 <strong class="small d-block mb-2" style="color: var(--vecto-surface-muted);">TAGS</strong>
-                                <div class="diff-tags-original audit-tag-pill-list">
+                                <div class="diff-tags-original tag-pill-list">
                                     {% for tag in edit.original_data.tags %}
-                                        <span class="audit-tag-pill" data-tag="{{ tag }}">{{ tag }}</span>
+                                        <span class="tag-pill" data-tag="{{ tag }}">{{ tag }}</span>
                                     {% empty %}
                                         <em style="opacity:0.5;">None</em>
                                     {% endfor %}
@@ -99,9 +99,9 @@
                             </div>
                             <div class="diff-box">
                                 <strong class="small d-block mb-2" style="color: var(--vecto-surface-muted);">TAGS</strong>
-                                <div class="diff-tags-suggested audit-tag-pill-list">
+                                <div class="diff-tags-suggested tag-pill-list">
                                     {% for tag in edit.suggested_data.tags %}
-                                        <span class="audit-tag-pill" data-tag="{{ tag }}">{{ tag }}</span>
+                                        <span class="tag-pill" data-tag="{{ tag }}">{{ tag }}</span>
                                     {% empty %}
                                         <em style="opacity:0.5;">None</em>
                                     {% endfor %}
@@ -116,7 +116,7 @@
                             <div class="diff-box">
                                 <strong class="small d-block mb-2" style="color: var(--vecto-surface-muted);">CHAPTERS ({{ orig_chap_list|length }})</strong>
                                 {% for chap in orig_chap_list %}
-                                    <div class="audit-chapter-row {% if chap not in sugg_chap_list %}chapter-removed{% endif %}">
+                                    <div class="chapter-row {% if chap not in sugg_chap_list %}chapter-removed{% endif %}">
                                         <div class="row g-2 align-items-center">
                                             <div class="col-md-4">
                                                 <label class="form-label small text-surface-muted mb-1">Start</label>
@@ -172,7 +172,7 @@
                             <div class="diff-box">
                                 <strong class="small d-block mb-2" style="color: var(--vecto-surface-muted);">CHAPTERS ({{ sugg_chap_list|length }})</strong>
                                 {% for chap in sugg_chap_list %}
-                                    <div class="audit-chapter-row {% if chap not in orig_chap_list %}chapter-added{% endif %}">
+                                    <div class="chapter-row {% if chap not in orig_chap_list %}chapter-added{% endif %}">
                                         <div class="row g-2 align-items-center">
                                             <div class="col-md-4">
                                                 <label class="form-label small text-surface-muted mb-1">Start</label>
@@ -304,7 +304,8 @@
 </div>
 
 <style>
-    /* Side-by-side diff grid: pairs of .diff-box items render in two columns. */
+    /* Side-by-side diff grid: pairs of .diff-box items render in two columns.
+       Tag pills and chapter row styles live in creator_settings.html. */
     .diff-grid {
         display: grid;
         grid-template-columns: 1fr 1fr;
@@ -313,9 +314,7 @@
         align-items: start;
     }
     @media (max-width: 768px) {
-        .diff-grid {
-            grid-template-columns: 1fr;
-        }
+        .diff-grid { grid-template-columns: 1fr; }
     }
     .diff-box {
         background-color: rgba(128, 128, 128, 0.08);
@@ -324,62 +323,6 @@
         border-radius: var(--bs-border-radius);
         min-width: 0;
         overflow: visible;
-    }
-
-    /* Audit log: tag pills (read-only, no remove buttons) and diff highlights. */
-    .audit-tag-pill-list {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 0.4rem;
-        align-items: center;
-    }
-    .audit-tag-pill {
-        display: inline-block;
-        padding: 0.25rem 0.6rem;
-        border: 1px solid var(--bs-border-color);
-        border-radius: 999px;
-        background-color: rgba(128, 128, 128, 0.12);
-        font-size: 0.85rem;
-        line-height: 1.2;
-        color: var(--vecto-surface-text);
-    }
-    .audit-tag-pill.tag-added {
-        background-color: rgba(25, 135, 84, 0.25);
-        border-color: rgba(25, 135, 84, 0.6);
-    }
-    .audit-tag-pill.tag-removed {
-        background-color: rgba(220, 53, 69, 0.25);
-        border-color: rgba(220, 53, 69, 0.6);
-        text-decoration: line-through;
-        opacity: 0.85;
-    }
-
-    /* ---- Chapter rows on the audit log (read-only, mirrors inbox style) ---- */
-    .audit-chapter-row {
-        background-color: rgba(0, 0, 0, 0.15);
-        border: 1px solid var(--bs-border-color);
-        border-radius: var(--bs-border-radius);
-        padding: 0.75rem;
-        margin-bottom: 0.6rem;
-    }
-    .audit-chapter-row .form-control,
-    .audit-chapter-row .form-control-sm {
-        background-color: var(--vecto-surface-bg);
-        color: var(--vecto-surface-text);
-        border-color: var(--bs-border-color);
-    }
-    /* Disabled inputs lose default browser dim — keep them readable. */
-    .audit-chapter-row input[disabled],
-    .audit-chapter-row .form-check-input[disabled] {
-        opacity: 0.85;
-    }
-    .audit-chapter-row.chapter-added {
-        background-color: rgba(25, 135, 84, 0.15);
-        border-color: rgba(25, 135, 84, 0.6);
-    }
-    .audit-chapter-row.chapter-removed {
-        background-color: rgba(220, 53, 69, 0.15);
-        border-color: rgba(220, 53, 69, 0.6);
     }
 </style>
 
@@ -449,19 +392,19 @@
             const tagsOrig = wrapper.querySelector('.diff-tags-original');
             const tagsSugg = wrapper.querySelector('.diff-tags-suggested');
             if (tagsOrig && tagsSugg && !tagsSugg.hasAttribute('data-diffed')) {
-                const origTags = Array.from(tagsOrig.querySelectorAll('.audit-tag-pill'))
+                const origTags = Array.from(tagsOrig.querySelectorAll('.tag-pill'))
                     .map(el => el.getAttribute('data-tag'));
-                const suggTags = Array.from(tagsSugg.querySelectorAll('.audit-tag-pill'))
+                const suggTags = Array.from(tagsSugg.querySelectorAll('.tag-pill'))
                     .map(el => el.getAttribute('data-tag'));
                 const origSet = new Set(origTags);
                 const suggSet = new Set(suggTags);
 
-                tagsOrig.querySelectorAll('.audit-tag-pill').forEach(pill => {
+                tagsOrig.querySelectorAll('.tag-pill').forEach(pill => {
                     if (!suggSet.has(pill.getAttribute('data-tag'))) {
                         pill.classList.add('tag-removed');
                     }
                 });
-                tagsSugg.querySelectorAll('.audit-tag-pill').forEach(pill => {
+                tagsSugg.querySelectorAll('.tag-pill').forEach(pill => {
                     if (!origSet.has(pill.getAttribute('data-tag'))) {
                         pill.classList.add('tag-added');
                     }

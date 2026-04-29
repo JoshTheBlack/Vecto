@@ -1,13 +1,8 @@
 <style>
     /* ============================================================
        INBOX DIFF LAYOUT — section-based, conflict-aware
-       Each section (tags / chapters / description) is its own
-       independent block. By default, sections render in 2-column
-       layout (Original | Suggested). When the server detects that
-       the live episode field has drifted from the user's submission-
-       time snapshot, the section gains the .conflicted class, which
-       expands it to a 3-column layout (Original | Current | Suggested)
-       with a "CHANGED" warning badge.
+       Two columns by default; three (.conflicted) when the live
+       episode field has drifted from the submission-time snapshot.
        ============================================================ */
     .diff-section {
         margin-bottom: 1.25rem;
@@ -21,7 +16,6 @@
         background-color: rgba(255, 193, 7, 0.04);
     }
 
-    /* The internal grid. Two columns by default; three when conflicted. */
     .diff-section-grid {
         display: grid;
         grid-template-columns: 1fr 1fr;
@@ -29,17 +23,12 @@
         row-gap: 0.6rem;
         align-items: stretch;
     }
-    .diff-section.conflicted .diff-section-grid {
-        grid-template-columns: 1fr 1fr 1fr;
-    }
+    .diff-section.conflicted .diff-section-grid { grid-template-columns: 1fr 1fr 1fr; }
     @media (max-width: 768px) {
         .diff-section-grid,
-        .diff-section.conflicted .diff-section-grid {
-            grid-template-columns: 1fr;
-        }
+        .diff-section.conflicted .diff-section-grid { grid-template-columns: 1fr; }
     }
 
-    /* The three column types. Current is hidden in non-conflicted mode. */
     .diff-cell {
         background-color: rgba(128, 128, 128, 0.08);
         border: 1px solid var(--bs-border-color);
@@ -50,18 +39,11 @@
         min-width: 0;
         overflow: visible;
     }
-    .diff-section:not(.conflicted) .diff-cell-current {
-        display: none;
-    }
+    .diff-section:not(.conflicted) .diff-cell-current { display: none; }
     .diff-section.conflicted .diff-cell-current {
         background-color: rgba(255, 193, 7, 0.08);
         border-color: rgba(255, 193, 7, 0.4);
     }
-
-    /* Visual indicator on the suggested cell when its content differs from the
-       original. Used by the description section since we don't apply per-word
-       highlights inside an editable contenteditable div (those would corrupt
-       the saved HTML). The class is toggled at JS init time. */
     .diff-cell.diff-cell-changed {
         border-left: 3px solid rgba(25, 135, 84, 0.7);
         background-color: rgba(25, 135, 84, 0.06);
@@ -74,11 +56,7 @@
         margin-bottom: 0.5rem;
         flex-wrap: wrap;
     }
-    .diff-cell-header .form-check {
-        margin-bottom: 0;
-        margin-left: auto;
-        padding-left: 2.25em;
-    }
+    .diff-cell-header .form-check { margin-bottom: 0; margin-left: auto; padding-left: 2.25em; }
 
     .conflict-badge {
         font-size: 0.65rem;
@@ -89,45 +67,12 @@
         letter-spacing: 0.05em;
     }
 
-    /* Chapters section uses the same grid pattern but with paired/triplet
-       chapter rows interleaved in the grid flow. JS inserts cells before
-       the anchor element. The header cells in the chapters grid don't get
-       the .diff-cell visual treatment (they're column titles, not content
-       boxes); chapter rows themselves carry their own .inbox-chapter-row
-       background/border styling. */
     .diff-section[data-section="chapters"]:not(.conflicted) .chapters-pair-header-current,
     .diff-section[data-section="chapters"]:not(.conflicted) .chapters-pair-current-only {
         display: none;
     }
 
-    /* When the chapters section is conflicted, JS will switch from
-       inserting pairs (orig|sugg) to inserting triplets (orig|curr|sugg).
-       The grid template above (1fr 1fr 1fr in .conflicted) handles layout. */
-
-    .accordion-button:not(.collapsed) {
-        background-color: rgba(128, 128, 128, 0.05) !important;
-        color: var(--vecto-surface-text) !important;
-    }
-
-    /* ---- TAG PILLS ---- */
-    .tag-pill-list {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 0.4rem;
-        align-items: center;
-    }
-    .tag-pill {
-        display: inline-flex;
-        align-items: center;
-        gap: 0.35rem;
-        padding: 0.25rem 0.6rem;
-        border: 1px solid var(--bs-border-color);
-        border-radius: 999px;
-        background-color: rgba(128,128,128,0.12);
-        font-size: 0.85rem;
-        line-height: 1.2;
-        color: var(--vecto-surface-text);
-    }
+    /* ---- TAG PILLS (inbox-only: remove button and editable input widget) ---- */
     .tag-pill .tag-remove {
         cursor: pointer;
         opacity: 0.6;
@@ -139,16 +84,7 @@
         padding: 0 0.1rem;
     }
     .tag-pill .tag-remove:hover { opacity: 1; color: #dc3545; }
-    .tag-pill.tag-added {
-        background-color: rgba(25, 135, 84, 0.25);
-        border-color: rgba(25, 135, 84, 0.6);
-    }
-    .tag-pill.tag-removed {
-        background-color: rgba(220, 53, 69, 0.25);
-        border-color: rgba(220, 53, 69, 0.6);
-        text-decoration: line-through;
-        opacity: 0.85;
-    }
+
     .tag-input-wrapper {
         display: flex;
         flex-wrap: wrap;
@@ -171,41 +107,18 @@
         font-size: 0.9rem;
     }
 
-    /* ---- CHAPTER ROWS (mirror the episode_detail editor) ---- */
+    /* ---- CHAPTER ROWS (inbox-specific flex layout on top of shared base) ---- */
     .inbox-chapter-row {
-        background-color: rgba(0,0,0,0.15);
-        border: 1px solid var(--bs-border-color);
-        border-radius: var(--bs-border-radius);
-        padding: 0.75rem;
         display: flex;
         flex-direction: column;
         height: 100%;
     }
-    .inbox-chapter-row + .inbox-chapter-row { margin-top: 0.6rem; }
-    .inbox-chapter-row .form-control,
-    .inbox-chapter-row .form-control-sm {
-        background-color: var(--vecto-surface-bg);
-        color: var(--vecto-surface-text);
-        border-color: var(--bs-border-color);
-    }
-    .inbox-chapter-row.chapter-added {
-        background-color: rgba(25, 135, 84, 0.15);
-        border-color: rgba(25, 135, 84, 0.6);
-    }
-    .inbox-chapter-row.chapter-removed {
-        background-color: rgba(220, 53, 69, 0.15);
-        border-color: rgba(220, 53, 69, 0.6);
-    }
-    .inbox-chapter-row.chapter-current {
-        background-color: rgba(255, 193, 7, 0.12);
-        border-color: rgba(255, 193, 7, 0.4);
-    }
     .inbox-chapter-row .chapter-row-controls { display: flex; gap: 0.25rem; justify-content: flex-end; }
+    .inbox-chapter-row.readonly input,
+    .inbox-chapter-row.readonly .form-check-input { pointer-events: none; }
 
-    /* Description editor — contenteditable div, no Quill. */
-    .inbox-desc-readonly {
-        min-height: 6rem;
-    }
+    /* ---- DESCRIPTION (contenteditable, no Quill) ---- */
+    .inbox-desc-readonly { min-height: 6rem; }
     .inbox-desc-editable {
         min-height: 8rem;
         padding: 0.75rem;
@@ -218,13 +131,6 @@
     .inbox-desc-editable:focus {
         border-color: rgba(25, 135, 84, 0.6);
         box-shadow: 0 0 0 0.15rem rgba(25, 135, 84, 0.15);
-    }
-
-    /* Disable native form-control look on read-only chapter inputs */
-    .inbox-chapter-row.readonly input,
-    .inbox-chapter-row.readonly .form-check-input {
-        pointer-events: none;
-        opacity: 0.85;
     }
 </style>
 

@@ -77,4 +77,69 @@
     </div>   
 </div>   
 <script src="{% static 'pod_manager/js/creator_tabs.js' %}"></script>
+
+<style>
+    /* Shared styles for Community Edits (inbox) and Audit Log tabs. */
+
+    .accordion-button:not(.collapsed) {
+        background-color: rgba(128, 128, 128, 0.05) !important;
+        color: var(--vecto-surface-text) !important;
+    }
+
+    /* Tag pills — base visual used by both tabs. Inbox adds .tag-remove buttons
+       on top; audit log renders read-only pills using the same base classes. */
+    .tag-pill-list {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.4rem;
+        align-items: center;
+    }
+    .tag-pill {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.35rem;
+        padding: 0.25rem 0.6rem;
+        border: 1px solid var(--bs-border-color);
+        border-radius: 999px;
+        background-color: rgba(128, 128, 128, 0.12);
+        font-size: 0.85rem;
+        line-height: 1.2;
+        color: var(--vecto-surface-text);
+    }
+    .tag-pill.tag-added {
+        background-color: rgba(25, 135, 84, 0.25);
+        border-color: rgba(25, 135, 84, 0.6);
+    }
+    .tag-pill.tag-removed {
+        background-color: rgba(220, 53, 69, 0.25);
+        border-color: rgba(220, 53, 69, 0.6);
+        text-decoration: line-through;
+        opacity: 0.85;
+    }
+
+    /* Chapter rows — base visual shared by both tabs. Inbox adds flex/height
+       rules on .inbox-chapter-row for grid alignment; audit uses .chapter-row
+       which only needs the base appearance. */
+    .inbox-chapter-row,
+    .chapter-row {
+        background-color: rgba(0, 0, 0, 0.15);
+        border: 1px solid var(--bs-border-color);
+        border-radius: var(--bs-border-radius);
+        padding: 0.75rem;
+        margin-bottom: 0.6rem;
+    }
+    .inbox-chapter-row .form-control, .inbox-chapter-row .form-control-sm,
+    .chapter-row .form-control,       .chapter-row .form-control-sm {
+        background-color: var(--vecto-surface-bg);
+        color: var(--vecto-surface-text);
+        border-color: var(--bs-border-color);
+    }
+    .inbox-chapter-row input[disabled], .inbox-chapter-row .form-check-input[disabled],
+    .chapter-row input[disabled],       .chapter-row .form-check-input[disabled] {
+        opacity: 0.85;
+    }
+    .inbox-chapter-row.chapter-added,  .chapter-row.chapter-added  { background-color: rgba(25, 135, 84, 0.15); border-color: rgba(25, 135, 84, 0.6); }
+    .inbox-chapter-row.chapter-removed,.chapter-row.chapter-removed { background-color: rgba(220, 53, 69, 0.15); border-color: rgba(220, 53, 69, 0.6); }
+    .inbox-chapter-row.chapter-current, .chapter-row.chapter-current { background-color: rgba(255, 193, 7, 0.12); border-color: rgba(255, 193, 7, 0.4); }
+</style>
 {% endblock %}

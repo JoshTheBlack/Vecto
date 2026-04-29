@@ -122,19 +122,25 @@ def parse_html_chapters(html_description):
             
     return None
 
+def _get_rich_description(entry):
+    if not entry: return ''
+    if hasattr(entry, 'content') and entry.content:
+        return entry.content[0].get('value', '')
+    return getattr(entry, 'description', '')
+
 def baldmove_enhancer(episode, pub_entry, sub_entry, is_new, stdout):
     """
     Custom network logic executed during commit_episode, just before saving to the DB.
     """
     # 1. Chapters fallback to HTML scraping
     if pub_entry and not episode.chapters_public:
-        html_chaps = parse_html_chapters(getattr(pub_entry, 'description', ''))
+        html_chaps = parse_html_chapters(_get_rich_description(pub_entry))
         if html_chaps:
             episode.chapters_public = html_chaps
             stdout.write("  -> Scraped HTML Chapters (Public)")
             
     if sub_entry and not episode.chapters_private:
-        html_chaps = parse_html_chapters(getattr(sub_entry, 'description', ''))
+        html_chaps = parse_html_chapters(_get_rich_description(sub_entry))
         if html_chaps:
             episode.chapters_private = html_chaps
             stdout.write("  -> Scraped HTML Chapters (Private)")

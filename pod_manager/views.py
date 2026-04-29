@@ -426,6 +426,7 @@ def _handle_inbox_action(request, current_network, action):
         # potentially-stale submission-time snapshot. Captured up front so that
         # field-by-field rewrites below don't pollute the snapshot mid-flight.
         pre_approval_snapshot = {
+            'title': ep.title,
             'description': ep.clean_description or '',
             'tags': list(ep.tags or []),
             'chapters': ep.chapters_public if ep.chapters_public is not None else [],
@@ -434,6 +435,15 @@ def _handle_inbox_action(request, current_network, action):
         # *intended* to add/remove). Falls back to current state when missing so
         # delta math degenerates safely to "no-op" for absent sections.
         user_snapshot = edit.original_data or {}
+
+        # 0. PROCESS TITLE
+        if request.POST.get('approve_title') == 'on':
+            new_title = request.POST.get('edited_title', '').strip()
+            if new_title and new_title != pre_approval_snapshot['title']:
+                ep.title = new_title
+                edit.suggested_data['title'] = new_title
+                points += 1
+                membership.edits_title += 1
 
         # 1. PROCESS DESCRIPTION
         # Whole-string replacement. The admin's checked toggle is acknowledgment
@@ -577,6 +587,7 @@ def _handle_rollback(request, current_network, action):
             return
 
         ep = edit.episode
+        ep.title = edit.original_data.get('title', ep.title)
         ep.clean_description = edit.original_data.get('description', ep.clean_description)
         ep.tags = edit.original_data.get('tags', ep.tags)
         ep.chapters_public = edit.original_data.get('chapters', ep.chapters_public)
@@ -590,6 +601,7 @@ def _handle_rollback(request, current_network, action):
         edit.save()
 
         membership.trust_score = max(0, membership.trust_score - 5)
+        if edit.suggested_data.get('title') != edit.original_data.get('title'): membership.edits_title = max(0, membership.edits_title - 1)
         if edit.suggested_data.get('chapters') != edit.original_data.get('chapters'): membership.edits_chapters = max(0, membership.edits_chapters - len(edit.suggested_data.get('chapters', [])))
         if edit.suggested_data.get('tags') != edit.original_data.get('tags'): membership.edits_tags = max(0, membership.edits_tags - 1)
         if edit.suggested_data.get('description') != edit.original_data.get('description'): membership.edits_descriptions = max(0, membership.edits_descriptions - 1)
@@ -613,6 +625,7 @@ def _handle_rollback(request, current_network, action):
         count = 0
         for edit in approved_edits:
             ep = edit.episode
+            ep.title = edit.original_data.get('title', ep.title)
             ep.clean_description = edit.original_data.get('description', ep.clean_description)
             ep.tags = edit.original_data.get('tags', ep.tags)
             ep.chapters_public = edit.original_data.get('chapters', ep.chapters_public)
@@ -770,6 +783,12 @@ def creator_settings(request):
         # has landed in the interim and the admin should review the 3-column view.
         ep = edit.episode
         orig = edit.original_data or {}
+
+        # Title: string equality
+        current_title = ep.title or ''
+        snapshot_title = orig.get('title') or ''
+        edit.title_conflict = current_title != snapshot_title
+        edit.current_title = current_title
 
         # Tags: compare as sets — listing order is not semantically meaningful.
         current_tags = ep.tags or []
@@ -1450,7 +1469,7 @@ def submit_episode_edit(request, episode_id):
         network = ep.podcast.network
         membership, _ = NetworkMembership.objects.get_or_create(user=request.user, network=network)
         
-        original_data = {"description": ep.clean_description, "tags": ep.tags or [], "chapters": ep.chapters_public or []}
+        original_data = {"title": ep.title, "description": ep.clean_description, "tags": ep.tags or [], "chapters": ep.chapters_public or []}
         is_first = not EpisodeEditSuggestion.objects.filter(episode=ep, status='approved').exists()
         
         is_trusted = membership.trust_score >= network.auto_approve_trust_threshold
@@ -1463,6 +1482,7 @@ def submit_episode_edit(request, episode_id):
         )
         
         if is_trusted:
+            ep.title = suggested_data.get('title', ep.title)
             ep.clean_description = suggested_data.get('description', ep.clean_description)
             ep.tags = suggested_data.get('tags', ep.tags)
             ep.chapters_public = suggested_data.get('chapters', ep.chapters_public)
@@ -1473,6 +1493,7 @@ def submit_episode_edit(request, episode_id):
             task_rebuild_episode_fragments.delay(ep.id, base_url)
 
             membership.trust_score = membership.trust_score + 5
+            if suggested_data.get('title') != original_data.get('title'): membership.edits_titles += 1
             if suggested_data.get('chapters') != original_data.get('chapters'): membership.edits_chapters += len(suggested_data.get('chapters', []))
             if suggested_data.get('tags') != original_data.get('tags'): membership.edits_tags += 1
             if suggested_data.get('description') != original_data.get('description'): membership.edits_descriptions += 1

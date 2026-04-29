@@ -227,6 +227,13 @@
                         {% csrf_token %}
                         <input type="hidden" name="payload" id="jsonPayload">
                         
+                        <div class="row mb-4 mt-2">
+                            <div class="col-12">
+                                <label for="editTitle" class="form-label text-light fw-bold">Episode Title</label>
+                                <input type="text" class="form-control bg-dark text-light border-secondary" id="editTitle" value="{{ ep.title }}" required>
+                            </div>
+                        </div>
+                        
                         <div class="row mb-4">
                             <div class="col-12 mb-3">
                                 <label class="form-label text-light fw-bold">Tags <small class="text-muted fw-normal">(press Enter or comma to add)</small></label>
@@ -261,6 +268,7 @@
                             <button type="submit" class="btn btn-warning btn-lg"><i class="bi bi-send"></i> Submit Edit Suggestion</button>
                         </div>
                     </form>
+
                 </div>
                 {% endif %}
 
@@ -546,8 +554,11 @@
                         chapters: chaptersArray
                     };
                 }
+                
+                const titleInput = document.getElementById('editTitle').value.trim();
 
                 const finalPayload = {
+                    title: titleInput,
                     description: descInput,
                     tags: tagsArray,
                     chapters: finalChaptersPayload

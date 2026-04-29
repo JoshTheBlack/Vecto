@@ -238,7 +238,14 @@ def commit_episode(podcast, pub_entry, sub_entry, match_reason, stdout, enhancer
         source_entry = pub_entry if pub_entry else sub_entry
         
         episode.title = getattr(source_entry, 'title', 'Untitled Episode')
-        raw_desc = getattr(source_entry, 'description', '')
+        raw_desc = ""
+        if hasattr(source_entry, 'content') and source_entry.content:
+            raw_desc = source_entry.content[0].get('value', '')
+        if not raw_desc:
+            raw_desc = getattr(source_entry, 'description', '')
+        if not raw_desc:
+            raw_desc = getattr(source_entry, 'summary', '')
+            
         episode.raw_description = raw_desc
         episode.clean_description = clean_html_description(raw_desc, podcast.network)
         

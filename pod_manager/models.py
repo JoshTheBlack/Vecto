@@ -358,7 +358,7 @@ class NetworkMembership(models.Model):
     last_active_date = models.DateField(null=True, blank=True, db_index=True, help_text="The last date this user interacted with this network's web or RSS properties.")
 
     # Gamification & Stats
-    trust_score = models.IntegerField(default=100)
+    trust_score = models.IntegerField(default=0)
     total_playback_hits = models.IntegerField(default=0)
     total_hours_accessed = models.FloatField(default=0.0)
     streak_days = models.IntegerField(default=0)
@@ -368,6 +368,7 @@ class NetworkMembership(models.Model):
     current_obsession = models.ForeignKey('Podcast', null=True, blank=True, on_delete=models.SET_NULL)
     
     # Contribution Tracking
+    edits_title = models.IntegerField(default=0)
     edits_chapters = models.IntegerField(default=0)
     edits_tags = models.IntegerField(default=0)
     edits_descriptions = models.IntegerField(default=0)

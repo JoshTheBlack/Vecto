@@ -79,6 +79,15 @@
                         <div class="diff-grid">
                             
                             <div class="diff-box">
+                                <strong class="small d-block mb-2" style="color: var(--vecto-surface-muted);">TITLE</strong>
+                                <div class="diff-title-original fw-bold">{{ edit.original_data.title|default:"" }}</div>
+                            </div>
+                            <div class="diff-box">
+                                <strong class="small d-block mb-2" style="color: var(--vecto-surface-muted);">TITLE</strong>
+                                <div class="diff-title-suggested fw-bold">{{ edit.suggested_data.title|default:"" }}</div>
+                            </div>
+
+                            <div class="diff-box">
                                 <strong class="small d-block mb-2" style="color: var(--vecto-surface-muted);">TAGS</strong>
                                 <div class="diff-tags-original audit-tag-pill-list">
                                     {% for tag in edit.original_data.tags %}
@@ -295,6 +304,28 @@
 </div>
 
 <style>
+    /* Side-by-side diff grid: pairs of .diff-box items render in two columns. */
+    .diff-grid {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        column-gap: 1rem;
+        row-gap: 0.75rem;
+        align-items: start;
+    }
+    @media (max-width: 768px) {
+        .diff-grid {
+            grid-template-columns: 1fr;
+        }
+    }
+    .diff-box {
+        background-color: rgba(128, 128, 128, 0.08);
+        border: 1px solid var(--bs-border-color);
+        padding: 0.75rem;
+        border-radius: var(--bs-border-radius);
+        min-width: 0;
+        overflow: visible;
+    }
+
     /* Audit log: tag pills (read-only, no remove buttons) and diff highlights. */
     .audit-tag-pill-list {
         display: flex;
@@ -397,6 +428,19 @@
         }
 
         auditAccordion.querySelectorAll('.diff-wrapper').forEach(wrapper => {
+            // ---- TITLE: text diff ----
+            const titleOrig = wrapper.querySelector('.diff-title-original');
+            const titleSugg = wrapper.querySelector('.diff-title-suggested');
+            if (titleOrig && titleSugg && !titleSugg.hasAttribute('data-diffed')) {
+                const origText = titleOrig.textContent;
+                const suggText = titleSugg.textContent;
+                if (origText.trim() !== suggText.trim()) {
+                    const { leftHtml, rightHtml } = diffTextToHtml(origText, suggText);
+                    titleOrig.innerHTML = leftHtml;
+                    titleSugg.innerHTML = rightHtml;
+                }
+                titleSugg.setAttribute('data-diffed', 'true');
+            }
             // ---- TAGS: per-pill diff. Each tag is a discrete <span> with
             // data-tag="<value>". An original pill not in the suggested set
             // gets the .tag-removed class; a suggested pill not in the

@@ -300,11 +300,45 @@
                             <input type="hidden" name="current_tab" value="inbox">
 
                             {# Hidden payload fields populated on submit by JS #}
+                            <input type="hidden" name="edited_title" class="hidden-edited-title" value="">
                             <input type="hidden" name="edited_tags" class="hidden-edited-tags" value="">
                             <input type="hidden" name="edited_chapters" class="hidden-edited-chapters" value="">
                             <input type="hidden" name="edited_description" class="hidden-edited-description" value="">
 
                             {# Each section renders independently as a stacking block. When .conflicted is present, the section shows three columns (Original / Current / Suggested); otherwise two (Original / Suggested). Server-side flags on the edit (tags_conflict / chapters_conflict / desc_conflict) decide which mode each section is in. #}
+                            
+                            {# ============== TITLE ============== #}
+                            <div class="diff-section{% if edit.title_conflict %} conflicted{% endif %}" data-section="title">
+                                <div class="diff-section-grid">
+                                    <div class="diff-cell diff-cell-original">
+                                        <div class="diff-cell-header">
+                                            <strong class="small text-danger"><i class="bi bi-clock-history"></i> Original Title</strong>
+                                        </div>
+                                        <div class="diff-title-original" style="font-weight: 500;">{{ edit.original_data.title|default:"" }}</div>
+                                    </div>
+
+                                    <div class="diff-cell diff-cell-current">
+                                        <div class="diff-cell-header">
+                                            <strong class="small text-warning"><i class="bi bi-exclamation-triangle"></i> Current Title</strong>
+                                            <span class="badge ms-2 conflict-badge">CHANGED</span>
+                                        </div>
+                                        <div class="diff-title-current" style="font-weight: 500;">{{ edit.current_title|default:"" }}</div>
+                                    </div>
+
+                                    <div class="diff-cell diff-cell-suggested">
+                                        <div class="diff-cell-header">
+                                            <strong class="small text-success"><i class="bi bi-check-circle"></i> Suggested Title</strong>
+                                            <div class="form-check form-switch ms-auto">
+                                                <input class="form-check-input" type="checkbox" role="switch"
+                                                    id="approveTitle{{ edit.id }}"
+                                                    name="approve_title" checked>
+                                                <label class="form-check-label small" for="approveTitle{{ edit.id }}">Approve</label>
+                                            </div>
+                                        </div>
+                                        <input type="text" class="form-control form-control-sm bg-dark text-light border-secondary diff-title-suggested" value="{{ edit.suggested_data.title|default:'' }}">
+                                    </div>
+                                </div>
+                            </div>
 
                             {# ============== TAGS ============== #}
                             <div class="diff-section{% if edit.tags_conflict %} conflicted{% endif %}"
@@ -814,6 +848,25 @@
         const origChapters = chaptersAsList(origChaptersRaw);
         const suggChapters = chaptersAsList(suggChaptersRaw);
 
+        // ---- TITLE ----
+        const titleRightHost = wrapper.querySelector('.diff-title-suggested');
+        const titleLeftHost = wrapper.querySelector('.diff-title-original');
+
+        const titleChanged = titleLeftHost && titleRightHost 
+            && titleLeftHost.textContent.trim() !== titleRightHost.value.trim();
+
+        const titleSection = wrapper.querySelector('.diff-section[data-section="title"]');
+        const titleConflicted = titleSection && titleSection.classList.contains('conflicted');
+        const approveTitleCb = wrapper.querySelector('input[name="approve_title"]');
+        if (approveTitleCb) {
+            approveTitleCb.checked = !!titleChanged && !titleConflicted;
+        }
+
+        if (titleChanged) {
+            const suggCell = titleSection && titleSection.querySelector('.diff-cell-suggested');
+            if (suggCell) suggCell.classList.add('diff-cell-changed');
+        }
+
         // ---- TAGS ----
         const tagsLeft = wrapper.querySelector('.tags-original-render');
         const tagsRightWrapper = wrapper.querySelector('.tags-suggested-input');
@@ -1031,6 +1084,12 @@
 
             // 3. Description — read directly from the contenteditable div
             wrapper.querySelector('.hidden-edited-description').value = descRightHost.innerHTML;
+
+            // 4. Title
+            const titleInput = wrapper.querySelector('.diff-title-suggested');
+            if (titleInput) {
+                wrapper.querySelector('.hidden-edited-title').value = titleInput.value.trim();
+            }
         });
     }
 

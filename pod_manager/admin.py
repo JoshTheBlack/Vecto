@@ -109,7 +109,22 @@ class NetworkMembershipInline(admin.TabularInline):
     }
 
 class UserAdmin(BaseUserAdmin):
+    # Keep your existing inlines
     inlines = (PatronProfileInline, NetworkMembershipInline)
+    
+    # Append the custom impersonate column to the standard Django columns
+    list_display = BaseUserAdmin.list_display + ('impersonate_action',)
+
+    def impersonate_action(self, obj):
+        if not obj.is_superuser:
+            url = reverse('start_impersonation', args=[obj.id])
+            return format_html(
+                '<a class="button" style="background-color: #ffc107; color: black; font-weight: bold; padding: 5px 10px; border-radius: 4px;" href="{}">Impersonate</a>', 
+                url
+            )
+        return mark_safe('<span style="color: gray;">Superuser (Locked)</span>')
+        
+    impersonate_action.short_description = 'Impersonate User'
 
 admin.site.unregister(User)
 admin.site.register(User, UserAdmin)

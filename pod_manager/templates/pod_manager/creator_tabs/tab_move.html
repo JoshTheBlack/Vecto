@@ -1,0 +1,236 @@
+<div class="tab-pane fade {% if request.GET.tab == 'move' %}show active{% endif %}" id="list-move" role="tabpanel" aria-labelledby="list-move-list">
+    <div class="card bg-dark border-secondary shadow-sm mb-4">
+        <div class="card-header border-secondary bg-black">
+            <h5 class="mb-0 text-warning"><i class="bi bi-arrows-move me-2"></i> Bulk Episode Mover</h5>
+        </div>
+        <div class="card-body">
+            <p class="text-muted small mb-4">Move episodes to different feeds. Moved episodes are automatically "metadata locked" so the ingester won't overwrite them or move them back.</p>
+
+            <div class="mb-4">
+                <label class="form-label text-light fw-bold">1. Select Source Podcast</label>
+                <select class="form-select bg-black text-light border-secondary" onchange="window.location.href='?tab=move&source_pod_id=' + this.value;">
+                    <option value="">-- Choose a podcast to extract from --</option>
+                    {% for pod in network_podcasts %}
+                        <option value="{{ pod.id }}" {% if source_pod_id == pod.id|stringformat:"s" %}selected{% endif %}>{{ pod.title }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+
+            {% if move_episodes %}
+            <form method="POST" action="{% url 'creator_settings' %}?network={{ current_network.slug }}&tab=move">
+                {% csrf_token %}
+                <input type="hidden" name="action" value="move_episodes">
+                
+                <div class="d-flex justify-content-between align-items-end mb-3 p-3 border border-secondary rounded bg-black">
+                    <div class="flex-grow-1 me-3">
+                        <label class="form-label text-light small mb-1"><i class="bi bi-funnel"></i> Live Filter</label>
+                        <input type="text" id="moveFilter" onkeyup="filterMoveTable()" class="form-control form-control-sm bg-dark text-light border-secondary" placeholder="Type a keyword to narrow down the list below...">
+                    </div>
+                    <div>
+                        <span class="badge bg-secondary text-light p-2 shadow-sm"><i class="bi bi-info-circle"></i> Tip: Hold SHIFT to select a range</span>
+                    </div>
+                </div>
+                
+                <div class="table-responsive mb-4 border border-secondary rounded" style="max-height: 400px; overflow-y: auto;">
+                    <table class="table table-dark table-hover table-sm align-middle mb-0" id="moveTable">
+                        <thead class="table-dark" style="position: sticky; top: 0; z-index: 1;">
+                            <tr>
+                                <th scope="col" style="width: 40px; padding-left: 1rem;">
+                                    <input class="form-check-input" type="checkbox" id="selectAllCheckbox" onclick="toggleAllMoveCheckboxes(this)">
+                                </th>
+                                <th scope="col" style="width: 120px;">Published</th>
+                                <th scope="col">Episode Title</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for ep in move_episodes %}
+                            <tr class="move-row" data-title="{{ ep.title|lower|escape }}">
+                                <td style="padding-left: 1rem;">
+                                    <input class="form-check-input move-checkbox" type="checkbox" name="episode_ids" value="{{ ep.id }}">
+                                </td>
+                                <td class="text-muted small">{{ ep.pub_date|date:"Y-m-d" }}</td>
+                                <td>{{ ep.title }}</td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+
+                <div class="p-3 border border-warning rounded bg-black">
+                    <label class="form-label text-warning fw-bold mb-3">2. Select Destination & Move</label>
+                    
+                    <ul class="nav nav-pills mb-4" id="pills-tab" role="tablist">
+                      <li class="nav-item" role="presentation">
+                        <button class="nav-link active btn-sm border border-secondary text-light px-3" id="pills-existing-tab" data-bs-toggle="pill" data-bs-target="#pills-existing" type="button" role="tab" aria-selected="true" onclick="clearNewForm()">Existing Podcast</button>
+                      </li>
+                      <li class="nav-item ms-2" role="presentation">
+                        <button class="nav-link btn-sm border border-secondary text-light px-3" id="pills-new-tab" data-bs-toggle="pill" data-bs-target="#pills-new" type="button" role="tab" aria-selected="false" onclick="clearExistingForm()">Create New Podcast</button>
+                      </li>
+                    </ul>
+
+                    <div class="tab-content" id="pills-tabContent">
+                        
+                        <div class="tab-pane fade show active" id="pills-existing" role="tabpanel">
+                            <div class="row">
+                                <div class="col-md-6">
+                                    <label class="form-label text-light small">Move to Existing Podcast</label>
+                                    <select name="target_podcast_id" id="targetPodcastId" class="form-select bg-dark text-light border-secondary">
+                                        <option value="">-- Choose destination --</option>
+                                        {% for pod in network_podcasts %}
+                                            {% if source_pod_id != pod.id|stringformat:"s" %}
+                                                <option value="{{ pod.id }}">{{ pod.title }}</option>
+                                            {% endif %}
+                                        {% endfor %}
+                                    </select>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="tab-pane fade" id="pills-new" role="tabpanel">
+                            <div class="row g-3">
+                                <div class="col-md-4">
+                                    <label class="form-label text-light small">Podcast Title</label>
+                                    <input type="text" name="new_podcast_title" id="newPodcastTitle" class="form-control bg-dark text-light border-secondary" placeholder="e.g. House of the Dragon">
+                                </div>
+                                <div class="col-md-4">
+                                    <label class="form-label text-light small">URL Slug</label>
+                                    <input type="text" name="new_podcast_slug" id="newPodcastSlug" class="form-control bg-dark text-light border-secondary" placeholder="e.g. house-of-the-dragon">
+                                </div>
+                                <div class="col-md-4">
+                                    <label class="form-label text-light small">Required Tier</label>
+                                    <select name="new_podcast_tier_id" id="newPodcastTier" class="form-select bg-dark text-light border-secondary">
+                                        <option value="">-- Free / Public --</option>
+                                        {% for tier in current_network.tiers.all %}
+                                            <option value="{{ tier.id }}" {% if tier.is_default %}selected{% endif %}>{{ tier.name }} (${{ tier.minimum_dollars|floatformat:2 }})</option>
+                                        {% endfor %}
+                                    </select>
+                                </div>
+                            </div>
+                        </div>
+                        
+                    </div>
+
+                    <div class="d-grid mt-4 pt-3 border-top border-secondary">
+                        <button type="submit" class="btn btn-warning fw-bold" onclick="return validateMoveForm()">
+                            <i class="bi bi-box-arrow-in-right"></i> Move Selected Episodes
+                        </button>
+                    </div>
+                </div>
+            </form>
+            {% elif source_pod_id %}
+                <div class="alert alert-secondary bg-black border-secondary text-muted text-center py-4">
+                    No episodes found in this podcast.
+                </div>
+            {% endif %}
+
+        </div>
+    </div>
+</div>
+
+<script>
+    // --- 1. Live Filter Logic ---
+    function filterMoveTable() {
+        const input = document.getElementById("moveFilter").value.toLowerCase();
+        const rows = document.querySelectorAll(".move-row");
+        
+        rows.forEach(row => {
+            const title = row.getAttribute("data-title");
+            if (title.indexOf(input) > -1) {
+                row.style.display = ""; // Show
+            } else {
+                row.style.display = "none"; // Hide
+            }
+        });
+
+        // Uncheck the "Select All" box when the filter changes to prevent confusion
+        document.getElementById("selectAllCheckbox").checked = false;
+    }
+
+    // --- 2. Smart Select All Logic ---
+    function toggleAllMoveCheckboxes(source) {
+        const checkboxes = document.querySelectorAll('.move-checkbox');
+        checkboxes.forEach(cb => {
+            const row = cb.closest('.move-row');
+            // Only toggle the checkbox if its row is currently visible
+            if (row.style.display !== "none") {
+                cb.checked = source.checked;
+            }
+        });
+    }
+
+    // --- 3. Shift-Click Range Selection Logic ---
+    let lastCheckedBox = null;
+
+    document.addEventListener("DOMContentLoaded", function() {
+        const checkboxes = Array.from(document.querySelectorAll('.move-checkbox'));
+        
+        checkboxes.forEach(cb => {
+            cb.addEventListener('click', function(e) {
+                if (!lastCheckedBox) {
+                    lastCheckedBox = this;
+                    return;
+                }
+
+                if (e.shiftKey) {
+                    let start = checkboxes.indexOf(this);
+                    let end = checkboxes.indexOf(lastCheckedBox);
+                    
+                    let min = Math.min(start, end);
+                    let max = Math.max(start, end);
+                    
+                    for (let i = min; i <= max; i++) {
+                        const row = checkboxes[i].closest('.move-row');
+                        // Only apply the shift-click state to visible rows
+                        if (row.style.display !== "none") {
+                            checkboxes[i].checked = this.checked;
+                        }
+                    }
+                }
+                lastCheckedBox = this;
+            });
+        });
+    });
+
+    // --- 4. Form Submission & Validation Logic ---
+    function clearNewForm() {
+        document.getElementById('newPodcastTitle').value = '';
+        document.getElementById('newPodcastSlug').value = '';
+    }
+    
+    function clearExistingForm() {
+        document.getElementById('targetPodcastId').value = '';
+    }
+
+    document.getElementById('newPodcastTitle')?.addEventListener('input', function(e) {
+        let title = e.target.value;
+        let slug = title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)+/g, '');
+        document.getElementById('newPodcastSlug').value = slug;
+    });
+
+    function validateMoveForm() {
+        const isNewTab = document.getElementById('pills-new-tab').classList.contains('active');
+        
+        if (isNewTab) {
+            const title = document.getElementById('newPodcastTitle').value.trim();
+            const slug = document.getElementById('newPodcastSlug').value.trim();
+            if (!title || !slug) {
+                alert("Please provide both a Title and a Slug for the new podcast.");
+                return false;
+            }
+        } else {
+            const existingId = document.getElementById('targetPodcastId').value;
+            if (!existingId) {
+                alert("Please select an existing destination podcast.");
+                return false;
+            }
+        }
+        
+        const checked = document.querySelectorAll('.move-checkbox:checked').length;
+        if (checked === 0) {
+            alert("Please select at least one episode to move.");
+            return false;
+        }
+        
+        return true;
+    }
+</script>

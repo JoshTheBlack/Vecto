@@ -188,9 +188,9 @@ def commit_episode(podcast, pub_entry, sub_entry, match_reason, stdout, enhancer
     pub_guid = getattr(pub_entry, 'id', None) if pub_entry else None
     sub_guid = getattr(sub_entry, 'id', None) if sub_entry else None
     
-    # 1. Independent Lookup: Find the exact database records for these GUIDs
-    ep_pub = Episode.objects.filter(podcast=podcast, guid_public=pub_guid).first() if pub_guid else None
-    ep_priv = Episode.objects.filter(podcast=podcast, guid_private=sub_guid).first() if sub_guid else None
+    # 1. Independent Lookup: Find the exact database records for these GUIDs anywhere in the network
+    ep_pub = Episode.objects.filter(podcast__network=podcast.network, guid_public=pub_guid).first() if pub_guid else None
+    ep_priv = Episode.objects.filter(podcast__network=podcast.network, guid_private=sub_guid).first() if sub_guid else None
         
     # ==========================================================
     # THE DIVORCE CLAUSE (Anti-Match Protection)

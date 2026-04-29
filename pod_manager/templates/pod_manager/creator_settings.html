@@ -29,7 +29,7 @@
 <div class="row">
     <div class="col-md-3 mb-4">
         <div class="list-group shadow-sm" id="list-tab" role="tablist">
-            <a class="list-group-item list-group-item-action border-secondary {% if request.GET.tab != 'audit' %}active{% endif %}" id="list-networks-list" data-bs-toggle="list" href="#list-networks" role="tab">
+            <a class="list-group-item list-group-item-action border-secondary {% if not request.GET.tab or request.GET.tab == 'network' %}active{% endif %}" id="list-networks-list" data-bs-toggle="list" href="#list-networks" role="tab">
                 <i class="bi bi-globe2 me-2"></i> Network Profile
             </a>
             <a class="list-group-item list-group-item-action border-secondary" id="list-shows-list" data-bs-toggle="list" href="#list-shows" role="tab">
@@ -40,6 +40,9 @@
             </a>
             <a class="list-group-item list-group-item-action border-secondary" id="list-merge-list" data-bs-toggle="list" href="#list-merge" role="tab">
                 <i class="bi bi-intersect me-2"></i> Merge Desk
+            </a>
+            <a class="list-group-item list-group-item-action border-secondary {% if request.GET.tab == 'move' %}active{% endif %}" id="list-move-list" data-bs-toggle="list" href="#list-move" role="tab">
+                <i class="bi bi-arrows-move me-2"></i> Bulk Move
             </a>
             <a class="list-group-item list-group-item-action border-secondary" id="list-inbox-list" data-bs-toggle="list" href="#list-inbox" role="tab">
                 <i class="bi bi-inbox me-2"></i> Community Edits
@@ -66,6 +69,8 @@
             {% include 'pod_manager/creator_tabs/tab_mixes.html' %}
 
             {% include 'pod_manager/creator_tabs/tab_merge.html' %}
+
+            {% include 'pod_manager/creator_tabs/tab_move.html' %}
 
             {% include 'pod_manager/creator_tabs/tab_sync.html' %}
 

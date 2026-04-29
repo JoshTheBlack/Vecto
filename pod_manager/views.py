@@ -754,9 +754,56 @@ def creator_settings(request):
             task_rebuild_episode_fragments.delay(ep.id, base_url)
             task_rebuild_episode_fragments.delay(new_ep.id, base_url)
             messages.success(request, f"Successfully split '{ep.title}'.")
+
+        elif action == 'move_episodes':
+            episode_ids = request.POST.getlist('episode_ids')
+            target_podcast_id = request.POST.get('target_podcast_id')
+            new_podcast_title = request.POST.get('new_podcast_title', '').strip()
+            new_podcast_slug = request.POST.get('new_podcast_slug', '').strip()
+            new_podcast_tier_id = request.POST.get('new_podcast_tier_id')
+
+            if episode_ids and (target_podcast_id or new_podcast_title):
+                
+                # Peek at the source podcast from the first selected episode
+                source_ep = Episode.objects.filter(id=episode_ids[0], podcast__network=current_network).select_related('podcast').first()
+                inherited_image_url = source_ep.podcast.image_url if source_ep else ""
+
+                if new_podcast_title:
+                    if not new_podcast_slug:
+                        messages.error(request, "A URL Slug is required to create a new podcast.")
+                        return redirect(f"{reverse('creator_settings')}?network={current_network.slug}&tab=move")
+                        
+                    if Podcast.objects.filter(network=current_network, slug=new_podcast_slug).exists():
+                        messages.error(request, f"A podcast with the slug '{new_podcast_slug}' already exists. Please choose another.")
+                        return redirect(f"{reverse('creator_settings')}?network={current_network.slug}&tab=move")
+                        
+                    req_tier = None
+                    if new_podcast_tier_id:
+                        req_tier = get_object_or_404(PatreonTier, id=new_podcast_tier_id, network=current_network)
+
+                    target_pod = Podcast.objects.create(
+                        network=current_network, 
+                        title=new_podcast_title, 
+                        slug=new_podcast_slug,
+                        required_tier=req_tier,
+                        image_url=inherited_image_url  # <-- Inherit the artwork here
+                    )
+                else:
+                    target_pod = get_object_or_404(Podcast, id=target_podcast_id, network=current_network)
+                    
+                eps = Episode.objects.filter(id__in=episode_ids, podcast__network=current_network)
+                
+                # Move them AND lock their metadata so the ingester doesn't overwrite titles/descriptions 
+                count = eps.update(podcast=target_pod, is_metadata_locked=True)
+                messages.success(request, f"Successfully moved and locked {count} episodes to '{target_pod.title}'.")
+                
+                # Rebuild their fragments so the RSS feeds update immediately
+                base_url = request.build_absolute_uri('/')[:-1]
+                for ep_id in episode_ids:
+                    task_rebuild_episode_fragments.delay(int(ep_id), base_url)
         
         return redirect(f"{reverse('creator_settings')}?network={current_network.slug}")
-
+    
     # 1. Manage Podcasts
     manage_podcasts = current_network.podcasts.annotate(
         clean_title=Case(When(title__istartswith='The ', then=Substr('title', 5)), default='title', output_field=CharField()),
@@ -870,6 +917,12 @@ def creator_settings(request):
     audit_paginator = Paginator(audit_query, 20)
     audit_page_obj = audit_paginator.get_page(request.GET.get('audit_page', 1))
 
+    # --- Bulk Move Context ---
+    source_pod_id = request.GET.get('source_pod_id', '')
+    move_episodes = []
+    if source_pod_id:
+        move_episodes = Episode.objects.filter(podcast_id=source_pod_id, podcast__network=current_network).order_by('-pub_date')
+
     # 5. Final Context Assembly
     context = {
         'networks': allowed_networks,
@@ -887,6 +940,8 @@ def creator_settings(request):
         'match_reasons': match_reasons,
         'audit_page_obj': audit_page_obj,
         'theme_config_json': json.dumps(current_network.theme_config, indent=2),
+        'source_pod_id': source_pod_id,
+        'move_episodes': move_episodes,
     }
     return render(request, 'pod_manager/creator_settings.html', context)
 
@@ -1017,6 +1072,7 @@ def episode_detail(request, episode_id):
         raise Http404("No Episode matches the given query.")
     
     ep.display_description = _build_episode_description(ep, ep.user_has_access)
+    ep.raw_audio_url = ep.audio_url_subscriber if (ep.user_has_access and ep.audio_url_subscriber) else ep.audio_url_public
     return render(request, 'pod_manager/episode_detail.html', {'ep': ep})
 
 @login_required(login_url='/login/')
@@ -1939,3 +1995,15 @@ def stream_feed_import(request, show_id):
             await asyncio.sleep(0.5)
 
     return StreamingHttpResponse(event_stream(), content_type='text/event-stream')
+
+def check_audio_status(request):
+    """Async endpoint for the frontend to verify MP3 reachability without blocking page loads."""
+    url = request.GET.get('url')
+    if not url:
+        return JsonResponse({'reachable': False})
+    try:
+        # Use HEAD to avoid downloading the file, timeout fast so we don't hold up workers
+        res = requests.head(url, timeout=3, allow_redirects=True)
+        return JsonResponse({'reachable': res.status_code < 400})
+    except requests.RequestException:
+        return JsonResponse({'reachable': False})

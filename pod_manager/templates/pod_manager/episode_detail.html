@@ -88,6 +88,28 @@
         font-size: 1rem;
     }
     .tag-pill .tag-remove:hover { opacity: 1; color: #dc3545; }
+    /* CRITICAL WARNING BANNER STYLES */
+    @keyframes criticalPulse {
+        0% { box-shadow: 0 0 0 0 rgba(220, 53, 69, 0.8); }
+        70% { box-shadow: 0 0 0 12px rgba(220, 53, 69, 0); }
+        100% { box-shadow: 0 0 0 0 rgba(220, 53, 69, 0); }
+    }
+    
+    .alert-critical {
+        /* Force bright colors overriding the dark theme */
+        background-color: #dc3545 !important; 
+        color: #ffffff !important;
+        border: 2px solid #ff6666 !important;
+        /* Trigger the glowing pulse animation */
+        animation: criticalPulse 2s infinite;
+        letter-spacing: 0.5px;
+    }
+    
+    .alert-critical .bi {
+        font-size: 1.3rem;
+        vertical-align: text-bottom;
+        color: #ffc107 !important; /* Yellow warning icon for contrast */
+    }
 </style>
 
 <nav aria-label="breadcrumb" class="mb-4">
@@ -119,6 +141,7 @@
             <div class="card-body bg-black p-4 tab-content" id="episodeTabsContent">
                 
                 <div class="tab-pane fade show active" id="listen" role="tabpanel" aria-labelledby="listen-tab">
+                    
                     <div class="row align-items-center mb-4">
                         <div class="col-md-3 text-center mb-3 mb-md-0">
                             {% if ep.podcast.image_url %}
@@ -149,9 +172,21 @@
                     </div>
                     
                     <div class="mb-4">
+                        <div id="audio-warning-banner" class="alert alert-critical d-none mb-4 rounded-3" role="alert">
+                            <div class="d-flex align-items-center">
+                                <i class="bi bi-exclamation-triangle-fill me-3"></i>
+                                <div>
+                                    <strong class="text-uppercase">Audio Unreachable:</strong> 
+                                    The source audio file cannot be found. It may have been deleted, moved by the host, or the external server is down.
+                                </div>
+                            </div>
+                        </div>
                         <audio class="js-player" controls>
                             <source src="{% if ep.user_has_access %}{{ ep.audio_url_subscriber }}{% else %}{{ ep.audio_url_public }}{% endif %}" type="audio/mpeg">
                         </audio>
+                        <div class="mt-2 mb-4 text-muted small" style="word-break: break-all; user-select: all; font-family: monospace;">
+                            <i class="bi bi-link-45deg"></i> Source URL: {{ ep.raw_audio_url }}
+                        </div>
                     </div>
 
                     {% if ep.user_has_access %}
@@ -568,5 +603,18 @@
             });
         }
     });
+
+    // Check MP3 reachability asynchronously 
+    const targetUrl = "{{ ep.raw_audio_url|escapejs }}";
+    if (targetUrl) {
+        fetch(`/api/check-audio/?url=${encodeURIComponent(targetUrl)}`)
+        .then(response => response.json())
+        .then(data => {
+            if (!data.reachable) {
+                document.getElementById('audio-warning-banner').classList.remove('d-none');
+            }
+        })
+        .catch(err => console.error("Audio check failed", err));
+    }
 </script>
 {% endblock %}

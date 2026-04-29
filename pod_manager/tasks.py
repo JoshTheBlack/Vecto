@@ -367,3 +367,15 @@ def task_send_magic_link(email, magic_link):
         recipient_list=[email],
         fail_silently=False,
     )
+
+@shared_task
+def task_generate_s3_reports():
+    """Runs the S3 Report generation script in the background to prevent web-worker timeouts."""
+    try:
+        logger.info("Starting background S3 report generation...")
+        call_command('generate_s3_report')
+        logger.info("S3 reports successfully generated.")
+        return "Success"
+    except Exception as e:
+        logger.error(f"Failed to generate S3 reports in background: {e}")
+        return f"Failed: {e}"

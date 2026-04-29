@@ -803,23 +803,20 @@ def creator_settings(request):
                     task_rebuild_episode_fragments.delay(int(ep_id), base_url)
 
             elif action == 'generate_s3_report':
-                from django.core.management import call_command
-                from io import StringIO
+                from pod_manager.tasks import task_generate_s3_reports
                 
-                # Capture the terminal output of the script into a variable
-                out = StringIO()
-                try:
-                    call_command('generate_s3_report', stdout=out)
-                    script_output = out.getvalue()
+                # Dispatch to Celery instantly without waiting
+                task_generate_s3_reports.delay()
+                
+                messages.success(request, "Report generation started in the background! Please wait a few moments and refresh this page to download the updated files.")
+                
+                # Stay on the current tab
+                target_tab = request.GET.get('tab', '')
+                redirect_url = f"{reverse('creator_settings')}?network={current_network.slug}"
+                if target_tab:
+                    redirect_url += f"&tab={target_tab}"
                     
-                    # Check if it skipped or succeeded and print the exact terminal log to the UI!
-                    if "Skipping" in script_output or "0 total" in script_output:
-                        messages.warning(request, f"Script Aborted: {script_output}")
-                    else:
-                        messages.success(request, f"Reports Generated! Log: {script_output}")
-                except Exception as e:
-                    logger.error(f"Failed to generate S3 reports: {e}")
-                    messages.error(request, f"Script Error: {e}")
+                return redirect(redirect_url)
         
         target_tab = request.GET.get('tab', '')
         redirect_url = f"{reverse('creator_settings')}?network={current_network.slug}"

@@ -147,6 +147,7 @@ class PatreonTier(models.Model):
     name = models.CharField(max_length=100, help_text="e.g., 'In Association With'")
     minimum_cents = models.IntegerField(help_text="e.g., 600 for $6.00")
     checkout_url = models.URLField(max_length=500, blank=True, null=True)
+    recurly_plan_code = models.CharField(max_length=255, null=True, blank=True, help_text="The exact 'plan_code' string from Recurly")
 
     is_default = models.BooleanField(default=False, help_text="Automatically assign to new podcasts.")
 
@@ -331,6 +332,7 @@ class UserMix(models.Model):
 class PatronProfile(models.Model):
     user = models.OneToOneField(User, on_delete=models.CASCADE, related_name='patron_profile')
     patreon_id = models.CharField(max_length=50, unique=True)
+    recurly_account_code = models.CharField(max_length=255, unique=True, null=True, blank=True)
     profile_image_url = models.URLField(max_length=500, null=True, blank=True)
     discord_id = models.CharField(max_length=100, null=True, blank=True)
 
@@ -349,6 +351,9 @@ class NetworkMembership(models.Model):
     patreon_pledge_cents = models.IntegerField(default=0)
     is_active_patron = models.BooleanField(default=False)
     
+    #Recurly Fields
+    active_recurly_plans = models.JSONField(default=list, blank=True)
+
     # Billing Presence Tracker ---
     last_active_date = models.DateField(null=True, blank=True, db_index=True, help_text="The last date this user interacted with this network's web or RSS properties.")
 

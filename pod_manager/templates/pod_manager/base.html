@@ -280,15 +280,29 @@
                                 <i class="bi bi-box-arrow-right"></i> Logout
                             </a>
                         {% else %}
-                            <a href="{% url 'patreon_login' %}" class="btn btn-sm btn-warning fw-bold">
-                                <i class="bi bi-person-fill"></i> Login with Patreon
-                            </a>
-                            {% endif %}
+                            <div class="dropdown">
+                                <button class="btn btn-sm btn-warning fw-bold dropdown-toggle" type="button" id="loginDropdown" data-bs-toggle="dropdown" aria-expanded="false">
+                                    <i class="bi bi-person-fill"></i> Log In
+                                </button>
+                                <ul class="dropdown-menu dropdown-menu-end dropdown-menu-dark shadow-sm" aria-labelledby="loginDropdown">
+                                    <li>
+                                        <a class="dropdown-item py-2 fw-semibold" href="{% url 'patreon_login' %}">
+                                            Log in with Patreon
+                                        </a>
+                                    </li>
+                                    <li><hr class="dropdown-divider"></li>
+                                    <li>
+                                        <a class="dropdown-item py-2 fw-semibold" href="{% url 'request_magic_link' %}">
+                                            Log in with Email
+                                        </a>
+                                    </li>
+                                </ul>
+                            </div>
+                        {% endif %}
                     </div>
                 </div>
             </div>
         </div>
-    </nav>
     </nav>
 
     {% if current_network.url_patreon or current_network.url_youtube or current_network.url_twitch or current_network.url_bluesky or current_network.url_twitter %}
@@ -353,8 +367,6 @@
         </a>
     </div>
     <div style="height: 50px;"></div> 
-    {% endif %}
-</body>
-</html>
+{% endif %}
 </body>
 </html>

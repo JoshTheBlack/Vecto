@@ -7,6 +7,7 @@ from datetime import timedelta
 from collections import defaultdict
 
 from celery import shared_task
+from django.core.mail import send_mail
 from django.conf import settings
 from django.core.cache import cache
 from django.core.management import call_command
@@ -356,3 +357,13 @@ def task_rebuild_podcast_shell(podcast_id, base_url):
         get_or_build_feed_shell(pod, base_url, True)
     except Podcast.DoesNotExist:
         pass
+
+@shared_task
+def task_send_magic_link(email, magic_link):
+    send_mail(
+        subject="Log in to Vecto Premium",
+        message=f"Click the link below to securely log into your Vecto account:\n\n{magic_link}\n\nThis link expires in 15 minutes.",
+        from_email=None, # Uses DEFAULT_FROM_EMAIL
+        recipient_list=[email],
+        fail_silently=False,
+    )

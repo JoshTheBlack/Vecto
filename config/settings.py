@@ -108,12 +108,19 @@ INSTALLED_APPS = [
     'django.contrib.sessions',
     'django.contrib.messages',
     'django.contrib.staticfiles',
+    "anymail",
     'pod_manager',
 ]
 
 CRYPTOGRAPHY_KEY = os.environ.get('DJANGO_CRYPTOGRAPHY_KEY', 'generate-a-secure-random-string-here')
 
-
+ANYMAIL = {
+    "MAILGUN_API_KEY": os.environ.get('MAILGUN_API_KEY'),
+    "MAILGUN_SENDER_DOMAIN": os.environ.get('MAILGUN_SENDER_DOMAIN'),
+}
+EMAIL_BACKEND = "anymail.backends.mailgun.EmailBackend"
+DEFAULT_FROM_EMAIL = f"login@{os.environ.get('MAILGUN_SENDER_DOMAIN')}"
+RECURLY_API_KEY = os.environ.get('RECURLY_API_KEY')
 
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',

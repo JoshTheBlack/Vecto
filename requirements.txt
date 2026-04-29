@@ -2,6 +2,7 @@
 django>=5.1
 djangorestframework
 hypercorn
+django-anymail[mailgun]
 
 # RSS & HTML Processing
 feedparser
@@ -23,3 +24,4 @@ Pillow==10.3.0
 pdfkit
 lxml
 whitenoise
+recurly

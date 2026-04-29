@@ -12,5 +12,36 @@
                             </button>
                         </form>
                     </div>
+                    <div class="p-4 border border-secondary rounded bg-dark shadow-sm mt-4">
+                        <div class="p-4 border border-secondary rounded bg-dark shadow-sm mt-4">
+                            <h5 class="text-light fw-bold mb-1"><i class="bi bi-file-earmark-bar-graph me-2"></i> S3 Hosting Reports</h5>
+                            <p class="text-muted small mb-3">Generate the latest TXT and CSV reports of all episodes currently hosted on Amazon S3. The new files will instantly overwrite the previous versions in the <code>/app/media</code> folder.</p>
+                            
+                            <div class="d-flex flex-wrap gap-3 align-items-center">
+                                <form method="POST" action="{% url 'creator_settings' %}?network={{ current_network.slug }}&tab=sync" class="mb-0">
+                                    {% csrf_token %}
+                                    <input type="hidden" name="action" value="generate_s3_report">
+                                    <button type="submit" class="btn btn-outline-warning fw-bold">
+                                        <i class="bi bi-arrow-clockwise me-2"></i> Generate New Reports
+                                    </button>
+                                </form>
+
+                                {% if reports.txt_exists or reports.csv_exists %}
+                                    <div class="border-start border-secondary ps-3 ms-1 d-flex gap-2">
+                                        {% if reports.txt_exists %}
+                                            <a href="{{ reports.txt_url }}" target="_blank" class="btn btn-primary fw-bold">
+                                                <i class="bi bi-file-text me-1"></i> View TXT
+                                            </a>
+                                        {% endif %}
+                                        
+                                        {% if reports.csv_exists %}
+                                            <a href="{{ reports.csv_url }}" download class="btn btn-success fw-bold">
+                                                <i class="bi bi-file-spreadsheet me-1"></i> Download CSV
+                                            </a>
+                                        {% endif %}
+                                    </div>
+                                {% endif %}
+                            </div>
+                        </div>
                 </div>
             </div>

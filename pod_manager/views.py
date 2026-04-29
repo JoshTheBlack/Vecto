@@ -786,7 +786,7 @@ def creator_settings(request):
                         title=new_podcast_title, 
                         slug=new_podcast_slug,
                         required_tier=req_tier,
-                        image_url=inherited_image_url  # <-- Inherit the artwork here
+                        image_url=inherited_image_url 
                     )
                 else:
                     target_pod = get_object_or_404(Podcast, id=target_podcast_id, network=current_network)
@@ -801,8 +801,32 @@ def creator_settings(request):
                 base_url = request.build_absolute_uri('/')[:-1]
                 for ep_id in episode_ids:
                     task_rebuild_episode_fragments.delay(int(ep_id), base_url)
+
+            elif action == 'generate_s3_report':
+                from django.core.management import call_command
+                from io import StringIO
+                
+                # Capture the terminal output of the script into a variable
+                out = StringIO()
+                try:
+                    call_command('generate_s3_report', stdout=out)
+                    script_output = out.getvalue()
+                    
+                    # Check if it skipped or succeeded and print the exact terminal log to the UI!
+                    if "Skipping" in script_output or "0 total" in script_output:
+                        messages.warning(request, f"Script Aborted: {script_output}")
+                    else:
+                        messages.success(request, f"Reports Generated! Log: {script_output}")
+                except Exception as e:
+                    logger.error(f"Failed to generate S3 reports: {e}")
+                    messages.error(request, f"Script Error: {e}")
         
-        return redirect(f"{reverse('creator_settings')}?network={current_network.slug}")
+        target_tab = request.GET.get('tab', '')
+        redirect_url = f"{reverse('creator_settings')}?network={current_network.slug}"
+        if target_tab:
+            redirect_url += f"&tab={target_tab}"
+            
+        return redirect(redirect_url)
     
     # 1. Manage Podcasts
     manage_podcasts = current_network.podcasts.annotate(
@@ -923,6 +947,22 @@ def creator_settings(request):
     if source_pod_id:
         move_episodes = Episode.objects.filter(podcast_id=source_pod_id, podcast__network=current_network).order_by('-pub_date')
 
+    # --- S3 Reports Context ---
+    import os
+    from django.conf import settings
+    
+    # Use Django's settings to dynamically find the correct OS path
+    txt_path = os.path.join(settings.MEDIA_ROOT, 's3_hosting_report.txt')
+    csv_path = os.path.join(settings.MEDIA_ROOT, 's3_hosted_episodes.csv')
+
+    reports_data = {
+        'txt_exists': os.path.exists(txt_path),
+        'csv_exists': os.path.exists(csv_path),
+        # Dynamically build the URLs using the MEDIA_URL setting
+        'txt_url': f"{settings.MEDIA_URL}s3_hosting_report.txt",
+        'csv_url': f"{settings.MEDIA_URL}s3_hosted_episodes.csv",
+    }
+
     # 5. Final Context Assembly
     context = {
         'networks': allowed_networks,
@@ -942,6 +982,7 @@ def creator_settings(request):
         'theme_config_json': json.dumps(current_network.theme_config, indent=2),
         'source_pod_id': source_pod_id,
         'move_episodes': move_episodes,
+        'reports': reports_data, 
     }
     return render(request, 'pod_manager/creator_settings.html', context)
 

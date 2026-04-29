@@ -952,14 +952,31 @@ def creator_settings(request):
 def home(request):
     show_slug = request.GET.get('show')
     search_query = request.GET.get('q', '').strip()
+    older_than = request.GET.get('older_than', '').strip()
+    newer_than = request.GET.get('newer_than', '').strip()
     
     tenant_profile = getattr(request, 'tenant_profile', None)
     
     query = Episode.objects.select_related('podcast', 'podcast__network', 'podcast__required_tier').filter(podcast__network=request.network)
     podcasts = Podcast.objects.filter(network=request.network).order_by('title')
 
-    if show_slug: query = query.filter(podcast__slug=show_slug)
-    if search_query: query = query.filter(Q(title__icontains=search_query) | Q(clean_description__icontains=search_query))
+    # Apply Podcast & Text Filters
+    if show_slug: 
+        query = query.filter(podcast__slug=show_slug)
+    if search_query: 
+        query = query.filter(Q(title__icontains=search_query) | Q(clean_description__icontains=search_query))
+    
+    # Apply Date Filters (Stackable and Optional)
+    from django.utils.dateparse import parse_date
+    if newer_than:
+        parsed_newer = parse_date(newer_than)
+        if parsed_newer:
+            query = query.filter(pub_date__gt=parsed_newer)  # __gt means "greater than"
+            
+    if older_than:
+        parsed_older = parse_date(older_than)
+        if parsed_older:
+            query = query.filter(pub_date__lt=parsed_older)  # __lt means "less than"
         
     page_obj = Paginator(query.order_by('-pub_date'), 20).get_page(request.GET.get('page', 1))
     
@@ -969,7 +986,9 @@ def home(request):
     context = {
         'episodes': page_obj, 'page_obj': page_obj, 'podcasts': podcasts,          
         'current_filter': show_slug, 'current_network': request.network, 
-        'search_query': search_query, 'tenant_profile': tenant_profile
+        'search_query': search_query, 'tenant_profile': tenant_profile,
+        'older_than': older_than,
+        'newer_than': newer_than,
     }
     return render(request, 'pod_manager/home.html', context)
 

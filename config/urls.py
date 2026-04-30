@@ -28,6 +28,8 @@ urlpatterns = [
     path('impersonate/start/<int:user_id>/', views.start_impersonation, name='start_impersonation'),
     path('impersonate/stop/', views.stop_impersonation, name='stop_impersonation'),
     path('episode/<int:episode_id>/edit/', views.submit_episode_edit, name='submit_episode_edit'),
+    path('ajax/update_avatar_preference/', views.update_avatar_preference, name='update_avatar_preference'),
+    path('ajax/upload_custom_avatar/', views.upload_custom_avatar, name='upload_custom_avatar'),
 
     # Feed Endpoints
     path('feed/', views.generate_custom_feed, name='custom_feed'),

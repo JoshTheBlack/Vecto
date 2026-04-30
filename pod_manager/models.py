@@ -358,7 +358,7 @@ class NetworkMembership(models.Model):
     last_active_date = models.DateField(null=True, blank=True, db_index=True, help_text="The last date this user interacted with this network's web or RSS properties.")
 
     discord_image_url = models.URLField(max_length=500, null=True, blank=True)
-    
+
     # Gamification & Stats
     trust_score = models.IntegerField(default=0)
     total_playback_hits = models.IntegerField(default=0)
@@ -376,11 +376,73 @@ class NetworkMembership(models.Model):
     edits_descriptions = models.IntegerField(default=0)
     first_responder_count = models.IntegerField(default=0)
 
+    # Avatar Preferences
+    AVATAR_CHOICES = [
+        ('patreon', 'Patreon'),
+        ('discord', 'Discord'),
+        ('custom', 'Custom'),
+    ]
+    preferred_avatar_source = models.CharField(max_length=20, choices=AVATAR_CHOICES, default='discord')
+    custom_image_url = models.URLField(max_length=500, blank=True, null=True)
+    custom_image_upload = models.ImageField(upload_to='custom_avatars/', blank=True, null=True)
+
     class Meta:
         unique_together = ('user', 'network')
 
     def __str__(self):
         return f"{self.user.username} - {self.network.name}"
+
+    @property
+    def display_avatar(self):
+        if self.preferred_avatar_source == 'discord' and self.discord_image_url:
+            return self.discord_image_url
+        elif self.preferred_avatar_source == 'custom':
+            if self.custom_image_upload: return self.custom_image_upload.url
+            if self.custom_image_url: return self.custom_image_url
+            
+        # Default fallback to Patreon
+        if hasattr(self.user, 'patron_profile') and self.user.patron_profile.profile_image_url:
+            return self.user.patron_profile.profile_image_url
+        return "https://ui-avatars.com/api/?name=V+P&background=random" # Failsafe
+
+    def save(self, *args, **kwargs):
+        super().save(*args, **kwargs)
+
+        # Post-process Custom Avatar (Crop & Resize to 256x256)
+        if self.custom_image_upload:
+            try:
+                from PIL import Image
+                from io import BytesIO
+                from django.core.files.base import ContentFile
+
+                with Image.open(self.custom_image_upload) as img:
+                    original_format = img.format or 'JPEG'
+                    width, height = img.size
+                    
+                    if width != height:
+                        new_size = min(width, height)
+                        left = (width - new_size) / 2
+                        top = (height - new_size) / 2
+                        right = (width + new_size) / 2
+                        bottom = (height + new_size) / 2
+                        img = img.crop((left, top, right, bottom))
+                    
+                    if img.height > 256 or img.width > 256:
+                        img.thumbnail((256, 256), Image.Resampling.LANCZOS)
+                    
+                    if original_format == 'JPEG' and img.mode in ('RGBA', 'LA', 'P'):
+                        img = img.convert('RGB')
+                        
+                    temp_handle = BytesIO()
+                    img.save(temp_handle, format=original_format)
+                    temp_handle.seek(0)
+                    
+                # Save without triggering another save() recursion
+                self.custom_image_upload.close()
+                self.custom_image_upload.file = ContentFile(temp_handle.read())
+                NetworkMembership.objects.filter(id=self.id).update(custom_image_upload=self.custom_image_upload.name)
+            except Exception as e:
+                logger.error(f"Avatar processing failed for membership {self.id}: {e}", exc_info=True)
 
 @receiver(post_delete, sender=UserMix)
 def auto_delete_file_on_delete(sender, instance, **kwargs):

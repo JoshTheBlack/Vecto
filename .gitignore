@@ -17,6 +17,7 @@ db.sqlite3-shm
 .feed_cache/
 mix_covers/
 invoices/
+media/
 
 # IDE settings
 .vscode/

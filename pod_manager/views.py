@@ -36,6 +36,7 @@ from django.urls import reverse
 from django.utils import timezone
 from datetime import timedelta
 from django.views.decorators.csrf import csrf_exempt
+from django.views.decorators.http import require_POST
 
 from podgen import Podcast as PodgenPodcast, Episode as PodgenEpisode, Media, Person
 from lxml import etree
@@ -129,6 +130,31 @@ def process_mix_image_url(image_url, mix_instance):
         return f"Server returned status {res.status_code}."
     except requests.exceptions.RequestException:
         return "URL invalid or unreachable."
+
+@login_required(login_url='/login/')
+@require_POST
+def update_avatar_preference(request):
+    source = request.POST.get('source')
+    if source in ['patreon', 'discord', 'custom']:
+        NetworkMembership.objects.filter(user=request.user, network=request.network).update(preferred_avatar_source=source)
+        return JsonResponse({'status': 'success'})
+    return JsonResponse({'status': 'error', 'message': 'Invalid source'}, status=400)
+
+@login_required(login_url='/login/')
+@require_POST
+def upload_custom_avatar(request):
+    membership = NetworkMembership.objects.filter(user=request.user, network=request.network).first()
+    if membership:
+        if 'custom_image_upload' in request.FILES:
+            membership.custom_image_upload = request.FILES['custom_image_upload']
+            membership.custom_image_url = "" # Clear URL if physical upload
+        elif request.POST.get('custom_image_url'):
+            membership.custom_image_url = request.POST.get('custom_image_url')
+            
+        membership.preferred_avatar_source = 'custom'
+        membership.save()
+        messages.success(request, "Custom avatar updated!")
+    return redirect('user_profile')
 
 # ==========================================
 # 2. DRY RSS FEED GENERATOR

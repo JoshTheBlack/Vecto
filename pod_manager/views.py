@@ -1032,6 +1032,12 @@ def home(request):
         
     page_obj = Paginator(query.order_by('-pub_date'), 20).get_page(request.GET.get('page', 1))
     
+    page_number = page_obj.number
+    total_pages = page_obj.paginator.num_pages
+    start_page = max(1, page_number - 3)
+    end_page = min(total_pages, page_number + 3)
+    custom_page_range = range(start_page, end_page + 1)
+
     for ep in page_obj:
         ep.user_has_access, is_owner = _evaluate_access(request.user, ep.podcast, request.network)
 
@@ -1041,6 +1047,7 @@ def home(request):
         'search_query': search_query, 'tenant_profile': tenant_profile,
         'older_than': older_than,
         'newer_than': newer_than,
+        'custom_page_range': custom_page_range,
     }
     return render(request, 'pod_manager/home.html', context)
 

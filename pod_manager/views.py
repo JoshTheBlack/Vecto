@@ -830,60 +830,61 @@ def creator_settings(request):
             
         return redirect(redirect_url)
     
+    # =====================================================================
+    # GET REQUEST / PAGE LOAD LOGIC (With Diagnostic Timers)
+    # =====================================================================
+    import time
+    logger.info(f"\n--- [DIAGNOSTIC] Loading Creator Settings for {request.user} ---")
+    
+    logger.info("[DIAGNOSTIC] 1. Gathering Manage Podcasts...")
+    t1 = time.time()
     # 1. Manage Podcasts
     manage_podcasts = current_network.podcasts.annotate(
         clean_title=Case(When(title__istartswith='The ', then=Substr('title', 5)), default='title', output_field=CharField()),
         latest_episode_date=Max('episodes__pub_date'),
         episode_count=Count('episodes', distinct=True)
     ).order_by(Lower('clean_title'))
+    logger.info(f"[DIAGNOSTIC] 1. Done in {time.time() - t1:.2f}s")
 
-    # 2. Inbox (Pending Edits with Multi-Tenant Trust Scores + Conflict Detection)
+    logger.info("[DIAGNOSTIC] 2. Gathering Inbox...")
+    t2 = time.time()
+    # 2. Inbox (Pending Edits)
+    # BUG FIX: Added 'episode__podcast' to prevent N+1 query timeouts!
     pending_edits = EpisodeEditSuggestion.objects.filter(
         episode__podcast__network=current_network, status='pending'
-    ).select_related('episode', 'user')
+    ).select_related('episode', 'episode__podcast', 'user')
 
     user_ids = [e.user_id for e in pending_edits]
     memberships = {m.user_id: m for m in NetworkMembership.objects.filter(user_id__in=user_ids, network=current_network)}
 
     for edit in pending_edits:
         edit.membership = memberships.get(edit.user_id)
-
-        # Per-section conflict detection: did the live episode field change since
-        # this edit was submitted? Computation runs entirely in Python on data
-        # already loaded by select_related — no extra DB hits per edit. Each
-        # `*_conflict` flag becomes True when the user's `original_data` snapshot
-        # disagrees with the current episode field, meaning some other approval
-        # has landed in the interim and the admin should review the 3-column view.
         ep = edit.episode
         orig = edit.original_data or {}
 
-        # Title: string equality
         current_title = ep.title or ''
         snapshot_title = orig.get('title') or ''
         edit.title_conflict = current_title != snapshot_title
         edit.current_title = current_title
 
-        # Tags: compare as sets — listing order is not semantically meaningful.
         current_tags = ep.tags or []
         snapshot_tags = orig.get('tags') or []
         edit.tags_conflict = set(current_tags) != set(snapshot_tags)
         edit.current_tags = current_tags
 
-        # Chapters: compare as deserialized Python objects. Both list and
-        # {waypoints, chapters: [...]} shapes compare correctly via ==.
         current_chapters = ep.chapters_public or []
         snapshot_chapters = orig.get('chapters') or []
         edit.chapters_conflict = current_chapters != snapshot_chapters
         edit.current_chapters = current_chapters
 
-        # Description: HTML string equality. May produce occasional false
-        # positives if the renderer re-serialized whitespace, but never a false
-        # negative — when in doubt the admin sees the warning.
         current_desc = ep.clean_description or ''
         snapshot_desc = orig.get('description') or ''
         edit.desc_conflict = current_desc != snapshot_desc
         edit.current_description = current_desc
+    logger.info(f"[DIAGNOSTIC] 2. Done in {time.time() - t2:.2f}s")
 
+    logger.info("[DIAGNOSTIC] 3. Gathering Merge Desk...")
+    t3 = time.time()
     # 3. Merge Desk (Unpaired & Matched Episodes)
     merge_view = request.GET.get('merge_view', 'orphans')
     merge_podcast_id = request.GET.get('merge_podcast_id', '')
@@ -896,9 +897,7 @@ def creator_settings(request):
         base_episodes = base_episodes.filter(podcast_id=merge_podcast_id)
     if merge_q:
         base_episodes = base_episodes.filter(
-            Q(title__icontains=merge_q) | 
-            Q(guid_public__icontains=merge_q) | 
-            Q(guid_private__icontains=merge_q)
+            Q(title__icontains=merge_q) | Q(guid_public__icontains=merge_q) | Q(guid_private__icontains=merge_q)
         )
 
     public_orphans = None
@@ -915,18 +914,21 @@ def creator_settings(request):
     
     elif merge_view == 'matched':
         matched_qs = base_episodes.exclude(Q(guid_public__isnull=True) | Q(guid_public__exact='')).exclude(Q(guid_private__isnull=True) | Q(guid_private__exact=''))
-        
         match_reasons = Episode.objects.filter(podcast__network=current_network).exclude(match_reason__isnull=True).exclude(match_reason__exact='').values_list('match_reason', flat=True).distinct()
         
         if merge_reason:
             matched_qs = matched_qs.filter(match_reason=merge_reason)
             
         matched_episodes = Paginator(matched_qs.order_by('-pub_date'), 20).get_page(request.GET.get('match_page', 1))
+    logger.info(f"[DIAGNOSTIC] 3. Done in {time.time() - t3:.2f}s")
 
+    logger.info("[DIAGNOSTIC] 4. Gathering Audit Log...")
+    t4 = time.time()
     # 4. Audit Log
+    # BUG FIX: Added 'episode__podcast' to prevent N+1 query timeouts!
     audit_query = EpisodeEditSuggestion.objects.filter(
         episode__podcast__network=current_network
-    ).exclude(status='pending').select_related('episode', 'user')
+    ).exclude(status='pending').select_related('episode', 'episode__podcast', 'user')
 
     audit_q = request.GET.get('audit_q', '').strip()
     audit_status = request.GET.get('audit_status', '').strip()
@@ -942,28 +944,33 @@ def creator_settings(request):
     audit_query = audit_query.order_by('-resolved_at')
     audit_paginator = Paginator(audit_query, 20)
     audit_page_obj = audit_paginator.get_page(request.GET.get('audit_page', 1))
+    logger.info(f"[DIAGNOSTIC] 4. Done in {time.time() - t4:.2f}s")
 
+    logger.info("[DIAGNOSTIC] 5. Gathering Bulk Move Context...")
+    t5 = time.time()
     # --- Bulk Move Context ---
     source_pod_id = request.GET.get('source_pod_id', '')
     move_episodes = []
-    if source_pod_id:
+    # BUG FIX: Added .isdigit() to prevent ValueError crashes if Javascript sends weird strings
+    if source_pod_id and source_pod_id.isdigit():
         move_episodes = Episode.objects.filter(podcast_id=source_pod_id, podcast__network=current_network).order_by('-pub_date')
+    logger.info(f"[DIAGNOSTIC] 5. Done in {time.time() - t5:.2f}s")
 
+    logger.info("[DIAGNOSTIC] 6. Gathering S3 Reports...")
+    t6 = time.time()
     # --- S3 Reports Context ---
     import os
     from django.conf import settings
-    
-    # Use Django's settings to dynamically find the correct OS path
     txt_path = os.path.join(settings.MEDIA_ROOT, 's3_hosting_report.txt')
     csv_path = os.path.join(settings.MEDIA_ROOT, 's3_hosted_episodes.csv')
 
     reports_data = {
         'txt_exists': os.path.exists(txt_path),
         'csv_exists': os.path.exists(csv_path),
-        # Dynamically build the URLs using the MEDIA_URL setting
         'txt_url': f"{settings.MEDIA_URL}s3_hosting_report.txt",
         'csv_url': f"{settings.MEDIA_URL}s3_hosted_episodes.csv",
     }
+    logger.info(f"[DIAGNOSTIC] 6. Done in {time.time() - t6:.2f}s")
 
     # 5. Final Context Assembly
     context = {
@@ -986,6 +993,8 @@ def creator_settings(request):
         'move_episodes': move_episodes,
         'reports': reports_data, 
     }
+    
+    logger.info(f"[DIAGNOSTIC] PAGE READY. Total Load Time: {time.time() - t1:.2f}s\n")
     return render(request, 'pod_manager/creator_settings.html', context)
 
 # ==========================================

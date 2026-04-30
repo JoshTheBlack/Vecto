@@ -142,6 +142,23 @@ services:
       - internal
     restart: unless-stopped
 
+vecto-bot:
+    build: .
+    command: python manage.py run_discord_bot
+    volumes:
+      - .:/app
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+    env_file: .env
+    depends_on:
+      pgbouncer:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - internal
+    restart: unless-stopped
+
 networks:
   proxy:
     name: vecto_proxy

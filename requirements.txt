@@ -19,6 +19,7 @@ django-cryptography
 
 # Utilities
 python-dotenv
+discord.py
 requests
 Pillow==10.3.0
 pdfkit

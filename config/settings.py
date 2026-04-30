@@ -23,6 +23,9 @@ PATREON_CLIENT_SECRET = os.getenv("PATREON_CLIENT_SECRET")
 PATREON_REDIRECT_URI = os.getenv("PATREON_REDIRECT_URI")
 PATREON_WEBHOOK_SECRET = os.getenv("PATREON_WEBHOOK_SECRET")
 
+# Discord Credentials
+DISCORD_BOT_TOKEN = os.getenv("DISCORD_BOT_TOKEN")
+
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
 

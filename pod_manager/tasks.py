@@ -382,3 +382,35 @@ def task_generate_s3_reports():
         logger.error(f"❌ [CELERY WORKER] Task FAILED: {e}")
         logger.info("=======================================================\n")
         return f"Failed: {e}"
+    
+@shared_task
+def task_sync_discord_avatar(discord_id, membership_id):
+    import requests
+    
+    bot_token = settings.DISCORD_BOT_TOKEN
+    if not bot_token:
+        logger.warning("DISCORD_BOT_TOKEN not set. Skipping Discord avatar sync.")
+        return
+
+    url = f"https://discord.com/api/v10/users/{discord_id}"
+    headers = {"Authorization": f"Bot {bot_token}"}
+    
+    try:
+        res = requests.get(url, headers=headers, timeout=5)
+        if res.status_code == 200:
+            data = res.json()
+            avatar_hash = data.get('avatar')
+            
+            if avatar_hash:
+                # Handle animated GIFs vs standard PNGs
+                ext = "gif" if avatar_hash.startswith("a_") else "png"
+                avatar_url = f"https://cdn.discordapp.com/avatars/{discord_id}/{avatar_hash}.{ext}?size=256"
+                
+                NetworkMembership.objects.filter(id=membership_id).update(discord_image_url=avatar_url)
+                logger.info(f"Synced Discord avatar for user {discord_id}.")
+            else:
+                logger.info(f"Discord user {discord_id} has no custom avatar.")
+        else:
+            logger.error(f"Failed to fetch Discord user {discord_id}: {res.status_code} - {res.text}")
+    except Exception as e:
+        logger.error(f"Error fetching Discord avatar for {discord_id}: {e}", exc_info=True)

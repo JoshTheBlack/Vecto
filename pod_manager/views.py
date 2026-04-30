@@ -794,7 +794,7 @@ def creator_settings(request):
                 eps = Episode.objects.filter(id__in=episode_ids, podcast__network=current_network)
                 
                 # Move them AND lock their metadata so the ingester doesn't overwrite titles/descriptions 
-                count = eps.update(podcast=target_pod, is_metadata_locked=True)
+                count = eps.update(podcast=target_pod)
                 messages.success(request, f"Successfully moved and locked {count} episodes to '{target_pod.title}'.")
                 
                 # Rebuild their fragments so the RSS feeds update immediately
@@ -1801,7 +1801,15 @@ def patreon_callback(request):
             'last_name': user_data.get('attributes', {}).get('last_name', '')
         })
 
-        _sync_patron_profile(user, user_data, included_data, current_network=request.network)
+        profile = _sync_patron_profile(user, user_data, included_data, current_network=request.network)
+        
+        # Trigger Discord Avatar Sync if a Discord ID exists
+        if profile and profile.discord_id and hasattr(request, 'network'):
+            membership = NetworkMembership.objects.filter(user=user, network=request.network).first()
+            if membership:
+                from pod_manager.tasks import task_sync_discord_avatar
+                task_sync_discord_avatar.delay(profile.discord_id, membership.id)
+
         login(request, user)
         return redirect('home')
 

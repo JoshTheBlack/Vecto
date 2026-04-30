@@ -357,6 +357,8 @@ class NetworkMembership(models.Model):
     # Billing Presence Tracker ---
     last_active_date = models.DateField(null=True, blank=True, db_index=True, help_text="The last date this user interacted with this network's web or RSS properties.")
 
+    discord_image_url = models.URLField(max_length=500, null=True, blank=True)
+    
     # Gamification & Stats
     trust_score = models.IntegerField(default=0)
     total_playback_hits = models.IntegerField(default=0)

@@ -122,24 +122,39 @@ def get_enclosure(entry):
 def clean_html_description(html_content, network):
     if not html_content:
         return ""
+        
+    # 1. Normalize line breaks to paragraphs BEFORE parsing
+    html_content = re.sub(r'(<br\s*/?>\s*){2,}', '</p><p>', html_content, flags=re.IGNORECASE)
     html_content = re.sub(r'\n{2,}', '</p><p>', html_content)
-    html_content = re.sub(r'(<br\s*/?>\s*){2,}', '</p><p>', html_content)
-    html_content = f"<p>{html_content}</p>"
     
+    # Prevent creating invalid nested <p><p> wrappers if the content is already HTML
+    if not html_content.strip().startswith('<'):
+        html_content = f"<p>{html_content}</p>"
+        
     soup = BeautifulSoup(html_content, "html.parser")
     
+    # 2. Description Cut Triggers (with Parent Protection)
     if network.description_cut_triggers:
         triggers = [t.strip().lower() for t in network.description_cut_triggers.split(',') if t.strip()]
         for element in soup.find_all(['p', 'div', 'li', 'em', 'strong']):
+            
+            if element.name == 'div' and element.find(['p', 'li', 'div']):
+                continue
+                
             text = element.get_text().lower()
             if any(trigger in text for trigger in triggers):
                 element.decompose()
     
-    for empty in soup.find_all(lambda tag: not tag.contents and not tag.get_text(strip=True)):
-        empty.decompose()
-        
+    # 3. Clean up empty tags (Fixes the surviving <p></p> spacing)
+    for empty in soup.find_all(['p', 'div', 'span', 'li']):
+        # Use get_text(strip=True) so whitespace/breaks aren't counted as real content
+        if not empty.get_text(strip=True) and not empty.find(['img', 'iframe', 'a']):
+            empty.decompose()
+            
+    # 4. Final Polish
     final_html = str(soup).strip()
-    final_html = final_html.replace('\n', '<br>')
+    final_html = final_html.replace('\n', ' ')
+    
     return final_html
 
 def get_cached_feed(url, feed_type, stdout):

@@ -79,11 +79,14 @@ def _evaluate_access(user, podcast, network=None):
     
     # --- 3. THE RECURLY CHECK ---
     recurly_access = False
-    required_plan = podcast.required_tier.recurly_plan_code
+    required_plan_string = podcast.required_tier.recurly_plan_code
     
-    if required_plan and membership.active_recurly_plans:
-        # Check if the required Recurly plan code exists in the user's JSON array
-        if required_plan in membership.active_recurly_plans:
+    if required_plan_string and membership.active_recurly_plans:
+        # 1. Split the comma-separated string from the database into a list
+        allowed_plans = [p.strip() for p in required_plan_string.split(',')]
+        
+        # 2. Check if ANY of the user's active plans match the allowed list
+        if any(plan in allowed_plans for plan in membership.active_recurly_plans):
             recurly_access = True
 
     # 4. The Final Verdict

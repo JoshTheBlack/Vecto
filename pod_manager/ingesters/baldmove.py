@@ -117,6 +117,11 @@ def get_feed_tags(entry):
 def parse_html_chapters(html_description):
     if not html_description: return None
     soup = BeautifulSoup(html_description, 'html.parser')
+    
+    # Updated Regex: Optional '(', capturing group for time, optional ')', whitespace, dash variants, whitespace, title
+    chapter_pattern = re.compile(r'^\(?(\d{1,2}:\d{2}(?::\d{2})?)\)?\s*[-—–]+\s*(.+)$')
+    
+    # Strategy 1: Strict <ul>/<li> parsing (Legacy behavior)
     for ul in soup.find_all('ul'):
         chapters = []
         li_tags = ul.find_all('li')
@@ -124,7 +129,7 @@ def parse_html_chapters(html_description):
             
         is_valid = True
         for li in li_tags:
-            match = re.match(r'^(\d{1,2}:\d{2}(?::\d{2})?)\s*[-—–]+\s*(.+)$', li.get_text().strip())
+            match = chapter_pattern.match(li.get_text().strip())
             if match:
                 parts = match.group(1).split(':')
                 seconds = int(parts[0])*3600 + int(parts[1])*60 + int(parts[2]) if len(parts)==3 else int(parts[0])*60 + int(parts[1])
@@ -134,6 +139,26 @@ def parse_html_chapters(html_description):
                 break 
 
         if is_valid and chapters: return {"version": "1.2.0", "chapters": chapters}
+        
+    # Strategy 2: Fallback for <p> and <br> separated lines
+    # Show notes often have timestamps separated by standard line breaks instead of bulleted lists
+    text_lines = soup.get_text(separator='\n').split('\n')
+    fallback_chapters = []
+    
+    for line in text_lines:
+        line = line.strip()
+        if not line: continue
+        
+        match = chapter_pattern.match(line)
+        if match:
+            parts = match.group(1).split(':')
+            seconds = int(parts[0])*3600 + int(parts[1])*60 + int(parts[2]) if len(parts)==3 else int(parts[0])*60 + int(parts[1])
+            fallback_chapters.append({"startTime": seconds, "title": match.group(2).strip()})
+    
+    # Require at least 2 found chapters to prevent random standalone timestamps from falsely triggering
+    if len(fallback_chapters) >= 2:
+        return {"version": "1.2.0", "chapters": fallback_chapters}
+        
     return None
 
 def _get_rich_description(entry):
@@ -145,6 +170,15 @@ def baldmove_enhancer(episode, pub_entry, sub_entry, is_new, stdout):
     stdout.write(f"\n[ENHANCER] Running for: {episode.title}")
     stdout.write(f"[ENHANCER] Episode Link property: {episode.link}")
     stdout.write(f"[ENHANCER] Is New? {is_new}")
+    
+    # Intercept flat arrays imported by default.py and wrap them safely
+    if isinstance(episode.chapters_public, list):
+        episode.chapters_public = {"version": "1.2.0", "chapters": episode.chapters_public}
+        stdout.write("  -> Upgraded native public chapters to 1.2.0 standard")
+        
+    if isinstance(episode.chapters_private, list):
+        episode.chapters_private = {"version": "1.2.0", "chapters": episode.chapters_private}
+        stdout.write("  -> Upgraded native private chapters to 1.2.0 standard")
     
     if pub_entry and not episode.chapters_public:
         html_chaps = parse_html_chapters(_get_rich_description(pub_entry))

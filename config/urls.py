@@ -30,7 +30,10 @@ urlpatterns = [
     path('episode/<int:episode_id>/edit/', views.submit_episode_edit, name='submit_episode_edit'),
     path('ajax/update_avatar_preference/', views.update_avatar_preference, name='update_avatar_preference'),
     path('ajax/upload_custom_avatar/', views.upload_custom_avatar, name='upload_custom_avatar'),
-
+    path('auth/totp/setup/', views.generate_qr_code, name='generate_qr_code'),
+    path('auth/totp/verify/', views.verify_authenticator, name='verify_authenticator'),
+    path('auth/totp/remove/', views.remove_authenticator, name='remove_authenticator'),
+    
     # Feed Endpoints
     path('feed/', views.generate_custom_feed, name='custom_feed'),
     path('feed/<slug:network_slug>/mix/<slug:mix_slug>/', views.generate_network_mix_feed, name='network_mix_feed'),

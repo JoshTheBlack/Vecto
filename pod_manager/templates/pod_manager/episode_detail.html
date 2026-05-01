@@ -362,7 +362,8 @@
         let existingChapters = [];
         try {
             const parsed = JSON.parse(document.getElementById('existing-chapters').textContent);
-            if (parsed && Array.isArray(parsed)) {
+            // Accept both arrays (legacy) and objects (new dict format)
+            if (parsed && (Array.isArray(parsed) || typeof parsed === 'object')) {
                 existingChapters = parsed;
             }
         } catch (e) {
@@ -578,16 +579,15 @@
 
                 chaptersArray.sort((a, b) => a.startTime - b.startTime);
 
-                // Build Final Payload Object
-                let finalChaptersPayload = chaptersArray;
+                // ALWAYS enforce the Podcasting 2.0 Dictionary Standard
+                let finalChaptersPayload = {
+                    version: "1.2.0",
+                    chapters: chaptersArray
+                };
+                
                 const isWaypointsEnabled = document.getElementById('globalWaypoints').checked;
-
-                // If waypoints is checked, wrap the array in a root dict
                 if (isWaypointsEnabled) {
-                    finalChaptersPayload = {
-                        waypoints: true,
-                        chapters: chaptersArray
-                    };
+                    finalChaptersPayload.waypoints = true;
                 }
                 
                 const titleInput = document.getElementById('editTitle').value.trim();

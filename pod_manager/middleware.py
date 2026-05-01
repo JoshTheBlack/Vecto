@@ -17,12 +17,17 @@ class NetworkMiddleware:
         if request.path.startswith('/api/') or request.path.startswith('/admin/') or request.path.startswith('/static/'):
             return self.get_response(request)
         host = request.get_host().split(':')[0] # Remove port if present
+        x_forwarded_for = request.META.get('HTTP_X_FORWARDED_FOR')
+        if x_forwarded_for:
+            client_ip = x_forwarded_for.split(',')[0].strip()
+        else:
+            client_ip = request.META.get('REMOTE_ADDR', 'unknown')
         logger.debug(f"Incoming request for host: '{host}' | Path: {request.path}")
         
         # 1. Attempt to find a network by custom domain
         network = Network.objects.filter(custom_domain=host).first()
         request.network = network
-        request.tenant_profile = None # <-- Default to None for guests
+        request.tenant_profile = None
         
         if network:
             logger.debug(f"Matched host '{host}' to Network: {network.name} ({network.slug})")
@@ -50,7 +55,7 @@ class NetworkMiddleware:
                 logger.debug(f"Allowing whitelisted path without network: {path}")
                 pass
             elif path == '/':
-                logger.info(f"Serving Vecto landing page for unknown host: {host}")
+                logger.warning(f"Serving Vecto landing page for unknown host: {host} [IP: {client_ip}]")
                 return render(request, 'pod_manager/vecto_landing.html')
                 
             # If an unknown domain tries to access anything else, hard 404.

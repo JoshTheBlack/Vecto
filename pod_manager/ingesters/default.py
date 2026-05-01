@@ -26,7 +26,11 @@ def extract_rss_chapters(entry):
             try:
                 resp = requests.get(url, timeout=5)
                 if resp.status_code == 200:
-                    return resp.json()
+                    data = resp.json()
+                    # --- FIX: Force standard if remote host returns a legacy flat array ---
+                    if isinstance(data, list):
+                        return {"version": "1.2.0", "chapters": data}
+                    return data
             except Exception:
                 pass
 

@@ -14,9 +14,14 @@ import urllib.parse
 import re
 import html
 import recurly
-import random
+import qrcode
+import base64
+import secrets
+import socket
+import ipaddress
 from email.utils import format_datetime
 
+import nh3
 import requests
 from django.conf import settings
 from django.contrib import messages
@@ -38,6 +43,8 @@ from django.utils import timezone
 from datetime import timedelta
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_POST
+from io import BytesIO
+from django_otp.plugins.otp_totp.models import TOTPDevice
 
 from podgen import Podcast as PodgenPodcast, Episode as PodgenEpisode, Media, Person
 from lxml import etree
@@ -121,16 +128,138 @@ def parse_duration(duration_str: str) -> timedelta | None:
     except ValueError:
         return None
 
+# ==========================================
+# 1.5 SECURITY HELPERS
+# ==========================================
+
+# Signer for OAuth `state` so we can put a value (e.g. network_id) in the redirect
+# without letting attackers forge it. Salt scopes the signature so a state for
+# patreon_oauth can't be reused as a generic CSRF token elsewhere.
+_OAUTH_STATE_SIGNER = TimestampSigner(salt='patreon-oauth-state')
+
+def _sign_oauth_state(payload: str) -> str:
+    return _OAUTH_STATE_SIGNER.sign(payload)
+
+def _unsign_oauth_state(signed_value: str, max_age_seconds: int = 600):
+    """Return the original payload, or None if the state is missing/forged/expired."""
+    if not signed_value:
+        return None
+    try:
+        return _OAUTH_STATE_SIGNER.unsign(signed_value, max_age=max_age_seconds)
+    except (BadSignature, SignatureExpired):
+        return None
+
+
+# SSRF guard: any URL we feed to `requests.get` from user-supplied input must
+# resolve to a public, routable address. Blocks loopback, link-local, private,
+# multicast, and reserved ranges (covers cloud metadata services, internal
+# Redis/Postgres/etc).
+_ALLOWED_URL_SCHEMES = ('http', 'https')
+
+def _validate_public_url(url: str) -> tuple[bool, str]:
+    if not url or not isinstance(url, str):
+        return False, "URL is empty."
+    parsed = urllib.parse.urlsplit(url.strip())
+    if parsed.scheme.lower() not in _ALLOWED_URL_SCHEMES:
+        return False, f"Scheme '{parsed.scheme}' not allowed."
+    host = parsed.hostname
+    if not host:
+        return False, "URL has no host."
+    try:
+        # Resolve all addresses; reject if ANY resolution lands in a reserved range.
+        # (Defense against DNS rebinding to a public-then-private answer.)
+        infos = socket.getaddrinfo(host, None)
+    except socket.gaierror:
+        return False, "Host could not be resolved."
+    for info in infos:
+        addr = info[4][0]
+        try:
+            ip = ipaddress.ip_address(addr)
+        except ValueError:
+            return False, f"Resolved to invalid address: {addr}"
+        if (ip.is_private or ip.is_loopback or ip.is_link_local or
+                ip.is_reserved or ip.is_multicast or ip.is_unspecified):
+            return False, f"Host resolves to a non-public address ({addr})."
+    return True, ""
+
+
+# Rate-limit helper backed by the existing cache (Redis in prod, locmem in IDE).
+# Increments a counter on a sliding window equal to `window_seconds`. Returns
+# True when the action is over the limit (caller should reject).
+def _is_rate_limited(bucket: str, limit: int, window_seconds: int) -> bool:
+    key = f"ratelimit:{bucket}"
+    try:
+        current = cache.incr(key)
+    except ValueError:
+        cache.set(key, 1, timeout=window_seconds)
+        current = 1
+    return current > limit
+
+def _client_ip(request) -> str:
+    # Trust the leftmost X-Forwarded-For entry (Traefik/nginx already strip
+    # client-supplied XFF before forwarding). Falls back to REMOTE_ADDR.
+    xff = request.META.get('HTTP_X_FORWARDED_FOR', '')
+    if xff:
+        return xff.split(',')[0].strip()
+    return request.META.get('REMOTE_ADDR', 'unknown')
+
+
+# OTP attempt accounting. After MAX_OTP_ATTEMPTS bad tries the cached OTP is
+# burned, forcing the user to request a new code.
+MAX_OTP_ATTEMPTS = 5
+
+def _record_otp_failure(email: str) -> int:
+    """Increment failure counter for this email's OTP. Returns the new count."""
+    key = f"recurly_otp_attempts:{email}"
+    try:
+        return cache.incr(key)
+    except ValueError:
+        cache.set(key, 1, timeout=600)
+        return 1
+
+def _clear_otp_state(email: str):
+    cache.delete(f"recurly_otp_{email}")
+    cache.delete(f"recurly_account_{email}")
+    cache.delete(f"recurly_otp_attempts:{email}")
+
+
+# HTML sanitizer for user-submitted episode descriptions. Strips scripts, event
+# handlers, and any tag/attribute not on the allowlist. Used on submit, not on
+# render — DB stays clean so existing `|safe` template usage remains correct.
+_ALLOWED_DESC_TAGS = {
+    'p', 'br', 'em', 'strong', 'b', 'i', 'u', 's', 'a',
+    'ul', 'ol', 'li', 'blockquote', 'code', 'pre',
+    'h2', 'h3', 'h4', 'h5', 'h6', 'span', 'div', 'hr', 'img'
+}
+_ALLOWED_DESC_ATTRS = {
+    'a': {'href', 'title', 'target'},
+    'img': {'src', 'alt', 'title'},
+}
+
+def sanitize_user_html(html_str: str) -> str:
+    if not html_str:
+        return ''
+    return nh3.clean(
+        html_str,
+        tags=_ALLOWED_DESC_TAGS,
+        attributes=_ALLOWED_DESC_ATTRS,
+        link_rel='noopener noreferrer nofollow',
+    )
+
+
 def process_mix_image_url(image_url, mix_instance):
     if not image_url: return None
+    ok, reason = _validate_public_url(image_url)
+    if not ok:
+        return reason
     try:
-        res = requests.get(image_url, timeout=5) 
+        res = requests.get(image_url, timeout=5)
         if res.status_code == 200:
             import os
             temp_name = os.path.basename(image_url).split('?')[0] or "cover.jpg"
             mix_instance.image_upload.save(temp_name, ContentFile(res.content), save=False)
-            mix_instance.image_url = "" 
-            return None 
+            mix_instance.image_url = ""
+            return None
         return f"Server returned status {res.status_code}."
     except requests.exceptions.RequestException:
         return "URL invalid or unreachable."
@@ -153,8 +282,13 @@ def upload_custom_avatar(request):
             membership.custom_image_upload = request.FILES['custom_image_upload']
             membership.custom_image_url = "" # Clear URL if physical upload
         elif request.POST.get('custom_image_url'):
-            membership.custom_image_url = request.POST.get('custom_image_url')
-            
+            candidate_url = request.POST.get('custom_image_url')
+            ok, reason = _validate_public_url(candidate_url)
+            if not ok:
+                messages.error(request, f"Avatar URL rejected: {reason}")
+                return redirect('user_profile')
+            membership.custom_image_url = candidate_url
+
         membership.preferred_avatar_source = 'custom'
         membership.save()
         messages.success(request, "Custom avatar updated!")
@@ -403,11 +537,13 @@ def sync_network_patrons(network):
 @csrf_exempt
 def patreon_webhook(request):
     if request.method != 'POST': return HttpResponse("Method not allowed", status=405)
+    signature = request.headers.get('X-Patreon-Signature') or ''
+    secret = settings.PATREON_WEBHOOK_SECRET
+    if not secret:
+        return HttpResponseForbidden("Webhook secret not configured")
     
-    signature = request.headers.get('X-Patreon-Signature')
-    secret = settings.PATREON_WEBHOOK_SECRET.encode('utf-8')
-    expected_signature = hmac.new(secret, request.body, hashlib.md5).hexdigest()
-    if not hmac.compare_digest(expected_signature, signature): return HttpResponseForbidden("Invalid signature")
+    expected = hmac.new(secret.encode('utf-8'), request.body, hashlib.md5).hexdigest()
+    if not hmac.compare_digest(expected, signature): return HttpResponseForbidden("Invalid signature")
 
     try:
         data = json.loads(request.body)
@@ -479,7 +615,10 @@ def _handle_inbox_action(request, current_network, action):
         # Whole-string replacement. The admin's checked toggle is acknowledgment
         # of any conflict that was visible in the inbox.
         if request.POST.get('approve_description') == 'on':
-            new_desc = request.POST.get('edited_description', '').strip()
+            # Re-sanitize: even though submit_episode_edit cleans the user's
+            # original, the admin's textarea is free-form and may have been
+            # edited (or pasted into) before approval.
+            new_desc = sanitize_user_html(request.POST.get('edited_description', '').strip())
             if new_desc and new_desc != pre_approval_snapshot['description']:
                 ep.clean_description = new_desc
                 edit.suggested_data['description'] = new_desc  # Update for Audit Log
@@ -1187,10 +1326,13 @@ def episode_detail(request, episode_id):
 def user_profile(request):
     tenant_profile = getattr(request, 'tenant_profile', None)
     
+    has_active_totp = request.user.totpdevice_set.filter(confirmed=True).exists()
+
     if not tenant_profile:
         return render(request, 'pod_manager/user_profile.html', {
             'level': 0, 'title': "Commoner", 'progress_percent': 0,
             'total_approved': 0, 'account_vintage': None, 
+            'has_active_totp': has_active_totp,
             'live_stats': {'playback_hits': 0, 'hours_accessed': 0.0, 'streak_days': 0, 'streak_weeks': 0, 'obsession_title': "Wandering Adventurer"}
         })
 
@@ -1226,6 +1368,7 @@ def user_profile(request):
         'account_vintage': account_vintage,
         'joined_after_launch_days': joined_after_launch_days,
         'account_age_years': account_age_years,
+        'has_active_totp': has_active_totp,
     }
     return render(request, 'pod_manager/user_profile.html', context)
 
@@ -1388,6 +1531,17 @@ def generate_public_feed(request, podcast_slug):
 
 def generate_mix_feed(request, unique_id):
     user_mix = get_object_or_404(UserMix.objects.select_related('user__patron_profile'), unique_id=unique_id, is_active=True)
+
+    # Require the mix owner's feed_token. Without this check, anyone holding
+    # the (UUID) mix URL gets the resulting RSS — and that RSS embeds the
+    # user's primary feed_token in every audio URL, which can then be replayed
+    # against other private feeds. With the check, the URL is no more
+    # privileged than the feed_token itself.
+    feed_token = request.GET.get('auth')
+    owner_token = getattr(getattr(user_mix.user, 'patron_profile', None), 'feed_token', None)
+    if not feed_token or not owner_token or not hmac.compare_digest(str(feed_token), str(owner_token)):
+        raise Http404("Mix feed not found.")
+
     base_url = request.build_absolute_uri('/')[:-1]
     cache_key = f"shell_user_mix_{user_mix.id}"
     shell = cache.get(cache_key)
@@ -1561,7 +1715,16 @@ def play_episode(request, episode_id):
             
     target_url = ep.audio_url_subscriber if (has_access and ep.audio_url_subscriber) else ep.audio_url_public
     if not target_url: raise Http404("Audio file not found.")
-        
+
+    # Defense-in-depth: Django's HttpResponseRedirect already rejects exotic
+    # schemes (raises DisallowedRedirect, which becomes a 500), but we'd
+    # rather 404 cleanly. Audio URLs are populated by the ingest pipeline
+    # from external feeds — a malicious feed publisher could write a non-http
+    # value into the row, so explicitly require http(s) before redirecting.
+    if not target_url.lower().startswith(('http://', 'https://')):
+        logger.warning(f"[play_episode] Refusing redirect to non-http(s) URL for ep {ep.id}: {target_url[:64]}")
+        raise Http404("Audio file not found.")
+
     response = HttpResponseRedirect(target_url)
     response['Cache-Control'] = 'no-cache, no-store, must-revalidate'
     return response
@@ -1593,12 +1756,17 @@ def submit_episode_edit(request, episode_id):
         for chap in raw_chap_list:
             if 'startTime' in chap and 'title' in chap:
                 try:
+                    # Convert to int if it's a whole number (e.g., 36 instead of 36.0)
+                    start_val = float(chap['startTime'])
+                    start_time = int(start_val) if start_val.is_integer() else start_val
+                    
                     c = {
-                        "startTime": float(chap['startTime']),
+                        "startTime": start_time,
                         "title": str(chap['title']).strip()
                     }
                     if 'endTime' in chap and chap['endTime'] not in [None, ""]:
-                        c['endTime'] = float(chap['endTime'])
+                        end_val = float(chap['endTime'])
+                        c['endTime'] = int(end_val) if end_val.is_integer() else end_val
                     if 'url' in chap and str(chap['url']).startswith('http'):
                         c['url'] = str(chap['url']).strip()
                     if 'img' in chap and str(chap['img']).startswith('http'):
@@ -1624,11 +1792,22 @@ def submit_episode_edit(request, episode_id):
                 except ValueError:
                     pass 
 
-        # Package the validated data back into the shape the DB expects
+        # ALWAYS enforce the Podcasting 2.0 Dictionary Standard
+        suggested_data['chapters'] = {
+            "version": "1.2.0",
+            "chapters": clean_chapters
+        }
         if waypoints_enabled:
-            suggested_data['chapters'] = {"waypoints": True, "chapters": clean_chapters}
-        else:
-            suggested_data['chapters'] = clean_chapters
+            suggested_data['chapters']["waypoints"] = True
+
+        # Sanitize description HTML on the way in. The episode_detail.html
+        # template renders ep.display_description with `|safe`, so anything we
+        # let into the DB will execute in the browser. Quill produces clean
+        # HTML on the frontend, but a malicious user can POST raw JSON,
+        # bypassing Quill — so we have to clean server-side. Title and tags
+        # are auto-escaped by Django when rendered, so they don't need this.
+        if 'description' in suggested_data:
+            suggested_data['description'] = sanitize_user_html(suggested_data.get('description') or '')
 
         network = ep.podcast.network
         membership, _ = NetworkMembership.objects.get_or_create(user=request.user, network=network)
@@ -1657,8 +1836,13 @@ def submit_episode_edit(request, episode_id):
             task_rebuild_episode_fragments.delay(ep.id, base_url)
 
             membership.trust_score = membership.trust_score + 5
-            if suggested_data.get('title') != original_data.get('title'): membership.edits_titles += 1
-            if suggested_data.get('chapters') != original_data.get('chapters'): membership.edits_chapters += len(suggested_data.get('chapters', []))
+            if suggested_data.get('title') != original_data.get('title'): membership.edits_title += 1
+            if suggested_data.get('chapters') != original_data.get('chapters'): 
+                chap_data = suggested_data.get('chapters', [])
+                if isinstance(chap_data, dict):
+                    membership.edits_chapters += len(chap_data.get('chapters', []))
+                else:
+                    membership.edits_chapters += len(chap_data)
             if suggested_data.get('tags') != original_data.get('tags'): membership.edits_tags += 1
             if suggested_data.get('description') != original_data.get('description'): membership.edits_descriptions += 1
             if is_first: membership.first_responder_count += 1
@@ -1668,6 +1852,7 @@ def submit_episode_edit(request, episode_id):
             messages.success(request, "Edit submitted for review.")
             
     except Exception as e:
+        logger.error(f"Edit submission failed for Episode {ep.id}: {e}", exc_info=True)
         messages.error(request, "Failed to submit edit.")
         
     return redirect('episode_detail', episode_id=ep.id)
@@ -1694,7 +1879,11 @@ def _exchange_patreon_token(code, redirect_uri):
 def _link_creator_campaign(request, network_id, access_token, refresh_token):
     """Handles the flow when a creator links their Patreon to a Vecto Network."""
     logger.info(f"Linking Patreon Campaign to Network ID {network_id} for user {request.user.username}")
-    network = get_object_or_404(Network, id=network_id)
+    # Defense-in-depth: even though `patreon_login` already verified ownership
+    # and `patreon_callback` verified the signed state, reject anything that
+    # isn't an owner here too — this view should be impossible to reach for a
+    # non-owner under any flow.
+    network = get_object_or_404(Network, id=network_id, owners=request.user)
     
     headers = {"Authorization": f"Bearer {access_token}"}
     
@@ -1787,23 +1976,49 @@ def _fetch_patreon_identity(access_token):
 def patreon_login(request):
     network_id = request.GET.get('network_id')
     dynamic_redirect_uri = request.build_absolute_uri('/oauth/patreon/callback')
-    
+
+    # Creator-link flow: only logged-in owners of the target network may
+    # initiate, and the network_id is signed so an attacker can't forge a
+    # callback that links *their* Patreon to someone else's network.
+    if network_id:
+        if not request.user.is_authenticated:
+            return HttpResponseForbidden("Login required to link a Patreon campaign.")
+        if not Network.objects.filter(id=network_id, owners=request.user).exists():
+            return HttpResponseForbidden("You are not an owner of that network.")
+
     scope = "identity identity[email] identity.memberships campaigns campaigns.members campaigns.members[email]" if network_id else "identity identity[email] identity.memberships"
-    
+
     params = {
         "response_type": "code",
         "client_id": settings.PATREON_CLIENT_ID,
         "redirect_uri": dynamic_redirect_uri,
         "scope": scope,
     }
-    if network_id: params["state"] = network_id
+    if network_id:
+        params["state"] = _sign_oauth_state(f"link:{request.user.id}:{network_id}")
+    else:
+        # Sign a nonce even on the listener flow so we can later detect/replay-protect.
+        params["state"] = _sign_oauth_state(f"login:{secrets.token_urlsafe(16)}")
     return redirect(f"https://www.patreon.com/oauth2/authorize?{urllib.parse.urlencode(params)}")
 
 def patreon_callback(request):
     code = request.GET.get('code')
-    state_network_id = request.GET.get('state')
+    raw_state = request.GET.get('state')
 
     if not code: return HttpResponse("No code provided by Patreon", status=400)
+
+    # Verify state. A missing/forged/expired state means we cannot trust ANY
+    # creator-link claim baked into it — fall through to the listener flow.
+    state_payload = _unsign_oauth_state(raw_state) if raw_state else None
+    link_user_id = None
+    state_network_id = None
+    if state_payload and state_payload.startswith('link:'):
+        try:
+            _, link_user_id, state_network_id = state_payload.split(':', 2)
+            link_user_id = int(link_user_id)
+        except (ValueError, IndexError):
+            link_user_id = None
+            state_network_id = None
 
     try:
         dynamic_redirect_uri = request.build_absolute_uri('/oauth/patreon/callback')
@@ -1812,8 +2027,8 @@ def patreon_callback(request):
 
         access_token = token_data['access_token']
         refresh_token = token_data['refresh_token']
-        
-        if state_network_id and request.user.is_authenticated:
+
+        if state_network_id and request.user.is_authenticated and request.user.id == link_user_id:
             return _link_creator_campaign(request, state_network_id, access_token, refresh_token)
 
         payload, error_response = _fetch_patreon_identity(access_token)
@@ -1857,53 +2072,162 @@ def logout_view(request):
 def recurly_login(request):
     # Allow the user to "Start Over" if they made a typo in their email
     if request.GET.get('reset'):
+        old_email = request.session.get('pending_otp_email') or request.session.get('pending_totp_email')
+        if old_email:
+            _clear_otp_state(old_email)
         request.session.pop('pending_otp_email', None)
+        request.session.pop('pending_totp_email', None)
         return redirect('recurly_login')
 
     pending_email = request.session.get('pending_otp_email')
+    pending_totp = request.session.get('pending_totp_email')
 
     if request.method == 'POST':
         # ==========================================
         # STEP 1: USER SUBMITS EMAIL
         # ==========================================
-        if not pending_email:
+        if not pending_email and not pending_totp:
             email = request.POST.get('email', '').strip().lower()
+
+            # Rate-limit email submissions per-IP and per-email so an attacker
+            # can't (a) enumerate Recurly accounts at scale or (b) drain a
+            # victim's OTP send quota / inbox. Cheap before any external call.
+            ip = _client_ip(request)
+            if _is_rate_limited(f"login:ip:{ip}", limit=10, window_seconds=600):
+                logger.warning(f"[Recurly Auth] IP rate-limit hit: {ip}")
+                messages.error(request, "Too many login attempts from this network. Please wait and try again.")
+                return redirect('recurly_login')
+            if email and _is_rate_limited(f"login:email:{email}", limit=5, window_seconds=600):
+                logger.warning(f"[Recurly Auth] Email rate-limit hit: {email}")
+                messages.error(request, "Too many login attempts for this address. Please wait and try again.")
+                return redirect('recurly_login')
+
             client = recurly.Client(settings.RECURLY_API_KEY)
-            
+
             try:
                 logger.info(f"[Recurly Auth] Lookup initiated for email: {email}")
                 accounts = client.list_accounts(params={'email': email})
-                
-                # Safely grab the first account ID
                 account_id = next((acc.id for acc in accounts.items()), None)
-                    
+
                 if account_id:
-                    # Generate a 6-digit OTP
-                    otp = str(random.randint(100000, 999999))
-                    
-                    # Store OTP & Account ID in cache for 10 minutes
-                    cache.set(f"recurly_otp_{email}", f"{otp}|{account_id}", timeout=600)
-                    
-                    # Dispatch Celery task to email the code
-                    from pod_manager.tasks import task_send_otp_email
-                    task_send_otp_email.delay(email, otp, request.network.name, request.network.theme_config)
-                    
-                    # Lock the session to the OTP verification step
-                    request.session['pending_otp_email'] = email
-                    logger.info(f"[Recurly Auth] OTP sent for {email}")
-                    messages.success(request, "A 6-digit code has been sent to your email.")
+                    user = User.objects.filter(email=email).first()
+                    has_totp = user and user.totpdevice_set.filter(confirmed=True).exists()
+
+                    # Reset any stale failure counters so a fresh challenge starts at 0.
+                    cache.delete(f"recurly_otp_attempts:{email}")
+
+                    if has_totp:
+                        # TOTP BYPASS
+                        cache.set(f"recurly_account_{email}", account_id, timeout=600)
+                        request.session['pending_totp_email'] = email
+                        messages.info(request, "Please enter your 6-digit Authenticator App code.")
+                    else:
+                        # NORMAL EMAIL FLOW
+                        otp = f"{secrets.randbelow(900_000) + 100_000}"
+                        cache.set(f"recurly_otp_{email}", f"{otp}|{account_id}", timeout=600)
+                        from pod_manager.tasks import task_send_otp_email
+                        task_send_otp_email.delay(email, otp, request.network.name, request.network.theme_config)
+                        request.session['pending_otp_email'] = email
+                        logger.info(f"[Recurly Auth] OTP sent for {email}")
+                        messages.success(request, "A 6-digit code has been sent to your email.")
                 else:
                     logger.warning(f"[Recurly Auth] Login failed: No Recurly account found for {email}")
                     messages.error(request, "No active subscription found for that email address.")
-                    
+
             except Exception as e:
                 logger.error(f"[Recurly Auth] Error during lookup for {email}: {e}")
                 messages.error(request, "System error verifying account.")
-                
+
             return redirect('recurly_login')
 
         # ==========================================
-        # STEP 2: USER SUBMITS OTP CODE
+        # STEP 2.A: USER SUBMITS TOTP APP CODE
+        # ==========================================
+        elif pending_totp:
+            
+            # --- BULLETPROOF EMAIL FALLBACK ---
+            if request.POST.get('fallback_to_email'):
+                if _is_rate_limited(f"login:fallback:{pending_totp}", limit=3, window_seconds=600):
+                    logger.warning(f"[Recurly Auth] Fallback rate-limit hit for {pending_totp}")
+                    messages.error(request, "Too many fallback requests. Please wait and try again.")
+                    return redirect('recurly_login')
+                client = recurly.Client(settings.RECURLY_API_KEY)
+                try:
+                    # Do a fresh lookup in case the cache expired
+                    accounts = client.list_accounts(params={'email': pending_totp})
+                    account_id = next((acc.id for acc in accounts.items()), None)
+                    
+                    if account_id:
+                        otp = f"{secrets.randbelow(900_000) + 100_000}"
+                        cache.set(f"recurly_otp_{pending_totp}", f"{otp}|{account_id}", timeout=600)
+                        
+                        from pod_manager.tasks import task_send_otp_email
+                        task_send_otp_email.delay(pending_totp, otp, request.network.name, request.network.theme_config)
+                        
+                        request.session['pending_otp_email'] = pending_totp
+                        request.session.pop('pending_totp_email', None)
+                        messages.success(request, "Authenticator bypassed. A 6-digit code has been sent to your email.")
+                    else:
+                        request.session.pop('pending_totp_email', None)
+                        messages.error(request, "Session expired. Please start over.")
+                except Exception:
+                    request.session.pop('pending_totp_email', None)
+                    messages.error(request, "System error during fallback. Please start over.")
+                    
+                return redirect('recurly_login')
+            # --------------------------------
+
+            user_otp = request.POST.get('otp', '').strip()
+            account_id = cache.get(f"recurly_account_{pending_totp}")
+            user = User.objects.filter(email=pending_totp).first()
+
+            if not account_id or not user:
+                messages.error(request, "Session expired. Please start over.")
+                request.session.pop('pending_totp_email', None)
+                return redirect('recurly_login')
+
+            device = user.totpdevice_set.filter(confirmed=True).first()
+            if device and device.verify_token(user_otp):
+                _clear_otp_state(pending_totp)
+                request.session.pop('pending_totp_email', None)
+                
+                profile, _ = PatronProfile.objects.get_or_create(user=user)
+                if profile.recurly_account_code != account_id:
+                    profile.recurly_account_code = account_id
+                    profile.save()
+
+                client = recurly.Client(settings.RECURLY_API_KEY)
+                active_plans = []
+                try:
+                    subs = client.list_account_subscriptions(account_id=account_id)
+                    for sub in subs.items():
+                        if sub.state in ['active', 'in_trial', 'past_due']:
+                            active_plans.append(sub.plan.code)
+                            
+                    for network in Network.objects.all():
+                        membership, _ = NetworkMembership.objects.get_or_create(user=user, network=network)
+                        membership.active_recurly_plans = active_plans
+                        membership.save()
+                except Exception as e:
+                    logger.error(f"[Recurly Auth] Failed to fetch subscriptions for {pending_totp}: {e}")
+                    messages.warning(request, "Logged in, but could not sync latest subscription data.")
+
+                login(request, user)
+                messages.success(request, "Successfully logged in via Authenticator!")
+                return redirect('user_feeds')
+            else:
+                attempts = _record_otp_failure(pending_totp)
+                if attempts >= MAX_OTP_ATTEMPTS:
+                    _clear_otp_state(pending_totp)
+                    request.session.pop('pending_totp_email', None)
+                    logger.warning(f"[Recurly Auth] TOTP attempts exhausted for {pending_totp}")
+                    messages.error(request, "Too many failed attempts. Please start over.")
+                else:
+                    messages.error(request, f"Invalid Authenticator code. {MAX_OTP_ATTEMPTS - attempts} attempts left.")
+                return redirect('recurly_login')
+                
+        # ==========================================
+        # STEP 2.B: USER SUBMITS EMAIL OTP CODE
         # ==========================================
         else:
             user_otp = request.POST.get('otp', '').strip()
@@ -1916,12 +2240,10 @@ def recurly_login(request):
 
             correct_otp, account_id = cached_data.split('|')
 
-            if user_otp == correct_otp:
-                # 1. Clean up
-                cache.delete(f"recurly_otp_{pending_email}")
+            if hmac.compare_digest(user_otp, correct_otp):
+                _clear_otp_state(pending_email)
                 request.session.pop('pending_otp_email', None)
                 
-                # 2. Identity Link
                 user, _ = User.objects.get_or_create(username=pending_email, defaults={'email': pending_email})
                 profile, _ = PatronProfile.objects.get_or_create(user=user)
                 
@@ -1929,36 +2251,40 @@ def recurly_login(request):
                     profile.recurly_account_code = account_id
                     profile.save()
 
-                # 3. Database Sync (The Recurly Bridge)
                 client = recurly.Client(settings.RECURLY_API_KEY)
                 active_plans = []
-                
                 try:
                     subs = client.list_account_subscriptions(account_id=account_id)
                     for sub in subs.items():
                         if sub.state in ['active', 'in_trial', 'past_due']:
                             active_plans.append(sub.plan.code)
                             
-                    # Sync to all NetworkMemberships
                     for network in Network.objects.all():
                         membership, _ = NetworkMembership.objects.get_or_create(user=user, network=network)
                         membership.active_recurly_plans = active_plans
                         membership.save()
-                        
                 except Exception as e:
                     logger.error(f"[Recurly Auth] Failed to fetch subscriptions for {pending_email}: {e}")
                     messages.warning(request, "Logged in, but could not sync latest subscription data.")
 
-                # 4. Authenticate
                 login(request, user)
                 messages.success(request, "Successfully logged in!")
                 return redirect('user_feeds')
             else:
-                messages.error(request, "Invalid code. Please try again.")
+                attempts = _record_otp_failure(pending_email)
+                if attempts >= MAX_OTP_ATTEMPTS:
+                    _clear_otp_state(pending_email)
+                    request.session.pop('pending_otp_email', None)
+                    logger.warning(f"[Recurly Auth] Email OTP attempts exhausted for {pending_email}")
+                    messages.error(request, "Too many failed attempts. Please request a new code.")
+                else:
+                    messages.error(request, f"Invalid code. {MAX_OTP_ATTEMPTS - attempts} attempts left.")
                 return redirect('recurly_login')
 
-    # Pass the pending_email state to the template to toggle the UI
-    return render(request, 'pod_manager/login_request.html', {'pending_email': pending_email})
+    return render(request, 'pod_manager/login_request.html', {
+        'pending_email': pending_email,
+        'pending_totp': pending_totp
+    })
 
 @staff_member_required
 def start_impersonation(request, user_id):
@@ -1980,6 +2306,61 @@ def stop_impersonation(request):
         del request.session['impersonated_user_id']
         messages.success(request, "Impersonation ended. Welcome back.")
     return redirect('admin:auth_user_changelist')
+
+@login_required(login_url='/login/')
+def generate_qr_code(request):
+    """Creates a new unverified device and renders its QR code."""
+    # 1. Clear any existing unverified devices to prevent clutter
+    TOTPDevice.objects.filter(user=request.user, confirmed=False).delete()
+    
+    # 2. Create a new device
+    device = TOTPDevice.objects.create(user=request.user, confirmed=False, name="Vecto")
+    
+    # 3. Generate the provisioning URL (otpauth://...)
+    url = device.config_url
+    
+    # 4. Extract the raw bytes key and encode to Base32 for manual entry
+    raw_key = base64.b32encode(device.bin_key).decode('utf-8')
+    # Format the string into chunks of 4 for easy reading (e.g., "ABCD EFGH IJKL")
+    formatted_key = " ".join([raw_key[i:i+4] for i in range(0, len(raw_key), 4)])
+    
+    # 5. Generate a PNG QR code and encode it in Base64 so HTML can read it safely
+    img = qrcode.make(url)
+    stream = BytesIO()
+    img.save(stream, format="PNG")
+    qr_b64 = base64.b64encode(stream.getvalue()).decode('utf-8')
+    qr_data_uri = f"data:image/png;base64,{qr_b64}"
+    
+    return render(request, 'pod_manager/verify_authenticator.html', {
+        'qr_data_uri': qr_data_uri,
+        'setup_key': formatted_key,
+        'device_id': device.id
+    })
+
+@login_required(login_url='/login/')
+def verify_authenticator(request):
+    """Verifies the first 6-digit code to finalize setup."""
+    if request.method == 'POST':
+        code = request.POST.get('code')
+        device_id = request.POST.get('device_id')
+        
+        device = TOTPDevice.objects.filter(id=device_id, user=request.user, confirmed=False).first()
+        if device and device.verify_token(code):
+            device.confirmed = True
+            device.save()
+            messages.success(request, "Authenticator App successfully linked!")
+            return redirect('user_profile')
+            
+        messages.error(request, "Invalid code. Please try again.")
+    return redirect('generate_qr_code')
+
+@login_required(login_url='/login/')
+def remove_authenticator(request):
+    """Destroys all devices, falling the user back to email login."""
+    if request.method == 'POST':
+        TOTPDevice.objects.filter(user=request.user).delete()
+        messages.success(request, "Authenticator App removed. You will now log in via Email Links.")
+    return redirect('user_profile')
 
 # ==========================================
 # 9. UTILITIES & API
@@ -2133,9 +2514,15 @@ def check_audio_status(request):
     url = request.GET.get('url')
     if not url:
         return JsonResponse({'reachable': False})
+    # Endpoint is publicly callable, so the URL is fully attacker-controlled —
+    # block redirects and any URL that resolves to a non-public address.
+    ok, _ = _validate_public_url(url)
+    if not ok:
+        return JsonResponse({'reachable': False})
     try:
-        # Use HEAD to avoid downloading the file, timeout fast so we don't hold up workers
-        res = requests.head(url, timeout=3, allow_redirects=True)
+        # allow_redirects=False so a redirect chain can't bounce us into a
+        # private network the initial host wouldn't have allowed.
+        res = requests.head(url, timeout=3, allow_redirects=False)
         return JsonResponse({'reachable': res.status_code < 400})
     except requests.RequestException:
         return JsonResponse({'reachable': False})

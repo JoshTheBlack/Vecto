@@ -21,6 +21,7 @@
         border-bottom: 2px solid var(--bs-border-color);
         background-color: rgba(0, 0, 0, 0.15); 
     }
+    
     .stat-box {
         border: 2px solid var(--bs-border-color);
         border-radius: 12px;
@@ -49,598 +50,215 @@
         font-family: monospace;
         font-weight: bold;
         line-height: 1;
+        padding-top: 1.5rem;
     }
     .stat-box-sub {
         font-size: 0.8rem;
         color: var(--vecto-surface-muted);
         margin-top: 0.5rem;
         border-top: 1px solid var(--bs-border-color);
-        padding-top: 0.25rem;
+        padding: 0.25rem 0.5rem 0.5rem 0.5rem;
     }
-    .section-title {
-        font-size: 1.2rem;
-        font-weight: bold;
-        text-transform: uppercase;
-        letter-spacing: 2px;
-        border-bottom: 2px solid var(--vecto-primary);
-        padding-bottom: 0.5rem;
-        margin-bottom: 1.5rem;
-        color: var(--vecto-primary);
-    }
-    .badge-icon {
+
+    /* Side-Folder Tab Navigation */
+    .side-tab-btn {
         width: 60px;
         height: 60px;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        font-size: 2rem;
-        border-radius: 50%;
-        background-color: rgba(0, 0, 0, 0.15);
+        border-radius: 20px 0 0 20px !important;
         border: 2px solid var(--bs-border-color);
-        margin: 0 auto 0.5rem auto;
-        opacity: 0.4;
-        filter: grayscale(100%);
-        transition: all 0.3s ease;
-    }
-    .badge-icon.unlocked {
-        opacity: 1;
-        filter: grayscale(0%);
-        border-color: var(--vecto-primary);
-        box-shadow: 0 0 15px rgba(0, 0, 0, 0.2);
-        color: var(--vecto-primary);
-    }
-    /* Skill Tree Aesthetics */
-    .skill-tree-section { margin-bottom: 3rem; }
-    .skill-tree-title {
-        font-size: 1rem;
-        font-weight: bold;
-        text-transform: uppercase;
+        border-right: none !important; /* Removes right border to merge with container */
+        background-color: rgba(0,0,0,0.2);
         color: var(--vecto-surface-muted);
-        border-bottom: 1px dashed rgba(0,0,0,0.1);
-        margin-bottom: 1rem;
-        padding-bottom: 0.5rem;
-    }
-    .skill-tree-path {
-        position: relative;
         display: flex;
-        justify-content: space-between;
-        align-items: flex-start;
-        margin-bottom: 2rem;
-    }
-    .skill-tree-line {
-        position: absolute;
-        top: 22px; /* Centers the line behind 45px badges */
-        left: 5%;
-        right: 5%;
-        height: 4px;
-        background-color: rgba(0, 0, 0, 0.1);
-        z-index: 0;
-        border-radius: 2px;
-    }
-    .skill-node {
-        position: relative;
-        z-index: 1;
-        width: 18%; /* Fits 5 nodes perfectly */
-        text-align: center;
-    }
-    .badge-icon-sm {
-        width: 45px;
-        height: 45px;
-        display: flex;
-        align-items: center;
         justify-content: center;
-        font-size: 1.3rem;
-        border-radius: 50%;
-        background-color: var(--vecto-surface-bg); /* Masks the line behind it */
-        border: 2px solid var(--bs-border-color);
-        margin: 0 auto 0.5rem auto;
-        opacity: 0.4;
-        filter: grayscale(100%);
-        transition: all 0.3s ease;
+        align-items: center;
+        padding: 0 !important;
+        transition: all 0.2s ease;
+        margin-right: -2px; /* Pulls tab right so it overlaps the container's left border */
+        cursor: pointer;
+        position: relative;
     }
-    .badge-icon-sm.unlocked {
-        opacity: 1;
-        filter: grayscale(0%);
-        border-color: var(--vecto-primary);
-        box-shadow: 0 0 10px rgba(0, 0, 0, 0.2);
-        color: var(--vecto-primary);
-        background-color: rgba(0,0,0,0.05);
+    .side-tab-btn.active {
+        background-color: var(--vecto-surface-bg) !important;
+        color: var(--vecto-primary) !important;
+        z-index: 5;
     }
+    .side-tab-btn.active::after {
+        content: '';
+        position: absolute;
+        right: -2px;
+        top: 0;
+        bottom: 0;
+        width: 4px;
+        background-color: var(--vecto-surface-bg);
+    }
+    .side-tab-btn:not(.active):hover {
+        background-color: rgba(0,0,0,0.4);
+        color: var(--bs-light);
+    }
+
+    /* Avatar Triad/Tetrad CSS */
+    .avatar-triad-wrapper {
+        position: relative; width: 80px; height: 80px;
+        display: flex; justify-content: center; align-items: center; cursor: pointer;
+        transition: width 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+        background-color: rgba(0,0,0,0.2); border-radius: 40px; border: 2px solid var(--vecto-primary);
+        overflow: hidden; flex-shrink: 0;
+    }
+    .avatar-triad-wrapper.expanded { width: 290px; justify-content: flex-start; padding-left: 10px; gap: 10px; }
+    .avatar-option-container {
+        position: relative; width: 60px; height: 60px; border-radius: 50%;
+        border: 2px solid transparent; opacity: 0; transform: scale(0.5);
+        transition: all 0.3s ease; pointer-events: none; display: none; flex-shrink: 0;
+    }
+    .avatar-triad-wrapper.expanded .avatar-option-container { opacity: 0.6; transform: scale(1); pointer-events: auto; display: block; }
+    .avatar-triad-wrapper.expanded .avatar-option-container:hover { opacity: 1; border-color: var(--bs-border-color); transform: scale(1.1); }
+    .avatar-triad-wrapper.expanded .avatar-option-container.active-option { opacity: 1; border-color: var(--vecto-primary); }
+    .avatar-triad-wrapper:not(.expanded) .active-option { opacity: 1; transform: scale(1.3); pointer-events: auto; display: block; border-color: transparent; position: absolute; }
+    .avatar-img { width: 100%; height: 100%; object-fit: cover; border-radius: 50%; }
+    .edit-tail {
+        position: absolute; bottom: 0; right: 0; width: 20px; height: 20px; border-radius: 50%; display: flex; justify-content: center; align-items: center;
+        color: white; font-size: 10px; opacity: 0; transform: scale(0); transition: all 0.2s ease;
+        border: 1px solid var(--vecto-surface-bg); background-color: var(--bs-primary); z-index: 10;
+    }
+    .avatar-triad-wrapper.expanded .avatar-option-container:hover .edit-tail { opacity: 1; transform: scale(1); }
+    
+    /* Skill Tree Aesthetics */
+    .section-title { font-size: 1.2rem; font-weight: bold; text-transform: uppercase; letter-spacing: 2px; border-bottom: 2px solid var(--vecto-primary); padding-bottom: 0.5rem; margin-bottom: 1.5rem; color: var(--vecto-primary); }
+    .skill-tree-section { margin-bottom: 3rem; }
+    .skill-tree-title { font-size: 1rem; font-weight: bold; text-transform: uppercase; color: var(--vecto-surface-muted); border-bottom: 1px dashed rgba(0,0,0,0.1); margin-bottom: 1rem; padding-bottom: 0.5rem; }
+    .skill-tree-path { position: relative; display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 2rem; }
+    .skill-tree-line { position: absolute; top: 22px; left: 5%; right: 5%; height: 4px; background-color: rgba(0, 0, 0, 0.1); z-index: 0; border-radius: 2px; }
+    .skill-node { position: relative; z-index: 1; width: 18%; text-align: center; }
+    .badge-icon-sm { width: 45px; height: 45px; display: flex; align-items: center; justify-content: center; font-size: 1.3rem; border-radius: 50%; background-color: var(--vecto-surface-bg); border: 2px solid var(--bs-border-color); margin: 0 auto 0.5rem auto; opacity: 0.4; filter: grayscale(100%); transition: all 0.3s ease; }
+    .badge-icon-sm.unlocked { opacity: 1; filter: grayscale(0%); border-color: var(--vecto-primary); box-shadow: 0 0 10px rgba(0, 0, 0, 0.2); color: var(--vecto-primary); background-color: rgba(0,0,0,0.05); }
     .badge-title { font-size: 0.75rem; font-weight: bold; line-height: 1.1; margin-bottom: 2px; }
     .badge-req { font-size: 0.65rem; color: var(--vecto-surface-muted); line-height: 1.1; }
-    .avatar-triad-wrapper {
-        position: relative;
-        display: inline-flex;
-        align-items: center;
-        gap: 0;
-        cursor: pointer;
-        transition: gap 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275);
-    }
-    .avatar-triad-wrapper.expanded {
-        gap: 15px; /* Spreads out the options */
-    }
-    .avatar-option-container {
-        position: absolute; /* Takes invisible options out of the layout flow */
-        top: 0;
-        left: 0;
-        width: 80px;
-        height: 80px;
-        transition: all 0.4s ease;
-        opacity: 0;
-        transform: scale(0.5);
-        pointer-events: none;
-        z-index: 1;
-    }
-    .avatar-option-container.active-option {
-        position: relative; /* Gives the wrapper its 80x80 layout space */
-        opacity: 1;
-        transform: scale(1);
-        pointer-events: auto;
-        z-index: 10;
-        order: -1;
-    }
-    .avatar-triad-wrapper.expanded .avatar-option-container {
-        position: relative; /* Drops them back into the flexbox line */
-        opacity: 1;
-        transform: scale(1);
-        pointer-events: auto;
-    }
-    .avatar-img {
-        width: 100%;
-        height: 100%;
-        border-radius: 50%;
-        object-fit: cover;
-        border: 3px solid transparent;
-        transition: border-color 0.2s;
-    }
-    .avatar-img:hover { border-color: rgba(255, 255, 255, 0.5); }
-    .active-option .avatar-img { border-color: var(--bs-primary); }
-    
-    /* Edit Tail for Custom */
-    .edit-tail {
-        position: absolute;
-        bottom: 0px;
-        right: -5px;
-        background: var(--bs-primary);
-        color: #000;
-        border-radius: 50%;
-        width: 28px;
-        height: 28px;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        opacity: 0;
-        transition: opacity 0.3s, transform 0.2s;
-        z-index: 20;
-    }
-    .edit-tail:hover { transform: scale(1.1); }
-    .avatar-triad-wrapper.expanded .avatar-option-container:hover .edit-tail {
-        opacity: 1;
-    }
 </style>
 
 <div class="container py-4">
-    <div class="sheet-container p-0">
+    <div class="d-flex align-items-start">
         
-        <div class="sheet-header p-4 d-flex justify-content-between align-items-center flex-wrap gap-3">
-            <div class="d-flex align-items-center gap-4">
-                {% with membership=request.user.network_memberships.first %}
-                <div class="avatar-triad-wrapper" id="avatarTriad">
-    
-                    <div class="avatar-option-container {% if profile.preferred_avatar_source == 'patreon' or not profile.preferred_avatar_source %}active-option{% endif %}" onclick="selectAvatar('patreon', event)">
-                        <img src="{{ request.user.patron_profile.profile_image_url|default:'https://ui-avatars.com/api/?name=P+A&background=random' }}" class="avatar-img" title="Use Patreon Avatar">
-                    </div>
-
-                    {% if profile.discord_image_url %}
-                    <div class="avatar-option-container {% if profile.preferred_avatar_source == 'discord' %}active-option{% endif %}" onclick="selectAvatar('discord', event)">
-                        <img src="{{ profile.discord_image_url }}" class="avatar-img" title="Use Discord Avatar">
-                    </div>
-                    {% endif %}
-                    
-                    <div class="avatar-option-container {% if profile.preferred_avatar_source == 'gravatar' %}active-option{% endif %}" onclick="selectAvatar('gravatar', event)">
-                        <img src="https://0.gravatar.com/avatar/{{ membership.email_hash }}?d=mp&s=150" class="avatar-img" title="Use Gravatar">
-                        
-                        <div id="gravatar-setup-tail" class="edit-tail" style="display: none; background-color: var(--bs-warning);" onclick="window.open('https://gravatar.com/', '_blank'); event.stopPropagation();" title="Setup your Gravatar">
-                            <i class="bi bi-box-arrow-up-right" style="font-size: 14px;"></i>
-                        </div>
-                    </div>
-                    
-                    <div class="avatar-option-container {% if profile.preferred_avatar_source == 'custom' %}active-option{% endif %}" onclick="selectAvatar('custom', event)">
-                        {% if profile.custom_image_upload %}
-                            <img src="{{ profile.custom_image_upload.url }}" class="avatar-img" title="Use Custom Avatar">
-                        {% elif profile.custom_image_url %}
-                            <img src="{{ profile.custom_image_url }}" class="avatar-img" title="Use Custom Avatar">
-                        {% else %}
-                            <img src="https://ui-avatars.com/api/?name=C+U&background=random" class="avatar-img" title="Use Custom Avatar">
-                        {% endif %}
-                        
-                        <div class="edit-tail" onclick="openUploadModal(event)" title="Upload/Link new Image">
-                            <i class="bi bi-pencil-fill" style="font-size: 14px;"></i>
-                        </div>
-                    </div>
-                </div>  
-                {% endwith %}
-                <div>
-                    <h1 class="mb-0 fw-bold">{{ request.user.first_name|default:request.user.username }}</h1>
-                    <div class="text-accent fw-bold text-uppercase" style="letter-spacing: 1px;">
-                        Level {{ level }} {{ title }}
-                    </div>
-                </div>
-            </div>
-            
-            <div class="text-end small text-surface-muted">
-                <div><strong>Current Obsession:</strong> <span style="color: var(--vecto-surface-text);">{{ live_stats.obsession_title }}</span></div>
-                <div><strong>Account Vintage:</strong> <span style="color: var(--vecto-surface-text);">{{ account_vintage|date:"F Y"|default:"Unknown Origins" }}</span></div>
-            </div>
+        <div class="nav flex-column nav-pills position-relative" id="profileTabs" role="tablist" style="width: 60px; margin-top: 130px; z-index: 2;">
+            <button class="nav-link active side-tab-btn mb-2" id="tab-profile" data-bs-toggle="pill" data-bs-target="#content-profile" type="button" role="tab" title="Character Sheet">
+                <i class="bi bi-person fs-3"></i>
+            </button>
+            <button class="nav-link side-tab-btn" id="tab-settings" data-bs-toggle="pill" data-bs-target="#content-settings" type="button" role="tab" title="Settings">
+                <i class="bi bi-gear fs-3"></i>
+            </button>
         </div>
 
-        <div class="row g-0">
-            <div class="col-md-3 p-4 border-end" style="background-color: rgba(0,0,0,0.05); border-color: var(--bs-border-color) !important;">
-                <div class="d-flex flex-column gap-4">
-                    
-                    <div class="stat-box">
-                        <div class="stat-box-label">Trust Score</div>
-                        <div class="stat-box-value {% if profile.trust_score < 50 %}text-danger{% elif profile.trust_score < 80 %}text-warning{% else %}text-success{% endif %}">
-                            {{ profile.trust_score|default_if_none:100 }}
+        <div class="sheet-container p-0 flex-grow-1 position-relative" style="z-index: 1; min-width: 0;">
+            
+            <div class="sheet-header p-4 d-flex justify-content-between align-items-center flex-wrap gap-3">
+                <div class="d-flex align-items-center gap-4">
+                    {% with membership=request.user.network_memberships.first %}
+                    <div class="avatar-triad-wrapper" id="avatarTriad" title="Click to change avatar">
+                        <div class="avatar-option-container {% if membership.preferred_avatar_source == 'patreon' or not membership.preferred_avatar_source %}active-option{% endif %}" onclick="selectAvatar('patreon', event)">
+                            <img src="{{ request.user.patron_profile.profile_image_url|default:'https://ui-avatars.com/api/?name=P+A&background=random' }}" class="avatar-img" title="Use Patreon Avatar">
                         </div>
-                        <div class="stat-box-sub pb-2 px-2">Reputation</div>
-                    </div>
 
-                    <div class="stat-box">
-                        <div class="stat-box-label">Endurance</div>
-                        <div class="stat-box-value">{{ live_stats.hours_accessed|floatformat:0 }}</div>
-                        <div class="stat-box-sub pb-2 px-2">Hours Accessed</div>
-                    </div>
-
-                    <div class="stat-box">
-                        <div class="stat-box-label">Activity</div>
-                        <div class="stat-box-value">{{ live_stats.playback_hits }}</div>
-                        <div class="stat-box-sub pb-2 px-2">Episodes Played</div>
-                    </div>
-
-                </div>
-            </div>
-
-            <div class="col-md-9 p-4">
-                
-                <div class="mb-5">
-                    <div class="d-flex justify-content-between small mb-1 fw-bold text-uppercase text-surface-muted">
-                        <span>Experience</span>
-                        {% if level < 4 %}
-                            <span>{{ total_approved }} / {{ next_level_goal }} Edits to Level {{ level|add:"1" }}</span>
-                        {% else %}
-                            <span class="text-accent">Max Level Achieved</span>
+                        {% if profile.discord_image_url %}
+                        <div class="avatar-option-container {% if membership.preferred_avatar_source == 'discord' %}active-option{% endif %}" onclick="selectAvatar('discord', event)">
+                            <img src="{{ profile.discord_image_url }}" class="avatar-img" title="Use Discord Avatar">
+                        </div>
                         {% endif %}
-                    </div>
-                    <div class="progress border" style="height: 12px; background-color: rgba(0,0,0,0.2); border-color: var(--bs-border-color) !important;">
-                        <div class="progress-bar bg-accent" role="progressbar" style="width: {{ progress_percent }}%;" aria-valuenow="{{ progress_percent }}" aria-valuemin="0" aria-valuemax="100"></div>
+                        
+                        <div class="avatar-option-container {% if membership.preferred_avatar_source == 'gravatar' %}active-option{% endif %}" onclick="selectAvatar('gravatar', event)">
+                            <img src="https://0.gravatar.com/avatar/{{ membership.email_hash }}?d=mp&s=150" class="avatar-img" title="Use Gravatar">
+                            <div id="gravatar-setup-tail" class="edit-tail" style="display: none; background-color: var(--bs-warning);" onclick="window.open('https://gravatar.com/', '_blank'); event.stopPropagation();" title="Setup your Gravatar">
+                                <i class="bi bi-box-arrow-up-right" style="font-size: 14px;"></i>
+                            </div>
+                        </div>
+                        
+                        <div class="avatar-option-container {% if membership.preferred_avatar_source == 'custom' %}active-option{% endif %}" onclick="selectAvatar('custom', event)">
+                            {% if membership.custom_image_upload %}
+                                <img src="{{ membership.custom_image_upload.url }}" class="avatar-img" title="Use Custom Avatar">
+                            {% elif membership.custom_image_url %}
+                                <img src="{{ membership.custom_image_url }}" class="avatar-img" title="Use Custom Avatar">
+                            {% else %}
+                                <img src="https://ui-avatars.com/api/?name=C+U&background=random" class="avatar-img" title="Use Custom Avatar">
+                            {% endif %}
+                            <div class="edit-tail" onclick="openUploadModal(event)" title="Upload/Link new Image">
+                                <i class="bi bi-pencil-fill" style="font-size: 14px;"></i>
+                            </div>
+                        </div>
+                    </div>  
+                    {% endwith %}
+                    <div>
+                        <h1 class="mb-0 fw-bold">{{ request.user.first_name|default:request.user.username }}</h1>
+                        <div class="text-accent fw-bold text-uppercase" style="letter-spacing: 1px;">
+                            Level {{ level }} {{ title }}
+                        </div>
                     </div>
                 </div>
+                
+                <div class="text-end small text-surface-muted">
+                    <div><strong>Current Obsession:</strong> <span style="color: var(--vecto-surface-text);">{{ live_stats.obsession_title }}</span></div>
+                    <div><strong>Account Vintage:</strong> <span style="color: var(--vecto-surface-text);">{{ account_vintage|date:"F Y"|default:"Unknown Origins" }}</span></div>
+                </div>
+            </div>
 
-                <div class="row g-5">
-                    <div class="col-md-6">
-                        <h3 class="section-title">Archival Skills</h3>
-                        
-                        <div class="d-flex justify-content-between align-items-center mb-3 pb-2 border-bottom" style="border-color: rgba(0,0,0,0.1) !important;">
-                            <span><i class="bi bi-clock-history me-2 text-surface-muted"></i> Titles Scribed</span>
-                            <span class="badge border fs-6" style="background-color: rgba(0,0,0,0.2); border-color: var(--bs-border-color) !important;">{{ profile.edits_title }}</span>
-                        </div>
+            <div class="tab-content" id="profileTabsContent">
+                
+                <div class="tab-pane fade show active" id="content-profile" role="tabpanel">
+                    <div class="row g-0">
+                        <div class="col-md-3 p-4 border-end" style="background-color: rgba(0,0,0,0.05); border-color: var(--bs-border-color) !important;">
+                            <div class="d-flex flex-column gap-5 mt-3">
+                                <div class="stat-box">
+                                    <div class="stat-box-label">Trust Score</div>
+                                    <div class="stat-box-value {% if profile.trust_score < 50 %}text-danger{% elif profile.trust_score < 80 %}text-warning{% else %}text-success{% endif %}">
+                                        {{ profile.trust_score|default_if_none:100 }}
+                                    </div>
+                                    <div class="stat-box-sub">Reputation</div>
+                                </div>
 
-                        <div class="d-flex justify-content-between align-items-center mb-3 pb-2 border-bottom" style="border-color: rgba(0,0,0,0.1) !important;">
-                            <span><i class="bi bi-clock-history me-2 text-surface-muted"></i> Chapters Mapped</span>
-                            <span class="badge border fs-6" style="background-color: rgba(0,0,0,0.2); border-color: var(--bs-border-color) !important;">{{ profile.edits_chapters }}</span>
-                        </div>
-                        
-                        <div class="d-flex justify-content-between align-items-center mb-3 pb-2 border-bottom" style="border-color: rgba(0,0,0,0.1) !important;">
-                            <span><i class="bi bi-tags me-2 text-surface-muted"></i> Tags Applied</span>
-                            <span class="badge border fs-6" style="background-color: rgba(0,0,0,0.2); border-color: var(--bs-border-color) !important;">{{ profile.edits_tags }}</span>
-                        </div>
-                        
-                        <div class="d-flex justify-content-between align-items-center mb-3 pb-2 border-bottom" style="border-color: rgba(0,0,0,0.1) !important;">
-                            <span><i class="bi bi-card-text me-2 text-surface-muted"></i> Descriptions Scribed</span>
-                            <span class="badge border fs-6" style="background-color: rgba(0,0,0,0.2); border-color: var(--bs-border-color) !important;">{{ profile.edits_descriptions }}</span>
-                        </div>
+                                <div class="stat-box">
+                                    <div class="stat-box-label">Endurance</div>
+                                    <div class="stat-box-value">{{ live_stats.hours_accessed|floatformat:0 }}</div>
+                                    <div class="stat-box-sub">Hours Accessed</div>
+                                </div>
 
-                        <div class="d-flex justify-content-between align-items-center mb-3 pb-2 border-bottom" style="border-color: rgba(0,0,0,0.1) !important;">
-                            <span><i class="bi bi-lightning-charge me-2 text-surface-muted"></i> First Responder</span>
-                            <span class="badge border fs-6" style="background-color: rgba(0,0,0,0.2); border-color: var(--bs-border-color) !important;">{{ profile.first_responder_count }}</span>
-                        </div>
-                    </div>
-
-                    <div class="col-md-6">
-                        <h3 class="section-title">Features & Traits</h3>
-                        
-                        <div class="card border mb-3" style="background-color: rgba(0,0,0,0.15); border-color: var(--bs-border-color) !important;">
-                            <div class="card-body py-2 px-3 d-flex align-items-center">
-                                <i class="bi bi-fire text-danger fs-3 me-3"></i>
-                                <div>
-                                    <div class="fw-bold">Daily Ritual</div>
-                                    <div class="small text-surface-muted">Current active daily listening streak: <span class="text-accent fw-bold">{{ live_stats.streak_days }} Days</span></div>
+                                <div class="stat-box">
+                                    <div class="stat-box-label">Activity</div>
+                                    <div class="stat-box-value">{{ live_stats.playback_hits }}</div>
+                                    <div class="stat-box-sub">Episodes Played</div>
                                 </div>
                             </div>
                         </div>
 
-                        <div class="card border mb-3" style="background-color: rgba(0,0,0,0.15); border-color: var(--bs-border-color) !important;">
-                            <div class="card-body py-2 px-3 d-flex align-items-center">
-                                <i class="bi bi-calendar2-week text-info fs-3 me-3"></i>
-                                <div>
-                                    <div class="fw-bold">Weekly Devotion</div>
-                                    <div class="small text-surface-muted">Current active weekly listening streak: <span class="text-accent fw-bold">{{ live_stats.streak_weeks }} Weeks</span></div>
-                                </div>
-                            </div>
+                        <div class="col-md-9 p-4 p-md-5">
+                            {% include 'pod_manager/profile_tabs/profile_content.html' %}
                         </div>
                     </div>
                 </div>
 
-                <div class="mt-5">
-                    <h3 class="section-title">The Archivist's Guild (Contribution Trees)</h3>
-                    
-                    <div class="skill-tree-section">
-                        <div class="skill-tree-title">Overall Approval Path</div>
-                        <div class="skill-tree-path">
-                            <div class="skill-tree-line"></div>
-                            <div class="skill-node">
-                                <div class="badge-icon-sm {% if total_approved >= 1 %}unlocked{% endif %}"><i class="bi bi-shield"></i></div>
-                                <div class="badge-title">Initiate</div><div class="badge-req">1 Edit</div>
-                            </div>
-                            <div class="skill-node">
-                                <div class="badge-icon-sm {% if total_approved >= 25 %}unlocked{% endif %}"><i class="bi bi-compass"></i></div>
-                                <div class="badge-title">Scout</div><div class="badge-req">25 Edits</div>
-                            </div>
-                            <div class="skill-node">
-                                <div class="badge-icon-sm {% if total_approved >= 100 %}unlocked{% endif %}"><i class="bi bi-journal-bookmark-fill"></i></div>
-                                <div class="badge-title">Archivist</div><div class="badge-req">100 Edits</div>
-                            </div>
-                            <div class="skill-node">
-                                <div class="badge-icon-sm {% if total_approved >= 500 %}unlocked{% endif %}"><i class="bi bi-gem"></i></div>
-                                <div class="badge-title">Grand Archivist</div><div class="badge-req">500 Edits</div>
-                            </div>
-                            <div class="skill-node">
-                                <div class="badge-icon-sm {% if total_approved >= 1000 %}unlocked{% endif %}"><i class="bi bi-bank"></i></div>
-                                <div class="badge-title">Keeper of the Tome</div><div class="badge-req">1,000 Edits</div>
-                            </div>
-                        </div>
+                <div class="tab-pane fade" id="content-settings" role="tabpanel">
+                    <div class="p-4 p-md-5">
+                        {% include 'pod_manager/profile_tabs/settings_content.html' %}
                     </div>
-
-                    <div class="skill-tree-section">
-                        <div class="skill-tree-title">Cartography Path</div>
-                        <div class="skill-tree-path">
-                            <div class="skill-tree-line"></div>
-                            <div class="skill-node">
-                                <div class="badge-icon-sm {% if profile.edits_chapters >= 1 %}unlocked{% endif %}"><i class="bi bi-signpost"></i></div>
-                                <div class="badge-title">Wayfinder</div><div class="badge-req">1 Chapter</div>
-                            </div>
-                            <div class="skill-node">
-                                <div class="badge-icon-sm {% if profile.edits_chapters >= 10 %}unlocked{% endif %}"><i class="bi bi-signpost-split"></i></div>
-                                <div class="badge-title">Navigator</div><div class="badge-req">10 Chapters</div>
-                            </div>
-                            <div class="skill-node">
-                                <div class="badge-icon-sm {% if profile.edits_chapters >= 50 %}unlocked{% endif %}"><i class="bi bi-map"></i></div>
-                                <div class="badge-title">Cartographer</div><div class="badge-req">50 Chapters</div>
-                            </div>
-                            <div class="skill-node">
-                                <div class="badge-icon-sm {% if profile.edits_chapters >= 100 %}unlocked{% endif %}"><i class="bi bi-map-fill"></i></div>
-                                <div class="badge-title">Pathfinder</div><div class="badge-req">100 Chapters</div>
-                            </div>
-                            <div class="skill-node">
-                                <div class="badge-icon-sm {% if profile.edits_chapters >= 500 %}unlocked{% endif %}"><i class="bi bi-globe-americas"></i></div>
-                                <div class="badge-title">World Walker</div><div class="badge-req">500 Chapters</div>
-                            </div>
-                        </div>
-                    </div>
-
-                    <div class="skill-tree-section">
-                        <div class="skill-tree-title">Lexicography Path</div>
-                        <div class="skill-tree-path">
-                            <div class="skill-tree-line"></div>
-                            <div class="skill-node">
-                                <div class="badge-icon-sm {% if profile.edits_tags >= 1 %}unlocked{% endif %}"><i class="bi bi-tag"></i></div>
-                                <div class="badge-title">Sorter</div><div class="badge-req">1 Tag</div>
-                            </div>
-                            <div class="skill-node">
-                                <div class="badge-icon-sm {% if profile.edits_tags >= 10 %}unlocked{% endif %}"><i class="bi bi-tags"></i></div>
-                                <div class="badge-title">Indexer</div><div class="badge-req">10 Tags</div>
-                            </div>
-                            <div class="skill-node">
-                                <div class="badge-icon-sm {% if profile.edits_tags >= 50 %}unlocked{% endif %}"><i class="bi bi-tags-fill"></i></div>
-                                <div class="badge-title">Lexicographer</div><div class="badge-req">50 Tags</div>
-                            </div>
-                            <div class="skill-node">
-                                <div class="badge-icon-sm {% if profile.edits_tags >= 100 %}unlocked{% endif %}"><i class="bi bi-collection-fill"></i></div>
-                                <div class="badge-title">Cataloger</div><div class="badge-req">100 Tags</div>
-                            </div>
-                            <div class="skill-node">
-                                <div class="badge-icon-sm {% if profile.edits_tags >= 500 %}unlocked{% endif %}"><i class="bi bi-archive-fill"></i></div>
-                                <div class="badge-title">The Great Index</div><div class="badge-req">500 Tags</div>
-                            </div>
-                        </div>
-                    </div>
-
-                    <div class="skill-tree-section">
-                        <div class="skill-tree-title">Scribe Path</div>
-                        <div class="skill-tree-path">
-                            <div class="skill-tree-line"></div>
-                            <div class="skill-node">
-                                <div class="badge-icon-sm {% if profile.edits_descriptions >= 1 %}unlocked{% endif %}"><i class="bi bi-pencil"></i></div>
-                                <div class="badge-title">Note-Taker</div><div class="badge-req">1 Desc</div>
-                            </div>
-                            <div class="skill-node">
-                                <div class="badge-icon-sm {% if profile.edits_descriptions >= 10 %}unlocked{% endif %}"><i class="bi bi-pencil-fill"></i></div>
-                                <div class="badge-title">Chronicler</div><div class="badge-req">10 Descs</div>
-                            </div>
-                            <div class="skill-node">
-                                <div class="badge-icon-sm {% if profile.edits_descriptions >= 50 %}unlocked{% endif %}"><i class="bi bi-pen-fill"></i></div>
-                                <div class="badge-title">Scribe</div><div class="badge-req">50 Descs</div>
-                            </div>
-                            <div class="skill-node">
-                                <div class="badge-icon-sm {% if profile.edits_descriptions >= 100 %}unlocked{% endif %}"><i class="bi bi-book"></i></div>
-                                <div class="badge-title">Loremaster</div><div class="badge-req">100 Descs</div>
-                            </div>
-                            <div class="skill-node">
-                                <div class="badge-icon-sm {% if profile.edits_descriptions >= 500 %}unlocked{% endif %}"><i class="bi bi-book-fill"></i></div>
-                                <div class="badge-title">Historian</div><div class="badge-req">500 Descs</div>
-                            </div>
-                        </div>
-                    </div>
-
-                    <div class="skill-tree-section">
-                        <div class="skill-tree-title">Specialist Path</div>
-                        <div class="skill-tree-path">
-                            <div class="skill-tree-line" style="left: 9%; width: 61.5%;"></div>
-                            
-                            <div class="skill-node">
-                                <div class="badge-icon-sm {% if profile.first_responder_count >= 1 %}unlocked{% endif %}"><i class="bi bi-eye"></i></div>
-                                <div class="badge-title">Watcher</div><div class="badge-req">1 First Edit</div>
-                            </div>
-                            <div class="skill-node">
-                                <div class="badge-icon-sm {% if profile.first_responder_count >= 5 %}unlocked{% endif %}"><i class="bi bi-eye-fill"></i></div>
-                                <div class="badge-title">Sentinel</div><div class="badge-req">5 First Edits</div>
-                            </div>
-                            <div class="skill-node">
-                                <div class="badge-icon-sm {% if profile.first_responder_count >= 10 %}unlocked{% endif %}"><i class="bi bi-lightning-charge"></i></div>
-                                <div class="badge-title">Vanguard</div><div class="badge-req">10 First Edits</div>
-                            </div>
-                            <div class="skill-node">
-                                <div class="badge-icon-sm {% if profile.first_responder_count >= 25 %}unlocked{% endif %}"><i class="bi bi-lightning-charge-fill"></i></div>
-                                <div class="badge-title">First Shield</div><div class="badge-req">25 First Edits</div>
-                            </div>
-                            <div class="skill-node">
-                                <div class="badge-icon-sm {% if total_approved >= 50 and profile.trust_score == 100 %}unlocked{% endif %} text-warning border-warning"><i class="bi bi-star-fill"></i></div>
-                                <div class="badge-title">Perfectionist</div><div class="badge-req">50 Edits & 100 Trust</div>
-                            </div>
-                        </div>
-                    </div>
-
-                    <h3 class="section-title mt-5">The Listener's Journey (Activity Trees)</h3>
-
-                    <div class="skill-tree-section">
-                        <div class="skill-tree-title">Endurance Path</div>
-                        <div class="skill-tree-path">
-                            <div class="skill-tree-line"></div>
-                            <div class="skill-node">
-                                <div class="badge-icon-sm {% if live_stats.hours_accessed >= 10 %}unlocked{% endif %}"><i class="bi bi-earbuds"></i></div>
-                                <div class="badge-title">Listener</div><div class="badge-req">10 Hours</div>
-                            </div>
-                            <div class="skill-node">
-                                <div class="badge-icon-sm {% if live_stats.hours_accessed >= 24 %}unlocked{% endif %}"><i class="bi bi-car-front-fill"></i></div>
-                                <div class="badge-title">Commuter</div><div class="badge-req">24 Hours</div>
-                            </div>
-                            <div class="skill-node">
-                                <div class="badge-icon-sm {% if live_stats.hours_accessed >= 100 %}unlocked{% endif %}"><i class="bi bi-bus-front-fill"></i></div>
-                                <div class="badge-title">Road Tripper</div><div class="badge-req">100 Hours</div>
-                            </div>
-                            <div class="skill-node">
-                                <div class="badge-icon-sm {% if live_stats.hours_accessed >= 500 %}unlocked{% endif %}"><i class="bi bi-airplane-fill"></i></div>
-                                <div class="badge-title">Voyager</div><div class="badge-req">500 Hours</div>
-                            </div>
-                            <div class="skill-node">
-                                <div class="badge-icon-sm {% if live_stats.hours_accessed >= 1000 %}unlocked{% endif %}"><i class="bi bi-hourglass-bottom"></i></div>
-                                <div class="badge-title">Time Lord</div><div class="badge-req">1,000 Hours</div>
-                            </div>
-                        </div>
-                    </div>
-
-                    <div class="skill-tree-section">
-                        <div class="skill-tree-title">Activity Path</div>
-                        <div class="skill-tree-path">
-                            <div class="skill-tree-line"></div>
-                            <div class="skill-node">
-                                <div class="badge-icon-sm {% if live_stats.playback_hits >= 10 %}unlocked{% endif %}"><i class="bi bi-play"></i></div>
-                                <div class="badge-title">Tuned In</div><div class="badge-req">10 Plays</div>
-                            </div>
-                            <div class="skill-node">
-                                <div class="badge-icon-sm {% if live_stats.playback_hits >= 50 %}unlocked{% endif %}"><i class="bi bi-play-fill"></i></div>
-                                <div class="badge-title">Regular</div><div class="badge-req">50 Plays</div>
-                            </div>
-                            <div class="skill-node">
-                                <div class="badge-icon-sm {% if live_stats.playback_hits >= 100 %}unlocked{% endif %}"><i class="bi bi-play-circle-fill"></i></div>
-                                <div class="badge-title">Frequent Flyer</div><div class="badge-req">100 Plays</div>
-                            </div>
-                            <div class="skill-node">
-                                <div class="badge-icon-sm {% if live_stats.playback_hits >= 500 %}unlocked{% endif %}"><i class="bi bi-speaker-fill"></i></div>
-                                <div class="badge-title">Superfan</div><div class="badge-req">500 Plays</div>
-                            </div>
-                            <div class="skill-node">
-                                <div class="badge-icon-sm {% if live_stats.playback_hits >= 2000 %}unlocked{% endif %}"><i class="bi bi-broadcast"></i></div>
-                                <div class="badge-title">The Oracle</div><div class="badge-req">2,000 Plays</div>
-                            </div>
-                        </div>
-                    </div>
-
-                    <div class="skill-tree-section">
-                        <div class="skill-tree-title">Devotion Path</div>
-                        <div class="skill-tree-path">
-                            <div class="skill-tree-line" style="left: 9%; width: 41%;"></div>
-                            <div class="skill-tree-line" style="left: 70.5%; width: 20.5%;"></div>
-                            
-                            <div class="skill-node">
-                                <div class="badge-icon-sm {% if live_stats.streak_days >= 3 %}unlocked{% endif %}"><i class="bi bi-stars"></i></div>
-                                <div class="badge-title">Spark</div><div class="badge-req">3-Day Streak</div>
-                            </div>
-                            <div class="skill-node">
-                                <div class="badge-icon-sm {% if live_stats.streak_days >= 7 %}unlocked{% endif %}"><i class="bi bi-fire"></i></div>
-                                <div class="badge-title">Flame</div><div class="badge-req">7-Day Streak</div>
-                            </div>
-                            <div class="skill-node">
-                                <div class="badge-icon-sm {% if live_stats.streak_days >= 30 %}unlocked{% endif %}"><i class="bi bi-brightness-high-fill"></i></div>
-                                <div class="badge-title">Inferno</div><div class="badge-req">30-Day Streak</div>
-                            </div>
-                            <div class="skill-node">
-                                <div class="badge-icon-sm {% if live_stats.streak_weeks >= 4 %}unlocked{% endif %}"><i class="bi bi-calendar2-check"></i></div>
-                                <div class="badge-title">Routine</div><div class="badge-req">4-Week Streak</div>
-                            </div>
-                            <div class="skill-node">
-                                <div class="badge-icon-sm {% if live_stats.streak_weeks >= 52 %}unlocked{% endif %}"><i class="bi bi-infinity"></i></div>
-                                <div class="badge-title">Unbroken</div><div class="badge-req">52-Week Streak</div>
-                            </div>
-                        </div>
-                    </div>
-
-                    <div class="skill-tree-section">
-                        <div class="skill-tree-title">Vanguard Path</div>
-                        <div class="skill-tree-path">
-                            <div class="skill-tree-line" style="left: 29.5%; width: 61.5%;"></div>
-                            
-                            <div class="skill-node">
-                                <div class="badge-icon-sm {% if account_age_years != None and account_age_years >= 5 %}unlocked{% endif %}"><i class="bi bi-tree-fill"></i></div>
-                                <div class="badge-title">The Elder</div><div class="badge-req">5+ Years Old</div>
-                            </div>
-                            <div class="skill-node">
-                                <div class="badge-icon-sm {% if joined_after_launch_days != None and joined_after_launch_days <= 365 %}unlocked{% endif %}"><i class="bi bi-award-fill"></i></div>
-                                <div class="badge-title">Year One</div><div class="badge-req">First Year</div>
-                            </div>
-                            <div class="skill-node">
-                                <div class="badge-icon-sm {% if joined_after_launch_days != None and joined_after_launch_days <= 180 %}unlocked{% endif %}"><i class="bi bi-flag-fill"></i></div>
-                                <div class="badge-title">Pioneer</div><div class="badge-req">First 6 Months</div>
-                            </div>
-                            <div class="skill-node">
-                                <div class="badge-icon-sm {% if joined_after_launch_days != None and joined_after_launch_days <= 30 %}unlocked{% endif %}"><i class="bi bi-rocket-fill"></i></div>
-                                <div class="badge-title">Early Adopter</div><div class="badge-req">First Month</div>
-                            </div>
-                            <div class="skill-node">
-                                <div class="badge-icon-sm {% if joined_after_launch_days != None and joined_after_launch_days <= 7 %}unlocked{% endif %}"><i class="bi bi-1-circle-fill"></i></div>
-                                <div class="badge-title">Day One</div><div class="badge-req">First Week</div>
-                            </div>
-                        </div>
-                    </div>
+                </div>
 
             </div>
+
         </div>
     </div>
 </div>
+
 <div class="modal fade" id="customAvatarModal" tabindex="-1">
-  <div class="modal-dialog">
-    <div class="modal-content text-bg-dark">
+  <div class="modal-dialog modal-dialog-centered">
+    <div class="modal-content text-bg-dark border-secondary">
       <div class="modal-header border-secondary">
         <h5 class="modal-title">Custom Avatar</h5>
         <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
       </div>
-      <form action="{% url 'upload_custom_avatar' %}" method="POST" enctype="multipart/form-data">
+      <form action="{% url 'update_avatar_preference' %}" method="POST" enctype="multipart/form-data">
         {% csrf_token %}
+        <input type="hidden" name="source" value="custom">
         <div class="modal-body">
             <div class="mb-3">
                 <label class="form-label">Upload Image</label>
-                <input class="form-control text-bg-dark border-secondary" type="file" name="custom_image_upload" accept="image/*">
+                <input class="form-control text-bg-dark border-secondary" type="file" name="custom_image" accept="image/*">
                 <small class="text-muted">Image will be automatically cropped and centered to a square.</small>
             </div>
             <hr class="border-secondary">
@@ -650,8 +268,8 @@
             </div>
         </div>
         <div class="modal-footer border-secondary">
-            <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
-            <button type="submit" class="btn btn-primary text-dark fw-bold">Save Custom Image</button>
+            <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
+            <button type="submit" class="btn btn-primary fw-bold">Save Custom Image</button>
         </div>
       </form>
     </div>
@@ -661,26 +279,18 @@
 <script>
     const triadWrapper = document.getElementById('avatarTriad');
 
-    // Toggle expansion
     triadWrapper.addEventListener('click', function() {
         this.classList.toggle('expanded');
     });
 
     function selectAvatar(source, event) {
-        // If not expanded, just let the wrapper expand, don't trigger selection
         if (!triadWrapper.classList.contains('expanded')) return;
-        
-        // Prevent wrapper click from immediately closing it before selection registers
         event.stopPropagation(); 
 
-        // Visual update
         document.querySelectorAll('.avatar-option-container').forEach(el => el.classList.remove('active-option'));
         event.currentTarget.classList.add('active-option');
-        
-        // Close triad
         triadWrapper.classList.remove('expanded');
 
-        // AJAX update
         const formData = new FormData();
         formData.append('source', source);
         formData.append('csrfmiddlewaretoken', '{{ csrf_token }}');
@@ -693,18 +303,15 @@
     }
 
     function openUploadModal(event) {
-        event.stopPropagation(); // Don't trigger avatar selection or triad folding
+        event.stopPropagation(); 
         new bootstrap.Modal(document.getElementById('customAvatarModal')).show();
     }
 
-    // Smart Generic Detection Script (V3 API)
+    // Ping Gravatar for fallback UI
     document.addEventListener("DOMContentLoaded", function() {
-        // Ping 0.gravatar.com with the new SHA256 hash
         let checkImg = new Image();
         checkImg.src = "https://0.gravatar.com/avatar/{{ membership.email_hash }}?d=404&s=150";
-        
         checkImg.onerror = function() {
-            // The image errored, meaning it's generic. Restore CSS flex layout for the edit tail.
             let tail = document.getElementById('gravatar-setup-tail');
             if (tail) tail.style.display = ''; 
         };

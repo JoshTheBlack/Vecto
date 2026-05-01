@@ -26,3 +26,5 @@ pdfkit
 lxml
 whitenoise
 recurly
+django-otp==1.2.3
+qrcode==7.4.2

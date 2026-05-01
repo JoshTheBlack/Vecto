@@ -44,6 +44,9 @@ IS_IDE = (RAW_DEBUG == 'IDE')
 # Django's internal DEBUG needs to be a boolean, so it's True if 'True' OR 'IDE'
 DEBUG = (RAW_DEBUG in ['True', 'IDE'])
 
+# TOTP Issuer
+OTP_TOTP_ISSUER = 'Vecto'
+
 # ==========================================
 # ALLOWED HOSTS (Dynamic Multi-Tenant)
 # ==========================================
@@ -111,6 +114,8 @@ INSTALLED_APPS = [
     'django.contrib.sessions',
     'django.contrib.messages',
     'django.contrib.staticfiles',
+    'django_otp',
+    'django_otp.plugins.otp_totp',
     "anymail",
     'pod_manager',
 ]
@@ -132,6 +137,7 @@ MIDDLEWARE = [
     'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
     'django.contrib.auth.middleware.AuthenticationMiddleware',
+    'django_otp.middleware.OTPMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
     'pod_manager.middleware.ImpersonationMiddleware',

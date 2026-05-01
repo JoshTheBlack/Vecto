@@ -86,15 +86,16 @@ def _evaluate_access(user, podcast, network=None):
     patreon_access = membership.is_active_patron and (membership.patreon_pledge_cents >= req_cents)
     
     # --- 3. THE RECURLY CHECK ---
+    # Plans are global to the Recurly account, so they live on PatronProfile.
     recurly_access = False
-    
+
     if podcast.required_tier:
-        allowed_plans = podcast.required_tier.recurly_plan_codes # This natively returns a Python list now!
-        
-        # If the tier has allowed plans, and the user has active plans...
-        if allowed_plans and membership.active_recurly_plans:
-            # Check for any intersection
-            if any(plan in allowed_plans for plan in membership.active_recurly_plans):
+        allowed_plans = podcast.required_tier.recurly_plan_codes
+        profile = getattr(user, 'patron_profile', None)
+        user_plans = profile.active_recurly_plans if profile else []
+
+        if allowed_plans and user_plans:
+            if any(plan in allowed_plans for plan in user_plans):
                 recurly_access = True
 
     # 4. The Final Verdict
@@ -2137,8 +2138,15 @@ def recurly_login(request):
                 account_id = next((acc.id for acc in accounts.items()), None)
 
                 if account_id:
-                    user = User.objects.filter(email=email).first()
+                    # Match by username, which the OTP-success and Patreon
+                    # paths both set to the lowercased email. Filtering by
+                    # `email=` would be ambiguous when two User rows share an
+                    # email (e.g. an admin-created superuser plus the OAuth
+                    # row), and `.first()` would non-deterministically pick
+                    # whichever has the lower PK.
+                    user = User.objects.filter(username__iexact=email).first()
                     has_totp = user and user.totpdevice_set.filter(confirmed=True).exists()
+                    logger.info(f"[Recurly Auth] User found: {bool(user)} | has_totp: {has_totp}")
 
                     # Reset any stale failure counters so a fresh challenge starts at 0.
                     cache.delete(f"recurly_otp_attempts:{email}")
@@ -2230,11 +2238,12 @@ def recurly_login(request):
                     for sub in subs.items():
                         if sub.state in ['active', 'in_trial', 'past_due']:
                             active_plans.append(sub.plan.code)
-                            
-                    for network in Network.objects.all():
-                        membership, _ = NetworkMembership.objects.get_or_create(user=user, network=network)
-                        membership.active_recurly_plans = active_plans
-                        membership.save()
+
+                    # Plans are global to the Recurly account — store on the
+                    # profile, not on every NetworkMembership. _evaluate_access
+                    # reads from the profile.
+                    profile.active_recurly_plans = active_plans
+                    profile.save(update_fields=['active_recurly_plans'])
                 except Exception as e:
                     logger.error(f"[Recurly Auth] Failed to fetch subscriptions for {pending_totp}: {e}")
                     messages.warning(request, "Logged in, but could not sync latest subscription data.")
@@ -2285,11 +2294,9 @@ def recurly_login(request):
                     for sub in subs.items():
                         if sub.state in ['active', 'in_trial', 'past_due']:
                             active_plans.append(sub.plan.code)
-                            
-                    for network in Network.objects.all():
-                        membership, _ = NetworkMembership.objects.get_or_create(user=user, network=network)
-                        membership.active_recurly_plans = active_plans
-                        membership.save()
+
+                    profile.active_recurly_plans = active_plans
+                    profile.save(update_fields=['active_recurly_plans'])
                 except Exception as e:
                     logger.error(f"[Recurly Auth] Failed to fetch subscriptions for {pending_email}: {e}")
                     messages.warning(request, "Logged in, but could not sync latest subscription data.")

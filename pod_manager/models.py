@@ -340,6 +340,11 @@ class PatronProfile(models.Model):
     profile_image_url = models.URLField(max_length=500, null=True, blank=True)
     discord_id = models.CharField(max_length=100, null=True, blank=True)
 
+    # Recurly plan codes are an intrinsic property of the Recurly account
+    # (one account → one plan set), so they live on the global profile rather
+    # than per-network. _evaluate_access reads from here.
+    active_recurly_plans = models.JSONField(default=list, blank=True)
+
     last_sync = models.DateTimeField(auto_now=True)
     feed_token = models.UUIDField(default=uuid.uuid4, editable=False, unique=True)
     
@@ -355,9 +360,6 @@ class NetworkMembership(models.Model):
     patreon_pledge_cents = models.IntegerField(default=0)
     is_active_patron = models.BooleanField(default=False)
     
-    #Recurly Fields
-    active_recurly_plans = models.JSONField(default=list, blank=True)
-
     # Billing Presence Tracker ---
     last_active_date = models.DateField(null=True, blank=True, db_index=True, help_text="The last date this user interacted with this network's web or RSS properties.")
 

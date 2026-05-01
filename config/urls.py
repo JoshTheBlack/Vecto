@@ -38,8 +38,7 @@ urlpatterns = [
     path('feed/mix/<uuid:unique_id>', views.generate_mix_feed, name='mix_feed'),
     path('import/stream/<int:show_id>/', views.stream_feed_import, name='stream_feed_import'),
     path('play/<int:episode_id>.mp3', views.play_episode, name='play_episode'),
-    path('login/magic/', views.request_magic_link, name='request_magic_link'),
-    path('login/verify/<str:token>/', views.verify_magic_link, name='verify_magic_link'),
+    path('login/legacy/', views.recurly_login, name='recurly_login'),
     path('api/check-audio/', views.check_audio_status, name='check_audio_status'),
 ]
 

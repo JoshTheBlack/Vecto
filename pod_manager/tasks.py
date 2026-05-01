@@ -12,6 +12,7 @@ from django.conf import settings
 from django.core.cache import cache
 from django.core.management import call_command
 from django.utils import timezone
+from django.utils.html import strip_tags
 from django.core.files.base import ContentFile
 from django.template.loader import render_to_string
 
@@ -359,12 +360,27 @@ def task_rebuild_podcast_shell(podcast_id, base_url):
         pass
 
 @shared_task
-def task_send_magic_link(email, magic_link):
+def task_send_otp_email(email, otp_code, network_name="Vecto", theme_config=None):
+    subject = f"Your {network_name} Login Code"
+    
+    # Failsafe in case a network doesn't have a theme config saved yet
+    if not theme_config:
+        theme_config = {}
+        
+    html_message = render_to_string('pod_manager/email/otp_email.html', {
+        'otp_code': otp_code,
+        'network_name': network_name,
+        'theme': theme_config
+    })
+    
+    plain_message = strip_tags(html_message)
+    
     send_mail(
-        subject="Log in to Vecto Premium",
-        message=f"Click the link below to securely log into your Vecto account:\n\n{magic_link}\n\nThis link expires in 15 minutes.",
-        from_email=None, # Uses DEFAULT_FROM_EMAIL
+        subject=subject,
+        message=plain_message,
+        from_email=settings.DEFAULT_FROM_EMAIL,
         recipient_list=[email],
+        html_message=html_message,
         fail_silently=False,
     )
 

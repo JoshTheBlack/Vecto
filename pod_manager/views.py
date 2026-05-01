@@ -14,6 +14,7 @@ import urllib.parse
 import re
 import html
 import recurly
+import random
 from email.utils import format_datetime
 
 import requests
@@ -42,7 +43,7 @@ from podgen import Podcast as PodgenPodcast, Episode as PodgenEpisode, Media, Pe
 from lxml import etree
 
 from .models import PatronProfile, NetworkMembership, Podcast, Episode, Network, PatreonTier, UserMix, NetworkMix, EpisodeEditSuggestion
-from .tasks import task_ingest_feed, task_rebuild_episode_fragments, task_rebuild_podcast_fragments, task_send_magic_link
+from .tasks import task_ingest_feed, task_rebuild_episode_fragments, task_rebuild_podcast_fragments, task_send_otp_email
 
 warnings.filterwarnings("ignore", message=".*Image URL must end with.*")
 warnings.filterwarnings("ignore", message=".*Size is set to 0.*")
@@ -79,15 +80,15 @@ def _evaluate_access(user, podcast, network=None):
     
     # --- 3. THE RECURLY CHECK ---
     recurly_access = False
-    required_plan_string = podcast.required_tier.recurly_plan_code
     
-    if required_plan_string and membership.active_recurly_plans:
-        # 1. Split the comma-separated string from the database into a list
-        allowed_plans = [p.strip() for p in required_plan_string.split(',')]
+    if podcast.required_tier:
+        allowed_plans = podcast.required_tier.recurly_plan_codes # This natively returns a Python list now!
         
-        # 2. Check if ANY of the user's active plans match the allowed list
-        if any(plan in allowed_plans for plan in membership.active_recurly_plans):
-            recurly_access = True
+        # If the tier has allowed plans, and the user has active plans...
+        if allowed_plans and membership.active_recurly_plans:
+            # Check for any intersection
+            if any(plan in allowed_plans for plan in membership.active_recurly_plans):
+                recurly_access = True
 
     # 4. The Final Verdict
     has_access = patreon_access or recurly_access
@@ -1851,97 +1852,111 @@ def logout_view(request):
     logout(request)
     return redirect('home')
 
-def request_magic_link(request):
+def recurly_login(request):
+    # Allow the user to "Start Over" if they made a typo in their email
+    if request.GET.get('reset'):
+        request.session.pop('pending_otp_email', None)
+        return redirect('recurly_login')
+
+    pending_email = request.session.get('pending_otp_email')
+
     if request.method == 'POST':
-        email = request.POST.get('email', '').strip()
-        client = recurly.Client(settings.RECURLY_API_KEY)
-        
-        try:
-            logger.info(f"[Recurly Auth] Lookup initiated for email: {email}")
+        # ==========================================
+        # STEP 1: USER SUBMITS EMAIL
+        # ==========================================
+        if not pending_email:
+            email = request.POST.get('email', '').strip().lower()
+            client = recurly.Client(settings.RECURLY_API_KEY)
             
-            # FIX 1: Pass the email inside the params dictionary
-            accounts = client.list_accounts(params={'email': email})
-            account_id = None
-            
-            # Safely grab the first account ID that matches the email
-            for acc in accounts.items():
-                account_id = acc.id
-                break
+            try:
+                logger.info(f"[Recurly Auth] Lookup initiated for email: {email}")
+                accounts = client.list_accounts(params={'email': email})
                 
-            if account_id:
-                signer = TimestampSigner()
-                payload = f"{email}|{account_id}" 
-                token = signer.sign(payload)
+                # Safely grab the first account ID
+                account_id = next((acc.id for acc in accounts.items()), None)
+                    
+                if account_id:
+                    # Generate a 6-digit OTP
+                    otp = str(random.randint(100000, 999999))
+                    
+                    # Store OTP & Account ID in cache for 10 minutes
+                    cache.set(f"recurly_otp_{email}", f"{otp}|{account_id}", timeout=600)
+                    
+                    # Dispatch Celery task to email the code
+                    from pod_manager.tasks import task_send_otp_email
+                    task_send_otp_email.delay(email, otp, request.network.name, request.network.theme_config)
+                    
+                    # Lock the session to the OTP verification step
+                    request.session['pending_otp_email'] = email
+                    logger.info(f"[Recurly Auth] OTP sent for {email}")
+                    messages.success(request, "A 6-digit code has been sent to your email.")
+                else:
+                    logger.warning(f"[Recurly Auth] Login failed: No Recurly account found for {email}")
+                    messages.error(request, "No active subscription found for that email address.")
+                    
+            except Exception as e:
+                logger.error(f"[Recurly Auth] Error during lookup for {email}: {e}")
+                messages.error(request, "System error verifying account.")
                 
-                base_url = request.build_absolute_uri('/')[:-1]
-                magic_link = f"{base_url}{reverse('verify_magic_link', args=[token])}"
+            return redirect('recurly_login')
+
+        # ==========================================
+        # STEP 2: USER SUBMITS OTP CODE
+        # ==========================================
+        else:
+            user_otp = request.POST.get('otp', '').strip()
+            cached_data = cache.get(f"recurly_otp_{pending_email}")
+
+            if not cached_data:
+                messages.error(request, "Code has expired. Please request a new one.")
+                request.session.pop('pending_otp_email', None)
+                return redirect('recurly_login')
+
+            correct_otp, account_id = cached_data.split('|')
+
+            if user_otp == correct_otp:
+                # 1. Clean up
+                cache.delete(f"recurly_otp_{pending_email}")
+                request.session.pop('pending_otp_email', None)
                 
-                task_send_magic_link.delay(email, magic_link)
-                logger.info(f"[Recurly Auth] Magic link generated & queued for: {email} (Acc ID: {account_id})")
+                # 2. Identity Link
+                user, _ = User.objects.get_or_create(username=pending_email, defaults={'email': pending_email})
+                profile, _ = PatronProfile.objects.get_or_create(user=user)
+                
+                if profile.recurly_account_code != account_id:
+                    profile.recurly_account_code = account_id
+                    profile.save()
+
+                # 3. Database Sync (The Recurly Bridge)
+                client = recurly.Client(settings.RECURLY_API_KEY)
+                active_plans = []
+                
+                try:
+                    subs = client.list_account_subscriptions(account_id=account_id)
+                    for sub in subs.items():
+                        if sub.state in ['active', 'in_trial', 'past_due']:
+                            active_plans.append(sub.plan.code)
+                            
+                    # Sync to all NetworkMemberships
+                    for network in Network.objects.all():
+                        membership, _ = NetworkMembership.objects.get_or_create(user=user, network=network)
+                        membership.active_recurly_plans = active_plans
+                        membership.save()
+                        
+                except Exception as e:
+                    logger.error(f"[Recurly Auth] Failed to fetch subscriptions for {pending_email}: {e}")
+                    messages.warning(request, "Logged in, but could not sync latest subscription data.")
+
+                # 4. Authenticate
+                login(request, user)
+                messages.success(request, "Successfully logged in!")
+                return redirect('user_feeds')
             else:
-                logger.warning(f"[Recurly Auth] Login failed: No Recurly account found for {email}")
-                
-            messages.success(request, "If an active subscription exists, a login link has been sent to your email.")
-            
-        # FIX 2: Catch standard Exceptions to prevent module AttributeError crashes
-        except Exception as e:
-            logger.error(f"[Recurly Auth] Error during account lookup for {email}: {e}")
-            messages.error(request, "Unable to verify subscription at this time due to a server error.")
-            
-    return render(request, 'pod_manager/login_request.html')
+                messages.error(request, "Invalid code. Please try again.")
+                return redirect('recurly_login')
 
-def verify_magic_link(request, token):
-    signer = TimestampSigner()
-    try:
-        # Decrypt token (900 seconds = 15 min expiration)
-        payload = signer.unsign(token, max_age=900)
-        email, account_id = payload.split('|')
-        logger.info(f"[Recurly Auth] Magic link clicked and validated for: {email}")
-    except SignatureExpired:
-        logger.warning("[Recurly Auth] Expired magic link clicked.")
-        messages.error(request, "This login link has expired. Please request a new one.")
-        return redirect('request_magic_link')
-    except BadSignature:
-        logger.warning("[Recurly Auth] Invalid/tampered magic link clicked.")
-        messages.error(request, "Invalid login link.")
-        return redirect('request_magic_link')
-
-    # 1. Identity Link
-    user, _ = User.objects.get_or_create(username=email, defaults={'email': email})
-    profile, _ = PatronProfile.objects.get_or_create(user=user)
-    
-    if profile.recurly_account_code != account_id:
-        profile.recurly_account_code = account_id
-        profile.save()
-        logger.info(f"[Recurly Auth] Linked Recurly ID {account_id} to user {email}")
-
-    # 2. Database Sync (The Recurly Bridge)
-    client = recurly.Client(settings.RECURLY_API_KEY)
-    active_plans = []
-    
-    try:
-        subs = client.list_account_subscriptions(account_id=account_id)
-        for sub in subs.items():
-            if sub.state in ['active', 'in_trial', 'past_due']:
-                active_plans.append(sub.plan.code)
-                
-        logger.info(f"[Recurly Auth] Sync successful. Active plans for {email}: {active_plans}")
-        
-        # Sync these plans to the user's NetworkMemberships
-        # (For this proof of concept, we map them globally across all networks)
-        for network in Network.objects.all():
-            membership, _ = NetworkMembership.objects.get_or_create(user=user, network=network)
-            membership.active_recurly_plans = active_plans
-            membership.save()
-            
-    except Exception as e:
-        logger.error(f"[Recurly Auth] Failed to fetch subscriptions for {email}: {e}")
-        messages.warning(request, "Logged in, but could not sync your latest subscription data.")
-
-    # 3. Authenticate
-    login(request, user)
-    messages.success(request, "Successfully logged in!")
-    return redirect('user_feeds') # Adjust to whatever your post-login dashboard URL name is
+    # Pass the pending_email state to the template to toggle the UI
+    return render(request, 'pod_manager/login_request.html', {'pending_email': pending_email})
 
 @staff_member_required
 def start_impersonation(request, user_id):

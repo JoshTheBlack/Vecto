@@ -1,28 +1,37 @@
-{% extends "pod_manager/base.html" %}
+{% extends 'pod_manager/base.html' %}
 
 {% block content %}
 <div class="container mt-5">
     <div class="row justify-content-center">
         <div class="col-md-6 col-lg-5">
-            <div class="card shadow-sm border-0 rounded-3">
-                <div class="card-body p-4 p-md-5">
-                    <h3 class="text-center fw-bold mb-3">Log In to Vecto</h3>
-                    <p class="text-muted text-center mb-4">Enter the email address tied to your premium subscription. We'll send you a secure link to access your feeds.</p>
+            <div class="card bg-dark text-light border-secondary">
+                <div class="card-body p-5 text-center">
+                    <h3 class="mb-4">Legacy Login</h3>
                     
-                    {% if messages %}
-                        {% for message in messages %}
-                            <div class="alert alert-{{ message.tags }} text-center">{{ message }}</div>
-                        {% endfor %}
+                    {% if pending_email %}
+                        <p class="text-muted">We sent a 6-digit code to <strong>{{ pending_email }}</strong></p>
+                        
+                        <form method="POST">
+                            {% csrf_token %}
+                            <div class="mb-4">
+                                <input type="text" name="otp" class="form-control form-control-lg text-center fw-bold bg-dark text-light border-secondary" placeholder="123456" maxlength="6" autocomplete="one-time-code" required autofocus>
+                            </div>
+                            <button type="submit" class="btn btn-warning w-100 btn-lg mb-3">Verify Code</button>
+                        </form>
+                        <a href="?reset=1" class="text-muted text-decoration-none small">Wait, I typed the wrong email</a>
+                        
+                    {% else %}
+                        <p class="text-muted mb-4">Enter the email address associated with your Recurly subscription.</p>
+                        
+                        <form method="POST">
+                            {% csrf_token %}
+                            <div class="mb-4">
+                                <input type="email" name="email" class="form-control bg-dark text-light border-secondary" placeholder="you@example.com" required autofocus>
+                            </div>
+                            <button type="submit" class="btn btn-primary w-100 mb-3">Send Login Code</button>
+                        </form>
                     {% endif %}
-
-                    <form method="POST" action="{% url 'request_magic_link' %}">
-                        {% csrf_token %}
-                        <div class="mb-4">
-                            <label for="email" class="form-label fw-semibold">Email Address</label>
-                            <input type="email" class="form-control form-control-lg" id="email" name="email" required placeholder="you@example.com">
-                        </div>
-                        <button type="submit" class="btn btn-primary btn-lg w-100">Send Login Link</button>
-                    </form>
+                    
                 </div>
             </div>
         </div>

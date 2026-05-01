@@ -147,7 +147,11 @@ class PatreonTier(models.Model):
     name = models.CharField(max_length=100, help_text="e.g., 'In Association With'")
     minimum_cents = models.IntegerField(help_text="e.g., 600 for $6.00")
     checkout_url = models.URLField(max_length=500, blank=True, null=True)
-    recurly_plan_code = models.CharField(max_length=255, null=True, blank=True, help_text="The exact 'plan_code' string from Recurly")
+    recurly_plan_codes = models.JSONField(
+        default=list, 
+        blank=True, 
+        help_text='List of Recurly plan codes: ["cbm-monthly", "cbm-yearly"]'
+    )
 
     is_default = models.BooleanField(default=False, help_text="Automatically assign to new podcasts.")
 

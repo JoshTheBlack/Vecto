@@ -236,7 +236,15 @@
                         <img src="{{ profile.discord_image_url }}" class="avatar-img" title="Use Discord Avatar">
                     </div>
                     {% endif %}
-
+                    
+                    <div class="avatar-option-container {% if profile.preferred_avatar_source == 'gravatar' %}active-option{% endif %}" onclick="selectAvatar('gravatar', event)">
+                        <img src="https://0.gravatar.com/avatar/{{ membership.email_hash }}?d=mp&s=150" class="avatar-img" title="Use Gravatar">
+                        
+                        <div id="gravatar-setup-tail" class="edit-tail" style="display: none; background-color: var(--bs-warning);" onclick="window.open('https://gravatar.com/', '_blank'); event.stopPropagation();" title="Setup your Gravatar">
+                            <i class="bi bi-box-arrow-up-right" style="font-size: 14px;"></i>
+                        </div>
+                    </div>
+                    
                     <div class="avatar-option-container {% if profile.preferred_avatar_source == 'custom' %}active-option{% endif %}" onclick="selectAvatar('custom', event)">
                         {% if profile.custom_image_upload %}
                             <img src="{{ profile.custom_image_upload.url }}" class="avatar-img" title="Use Custom Avatar">
@@ -688,5 +696,18 @@
         event.stopPropagation(); // Don't trigger avatar selection or triad folding
         new bootstrap.Modal(document.getElementById('customAvatarModal')).show();
     }
+
+    // Smart Generic Detection Script (V3 API)
+    document.addEventListener("DOMContentLoaded", function() {
+        // Ping 0.gravatar.com with the new SHA256 hash
+        let checkImg = new Image();
+        checkImg.src = "https://0.gravatar.com/avatar/{{ membership.email_hash }}?d=404&s=150";
+        
+        checkImg.onerror = function() {
+            // The image errored, meaning it's generic. Restore CSS flex layout for the edit tail.
+            let tail = document.getElementById('gravatar-setup-tail');
+            if (tail) tail.style.display = ''; 
+        };
+    });
 </script>
 {% endblock %}

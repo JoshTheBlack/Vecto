@@ -384,6 +384,7 @@ class NetworkMembership(models.Model):
     AVATAR_CHOICES = [
         ('patreon', 'Patreon'),
         ('discord', 'Discord'),
+        ('gravatar', 'Gravatar'),
         ('custom', 'Custom'),
     ]
     preferred_avatar_source = models.CharField(max_length=20, choices=AVATAR_CHOICES, default='discord')
@@ -397,17 +398,42 @@ class NetworkMembership(models.Model):
         return f"{self.user.username} - {self.network.name}"
 
     @property
+    def email_hash(self):
+        import hashlib
+        if self.user and self.user.email:
+            # V3 API REQUIRES SHA256 (MD5 is strictly prohibited)
+            return hashlib.sha256(self.user.email.strip().lower().encode('utf-8')).hexdigest()
+        # SHA256 hashes are 64 characters long
+        return "0" * 64
+    
+    @property
     def display_avatar(self):
-        if self.preferred_avatar_source == 'discord' and self.discord_image_url:
-            return self.discord_image_url
-        elif self.preferred_avatar_source == 'custom':
-            if self.custom_image_upload: return self.custom_image_upload.url
-            if self.custom_image_url: return self.custom_image_url
-            
-        # Default fallback to Patreon
+        discord_url = self.discord_image_url
+        custom_url = self.custom_image_upload.url if self.custom_image_upload else self.custom_image_url
+        
+        patreon_url = None
         if hasattr(self.user, 'patron_profile') and self.user.patron_profile.profile_image_url:
-            return self.user.patron_profile.profile_image_url
-        return "https://ui-avatars.com/api/?name=V+P&background=random" # Failsafe
+            patreon_url = self.user.patron_profile.profile_image_url
+
+        from urllib.parse import urlencode
+        params = urlencode({'d': 'mp', 's': '256'})
+        
+        # Update base URL to 0.gravatar.com per v3 documentation
+        gravatar_url = f"https://0.gravatar.com/avatar/{self.email_hash}?{params}"
+
+        # 1. Try their explicitly preferred source first
+        if self.preferred_avatar_source == 'discord' and discord_url: return discord_url
+        if self.preferred_avatar_source == 'patreon' and patreon_url: return patreon_url
+        if self.preferred_avatar_source == 'custom' and custom_url: return custom_url
+        if self.preferred_avatar_source == 'gravatar': return gravatar_url
+
+        # 2. Fallbacks: Cascade down what we actually have
+        
+        if custom_url: return custom_url
+        if discord_url: return discord_url
+        if patreon_url: return patreon_url
+        
+        return gravatar_url
 
     def save(self, *args, **kwargs):
         super().save(*args, **kwargs)

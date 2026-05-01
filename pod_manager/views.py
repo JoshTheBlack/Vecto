@@ -278,20 +278,31 @@ def update_avatar_preference(request):
 def upload_custom_avatar(request):
     membership = NetworkMembership.objects.filter(user=request.user, network=request.network).first()
     if membership:
-        if 'custom_image_upload' in request.FILES:
+        # Check if the user actually attached a file
+        if 'custom_image_upload' in request.FILES and request.FILES['custom_image_upload']:
+            if membership.custom_image_upload:
+                membership.custom_image_upload.delete(save=False)
+                
             membership.custom_image_upload = request.FILES['custom_image_upload']
-            membership.custom_image_url = "" # Clear URL if physical upload
+            membership.custom_image_url = "" 
+            
+        # Fallback to URL if no file was attached
         elif request.POST.get('custom_image_url'):
-            candidate_url = request.POST.get('custom_image_url')
+            candidate_url = request.POST.get('custom_image_url').strip()
             ok, reason = _validate_public_url(candidate_url)
             if not ok:
                 messages.error(request, f"Avatar URL rejected: {reason}")
                 return redirect('user_profile')
+                
             membership.custom_image_url = candidate_url
+            
+            if membership.custom_image_upload:
+                membership.custom_image_upload.delete(save=False)
 
         membership.preferred_avatar_source = 'custom'
         membership.save()
         messages.success(request, "Custom avatar updated!")
+        
     return redirect('user_profile')
 
 # ==========================================
@@ -1244,9 +1255,17 @@ def user_feeds(request):
         elif request.POST.get('edit_mix'):
             mix = get_object_or_404(UserMix, id=request.POST.get('mix_id'), user=request.user, network=request.network)
             mix.name = request.POST.get('mix_name', '').strip() or mix.name
-            mix.image_url = request.POST.get('mix_image', '') or mix.image_url
-            if 'mix_image_upload' in request.FILES:
+            
+            if 'mix_image_upload' in request.FILES and request.FILES['mix_image_upload']:
+                if mix.image_upload:
+                    mix.image_upload.delete(save=False)
                 mix.image_upload = request.FILES['mix_image_upload']
+                mix.image_url = ""
+            elif request.POST.get('mix_image'):
+                mix.image_url = request.POST.get('mix_image')
+                if mix.image_upload:
+                    mix.image_upload.delete(save=False)
+                    
             cache.delete(f"shell_user_mix_{mix.id}")   
             mix.selected_podcasts.set(request.POST.getlist('podcasts'))
             mix.save()
@@ -1256,6 +1275,10 @@ def user_feeds(request):
         elif request.POST.get('delete_mix'):
             mix = get_object_or_404(UserMix, id=request.POST.get('mix_id'), user=request.user, network=request.network)
             cache.delete(f"shell_user_mix_{mix.id}")
+            
+            if mix.image_upload:
+                mix.image_upload.delete(save=False)
+                
             mix.delete()
             messages.warning(request, "Custom mix deleted.")
 
@@ -1326,6 +1349,8 @@ def episode_detail(request, episode_id):
 def user_profile(request):
     tenant_profile = getattr(request, 'tenant_profile', None)
     
+    current_membership = NetworkMembership.objects.filter(user=request.user, network=request.network).first()
+
     has_active_totp = request.user.totpdevice_set.filter(confirmed=True).exists()
 
     if not tenant_profile:
@@ -1333,6 +1358,7 @@ def user_profile(request):
             'level': 0, 'title': "Commoner", 'progress_percent': 0,
             'total_approved': 0, 'account_vintage': None, 
             'has_active_totp': has_active_totp,
+            'membership': current_membership,
             'live_stats': {'playback_hits': 0, 'hours_accessed': 0.0, 'streak_days': 0, 'streak_weeks': 0, 'obsession_title': "Wandering Adventurer"}
         })
 
@@ -1369,6 +1395,7 @@ def user_profile(request):
         'joined_after_launch_days': joined_after_launch_days,
         'account_age_years': account_age_years,
         'has_active_totp': has_active_totp,
+        'membership': current_membership,
     }
     return render(request, 'pod_manager/user_profile.html', context)
 

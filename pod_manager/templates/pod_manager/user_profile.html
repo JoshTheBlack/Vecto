@@ -152,7 +152,7 @@
             
             <div class="sheet-header p-4 d-flex justify-content-between align-items-center flex-wrap gap-3">
                 <div class="d-flex align-items-center gap-4">
-                    {% with membership=request.user.network_memberships.first %}
+                    
                     <div class="avatar-triad-wrapper" id="avatarTriad" title="Click to change avatar">
                         <div class="avatar-option-container {% if membership.preferred_avatar_source == 'patreon' or not membership.preferred_avatar_source %}active-option{% endif %}" onclick="selectAvatar('patreon', event)">
                             <img src="{{ request.user.patron_profile.profile_image_url|default:'https://ui-avatars.com/api/?name=P+A&background=random' }}" class="avatar-img" title="Use Patreon Avatar">
@@ -172,7 +172,7 @@
                         </div>
                         
                         <div class="avatar-option-container {% if membership.preferred_avatar_source == 'custom' %}active-option{% endif %}" onclick="selectAvatar('custom', event)">
-                            {% if membership.custom_image_upload %}
+                            {% if membership.custom_image_upload.name %}
                                 <img src="{{ membership.custom_image_upload.url }}" class="avatar-img" title="Use Custom Avatar">
                             {% elif membership.custom_image_url %}
                                 <img src="{{ membership.custom_image_url }}" class="avatar-img" title="Use Custom Avatar">
@@ -184,7 +184,7 @@
                             </div>
                         </div>
                     </div>  
-                    {% endwith %}
+                   
                     <div>
                         <h1 class="mb-0 fw-bold">{{ request.user.first_name|default:request.user.username }}</h1>
                         <div class="text-accent fw-bold text-uppercase" style="letter-spacing: 1px;">
@@ -246,34 +246,30 @@
 </div>
 
 <div class="modal fade" id="customAvatarModal" tabindex="-1">
-  <div class="modal-dialog modal-dialog-centered">
-    <div class="modal-content text-bg-dark border-secondary">
-      <div class="modal-header border-secondary">
-        <h5 class="modal-title">Custom Avatar</h5>
-        <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
-      </div>
-      <form action="{% url 'update_avatar_preference' %}" method="POST" enctype="multipart/form-data">
-        {% csrf_token %}
-        <input type="hidden" name="source" value="custom">
-        <div class="modal-body">
-            <div class="mb-3">
-                <label class="form-label">Upload Image</label>
-                <input class="form-control text-bg-dark border-secondary" type="file" name="custom_image" accept="image/*">
-                <small class="text-muted">Image will be automatically cropped and centered to a square.</small>
-            </div>
-            <hr class="border-secondary">
-            <div class="mb-3">
-                <label class="form-label">Or Link to Image</label>
-                <input type="url" class="form-control text-bg-dark border-secondary" name="custom_image_url" placeholder="https://...">
-            </div>
+    <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content bg-dark border-secondary">
+            <form method="POST" action="{% url 'upload_custom_avatar' %}" enctype="multipart/form-data">
+                {% csrf_token %}
+                <div class="modal-header border-secondary">
+                    <h5 class="modal-title text-light">Upload Custom Avatar</h5>
+                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <input class="form-control bg-dark text-light border-secondary" type="file" name="custom_image_upload" accept="image/*">
+                    <div class="small text-muted mt-2 mb-3">Recommended: 256x256 square image (PNG or JPG)</div>
+                    
+                    <hr class="border-secondary">
+                    
+                    <label class="form-label text-light">Or Link to Image</label>
+                    <input type="url" class="form-control bg-dark text-light border-secondary" name="custom_image_url" placeholder="https://...">
+                </div>
+                <div class="modal-footer border-secondary">
+                    <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
+                    <button type="submit" class="btn btn-primary fw-bold">Save and Use</button>
+                </div>
+            </form>
         </div>
-        <div class="modal-footer border-secondary">
-            <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
-            <button type="submit" class="btn btn-primary fw-bold">Save Custom Image</button>
-        </div>
-      </form>
     </div>
-  </div>
 </div>
 
 <script>

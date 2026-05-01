@@ -1821,9 +1821,11 @@ def patreon_callback(request):
         
         user_data = payload.get('data', {})
         included_data = payload.get('included', [])
-        email = user_data.get('attributes', {}).get('email')
-
-        if not email: return HttpResponse("Patreon did not provide an email address.", status=400)
+        raw_email = user_data.get('attributes', {}).get('email')
+        if not raw_email: 
+            return HttpResponse("Patreon did not provide an email address.", status=400)
+            
+        email = raw_email.strip().lower()
 
         user, created = User.objects.get_or_create(username=email, defaults={
             'email': email,

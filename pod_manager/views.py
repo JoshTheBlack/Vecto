@@ -654,7 +654,10 @@ def _handle_inbox_action(request, current_network, action):
                 try:
                     new_chapters = json.loads(raw_chapters)
                     if new_chapters != pre_approval_snapshot['chapters']:
+                        # Mirror to both columns; see submit_episode_edit
+                        # for the rationale.
                         ep.chapters_public = new_chapters
+                        ep.chapters_private = new_chapters
                         edit.suggested_data['chapters'] = new_chapters  # Update for Audit Log
                         points += 1
 
@@ -956,6 +959,61 @@ def creator_settings(request):
                 base_url = request.build_absolute_uri('/')[:-1]
                 for ep_id in episode_ids:
                     task_rebuild_episode_fragments.delay(int(ep_id), base_url)
+
+        elif action == 'add_network_mix':
+            try:
+                tier_id = request.POST.get('tier_id') or None
+                req_tier = get_object_or_404(PatreonTier, id=tier_id, network=current_network) if tier_id else None
+                mix = NetworkMix.objects.create(
+                    network=current_network,
+                    name=request.POST.get('name', '').strip(),
+                    slug=request.POST.get('slug', '').strip(),
+                    image_url=request.POST.get('mix_image', '').strip(),
+                    required_tier=req_tier,
+                )
+                if 'mix_image_upload' in request.FILES and request.FILES['mix_image_upload']:
+                    mix.image_upload = request.FILES['mix_image_upload']
+                mix.selected_podcasts.set(request.POST.getlist('podcasts'))
+                mix.save()
+                messages.success(request, f"Network mix '{mix.name}' created.")
+            except Exception as e:
+                logger.error(f"Failed to create network mix: {e}", exc_info=True)
+                messages.error(request, f"Failed to create network mix: {e}")
+
+        elif action == 'edit_network_mix':
+            mix = get_object_or_404(NetworkMix, id=request.POST.get('mix_id'), network=current_network)
+            mix.name = request.POST.get('name', '').strip() or mix.name
+            new_slug = request.POST.get('slug', '').strip()
+            if new_slug:
+                mix.slug = new_slug
+
+            tier_id = request.POST.get('tier_id') or None
+            mix.required_tier = get_object_or_404(PatreonTier, id=tier_id, network=current_network) if tier_id else None
+
+            # Image: explicit file upload wins; otherwise allow URL update.
+            if 'mix_image_upload' in request.FILES and request.FILES['mix_image_upload']:
+                if mix.image_upload:
+                    mix.image_upload.delete(save=False)
+                mix.image_upload = request.FILES['mix_image_upload']
+                mix.image_url = ""
+            else:
+                posted_url = request.POST.get('mix_image', '').strip()
+                if posted_url and posted_url != mix.image_url:
+                    mix.image_url = posted_url
+                    if mix.image_upload:
+                        mix.image_upload.delete(save=False)
+
+            mix.selected_podcasts.set(request.POST.getlist('podcasts'))
+            cache.delete(f"shell_net_mix_{mix.id}")
+            mix.save()
+            messages.success(request, f"Network mix '{mix.name}' updated.")
+
+        elif action == 'delete_network_mix':
+            mix = get_object_or_404(NetworkMix, id=request.POST.get('mix_id'), network=current_network)
+            cache.delete(f"shell_net_mix_{mix.id}")
+            name = mix.name
+            mix.delete()  # post_delete signal cleans up the file
+            messages.warning(request, f"Network mix '{name}' deleted.")
 
         elif action == 'generate_s3_report':
             logger.info("\n\n=======================================================")
@@ -1456,10 +1514,18 @@ def generate_custom_feed(request):
 
     base_url = request.build_absolute_uri('/')[:-1]
     header, footer = get_or_build_feed_shell(podcast, base_url, has_access)
-    
+
     # Get valid episodes
     episodes = [ep for ep in podcast.episodes.all().order_by('-pub_date')[:1000] if ep.has_public_audio or ep.is_premium]
     if not has_access: episodes = [ep for ep in episodes if ep.has_public_audio]
+
+    # Pin lastBuildDate to the newest episode's pub_date so the ETag stays
+    # stable across shell-cache rebuilds. Without this, every cache miss
+    # (autoreload in dev, podcast-update fragment rebuild, cache eviction)
+    # produces a different timestamp and breaks ETag-based 304 responses.
+    if episodes:
+        latest_date_str = format_datetime(episodes[0].pub_date)
+        header = re.sub(r'<lastBuildDate>.*?</lastBuildDate>', f'<lastBuildDate>{latest_date_str}</lastBuildDate>', header)
         
     feed_type = 'private' if has_access else 'public'
     cache_keys = [f"ep_frag_{feed_type}_{ep.id}" for ep in episodes]
@@ -1502,10 +1568,16 @@ def generate_custom_feed(request):
 def generate_public_feed(request, podcast_slug):
     podcast = get_object_or_404(Podcast, slug=podcast_slug, network=request.network)
     base_url = request.build_absolute_uri('/')[:-1]
-    
+
     header, footer = get_or_build_feed_shell(podcast, base_url, False)
     episodes = [ep for ep in podcast.episodes.all().order_by('-pub_date')[:500] if ep.has_public_audio]
-    
+
+    # Pin lastBuildDate to the newest episode's pub_date for stable ETags.
+    # See generate_custom_feed for the rationale.
+    if episodes:
+        latest_date_str = format_datetime(episodes[0].pub_date)
+        header = re.sub(r'<lastBuildDate>.*?</lastBuildDate>', f'<lastBuildDate>{latest_date_str}</lastBuildDate>', header)
+
     cache_keys = [f"ep_frag_public_{ep.id}" for ep in episodes]
     fragments_dict = cache.get_many(cache_keys)
     
@@ -1842,7 +1914,13 @@ def submit_episode_edit(request, episode_id):
             ep.title = suggested_data.get('title', ep.title)
             ep.clean_description = suggested_data.get('description', ep.clean_description)
             ep.tags = suggested_data.get('tags', ep.tags)
-            ep.chapters_public = suggested_data.get('chapters', ep.chapters_public)
+            # Chapters live in two columns (public/private) for future
+            # ad-insertion-aware drift, but until that's solved both columns
+            # should mirror — write to both so the private feed isn't stuck
+            # on `null` after an edit.
+            new_chapters = suggested_data.get('chapters', ep.chapters_public)
+            ep.chapters_public = new_chapters
+            ep.chapters_private = new_chapters
             ep.is_metadata_locked = True
             ep.save()
             

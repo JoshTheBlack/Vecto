@@ -203,7 +203,7 @@
                         </div>
                     {% endif %}
 
-                    {% if ep.is_premium and ep.user_has_access %}
+                    {% if ep.is_premium and ep.user_has_access and ep.audio_url_public %}
                         <div class="mb-4">
                             <button class="btn btn-sm btn-outline-secondary" type="button" data-bs-toggle="collapse" data-bs-target="#publicAudioCollapse" aria-expanded="false" aria-controls="publicAudioCollapse">
                                 <i class="bi bi-music-note-list"></i> Show Ad-Supported Version

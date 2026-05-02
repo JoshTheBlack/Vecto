@@ -568,8 +568,9 @@ class AnalyticsSweepTests(TestCase):
                 }),
             ]
         else:
+            import os
             import redis as redis_lib
-            redis_url = django_settings.CACHES['default']['LOCATION']
+            redis_url = os.getenv('REDIS_URL', 'redis://redis:6379/0')
             self.fake = redis_lib.from_url(redis_url)
             self._clean_test_keys()
             self._patches = [

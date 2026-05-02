@@ -12,6 +12,7 @@ https://docs.djangoproject.com/en/6.0/ref/settings/
 
 from pathlib import Path
 import os
+import sys
 from dotenv import load_dotenv
 
 # Load environment variables from the .env file
@@ -166,6 +167,8 @@ TEMPLATES = [
 WSGI_APPLICATION = 'config.wsgi.application'
 
 # HYBRID DATABASE ROUTING
+IS_TEST = 'test' in sys.argv
+
 if IS_IDE:
     DATABASES = {
         'default': {
@@ -177,6 +180,19 @@ if IS_IDE:
             }
         }
     }
+elif IS_TEST:
+    # Bypass PgBouncer for tests — CREATE DATABASE requires a direct connection
+    # and a user with CREATEDB privilege (set TEST_DB_USER/TEST_DB_PASSWORD in .env)
+    DATABASES = {
+        'default': {
+            'ENGINE': 'django.db.backends.postgresql',
+            'NAME': os.getenv('POSTGRES_DB', 'vecto'),
+            'USER': os.getenv('TEST_DB_USER', 'vecto_test'),
+            'PASSWORD': os.getenv('TEST_DB_PASSWORD', ''),
+            'HOST': os.getenv('POSTGRES_HOST_DIRECT', 'db'),
+            'PORT': '5432',
+        }
+    }
 else:
     DATABASES = {
         'default': {
@@ -184,14 +200,14 @@ else:
             'NAME': os.getenv('POSTGRES_DB', 'vecto'),
             'USER': os.getenv('POSTGRES_USER', 'vecto_user'),
             'PASSWORD': os.getenv('POSTGRES_PASSWORD', 'vecto_pass'),
-            
-            # 1. Route through the Bouncer
+
+            # Route through the Bouncer
             'HOST': os.getenv('POSTGRES_HOST', 'pgbouncer'),
             'PORT': os.getenv('POSTGRES_PORT', '6432'),
-            
-            # 2. Activate Connection Pooling
-            'CONN_MAX_AGE': 60,         # Keep connections alive for 60 seconds
-            'CONN_HEALTH_CHECKS': True, # Ensure Django drops dead connections gracefully
+
+            # Connection Pooling
+            'CONN_MAX_AGE': 60,
+            'CONN_HEALTH_CHECKS': True,
         }
     }
 

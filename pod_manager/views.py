@@ -17,11 +17,8 @@ import recurly
 import qrcode
 import base64
 import secrets
-import socket
-import ipaddress
 from email.utils import format_datetime
 
-import nh3
 import requests
 from django.conf import settings
 from django.contrib import messages
@@ -51,6 +48,7 @@ from lxml import etree
 
 from .models import PatronProfile, NetworkMembership, Podcast, Episode, Network, PatreonTier, UserMix, NetworkMix, EpisodeEditSuggestion
 from .tasks import task_ingest_feed, task_rebuild_episode_fragments, task_rebuild_podcast_fragments, task_send_otp_email
+from .utils import validate_public_url, sanitize_user_html
 
 warnings.filterwarnings("ignore", message=".*Image URL must end with.*")
 warnings.filterwarnings("ignore", message=".*Size is set to 0.*")
@@ -151,39 +149,6 @@ def _unsign_oauth_state(signed_value: str, max_age_seconds: int = 600):
         return None
 
 
-# SSRF guard: any URL we feed to `requests.get` from user-supplied input must
-# resolve to a public, routable address. Blocks loopback, link-local, private,
-# multicast, and reserved ranges (covers cloud metadata services, internal
-# Redis/Postgres/etc).
-_ALLOWED_URL_SCHEMES = ('http', 'https')
-
-def _validate_public_url(url: str) -> tuple[bool, str]:
-    if not url or not isinstance(url, str):
-        return False, "URL is empty."
-    parsed = urllib.parse.urlsplit(url.strip())
-    if parsed.scheme.lower() not in _ALLOWED_URL_SCHEMES:
-        return False, f"Scheme '{parsed.scheme}' not allowed."
-    host = parsed.hostname
-    if not host:
-        return False, "URL has no host."
-    try:
-        # Resolve all addresses; reject if ANY resolution lands in a reserved range.
-        # (Defense against DNS rebinding to a public-then-private answer.)
-        infos = socket.getaddrinfo(host, None)
-    except socket.gaierror:
-        return False, "Host could not be resolved."
-    for info in infos:
-        addr = info[4][0]
-        try:
-            ip = ipaddress.ip_address(addr)
-        except ValueError:
-            return False, f"Resolved to invalid address: {addr}"
-        if (ip.is_private or ip.is_loopback or ip.is_link_local or
-                ip.is_reserved or ip.is_multicast or ip.is_unspecified):
-            return False, f"Host resolves to a non-public address ({addr})."
-    return True, ""
-
-
 # Rate-limit helper backed by the existing cache (Redis in prod, locmem in IDE).
 # Increments a counter on a sliding window equal to `window_seconds`. Returns
 # True when the action is over the limit (caller should reject).
@@ -224,33 +189,42 @@ def _clear_otp_state(email: str):
     cache.delete(f"recurly_otp_attempts:{email}")
 
 
-# HTML sanitizer for user-submitted episode descriptions. Strips scripts, event
-# handlers, and any tag/attribute not on the allowlist. Used on submit, not on
-# render — DB stays clean so existing `|safe` template usage remains correct.
-_ALLOWED_DESC_TAGS = {
-    'p', 'br', 'em', 'strong', 'b', 'i', 'u', 's', 'a',
-    'ul', 'ol', 'li', 'blockquote', 'code', 'pre',
-    'h2', 'h3', 'h4', 'h5', 'h6', 'span', 'div', 'hr', 'img'
-}
-_ALLOWED_DESC_ATTRS = {
-    'a': {'href', 'title', 'target'},
-    'img': {'src', 'alt', 'title'},
-}
+# RSS-activity counter. Writes one INCR per (network, user, day) on every RSS
+# fetch from a feed_token-authenticated client. The sweep job drains these
+# into NetworkMembership.last_active_date so RSS-only listeners (who never
+# trigger BillingPresenceMiddleware because they're session-less) still count
+# as active for billing.
+def _record_rss_activity(network_ids, user_id):
+    if not user_id:
+        return
+    today = timezone.now().strftime('%Y-%m-%d')
+    for net_id in network_ids:
+        if net_id is None:
+            continue
+        key = f"analytics:rss:{net_id}:{user_id}:{today}"
+        try:
+            cache.incr(key)
+        except ValueError:
+            cache.set(key, 1, timeout=172800)
 
-def sanitize_user_html(html_str: str) -> str:
-    if not html_str:
-        return ''
-    return nh3.clean(
-        html_str,
-        tags=_ALLOWED_DESC_TAGS,
-        attributes=_ALLOWED_DESC_ATTRS,
-        link_rel='noopener noreferrer nofollow',
-    )
+
+def _secure_login(request, user):
+    """
+    Wrapper around django.contrib.auth.login that scrubs any leftover
+    impersonation session key. Without this scrub, a staff user who was
+    impersonating someone and then re-logs in via OTP/Patreon would carry
+    the stale `impersonated_user_id` into the new session — the
+    ImpersonationMiddleware would purge it on the next request, but for the
+    duration of this response cycle the user is technically still flagged
+    as an impersonator. Belt-and-suspenders.
+    """
+    request.session.pop('impersonated_user_id', None)
+    login(request, user)
 
 
 def process_mix_image_url(image_url, mix_instance):
     if not image_url: return None
-    ok, reason = _validate_public_url(image_url)
+    ok, reason = validate_public_url(image_url)
     if not ok:
         return reason
     try:
@@ -290,7 +264,7 @@ def upload_custom_avatar(request):
         # Fallback to URL if no file was attached
         elif request.POST.get('custom_image_url'):
             candidate_url = request.POST.get('custom_image_url').strip()
-            ok, reason = _validate_public_url(candidate_url)
+            ok, reason = validate_public_url(candidate_url)
             if not ok:
                 messages.error(request, f"Avatar URL rejected: {reason}")
                 return redirect('user_profile')
@@ -1237,7 +1211,12 @@ def user_feeds(request):
     profile = getattr(request.user, 'patron_profile', None) if request.user.is_authenticated else None
     
     # --- 1. HANDLE POST ACTIONS (CREATE, EDIT, DELETE MIX) ---
+    # GET stays public so anonymous visitors can grab the public feed URLs.
+    # POST requires auth — every action needs a real user (FK on UserMix).
     if request.method == 'POST':
+        if not request.user.is_authenticated:
+            return redirect('patreon_login')
+
         if request.POST.get('create_mix'):
             mix_name = request.POST.get('mix_name', '').strip() or f"{request.user.first_name}'s Custom Mix"
             mix = UserMix.objects.create(
@@ -1497,9 +1476,8 @@ def generate_custom_feed(request):
         
     final_xml = header + items_xml + footer
     final_xml = final_xml.replace('__VECTO_AUTH_TOKEN__', str(profile.feed_token))
-    
-    analytics_key = f"analytics:rss:{profile.id}"
-    cache.incr(analytics_key) if cache.get(analytics_key) else cache.set(analytics_key, 1, timeout=172800)
+
+    _record_rss_activity({podcast.network_id}, profile.user_id)
     billing_key = f"billing:active:{podcast.network_id}:{profile.user_id}:{timezone.now().strftime('%Y-%m-%d')}"
     cache.set(billing_key, 1, timeout=172800)
 
@@ -1612,14 +1590,15 @@ def generate_mix_feed(request, unique_id):
     final_xml = header + items_xml + footer
     final_xml = final_xml.replace('__VECTO_AUTH_TOKEN__', str(user_mix.user.patron_profile.feed_token))
     
-    # Get all distinct network IDs attached to the podcasts in this mix
+    # Fan out billing + RSS-activity signals across every network whose
+    # podcasts are in this mix. A subscriber polling the mix once should
+    # mark them active on each contributing network for the day.
     today_str = timezone.now().strftime('%Y-%m-%d')
     network_ids = set(user_mix.selected_podcasts.values_list('network_id', flat=True))
-    
+    _record_rss_activity(network_ids, user_mix.user_id)
     for net_id in network_ids:
-        billing_key = f"billing:active:{net_id}:{user_mix.user.id}:{today_str}"
+        billing_key = f"billing:active:{net_id}:{user_mix.user_id}:{today_str}"
         cache.set(billing_key, 1, timeout=172800)
-    # ==========================================
 
     xml_bytes = final_xml.encode('utf-8')
     etag = f'"{hashlib.md5(xml_bytes).hexdigest()}"'
@@ -1691,10 +1670,17 @@ def generate_network_mix_feed(request, network_slug, mix_slug):
 
     final_xml = header + items_xml + footer
     if feed_token: final_xml = final_xml.replace('__VECTO_AUTH_TOKEN__', str(feed_token))
-    else: final_xml = final_xml.replace('?auth=__VECTO_AUTH_TOKEN__', '') 
+    else: final_xml = final_xml.replace('?auth=__VECTO_AUTH_TOKEN__', '')
     if user and user.is_authenticated:
-        billing_key = f"billing:active:{network_mix.network_id}:{user.id}:{timezone.now().strftime('%Y-%m-%d')}"
-        cache.set(billing_key, 1, timeout=172800)
+        # Fan out across the parent network plus any other network whose
+        # podcasts the curator pulled into this mix.
+        today_str = timezone.now().strftime('%Y-%m-%d')
+        network_ids = set(network_mix.selected_podcasts.values_list('network_id', flat=True))
+        network_ids.add(network_mix.network_id)
+        _record_rss_activity(network_ids, user.id)
+        for net_id in network_ids:
+            billing_key = f"billing:active:{net_id}:{user.id}:{today_str}"
+            cache.set(billing_key, 1, timeout=172800)
     
     xml_bytes = final_xml.encode('utf-8')
 
@@ -2085,7 +2071,7 @@ def patreon_callback(request):
                 from pod_manager.tasks import task_sync_discord_avatar
                 task_sync_discord_avatar.delay(profile.discord_id, membership.id)
 
-        login(request, user)
+        _secure_login(request, user)
         return redirect('home')
 
     except Exception as e:
@@ -2098,6 +2084,14 @@ def logout_view(request):
     return redirect('home')
 
 def recurly_login(request):
+    # Recurly login is per-tenant: the OTP email uses the network's name and
+    # theme, so we can't sensibly serve this page on an unconfigured host.
+    # Bounce the user to the Patreon OAuth flow instead — it's the only login
+    # path that doesn't depend on a tenant context.
+    if not getattr(request, 'network', None):
+        logger.warning(f"recurly_login hit without a tenant network (host={request.get_host()})")
+        return redirect('patreon_login')
+
     # Allow the user to "Start Over" if they made a typo in their email
     if request.GET.get('reset'):
         old_email = request.session.get('pending_otp_email') or request.session.get('pending_totp_email')
@@ -2248,7 +2242,7 @@ def recurly_login(request):
                     logger.error(f"[Recurly Auth] Failed to fetch subscriptions for {pending_totp}: {e}")
                     messages.warning(request, "Logged in, but could not sync latest subscription data.")
 
-                login(request, user)
+                _secure_login(request, user)
                 messages.success(request, "Successfully logged in via Authenticator!")
                 return redirect('user_feeds')
             else:
@@ -2301,7 +2295,7 @@ def recurly_login(request):
                     logger.error(f"[Recurly Auth] Failed to fetch subscriptions for {pending_email}: {e}")
                     messages.warning(request, "Logged in, but could not sync latest subscription data.")
 
-                login(request, user)
+                _secure_login(request, user)
                 messages.success(request, "Successfully logged in!")
                 return redirect('user_feeds')
             else:
@@ -2335,6 +2329,7 @@ def start_impersonation(request, user_id):
     messages.success(request, f"Now viewing site as {target_user.email}.")
     return redirect('home')
 
+@staff_member_required
 def stop_impersonation(request):
     if 'impersonated_user_id' in request.session:
         del request.session['impersonated_user_id']
@@ -2550,7 +2545,7 @@ def check_audio_status(request):
         return JsonResponse({'reachable': False})
     # Endpoint is publicly callable, so the URL is fully attacker-controlled —
     # block redirects and any URL that resolves to a non-public address.
-    ok, _ = _validate_public_url(url)
+    ok, _ = validate_public_url(url)
     if not ok:
         return JsonResponse({'reachable': False})
     try:

@@ -335,7 +335,10 @@ class UserMix(models.Model):
     
 class PatronProfile(models.Model):
     user = models.OneToOneField(User, on_delete=models.CASCADE, related_name='patron_profile')
-    patreon_id = models.CharField(max_length=50, unique=True)
+    # Nullable so Recurly-only users (no Patreon link) don't all collide on
+    # the empty string. PostgreSQL allows multiple NULLs under a unique
+    # constraint; the constraint only applies to non-NULL values.
+    patreon_id = models.CharField(max_length=50, unique=True, null=True, blank=True)
     recurly_account_code = models.CharField(max_length=255, unique=True, null=True, blank=True)
     profile_image_url = models.URLField(max_length=500, null=True, blank=True)
     discord_id = models.CharField(max_length=100, null=True, blank=True)
@@ -479,7 +482,7 @@ class NetworkMembership(models.Model):
 @receiver(post_delete, sender=UserMix)
 def auto_delete_file_on_delete(sender, instance, **kwargs):
     """
-    Deletes the physical file from the filesystem 
+    Deletes the physical file from the filesystem
     whenever a UserMix object is deleted from the database.
     """
     if instance.image_upload:
@@ -488,6 +491,17 @@ def auto_delete_file_on_delete(sender, instance, **kwargs):
             logger.debug(f"Deleted physical file for UserMix: {instance.image_upload.name}")
         except Exception as e:
             logger.error(f"Failed to delete physical file {instance.image_upload.name}: {e}", exc_info=True)
+
+
+@receiver(post_delete, sender=NetworkMembership)
+def auto_delete_membership_avatar(sender, instance, **kwargs):
+    """Deletes the custom avatar file when a NetworkMembership row is deleted."""
+    if instance.custom_image_upload:
+        try:
+            instance.custom_image_upload.storage.delete(instance.custom_image_upload.name)
+            logger.debug(f"Deleted custom avatar for membership {instance.id}: {instance.custom_image_upload.name}")
+        except Exception as e:
+            logger.error(f"Failed to delete avatar file {instance.custom_image_upload.name}: {e}", exc_info=True)
 
 class Invoice(models.Model):
     network = models.ForeignKey(Network, on_delete=models.CASCADE, related_name='invoices')

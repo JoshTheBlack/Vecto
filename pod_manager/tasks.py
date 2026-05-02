@@ -137,10 +137,26 @@ def task_generate_monthly_invoices():
         
         logger.info(f"Generated invoice for {network.name}: ${total_due} ({active_patrons_count} Patrons, {active_former_count} Former)")
 
+def _scan_keys(redis_client, pattern, batch=500):
+    """
+    Cursor-based wrapper around Redis SCAN. Use this instead of KEYS:
+    SCAN returns chunks of ~batch keys per call so Redis can interleave
+    other clients' commands; KEYS would block the entire instance for the
+    full keyspace walk.
+    """
+    cursor = 0
+    while True:
+        cursor, keys = redis_client.scan(cursor=cursor, match=pattern, count=batch)
+        for k in keys:
+            yield k
+        if cursor == 0:
+            break
+
+
 @shared_task
 def sweep_analytics_buffer():
     logger.info("Starting Multi-Tenant Analytics Buffer Sweep...")
-    
+
     cache_backend = settings.CACHES['default'].get('BACKEND', '').lower()
     if 'locmem' in cache_backend or 'dummy' in cache_backend:
         logger.info("Local memory cache detected, skipping Redis sweep.")
@@ -148,12 +164,12 @@ def sweep_analytics_buffer():
 
     redis_url = settings.CACHES['default']['LOCATION']
     redis_client = redis.from_url(redis_url)
-    
-    play_keys = redis_client.keys("*analytics:play:*")
-    
-    if not play_keys:
-        logger.info("No analytics keys found. Sweep complete.")
-        return
+
+    # Don't early-return when there are no play keys — the billing and
+    # analytics:rss sweeps below also need to run (a quiet day with web
+    # visits and RSS polls but no playback would otherwise leave
+    # last_active_date unchanged and undercount active users).
+    play_keys = list(_scan_keys(redis_client, "analytics:play:*"))
 
     raw_play_data = []
     profile_ids = set()
@@ -161,6 +177,8 @@ def sweep_analytics_buffer():
     episode_ids = set()
     keys_to_delete = []
 
+    if not play_keys:
+        logger.info("No analytics:play:* keys to sweep.")
     for key_bytes in play_keys:
         key_str = key_bytes.decode('utf-8')
         hits = redis_client.get(key_bytes)
@@ -235,49 +253,63 @@ def sweep_analytics_buffer():
             ['total_playback_hits', 'total_hours_accessed', 'streak_days', 'streak_weeks', 'last_playback_date', 'last_play_week', 'current_obsession_id']
         )
 
-    if keys_to_delete:
-        redis_client.delete(*keys_to_delete)
-        
-    logger.info(f"Sweep complete. Updated {len(memberships_to_save)} Network Memberships.")
-
-    # ... [Existing gamification bulk update code remains exactly as is] ...
-
     # ==========================================
-    # NEW: BILLING PRESENCE SWEEP
+    # ACTIVE-USER PRESENCE SWEEP
     # ==========================================
-    active_keys = redis_client.keys("*billing:active:*:*:*")
-    billing_updates = []
-    seen_memberships = set()
-    
-    if active_keys:
-        for key_bytes in active_keys:
+    # Two key shapes feed last_active_date:
+    #   billing:active:{net_id}:{user_id}:{date}      <- web visits (middleware)
+    #   analytics:rss:{net_id}:{user_id}:{date}       <- RSS polls (feed views)
+    # Both encode the activity date in the key itself, so we can drain them
+    # together. Deduplicate across (net_id, user_id) and write the most
+    # recent date we saw for each.
+    presence_by_member = {}  # (net_id, user_id) -> latest date_str seen
+    presence_keys_to_delete = []
+
+    for pattern in ("billing:active:*", "analytics:rss:*"):
+        for key_bytes in _scan_keys(redis_client, pattern):
             key_str = key_bytes.decode('utf-8')
             parts = key_str.split(':')
-            
-            if len(parts) == 5:
+            if len(parts) != 5:
+                presence_keys_to_delete.append(key_bytes)
+                continue
+            try:
                 net_id = int(parts[2])
                 user_id = int(parts[3])
-                date_str = parts[4]
-                
-                # Prevent querying the same membership multiple times if multiple days are cached
-                mem_key = (net_id, user_id)
-                if mem_key not in seen_memberships:
-                    mem = NetworkMembership.objects.filter(network_id=net_id, user_id=user_id).first()
-                    if mem:
-                        mem.last_active_date = date_str
-                        billing_updates.append(mem)
-                    seen_memberships.add(mem_key)
-                        
+            except ValueError:
+                presence_keys_to_delete.append(key_bytes)
+                continue
+            date_str = parts[4]
+            mem_key = (net_id, user_id)
+            existing = presence_by_member.get(mem_key)
+            # Keep the most recent date if a member has multiple keys.
+            if existing is None or date_str > existing:
+                presence_by_member[mem_key] = date_str
+            presence_keys_to_delete.append(key_bytes)
+
+    if presence_by_member:
+        member_keys = list(presence_by_member.keys())
+        memberships = NetworkMembership.objects.filter(
+            network_id__in={m[0] for m in member_keys},
+            user_id__in={m[1] for m in member_keys},
+        )
+        billing_updates = []
+        for mem in memberships:
+            new_date = presence_by_member.get((mem.network_id, mem.user_id))
+            if new_date and (mem.last_active_date is None or str(mem.last_active_date) < new_date):
+                mem.last_active_date = new_date
+                billing_updates.append(mem)
+
         if billing_updates:
             NetworkMembership.objects.bulk_update(billing_updates, ['last_active_date'])
-            logger.info(f"Updated {len(billing_updates)} billing presence timestamps.")
-            
-        redis_client.delete(*active_keys)
-        
-    # Finally, delete the old gamification keys
+            logger.info(f"Updated {len(billing_updates)} active-user timestamps.")
+
+    if presence_keys_to_delete:
+        redis_client.delete(*presence_keys_to_delete)
+
+    # Drain the play-analytics keys we processed earlier in the function.
     if keys_to_delete:
         redis_client.delete(*keys_to_delete)
-        
+
     logger.info("Sweep complete.")
     
 @shared_task

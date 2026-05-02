@@ -1,9 +1,7 @@
 import feedparser
 import time
 import re
-import os
 import requests
-import hashlib
 import logging
 from datetime import datetime
 from urllib.parse import urlparse
@@ -11,6 +9,7 @@ from django.utils.timezone import make_aware
 from django.conf import settings
 from pod_manager.models import Podcast, Episode
 from pod_manager.tasks import task_rebuild_episode_fragments, task_rebuild_podcast_shell
+from pod_manager.utils import validate_public_url, sanitize_user_html
 from difflib import SequenceMatcher
 from bs4 import BeautifulSoup
 
@@ -23,16 +22,23 @@ def extract_rss_chapters(entry):
     if hasattr(entry, 'podcast_chapters') and isinstance(entry.podcast_chapters, dict):
         url = entry.podcast_chapters.get('url')
         if url:
-            try:
-                resp = requests.get(url, timeout=5)
-                if resp.status_code == 200:
-                    data = resp.json()
-                    # --- FIX: Force standard if remote host returns a legacy flat array ---
-                    if isinstance(data, list):
-                        return {"version": "1.2.0", "chapters": data}
-                    return data
-            except Exception:
-                pass
+            # SSRF guard: chapter URL is publisher-controlled. Reject anything
+            # that resolves to a non-public address (cloud metadata, internal
+            # services, etc) before issuing the HTTP request.
+            ok, reason = validate_public_url(url)
+            if not ok:
+                logger.warning(f"Rejected chapter URL '{url}': {reason}")
+            else:
+                try:
+                    resp = requests.get(url, timeout=5)
+                    if resp.status_code == 200:
+                        data = resp.json()
+                        # --- FIX: Force standard if remote host returns a legacy flat array ---
+                        if isinstance(data, list):
+                            return {"version": "1.2.0", "chapters": data}
+                        return data
+                except Exception:
+                    pass
 
     # 2. Check for Podlove <psc:chapters>
     if hasattr(entry, 'psc_chapters') and hasattr(entry.psc_chapters, 'chapters'):
@@ -158,44 +164,28 @@ def clean_html_description(html_content, network):
     # 4. Final Polish
     final_html = str(soup).strip()
     final_html = final_html.replace('\n', ' ')
-    
-    return final_html
 
-def get_cached_feed(url, feed_type, stdout):
-    use_cache = os.getenv('USE_LOCAL_FEED_CACHE', 'False') == 'True'
+    # 5. Strip scripts / event handlers / disallowed tags. Feed publishers are
+    # presumptively trusted but ad insertion or a compromised host can poison
+    # an episode description, and the home/episode pages render this with
+    # `|safe`. Sanitize on the way in so the DB stays clean.
+    return sanitize_user_html(final_html)
+
+def get_feed(url, feed_type, stdout):
+    """Fetch and parse an RSS feed. Always live — no disk cache."""
     parsed_url = urlparse(url)
     auth = (parsed_url.username, parsed_url.password) if parsed_url.username else None
     clean_url = parsed_url._replace(netloc=parsed_url.hostname).geturl()
 
-    def fetch_live():
-        stdout.write(f"  [LIVE FETCH] Downloading {feed_type} feed...")
-        logger.debug(f"Fetching live {feed_type} feed from {clean_url}")
-        try:
-            response = requests.get(clean_url, auth=auth, timeout=30, headers={'User-Agent': 'Vecto/1.0'})
-            response.raise_for_status()
-            return response.content
-        except requests.exceptions.RequestException as e:
-            logger.error(f"HTTP Error fetching {feed_type} feed from {clean_url}: {e}", exc_info=True)
-            raise
-
-    if not use_cache:
-        return feedparser.parse(fetch_live())
-
-    cache_dir = os.path.join(settings.BASE_DIR, '.feed_cache')
-    if not os.path.exists(cache_dir): os.makedirs(cache_dir)
-    url_hash = hashlib.md5(clean_url.encode('utf-8')).hexdigest()
-    cache_file = os.path.join(cache_dir, f"{feed_type}_{url_hash}.xml")
-
-    if os.path.exists(cache_file):
-        stdout.write(f"  [CACHE HIT] Loading {feed_type} from disk...")
-        logger.debug(f"Loaded {feed_type} feed from local disk cache: {cache_file}")
-        return feedparser.parse(cache_file)
-
-    content = fetch_live()
-    with open(cache_file, 'wb') as f:
-        f.write(content)
-    logger.debug(f"Saved {feed_type} feed to local disk cache: {cache_file}")
-    return feedparser.parse(content)
+    stdout.write(f"  [LIVE FETCH] Downloading {feed_type} feed...")
+    logger.debug(f"Fetching live {feed_type} feed from {clean_url}")
+    try:
+        response = requests.get(clean_url, auth=auth, timeout=30, headers={'User-Agent': 'Vecto/1.0'})
+        response.raise_for_status()
+        return feedparser.parse(response.content)
+    except requests.exceptions.RequestException as e:
+        logger.error(f"HTTP Error fetching {feed_type} feed from {clean_url}: {e}", exc_info=True)
+        raise
 
 def commit_episode(podcast, pub_entry, sub_entry, match_reason, stdout, enhancer=None):
     """
@@ -310,7 +300,7 @@ def run_ingest(podcast, stdout, enhancer=None):
 
     sub_data = None
     if podcast.subscriber_feed_url:
-        sub_data = get_cached_feed(podcast.subscriber_feed_url, "PRIVATE", stdout)
+        sub_data = get_feed(podcast.subscriber_feed_url, "PRIVATE", stdout)
         if hasattr(sub_data, 'status') and sub_data.status == 401:
             logger.error(f"Auth Failed on Private Feed for podcast: {podcast.title}")
             stdout.write("[ERROR] Auth Failed on Private Feed.")
@@ -318,7 +308,7 @@ def run_ingest(podcast, stdout, enhancer=None):
 
     public_data = None
     if podcast.public_feed_url:
-        public_data = get_cached_feed(podcast.public_feed_url, "PUBLIC", stdout)
+        public_data = get_feed(podcast.public_feed_url, "PUBLIC", stdout)
 
     # 3. Dynamic Title & Artwork Extraction
     feed_image = ""

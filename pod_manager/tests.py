@@ -27,52 +27,52 @@ class ValidatePublicUrlTests(TestCase):
     """SSRF guard: only public, http(s) hosts are allowed through."""
 
     def test_rejects_empty_and_non_string(self):
-        self.assertEqual(views._validate_public_url('')[0], False)
-        self.assertEqual(views._validate_public_url(None)[0], False)
-        self.assertEqual(views._validate_public_url(12345)[0], False)
+        self.assertEqual(views.validate_public_url('')[0], False)
+        self.assertEqual(views.validate_public_url(None)[0], False)
+        self.assertEqual(views.validate_public_url(12345)[0], False)
 
     def test_rejects_non_http_schemes(self):
         for url in ['javascript:alert(1)', 'file:///etc/passwd', 'ftp://example.com', 'gopher://x']:
-            ok, _ = views._validate_public_url(url)
+            ok, _ = views.validate_public_url(url)
             self.assertFalse(ok, f"Expected reject for {url}")
 
     def test_rejects_loopback(self):
         for url in ['http://127.0.0.1/x', 'http://localhost/x', 'http://[::1]/x']:
-            ok, reason = views._validate_public_url(url)
+            ok, reason = views.validate_public_url(url)
             self.assertFalse(ok, f"Expected reject for {url}: {reason}")
 
     def test_rejects_aws_metadata(self):
         # 169.254.169.254 is link-local — primary cloud-metadata SSRF target.
-        ok, reason = views._validate_public_url('http://169.254.169.254/latest/meta-data/')
+        ok, reason = views.validate_public_url('http://169.254.169.254/latest/meta-data/')
         self.assertFalse(ok)
         self.assertIn('non-public', reason.lower())
 
     def test_rejects_private_ranges(self):
         for url in ['http://10.0.0.5/', 'http://192.168.1.1/', 'http://172.16.0.1/']:
-            ok, _ = views._validate_public_url(url)
+            ok, _ = views.validate_public_url(url)
             self.assertFalse(ok, f"Expected reject for {url}")
 
     def test_rejects_unresolvable_host(self):
-        ok, reason = views._validate_public_url('http://this-host-should-never-resolve.invalid/')
+        ok, reason = views.validate_public_url('http://this-host-should-never-resolve.invalid/')
         self.assertFalse(ok)
         self.assertIn('resolved', reason.lower())
 
     def test_accepts_public_url(self):
         # Use mock to avoid real DNS during CI.
-        with mock.patch('pod_manager.views.socket.getaddrinfo',
+        with mock.patch('pod_manager.utils.socket.getaddrinfo',
                         return_value=[(2, 1, 6, '', ('93.184.216.34', 0))]):
-            ok, _ = views._validate_public_url('https://example.com/path')
+            ok, _ = views.validate_public_url('https://example.com/path')
             self.assertTrue(ok)
 
     def test_dns_rebinding_defense(self):
         # If ANY resolved address is private, reject. Defends against a host
         # that resolves to a public address and a private address simultaneously.
-        with mock.patch('pod_manager.views.socket.getaddrinfo',
+        with mock.patch('pod_manager.utils.socket.getaddrinfo',
                         return_value=[
                             (2, 1, 6, '', ('93.184.216.34', 0)),
                             (2, 1, 6, '', ('10.0.0.1', 0)),
                         ]):
-            ok, _ = views._validate_public_url('https://shady.example.com/')
+            ok, _ = views.validate_public_url('https://shady.example.com/')
             self.assertFalse(ok)
 
 

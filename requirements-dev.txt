@@ -1,0 +1,9 @@
+# Dev/test-only dependencies. Install with:
+#   pip install -r requirements.txt -r requirements-dev.txt
+# Production images don't need these.
+
+-r requirements.txt
+
+# In-memory Redis stand-in for the analytics sweep tests so the suite
+# doesn't need a live Redis instance.
+fakeredis

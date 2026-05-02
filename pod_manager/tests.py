@@ -550,29 +550,47 @@ class AnalyticsSweepTests(TestCase):
     """
 
     def setUp(self):
-        import fakeredis
+        from django.conf import settings as django_settings
         self.user = User.objects.create_user(username='listener', email='listener@example.com')
         self.network = Network.objects.create(name='Net', slug='n')
         self.membership = NetworkMembership.objects.create(user=self.user, network=self.network)
-        self.fake = fakeredis.FakeRedis()
-        # Force the sweep onto a non-locmem cache so the early return doesn't
-        # fire, AND make redis.from_url return our fakeredis instance.
-        self._patches = [
-            mock.patch.object(views, 'cache', cache),  # not strictly needed
-            mock.patch('pod_manager.tasks.redis.from_url', return_value=self.fake),
-            override_settings(CACHES={
-                'default': {
-                    'BACKEND': 'django.core.cache.backends.redis.RedisCache',
-                    'LOCATION': 'redis://fake:6379/0',
-                }
-            }),
-        ]
+
+        if django_settings.IS_IDE:
+            import fakeredis
+            self.fake = fakeredis.FakeRedis()
+            self._patches = [
+                mock.patch('pod_manager.tasks.redis.from_url', return_value=self.fake),
+                override_settings(CACHES={
+                    'default': {
+                        'BACKEND': 'django.core.cache.backends.redis.RedisCache',
+                        'LOCATION': 'redis://fake:6379/0',
+                    }
+                }),
+            ]
+        else:
+            import redis as redis_lib
+            redis_url = django_settings.CACHES['default']['LOCATION']
+            self.fake = redis_lib.from_url(redis_url)
+            self._clean_test_keys()
+            self._patches = [
+                mock.patch('pod_manager.tasks.redis.from_url', return_value=self.fake),
+            ]
+
         for p in self._patches:
             p.enable() if hasattr(p, 'enable') else p.__enter__()
 
     def tearDown(self):
         for p in reversed(self._patches):
             p.disable() if hasattr(p, 'disable') else p.__exit__(None, None, None)
+        from django.conf import settings as django_settings
+        if not django_settings.IS_IDE:
+            self._clean_test_keys()
+
+    def _clean_test_keys(self):
+        for pattern in [b'billing:active:*', b'analytics:rss:*']:
+            keys = self.fake.keys(pattern)
+            if keys:
+                self.fake.delete(*keys)
 
     def test_billing_active_updates_last_active_date(self):
         from pod_manager.tasks import sweep_analytics_buffer

@@ -555,27 +555,28 @@ class AnalyticsSweepTests(TestCase):
         self.network = Network.objects.create(name='Net', slug='n')
         self.membership = NetworkMembership.objects.create(user=self.user, network=self.network)
 
+        import os
         if django_settings.IS_IDE:
             import fakeredis
             self.fake = fakeredis.FakeRedis()
-            self._patches = [
-                mock.patch('pod_manager.tasks.redis.from_url', return_value=self.fake),
-                override_settings(CACHES={
-                    'default': {
-                        'BACKEND': 'django.core.cache.backends.redis.RedisCache',
-                        'LOCATION': 'redis://fake:6379/0',
-                    }
-                }),
-            ]
+            redis_location = 'redis://fake:6379/0'
         else:
-            import os
             import redis as redis_lib
-            redis_url = os.getenv('REDIS_URL', 'redis://redis:6379/0')
-            self.fake = redis_lib.from_url(redis_url)
+            redis_location = os.getenv('REDIS_URL', 'redis://redis:6379/0')
+            self.fake = redis_lib.from_url(redis_location)
             self._clean_test_keys()
-            self._patches = [
-                mock.patch('pod_manager.tasks.redis.from_url', return_value=self.fake),
-            ]
+
+        # override_settings(CACHES=...) is required in both branches: the task reads
+        # settings.CACHES['default']['BACKEND'] directly and bails early on locmem.
+        self._patches = [
+            mock.patch('pod_manager.tasks.redis.from_url', return_value=self.fake),
+            override_settings(CACHES={
+                'default': {
+                    'BACKEND': 'django.core.cache.backends.redis.RedisCache',
+                    'LOCATION': redis_location,
+                }
+            }),
+        ]
 
         for p in self._patches:
             p.enable() if hasattr(p, 'enable') else p.__enter__()

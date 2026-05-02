@@ -100,7 +100,42 @@ class Command(BaseCommand):
                 logger.info(f"Synced {len(synced)} slash command(s) globally.")
             except Exception as e:
                 logger.error(f"Failed to sync slash commands: {e}")
+            await _sync_bot_avatar(bot)
             logger.info("=======================================================")
+
+        async def _sync_bot_avatar(bot):
+            """Set the bot's avatar to the configured network's guild icon.
+            Uses the same Network.discord_server_id source as the Celery task
+            so both paths stay consistent."""
+            @sync_to_async
+            def get_configured_guild_id():
+                from pod_manager.models import Network
+                network = Network.objects.exclude(
+                    discord_server_id__isnull=True
+                ).exclude(discord_server_id__exact='').first()
+                return int(network.discord_server_id) if network else None
+
+            guild_id = await get_configured_guild_id()
+            if not guild_id:
+                logger.info("[VECTO BOT] No network with a Discord server ID configured, skipping avatar sync.")
+                return
+
+            guild = bot.get_guild(guild_id)
+            if not guild or not guild.icon:
+                logger.info(f"[VECTO BOT] Guild {guild_id} not found or has no icon, skipping avatar sync.")
+                return
+
+            icon_hash = guild.icon.key
+            if bot.user.avatar and bot.user.avatar.key == icon_hash:
+                logger.info(f"[VECTO BOT] Avatar already matches guild icon ({icon_hash[:8]}…), skipping upload.")
+                return
+
+            try:
+                avatar_bytes = await guild.icon.read()
+                await bot.user.edit(avatar=avatar_bytes)
+                logger.info(f"[VECTO BOT] Avatar updated to match '{guild.name}' server icon.")
+            except discord.errors.HTTPException as e:
+                logger.warning(f"[VECTO BOT] Avatar update failed (rate-limited or forbidden): {e}")
 
         @bot.tree.error
         async def on_app_command_error(interaction: discord.Interaction, error: app_commands.AppCommandError):

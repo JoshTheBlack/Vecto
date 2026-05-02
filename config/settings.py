@@ -322,5 +322,12 @@ CELERY_ACCEPT_CONTENT = ['json']
 CELERY_TASK_SERIALIZER = 'json'
 CELERY_TIMEZONE = TIME_ZONE
 
+CELERY_BEAT_SCHEDULE = {
+    'sync-bot-avatar-hourly': {
+        'task': 'pod_manager.tasks.task_sync_bot_avatar',
+        'schedule': 3600,  # seconds
+    },
+}
+
 # Django Celery Beat for Scheduled Tasks
 INSTALLED_APPS += ['django_celery_beat']

@@ -18,7 +18,7 @@ from django.utils import timezone
 
 from pod_manager import views
 from pod_manager.models import (
-    Network, PatronProfile, Podcast, Episode, NetworkMembership, NetworkMix
+    Network, PatronProfile, Podcast, Episode, NetworkMembership, NetworkMix, UserMix
 )
 
 
@@ -387,6 +387,117 @@ class FeedEtagStabilityTests(TestCase):
         cache.delete(f"feed_shell_private_{self.podcast.id}")
         second = get_etag()
         self.assertEqual(first, second)
+
+    def test_public_feed_returns_304_on_etag_match(self):
+        req = _make_tenant_request(self.factory, self.network, path='/feed/')
+        resp = views.generate_public_feed(req, podcast_slug='show')
+        etag = resp.get('ETag')
+        self.assertIsNotNone(etag)
+        self.assertEqual(resp.status_code, 200)
+
+        req2 = _make_tenant_request(self.factory, self.network, path='/feed/')
+        req2.META['HTTP_IF_NONE_MATCH'] = etag
+        resp2 = views.generate_public_feed(req2, podcast_slug='show')
+        self.assertEqual(resp2.status_code, 304)
+        self.assertEqual(len(resp2.content), 0)
+
+    def test_custom_feed_returns_304_on_etag_match(self):
+        user = User.objects.create_user(username='listener')
+        profile = PatronProfile.objects.create(user=user, patreon_id=None)
+        NetworkMembership.objects.create(user=user, network=self.network)
+
+        def make_req(etag=None):
+            req = self.factory.get('/feed/', {
+                'auth': str(profile.feed_token),
+                'show': 'show',
+            })
+            req.network = self.network
+            if etag:
+                req.META['HTTP_IF_NONE_MATCH'] = etag
+            return req
+
+        resp = views.generate_custom_feed(make_req())
+        etag = resp.get('ETag')
+        self.assertIsNotNone(etag)
+        self.assertEqual(resp.status_code, 200)
+
+        resp2 = views.generate_custom_feed(make_req(etag))
+        self.assertEqual(resp2.status_code, 304)
+        self.assertEqual(len(resp2.content), 0)
+
+    # ── UserMix feed ──────────────────────────────────────────────────────
+
+    def _make_user_mix(self):
+        user = User.objects.create_user(username='mixowner')
+        profile = PatronProfile.objects.create(user=user, patreon_id=None)
+        NetworkMembership.objects.create(user=user, network=self.network)
+        mix = UserMix.objects.create(
+            user=user, network=self.network, name='My Mix', is_active=True
+        )
+        mix.selected_podcasts.add(self.podcast)
+        return mix, profile
+
+    def _mix_req(self, mix, profile, etag=None):
+        req = self.factory.get(
+            f'/feed/mix/{mix.unique_id}',
+            {'auth': str(profile.feed_token)},
+        )
+        if etag:
+            req.META['HTTP_IF_NONE_MATCH'] = etag
+        return req
+
+    def test_user_mix_feed_etag_stable_across_shell_cache_rebuild(self):
+        mix, profile = self._make_user_mix()
+        first = views.generate_mix_feed(self._mix_req(mix, profile), unique_id=mix.unique_id).get('ETag')
+        cache.delete(f"shell_user_mix_{mix.id}")
+        second = views.generate_mix_feed(self._mix_req(mix, profile), unique_id=mix.unique_id).get('ETag')
+        self.assertIsNotNone(first)
+        self.assertEqual(first, second, "UserMix ETag must not change when the shell cache is rebuilt.")
+
+    def test_user_mix_feed_returns_304_on_etag_match(self):
+        mix, profile = self._make_user_mix()
+        resp = views.generate_mix_feed(self._mix_req(mix, profile), unique_id=mix.unique_id)
+        etag = resp.get('ETag')
+        self.assertIsNotNone(etag)
+        self.assertEqual(resp.status_code, 200)
+
+        resp2 = views.generate_mix_feed(self._mix_req(mix, profile, etag=etag), unique_id=mix.unique_id)
+        self.assertEqual(resp2.status_code, 304)
+        self.assertEqual(len(resp2.content), 0)
+
+    # ── NetworkMix feed ───────────────────────────────────────────────────
+
+    def _make_network_mix(self):
+        mix = NetworkMix.objects.create(
+            network=self.network, name='Net Mix', slug='netmix', required_tier=None
+        )
+        mix.selected_podcasts.add(self.podcast)
+        return mix
+
+    def _net_mix_req(self, etag=None):
+        req = _make_tenant_request(self.factory, self.network, path='/feed/n/mix/netmix/')
+        if etag:
+            req.META['HTTP_IF_NONE_MATCH'] = etag
+        return req
+
+    def test_network_mix_feed_etag_stable_across_shell_cache_rebuild(self):
+        mix = self._make_network_mix()
+        first = views.generate_network_mix_feed(self._net_mix_req(), network_slug='n', mix_slug='netmix').get('ETag')
+        cache.delete(f"shell_net_mix_{mix.id}")
+        second = views.generate_network_mix_feed(self._net_mix_req(), network_slug='n', mix_slug='netmix').get('ETag')
+        self.assertIsNotNone(first)
+        self.assertEqual(first, second, "NetworkMix ETag must not change when the shell cache is rebuilt.")
+
+    def test_network_mix_feed_returns_304_on_etag_match(self):
+        self._make_network_mix()
+        resp = views.generate_network_mix_feed(self._net_mix_req(), network_slug='n', mix_slug='netmix')
+        etag = resp.get('ETag')
+        self.assertIsNotNone(etag)
+        self.assertEqual(resp.status_code, 200)
+
+        resp2 = views.generate_network_mix_feed(self._net_mix_req(etag=etag), network_slug='n', mix_slug='netmix')
+        self.assertEqual(resp2.status_code, 304)
+        self.assertEqual(len(resp2.content), 0)
 
 
 @override_settings(CACHES=TEST_CACHES)

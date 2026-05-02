@@ -462,3 +462,82 @@ def task_sync_discord_avatar(discord_id, membership_id):
             logger.error(f"Failed to fetch Discord user {discord_id}: {res.status_code} - {res.text}")
     except Exception as e:
         logger.error(f"Error fetching Discord avatar for {discord_id}: {e}", exc_info=True)
+
+
+@shared_task
+def task_sync_bot_avatar():
+    """Check if any linked Discord server's icon has changed and update the
+    bot's avatar via the REST API. Runs hourly via Celery Beat.
+    Uses a cached icon hash to skip the upload when nothing changed, staying
+    well within Discord's ~2 avatar edits per hour rate limit."""
+    import base64
+    import requests
+
+    bot_token = settings.DISCORD_BOT_TOKEN
+    if not bot_token:
+        logger.warning("[BotAvatarSync] DISCORD_BOT_TOKEN not set, skipping.")
+        return
+
+    network = Network.objects.exclude(
+        discord_server_id__isnull=True
+    ).exclude(discord_server_id__exact='').first()
+    if not network:
+        logger.info("[BotAvatarSync] No network with a Discord server ID found, skipping.")
+        return
+
+    guild_id = network.discord_server_id
+    headers = {'Authorization': f'Bot {bot_token}'}
+
+    try:
+        guild_resp = requests.get(
+            f'https://discord.com/api/v10/guilds/{guild_id}',
+            headers=headers, timeout=10,
+        )
+    except Exception as e:
+        logger.error(f"[BotAvatarSync] Failed to reach Discord API: {e}")
+        return
+
+    if guild_resp.status_code != 200:
+        logger.warning(f"[BotAvatarSync] Guild fetch returned {guild_resp.status_code}.")
+        return
+
+    icon_hash = guild_resp.json().get('icon')
+    if not icon_hash:
+        logger.info("[BotAvatarSync] Guild has no server icon, skipping.")
+        return
+
+    cache_key = 'bot_avatar_icon_hash'
+    if cache.get(cache_key) == icon_hash:
+        logger.debug("[BotAvatarSync] Icon unchanged, no upload needed.")
+        return
+
+    ext = 'gif' if icon_hash.startswith('a_') else 'png'
+    icon_url = f'https://cdn.discordapp.com/icons/{guild_id}/{icon_hash}.{ext}?size=256'
+    try:
+        icon_resp = requests.get(icon_url, timeout=10)
+        icon_resp.raise_for_status()
+    except Exception as e:
+        logger.error(f"[BotAvatarSync] Failed to download guild icon: {e}")
+        return
+
+    mime = 'image/gif' if ext == 'gif' else 'image/png'
+    avatar_data_uri = f"data:{mime};base64,{base64.b64encode(icon_resp.content).decode()}"
+
+    try:
+        patch_resp = requests.patch(
+            'https://discord.com/api/v10/users/@me',
+            headers={**headers, 'Content-Type': 'application/json'},
+            json={'avatar': avatar_data_uri},
+            timeout=10,
+        )
+    except Exception as e:
+        logger.error(f"[BotAvatarSync] Failed to reach Discord API for avatar update: {e}")
+        return
+
+    if patch_resp.status_code == 200:
+        cache.set(cache_key, icon_hash, timeout=None)
+        logger.info(f"[BotAvatarSync] Bot avatar updated to icon hash {icon_hash[:8]}…")
+    elif patch_resp.status_code == 429:
+        logger.warning("[BotAvatarSync] Rate-limited by Discord, will retry next hour.")
+    else:
+        logger.error(f"[BotAvatarSync] Avatar update failed: {patch_resp.status_code} {patch_resp.text}")

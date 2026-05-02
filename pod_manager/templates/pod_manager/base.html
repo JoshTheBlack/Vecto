@@ -230,7 +230,7 @@
                 {% if current_network.theme_config.logo_url %}
                     <img src="{{ current_network.theme_config.logo_url }}" alt="Logo" class="d-inline-block align-text-top rounded me-2" style="height: 32px; width: auto;">
                 {% elif current_network.logo_url %}
-                    <img src="{{ current_network.logo_url }}" alt="Logo" class="d-inline-block align-text-top rounded border border-secondary shadow-sm me-2" style="height: 32px; width: 32px; object-fit: cover;">
+                    <img src="{{ current_network.logo_url }}" alt="Logo" class="d-inline-block align-text-top rounded border border-secondary shadow-sm me-2" style="height: 32px; width: auto;">
                 {% else %}
                     <i class="bi bi-broadcast me-2 text-warning"></i>
                 {% endif %}

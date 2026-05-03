@@ -22,16 +22,13 @@ from ..models import PatronProfile, NetworkMembership, Network
 logger = logging.getLogger(__name__)
 
 
-def _sync_patron_profile(user, user_data, included_data, current_network=None):
-    logger.info(f"[_sync_patron_profile] Starting sync for user: {user.email} (ID: {user.id})")
-
+def update_global_profile_from_patreon(user, user_data) -> 'PatronProfile':
+    """Creates or updates the global PatronProfile from a Patreon identity payload."""
     patreon_id = user_data.get('id')
     attributes = user_data.get('attributes', {})
-    logger.debug(f"[_sync_patron_profile] Extracted Patreon ID: {patreon_id}")
 
-    # 1. Update Global Profile
     profile, created = PatronProfile.objects.get_or_create(user=user, defaults={'patreon_id': patreon_id})
-    logger.debug(f"[_sync_patron_profile] PatronProfile created: {created}")
+    logger.debug(f"[Patreon Sync] PatronProfile {'created' if created else 'found'} for {user.email}")
 
     profile.profile_image_url = attributes.get('image_url')
     socials = attributes.get('social_connections', {}) or {}
@@ -41,73 +38,86 @@ def _sync_patron_profile(user, user_data, included_data, current_network=None):
     if profile.patreon_id != patreon_id:
         profile.patreon_id = patreon_id
     profile.save()
-    logger.info("[_sync_patron_profile] Global profile saved successfully.")
+    logger.info(f"[Patreon Sync] Global profile saved for {user.email}")
+    return profile
 
-    # Even if they pay $0, they are now a registered free listener on this network.
+
+def apply_membership_updates(profile, included_data, current_network=None) -> set:
+    """Walks the Patreon included payload, writes NetworkMembership rows, and
+    returns the set of campaign IDs seen in this response."""
+    user = profile.user
+
+    # Even $0 patrons become registered free listeners on the current network.
     if current_network:
-        _, mem_created = NetworkMembership.objects.get_or_create(user=user, network=current_network)
-        logger.info(f"[_sync_patron_profile] Default NetworkMembership for '{current_network.name}' ensured (Created: {mem_created}).")
+        _, created = NetworkMembership.objects.get_or_create(user=user, network=current_network)
+        logger.info(f"[Patreon Sync] Default membership for '{current_network.name}' ensured (created={created})")
 
-    # Exclude empty strings to prevent dictionary overwrite bugs!
-    known_campaigns = {str(n.patreon_campaign_id): n for n in Network.objects.exclude(patreon_campaign_id__isnull=True).exclude(patreon_campaign_id__exact='')}
-    logger.info(f"[_sync_patron_profile] Known campaigns loaded: {list(known_campaigns.keys())}")
+    # Exclude empty strings to prevent dictionary overwrite bugs.
+    known_campaigns = {
+        str(n.patreon_campaign_id): n
+        for n in Network.objects.exclude(patreon_campaign_id__isnull=True).exclude(patreon_campaign_id__exact='')
+    }
+    logger.info(f"[Patreon Sync] Known campaigns: {list(known_campaigns.keys())}")
 
-    seen_campaigns = set()
-    logger.debug(f"[_sync_patron_profile] Scanning {len(included_data)} items in included_data...")
+    seen_campaigns: set = set()
 
     for item in included_data:
-        if item.get('type') == 'member':
-            attrs = item.get('attributes', {})
-            campaign_data = item.get('relationships', {}).get('campaign', {}).get('data', {})
+        if item.get('type') != 'member':
+            continue
+        attrs = item.get('attributes', {})
+        campaign_data = item.get('relationships', {}).get('campaign', {}).get('data', {})
 
-            logger.debug(f"[_sync_patron_profile] Found 'member' item. Status: '{attrs.get('patron_status')}', Cents: {attrs.get('currently_entitled_amount_cents')}")
+        if not campaign_data:
+            logger.warning("[Patreon Sync] Skipping member item: no campaign relationship data.")
+            continue
 
-            if campaign_data:
-                campaign_id = str(campaign_data.get('id'))
-                logger.debug(f"[_sync_patron_profile] Member item is attached to Campaign ID: {campaign_id}")
+        campaign_id = str(campaign_data.get('id'))
+        if campaign_id not in known_campaigns:
+            logger.warning(f"[Patreon Sync] Ignoring campaign ID '{campaign_id}' — not in our database.")
+            continue
 
-                if campaign_id in known_campaigns:
-                    seen_campaigns.add(campaign_id)
-                    network = known_campaigns[campaign_id]
-                    logger.info(f"[_sync_patron_profile] Campaign MATCH! Mapping to Network: '{network.name}'")
+        seen_campaigns.add(campaign_id)
+        network = known_campaigns[campaign_id]
+        membership, _ = NetworkMembership.objects.get_or_create(user=user, network=network)
 
-                    membership, mem_created = NetworkMembership.objects.get_or_create(user=user, network=network)
+        if attrs.get('patron_status') == 'active_patron':
+            cents = attrs.get('currently_entitled_amount_cents', 0)
+            membership.patreon_pledge_cents = cents
+            membership.is_active_patron = True
+            start_date_str = attrs.get('pledge_relationship_start')
+            if start_date_str:
+                try:
+                    membership.patreon_join_date = timezone.datetime.fromisoformat(start_date_str.replace('Z', '+00:00'))
+                except Exception as e:
+                    logger.error(f"[Patreon Sync] Date parsing failed for {network.name}: {e}")
+            logger.info(f"[Patreon Sync] Active pledge on '{network.name}': {cents} cents")
+        else:
+            membership.patreon_pledge_cents = 0
+            membership.is_active_patron = False
+            logger.info(f"[Patreon Sync] Inactive status '{attrs.get('patron_status')}' on '{network.name}' — zeroing pledge")
 
-                    if attrs.get('patron_status') == 'active_patron':
-                        cents = attrs.get('currently_entitled_amount_cents', 0)
-                        logger.info(f"[_sync_patron_profile] Applying ACTIVE pledge to '{network.name}': {cents} cents.")
-                        membership.patreon_pledge_cents = cents
-                        membership.is_active_patron = True
+        membership.save()
 
-                        start_date_str = attrs.get('pledge_relationship_start')
-                        if start_date_str:
-                            try:
-                                membership.patreon_join_date = timezone.datetime.fromisoformat(start_date_str.replace('Z', '+00:00'))
-                            except Exception as e:
-                                logger.error(f"[_sync_patron_profile] Date parsing failed: {e}")
-                    else:
-                        logger.info(f"[_sync_patron_profile] Patron status is '{attrs.get('patron_status')}'. Setting {network.name} pledge to 0.")
-                        membership.patreon_pledge_cents = 0
-                        membership.is_active_patron = False
+    return seen_campaigns
 
-                    membership.save()
-                else:
-                    logger.warning(f"[_sync_patron_profile] Ignoring member item: Campaign ID '{campaign_id}' is NOT in our database.")
-            else:
-                logger.warning("[_sync_patron_profile] Ignoring member item: No campaign relationship data found.")
 
-    logger.info(f"[_sync_patron_profile] Checking for stale memberships. Seen campaigns: {list(seen_campaigns)}")
-
-    # Check if the user has any active memberships that were NOT confirmed in this API response
+def revoke_stale_memberships(user, seen_campaign_ids: set):
+    """Revokes any active memberships for campaigns not present in this response."""
     for mem in NetworkMembership.objects.filter(user=user, is_active_patron=True):
         camp_id = str(mem.network.patreon_campaign_id)
-        if camp_id not in seen_campaigns:
-            logger.info(f"[_sync_patron_profile] REVOKING stale membership for '{mem.network.name}' (Campaign ID '{camp_id}' was not in API response).")
+        if camp_id not in seen_campaign_ids:
+            logger.info(f"[Patreon Sync] Revoking stale membership: '{mem.network.name}' (campaign {camp_id} absent from response)")
             mem.is_active_patron = False
             mem.patreon_pledge_cents = 0
             mem.save()
 
-    logger.info("[_sync_patron_profile] Sync complete.")
+
+def _sync_patron_profile(user, user_data, included_data, current_network=None):
+    logger.info(f"[Patreon Sync] Starting sync for {user.email}")
+    profile = update_global_profile_from_patreon(user, user_data)
+    seen_campaigns = apply_membership_updates(profile, included_data, current_network)
+    revoke_stale_memberships(user, seen_campaigns)
+    logger.info(f"[Patreon Sync] Sync complete for {user.email}")
     return profile
 
 

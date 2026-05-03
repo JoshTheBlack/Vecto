@@ -18,7 +18,8 @@ from django.utils import timezone
 
 from pod_manager import views
 from pod_manager.models import (
-    Network, PatronProfile, Podcast, Episode, NetworkMembership, NetworkMix, UserMix
+    Network, PatronProfile, Podcast, Episode, NetworkMembership, NetworkMix, UserMix,
+    EpisodeEditSuggestion,
 )
 
 
@@ -269,7 +270,12 @@ class RecurlyOtpAttemptTests(TestCase):
         from django.contrib.sessions.backends.cache import SessionStore
         req.session = SessionStore()
         req.session.create()
-        req.session['pending_otp_email'] = 'victim@example.com'
+        req.session['recurly_login'] = {
+            'state': 'awaiting_email',
+            'email': 'victim@example.com',
+            'account_id': 'acct_1',
+            'is_second_factor': False,
+        }
         req.session.save()
         from django.contrib.messages.storage.fallback import FallbackStorage
         setattr(req, '_messages', FallbackStorage(req))
@@ -285,7 +291,7 @@ class RecurlyOtpAttemptTests(TestCase):
 
     def test_correct_otp_still_works_within_attempts(self):
         # Two wrong guesses, then the right one — should still succeed.
-        with mock.patch('pod_manager.views.recurly.Client') as mock_client_cls:
+        with mock.patch('pod_manager.services.recurly.Client') as mock_client_cls:
             # Stub list_account_subscriptions so the success path doesn't blow up.
             mock_client_cls.return_value.list_account_subscriptions.return_value.items.return_value = iter([])
 
@@ -811,3 +817,505 @@ class PatreonStateForgeryTests(TestCase):
         req = self._callback(state=forged)
         views.patreon_callback(req)
         mock_link.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Creator settings: inbox action handlers (approve / reject)
+# ---------------------------------------------------------------------------
+
+@override_settings(CACHES=TEST_CACHES)
+class CreatorInboxActionTests(TestCase):
+    """_handle_inbox_action: approve_edit and reject_edit branches."""
+
+    def setUp(self):
+        cache.clear()
+        self.factory = RequestFactory()
+        self.owner = User.objects.create_user(username='owner')
+        self.submitter = User.objects.create_user(username='submitter')
+        # High threshold so submitter never auto-approves
+        self.network = Network.objects.create(name='Net', slug='n', auto_approve_trust_threshold=999)
+        self.network.owners.add(self.owner)
+        self.podcast = Podcast.objects.create(network=self.network, title='Show', slug='show')
+        self.episode = Episode.objects.create(
+            podcast=self.podcast, title='Original Title', pub_date=timezone.now(),
+            raw_description='hi', clean_description='<p>hi</p>',
+            audio_url_public='https://cdn.example.com/a.mp3',
+            tags=['tag1'], chapters_public=[],
+        )
+        self.membership = NetworkMembership.objects.create(
+            user=self.submitter, network=self.network, trust_score=5,
+        )
+
+    def _make_pending_edit(self):
+        return EpisodeEditSuggestion.objects.create(
+            episode=self.episode, user=self.submitter, status='pending',
+            original_data={
+                'title': self.episode.title,
+                'description': self.episode.clean_description,
+                'tags': list(self.episode.tags or []),
+                'chapters': self.episode.chapters_public or [],
+            },
+            suggested_data={
+                'title': 'New Title',
+                'description': '<p>new desc</p>',
+                'tags': ['tag2'],
+                'chapters': [],
+            },
+        )
+
+    def _post(self, data):
+        req = _make_tenant_request(self.factory, self.network,
+                                   method='post', path='/creator/',
+                                   data=data, user=self.owner)
+        return views.creator_settings(req)
+
+    def test_approve_title_grants_trust_locks_episode(self):
+        edit = self._make_pending_edit()
+        self._post({
+            'action': 'approve_edit',
+            'edit_id': edit.id,
+            'approve_title': 'on',
+            'edited_title': 'New Title',
+        })
+        self.episode.refresh_from_db()
+        self.assertEqual(self.episode.title, 'New Title')
+        self.assertTrue(self.episode.is_metadata_locked)
+        edit.refresh_from_db()
+        self.assertEqual(edit.status, 'approved')
+        self.membership.refresh_from_db()
+        self.assertEqual(self.membership.trust_score, 6)  # +1
+
+    def test_approve_zero_fields_converts_to_rejection_and_penalizes(self):
+        edit = self._make_pending_edit()
+        # No approve_* checkboxes → zero points
+        self._post({'action': 'approve_edit', 'edit_id': edit.id})
+        edit.refresh_from_db()
+        self.assertEqual(edit.status, 'rejected')
+        self.membership.refresh_from_db()
+        self.assertEqual(self.membership.trust_score, 3)  # -2
+
+    def test_approve_three_fields_applies_perfect_sweep_bonus(self):
+        import json as _json
+        edit = self._make_pending_edit()
+        self._post({
+            'action': 'approve_edit',
+            'edit_id': edit.id,
+            'approve_title': 'on',
+            'edited_title': 'New Title',
+            'approve_description': 'on',
+            'edited_description': '<p>new desc</p>',
+            'approve_tags': 'on',
+            'edited_tags': _json.dumps(['tag2']),
+        })
+        self.membership.refresh_from_db()
+        # 3 fields approved → 3 points + 2 perfect-sweep bonus = 5
+        self.assertEqual(self.membership.trust_score, 10)
+
+    def test_reject_edit_penalizes_trust_and_marks_rejected(self):
+        edit = self._make_pending_edit()
+        self._post({'action': 'reject_edit', 'edit_id': edit.id})
+        edit.refresh_from_db()
+        self.assertEqual(edit.status, 'rejected')
+        self.membership.refresh_from_db()
+        self.assertEqual(self.membership.trust_score, 3)  # -2
+
+
+# ---------------------------------------------------------------------------
+# Creator settings: rollback handlers
+# ---------------------------------------------------------------------------
+
+@override_settings(CACHES=TEST_CACHES)
+class CreatorRollbackTests(TestCase):
+    """rollback_single_edit and bulk_rollback branches of _handle_rollback."""
+
+    def setUp(self):
+        cache.clear()
+        self.factory = RequestFactory()
+        self.owner = User.objects.create_user(username='owner')
+        self.spammer = User.objects.create_user(username='spammer')
+        self.network = Network.objects.create(name='Net', slug='n')
+        self.network.owners.add(self.owner)
+        self.podcast = Podcast.objects.create(network=self.network, title='Show', slug='show')
+        self.episode = Episode.objects.create(
+            podcast=self.podcast, title='Vandalized', pub_date=timezone.now(),
+            raw_description='x', clean_description='x',
+            audio_url_public='https://cdn.example.com/a.mp3',
+        )
+        self.membership = NetworkMembership.objects.create(
+            user=self.spammer, network=self.network, trust_score=20, edits_title=1,
+        )
+
+    def _post(self, data):
+        req = _make_tenant_request(self.factory, self.network,
+                                   method='post', path='/creator/',
+                                   data=data, user=self.owner)
+        return views.creator_settings(req)
+
+    def _approved_edit(self, episode, original_title, resolved_at=None):
+        return EpisodeEditSuggestion.objects.create(
+            episode=episode, user=self.spammer, status='approved',
+            original_data={'title': original_title, 'description': 'x', 'tags': [], 'chapters': []},
+            suggested_data={'title': 'Vandalized', 'description': 'x', 'tags': [], 'chapters': []},
+            resolved_at=resolved_at or timezone.now(),
+        )
+
+    def test_rollback_blocked_when_newer_approved_edit_exists(self):
+        base = timezone.now()
+        older = self._approved_edit(self.episode, 'Original', resolved_at=base)
+        self._approved_edit(self.episode, 'Middle',
+                            resolved_at=base + timedelta(seconds=30))
+
+        self._post({'action': 'rollback_single_edit', 'edit_id': older.id})
+
+        older.refresh_from_db()
+        self.assertEqual(older.status, 'approved')  # Must not change
+
+    def test_rollback_single_restores_episode_and_penalizes_trust(self):
+        edit = self._approved_edit(self.episode, 'Original Title')
+
+        self._post({'action': 'rollback_single_edit', 'edit_id': edit.id})
+
+        self.episode.refresh_from_db()
+        self.assertEqual(self.episode.title, 'Original Title')
+        edit.refresh_from_db()
+        self.assertEqual(edit.status, 'rolled_back')
+        self.membership.refresh_from_db()
+        self.assertEqual(self.membership.trust_score, 15)  # -5
+
+    def test_bulk_rollback_reverts_all_edits_and_zeros_stats(self):
+        for i in range(3):
+            ep = Episode.objects.create(
+                podcast=self.podcast, title=f'Ep{i}', pub_date=timezone.now(),
+                raw_description='x', clean_description='x',
+                audio_url_public='https://cdn.example.com/a.mp3',
+            )
+            self._approved_edit(ep, f'Clean {i}')
+
+        self._post({'action': 'bulk_rollback', 'spammer_id': self.spammer.id})
+
+        self.membership.refresh_from_db()
+        self.assertEqual(self.membership.trust_score, 0)
+        self.assertEqual(self.membership.edits_chapters, 0)
+        reverted = EpisodeEditSuggestion.objects.filter(
+            user=self.spammer, status='rolled_back'
+        ).count()
+        self.assertEqual(reverted, 3)
+
+
+# ---------------------------------------------------------------------------
+# Creator settings: network and show management
+# ---------------------------------------------------------------------------
+
+@override_settings(CACHES=TEST_CACHES)
+class CreatorNetworkAndShowTests(TestCase):
+    """update_network, add_show, update_show action handlers."""
+
+    def setUp(self):
+        cache.clear()
+        self.factory = RequestFactory()
+        self.owner = User.objects.create_user(username='owner')
+        self.network = Network.objects.create(name='Net', slug='n')
+        self.network.owners.add(self.owner)
+
+    def _post(self, data):
+        req = _make_tenant_request(self.factory, self.network,
+                                   method='post', path='/creator/',
+                                   data=data, user=self.owner)
+        return views.creator_settings(req)
+
+    def test_update_network_invalid_json_does_not_save(self):
+        self.network.website_url = 'https://before.example.com'
+        self.network.save()
+        self._post({
+            'action': 'update_network',
+            'theme_config': '{invalid json}',
+            'website_url': 'https://after.example.com',
+            'patreon_campaign_id': '', 'default_image_url': '',
+            'ignored_title_tags': '', 'description_cut_triggers': '',
+            'footer_public': '', 'footer_private': '',
+        })
+        self.network.refresh_from_db()
+        self.assertEqual(self.network.website_url, 'https://before.example.com')
+
+    def test_update_network_valid_persists_fields(self):
+        import json as _json
+        self._post({
+            'action': 'update_network',
+            'theme_config': _json.dumps({'primary_color': '#abc'}),
+            'website_url': 'https://example.com',
+            'patreon_campaign_id': 'camp999',
+            'default_image_url': '', 'ignored_title_tags': '',
+            'description_cut_triggers': '',
+            'footer_public': 'Pub footer', 'footer_private': 'Priv footer',
+        })
+        self.network.refresh_from_db()
+        self.assertEqual(self.network.website_url, 'https://example.com')
+        self.assertEqual(self.network.patreon_campaign_id, 'camp999')
+        self.assertEqual(self.network.global_footer_public, 'Pub footer')
+        self.assertEqual(self.network.theme_config, {'primary_color': '#abc'})
+
+    def test_add_show_creates_podcast_and_redirects_to_auto_import(self):
+        resp = self._post({
+            'action': 'add_show',
+            'title': 'Brand New Show', 'slug': 'brand-new',
+            'tier_id': '',
+            'public_feed_url': 'https://feeds.example.com/show.rss',
+            'subscriber_feed_url': '',
+        })
+        self.assertEqual(resp.status_code, 302)
+        self.assertIn('auto_import=', resp['Location'])
+        self.assertTrue(Podcast.objects.filter(network=self.network, slug='brand-new').exists())
+
+    def test_update_show_persists_feed_url(self):
+        show = Podcast.objects.create(
+            network=self.network, title='S', slug='s',
+            public_feed_url='https://old.example.com/feed.rss',
+        )
+        self._post({
+            'action': 'update_show',
+            'show_id': show.id,
+            'public_feed_url': 'https://new.example.com/feed.rss',
+            'subscriber_feed_url': '',
+            'tier_id': '', 'show_footer_public': '', 'show_footer_private': '',
+        })
+        show.refresh_from_db()
+        self.assertEqual(show.public_feed_url, 'https://new.example.com/feed.rss')
+
+
+# ---------------------------------------------------------------------------
+# Creator settings: episode merge, split, move
+# ---------------------------------------------------------------------------
+
+@override_settings(CACHES=TEST_CACHES)
+class CreatorMergeAndMoveTests(TestCase):
+    """merge_episodes, split_episode, move_episodes handlers."""
+
+    def setUp(self):
+        cache.clear()
+        self.factory = RequestFactory()
+        self.owner = User.objects.create_user(username='owner')
+        self.network = Network.objects.create(name='Net', slug='n')
+        self.network.owners.add(self.owner)
+        self.podcast = Podcast.objects.create(network=self.network, title='P1', slug='p1')
+
+    def _ep(self, **kwargs):
+        defaults = dict(
+            podcast=self.podcast, pub_date=timezone.now(),
+            raw_description='x', clean_description='x',
+            audio_url_public='https://cdn.example.com/pub.mp3',
+        )
+        defaults.update(kwargs)
+        return Episode.objects.create(**defaults)
+
+    def _post(self, data):
+        req = _make_tenant_request(self.factory, self.network,
+                                   method='post', path='/creator/',
+                                   data=data, user=self.owner)
+        return views.creator_settings(req)
+
+    def test_merge_transfers_private_data_and_deletes_orphan(self):
+        pub_ep = self._ep(title='Public', guid_public='pub-guid')
+        priv_ep = self._ep(
+            title='Private', guid_private='priv-guid',
+            audio_url_subscriber='https://cdn.example.com/priv.mp3',
+        )
+        self._post({
+            'action': 'merge_episodes',
+            'public_episode_id': pub_ep.id,
+            'private_episode_id': priv_ep.id,
+        })
+        pub_ep.refresh_from_db()
+        self.assertEqual(pub_ep.guid_private, 'priv-guid')
+        self.assertEqual(pub_ep.audio_url_subscriber, 'https://cdn.example.com/priv.mp3')
+        self.assertFalse(Episode.objects.filter(id=priv_ep.id).exists())
+
+    def test_split_creates_new_episode_and_clears_private_data(self):
+        ep = self._ep(
+            title='Paired', guid_private='priv-guid',
+            audio_url_subscriber='https://cdn.example.com/priv.mp3',
+        )
+        self._post({'action': 'split_episode', 'episode_id': ep.id})
+
+        ep.refresh_from_db()
+        self.assertIsNone(ep.guid_private)
+        self.assertEqual(ep.audio_url_subscriber, '')
+        self.assertEqual(ep.match_reason, 'Manually Unpaired')
+        # A new episode with the same title must exist
+        self.assertEqual(Episode.objects.filter(podcast=self.podcast, title='Paired').count(), 2)
+
+    def test_move_episodes_to_existing_podcast(self):
+        target = Podcast.objects.create(network=self.network, title='Target', slug='target')
+        ep = self._ep(title='Traveller')
+        self._post({
+            'action': 'move_episodes',
+            'episode_ids': [ep.id],
+            'target_podcast_id': target.id,
+            'new_podcast_title': '', 'new_podcast_slug': '', 'new_podcast_tier_id': '',
+        })
+        ep.refresh_from_db()
+        self.assertEqual(ep.podcast_id, target.id)
+
+    def test_move_episodes_creates_new_podcast(self):
+        ep = self._ep(title='Traveller')
+        self._post({
+            'action': 'move_episodes',
+            'episode_ids': [ep.id],
+            'target_podcast_id': '',
+            'new_podcast_title': 'Brand New', 'new_podcast_slug': 'brand-new',
+            'new_podcast_tier_id': '',
+        })
+        ep.refresh_from_db()
+        new_pod = Podcast.objects.get(network=self.network, slug='brand-new')
+        self.assertEqual(ep.podcast_id, new_pod.id)
+
+    def test_move_episodes_missing_slug_redirects_with_error(self):
+        ep = self._ep(title='Traveller')
+        resp = self._post({
+            'action': 'move_episodes',
+            'episode_ids': [ep.id],
+            'target_podcast_id': '',
+            'new_podcast_title': 'Show Without Slug', 'new_podcast_slug': '',
+            'new_podcast_tier_id': '',
+        })
+        self.assertEqual(resp.status_code, 302)
+        self.assertIn('tab=move', resp['Location'])
+        ep.refresh_from_db()
+        self.assertEqual(ep.podcast_id, self.podcast.id)  # Unchanged
+
+    def test_move_episodes_duplicate_slug_redirects_with_error(self):
+        Podcast.objects.create(network=self.network, title='Existing', slug='exists')
+        ep = self._ep(title='Traveller')
+        resp = self._post({
+            'action': 'move_episodes',
+            'episode_ids': [ep.id],
+            'target_podcast_id': '',
+            'new_podcast_title': 'New Show', 'new_podcast_slug': 'exists',
+            'new_podcast_tier_id': '',
+        })
+        self.assertEqual(resp.status_code, 302)
+        self.assertIn('tab=move', resp['Location'])
+        ep.refresh_from_db()
+        self.assertEqual(ep.podcast_id, self.podcast.id)  # Unchanged
+
+
+# ---------------------------------------------------------------------------
+# gather_inbox conflict flags (tested directly, not through the full view)
+# ---------------------------------------------------------------------------
+
+class GatherInboxConflictFlagTests(TestCase):
+    """gather_inbox annotates each pending edit with conflict flags when the
+    live episode has changed since the user submitted their snapshot."""
+
+    def setUp(self):
+        from pod_manager.views.creator.data import gather_inbox as _gather_inbox
+        self._gather_inbox = _gather_inbox
+        self.submitter = User.objects.create_user(username='submitter')
+        self.network = Network.objects.create(name='Net', slug='n')
+        self.podcast = Podcast.objects.create(network=self.network, title='Show', slug='show')
+        self.episode = Episode.objects.create(
+            podcast=self.podcast, title='Current Title', pub_date=timezone.now(),
+            raw_description='x', clean_description='<p>current</p>',
+            audio_url_public='https://cdn.example.com/a.mp3',
+            tags=['tag-live'], chapters_public=[],
+        )
+
+    def _make_pending_edit(self, original_data):
+        return EpisodeEditSuggestion.objects.create(
+            episode=self.episode, user=self.submitter, status='pending',
+            original_data=original_data,
+            suggested_data={'title': 'X', 'description': 'X', 'tags': [], 'chapters': []},
+        )
+
+    def _pending_list(self):
+        return list(self._gather_inbox(self.network)['pending_edits'])
+
+    def test_no_conflict_when_episode_matches_snapshot(self):
+        self._make_pending_edit({
+            'title': 'Current Title', 'description': '<p>current</p>',
+            'tags': ['tag-live'], 'chapters': [],
+        })
+        edit = self._pending_list()[0]
+        self.assertFalse(edit.title_conflict)
+        self.assertFalse(edit.desc_conflict)
+        self.assertFalse(edit.tags_conflict)
+        self.assertFalse(edit.chapters_conflict)
+
+    def test_title_conflict_when_episode_changed_since_submission(self):
+        self._make_pending_edit({
+            'title': 'Old Title',  # episode is now 'Current Title'
+            'description': '<p>current</p>', 'tags': ['tag-live'], 'chapters': [],
+        })
+        edit = self._pending_list()[0]
+        self.assertTrue(edit.title_conflict)
+        self.assertFalse(edit.desc_conflict)
+
+    def test_tags_conflict_when_live_tags_differ_from_snapshot(self):
+        self._make_pending_edit({
+            'title': 'Current Title', 'description': '<p>current</p>',
+            'tags': ['tag-old'],  # episode has ['tag-live']
+            'chapters': [],
+        })
+        edit = self._pending_list()[0]
+        self.assertTrue(edit.tags_conflict)
+        self.assertFalse(edit.title_conflict)
+
+
+# ---------------------------------------------------------------------------
+# submit_episode_edit: untrusted (pending) path
+# ---------------------------------------------------------------------------
+
+class SubmitEpisodeEditPendingPathTests(TestCase):
+    """Untrusted users (trust_score < threshold) get 'pending' status.
+    The episode must NOT be mutated immediately."""
+
+    def setUp(self):
+        self.factory = RequestFactory()
+        self.user = User.objects.create_user(username='untrusted')
+        # threshold=100, user has score=0 → always pending
+        self.network = Network.objects.create(name='Net', slug='n', auto_approve_trust_threshold=100)
+        self.podcast = Podcast.objects.create(network=self.network, title='Show', slug='show')
+        self.episode = Episode.objects.create(
+            podcast=self.podcast, title='Original', pub_date=timezone.now(),
+            raw_description='hi', clean_description='<p>hi</p>',
+            audio_url_public='https://cdn.example.com/audio.mp3',
+        )
+        NetworkMembership.objects.create(user=self.user, network=self.network, trust_score=0)
+
+    def _submit(self, payload):
+        import json as _json
+        from django.contrib.messages.storage.fallback import FallbackStorage
+        from django.contrib.sessions.backends.cache import SessionStore
+        req = self.factory.post(
+            reverse('submit_episode_edit', args=[self.episode.id]),
+            data={'payload': _json.dumps(payload)},
+        )
+        req.user = self.user
+        req.network = self.network
+        req.session = SessionStore()
+        req.session.create()
+        setattr(req, '_messages', FallbackStorage(req))
+        return views.submit_episode_edit(req, self.episode.id)
+
+    def test_untrusted_edit_is_pending_and_episode_unchanged(self):
+        self._submit({
+            'title': 'Vandalized', 'description': '<p>bad</p>',
+            'tags': [], 'chapters': [],
+        })
+        suggestion = EpisodeEditSuggestion.objects.get(episode=self.episode)
+        self.assertEqual(suggestion.status, 'pending')
+        self.episode.refresh_from_db()
+        self.assertEqual(self.episode.title, 'Original')  # NOT mutated
+
+    def test_chapter_sanitization_skips_invalid_start_time(self):
+        """Chapters with non-numeric startTime must be silently dropped."""
+        self._submit({
+            'title': 'Ep', 'description': '<p>x</p>', 'tags': [],
+            'chapters': [
+                {'startTime': 0.0, 'title': 'Valid'},
+                {'startTime': 'not-a-number', 'title': 'Bad'},
+            ],
+        })
+        suggestion = EpisodeEditSuggestion.objects.get(episode=self.episode)
+        chaps = suggestion.suggested_data.get('chapters', {}).get('chapters', [])
+        self.assertEqual(len(chaps), 1)
+        self.assertEqual(chaps[0]['title'], 'Valid')

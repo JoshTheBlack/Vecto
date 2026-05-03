@@ -6,11 +6,30 @@ that need to be called from more than one entry point (views + ingesters).
 Don't dump unrelated helpers in here; if a function only has one caller, it
 should live next to that caller.
 """
+import functools
 import ipaddress
+import logging
 import socket
+import time
 import urllib.parse
 
 import nh3
+
+_diag_logger = logging.getLogger('pod_manager.diagnostic')
+
+
+def diagnostic_timer(label: str):
+    """Decorator: logs *label*, runs the function, logs elapsed time."""
+    def decorator(fn):
+        @functools.wraps(fn)
+        def wrapper(*args, **kwargs):
+            t = time.time()
+            _diag_logger.info(f"[DIAGNOSTIC] {label}...")
+            result = fn(*args, **kwargs)
+            _diag_logger.info(f"[DIAGNOSTIC] {label} done in {time.time() - t:.2f}s")
+            return result
+        return wrapper
+    return decorator
 
 
 # ---------------------------------------------------------------------------

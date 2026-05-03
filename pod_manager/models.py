@@ -348,6 +348,11 @@ class PatronProfile(models.Model):
     # than per-network. _evaluate_access reads from here.
     active_recurly_plans = models.JSONField(default=list, blank=True)
 
+    TOTP_REPLACE = 'replace'
+    TOTP_MFA = 'mfa'
+    TOTP_MODE_CHOICES = [('replace', 'Replace email OTP'), ('mfa', 'Require both (MFA)')]
+    totp_mode = models.CharField(max_length=10, choices=TOTP_MODE_CHOICES, default='replace')
+
     last_sync = models.DateTimeField(auto_now=True)
     feed_token = models.UUIDField(default=uuid.uuid4, editable=False, unique=True)
     

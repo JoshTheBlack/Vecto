@@ -30,6 +30,7 @@ urlpatterns = [
     path('episode/<int:episode_id>/edit/', views.submit_episode_edit, name='submit_episode_edit'),
     path('ajax/update_avatar_preference/', views.update_avatar_preference, name='update_avatar_preference'),
     path('ajax/upload_custom_avatar/', views.upload_custom_avatar, name='upload_custom_avatar'),
+    path('ajax/toggle_totp_mode/', views.toggle_totp_mode, name='toggle_totp_mode'),
     path('auth/totp/setup/', views.generate_qr_code, name='generate_qr_code'),
     path('auth/totp/verify/', views.verify_authenticator, name='verify_authenticator'),
     path('auth/totp/remove/', views.remove_authenticator, name='remove_authenticator'),

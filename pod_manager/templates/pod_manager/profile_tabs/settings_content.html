@@ -10,17 +10,72 @@
         </div>
         
         {% if has_active_totp %}
-            <p class="text-muted small mb-4">Your account is currently secured by an Authenticator App. {{ current_network.name }} will request a 6-digit code instead of sending an email when you log in.</p>
-            
+            <p class="text-muted small mb-3">Your account is secured by an Authenticator App.</p>
+
+            <div class="d-flex align-items-center justify-content-between p-3 rounded mb-3" style="background: rgba(0,0,0,0.2); border: 1px solid var(--bs-border-color);">
+                <div>
+                    <div class="fw-bold text-light mb-1">Multi-Factor Authentication (MFA)</div>
+                    <div class="text-muted small">
+                        {% if totp_mode == 'mfa' %}
+                            Both an emailed code <strong>and</strong> your authenticator are required to log in.
+                        {% else %}
+                            Your authenticator replaces the emailed code. Toggle on to require both.
+                        {% endif %}
+                    </div>
+                </div>
+                <div class="form-check form-switch ms-3 mb-0" style="min-width: 48px;">
+                    <input class="form-check-input" type="checkbox" role="switch" id="totpModeSwitch"
+                           style="width: 2.5em; height: 1.25em; cursor: pointer;"
+                           {% if totp_mode == 'mfa' %}checked{% endif %}>
+                </div>
+            </div>
+
+            <div id="totpModeStatus" class="small text-muted mb-3" style="min-height: 1.2em;"></div>
+
             <form method="POST" action="{% url 'remove_authenticator' %}">
                 {% csrf_token %}
                 <button type="submit" class="btn btn-outline-danger fw-bold">
                     <i class="bi bi-trash-fill me-2"></i> Remove / Reset Authenticator
                 </button>
             </form>
+
+            <script>
+            (function () {
+                const toggle = document.getElementById('totpModeSwitch');
+                const status = document.getElementById('totpModeStatus');
+
+                toggle.addEventListener('change', function () {
+                    const mode = this.checked ? 'mfa' : 'replace';
+                    const fd = new FormData();
+                    fd.append('mode', mode);
+                    fd.append('csrfmiddlewaretoken', '{{ csrf_token }}');
+
+                    fetch('{% url "toggle_totp_mode" %}', { method: 'POST', body: fd })
+                        .then(r => r.json())
+                        .then(data => {
+                            if (data.ok) {
+                                status.textContent = mode === 'mfa'
+                                    ? 'MFA enabled — both email and authenticator required.'
+                                    : 'Authenticator replaces email OTP.';
+                                status.style.color = 'var(--bs-success)';
+                            } else {
+                                toggle.checked = !toggle.checked;
+                                status.textContent = data.error || 'Could not save preference.';
+                                status.style.color = 'var(--bs-danger)';
+                            }
+                        })
+                        .catch(() => {
+                            toggle.checked = !toggle.checked;
+                            status.textContent = 'Network error. Please try again.';
+                            status.style.color = 'var(--bs-danger)';
+                        });
+                });
+            })();
+            </script>
+
         {% else %}
             <p class="text-muted small mb-4">Tired of waiting for email login links? Connect an Authenticator App (like Google Authenticator, Authy, or Apple Passwords) to log in instantly with a secure 6-digit code.</p>
-            
+
             <a href="{% url 'generate_qr_code' %}" class="btn btn-outline-success fw-bold">
                 <i class="bi bi-qr-code-scan me-2"></i> Set Up Authenticator
             </a>

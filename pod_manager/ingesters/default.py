@@ -7,7 +7,8 @@ from datetime import datetime
 from urllib.parse import urlparse
 from django.utils.timezone import make_aware
 from django.conf import settings
-from pod_manager.models import Podcast, Episode
+from django.core.cache import cache
+from pod_manager.models import Episode
 from pod_manager.tasks import task_rebuild_episode_fragments, task_rebuild_podcast_shell
 from pod_manager.utils import validate_public_url, sanitize_user_html
 from difflib import SequenceMatcher
@@ -171,18 +172,46 @@ def clean_html_description(html_content, network):
     # `|safe`. Sanitize on the way in so the DB stays clean.
     return sanitize_user_html(final_html)
 
-def get_feed(url, feed_type, stdout):
-    """Fetch and parse an RSS feed. Always live — no disk cache."""
+def get_feed(url, feed_type, podcast_id, stdout, force_fetch=False):
+    """Fetch and parse an RSS feed, utilizing ETags via Redis to save bandwidth."""
     parsed_url = urlparse(url)
     auth = (parsed_url.username, parsed_url.password) if parsed_url.username else None
     clean_url = parsed_url._replace(netloc=parsed_url.hostname).geturl()
 
+    # Define Redis keys based on the podcast ID
+    etag_key = f"inbound_etag_{feed_type}_{podcast_id}"
+    mod_key = f"inbound_modified_{feed_type}_{podcast_id}"
+    
+    headers = {'User-Agent': 'Vecto/1.0'}
+    
+    # Inject cache headers unless we are forced to download the body for merging
+    if not force_fetch:
+        cached_etag = cache.get(etag_key)
+        cached_mod = cache.get(mod_key)
+        if cached_etag: headers['If-None-Match'] = cached_etag
+        if cached_mod: headers['If-Modified-Since'] = cached_mod
+
     stdout.write(f"  [LIVE FETCH] Downloading {feed_type} feed...")
     logger.debug(f"Fetching live {feed_type} feed from {clean_url}")
+    
     try:
-        response = requests.get(clean_url, auth=auth, timeout=30, headers={'User-Agent': 'Vecto/1.0'})
+        response = requests.get(clean_url, auth=auth, timeout=30, headers=headers)
+        
+        # The HTTP 304 Check (Bandwidth Saver)
+        if response.status_code == 304:
+            stdout.write(f"  [{feed_type} FEED] 304 Not Modified.")
+            return 304  # Return a specific integer to signal a cached skip
+            
         response.raise_for_status()
+        
+        # Save the new cache headers to Redis (7 Days)
+        if response.headers.get('ETag'):
+            cache.set(etag_key, response.headers.get('ETag'), timeout=604800)
+        if response.headers.get('Last-Modified'):
+            cache.set(mod_key, response.headers.get('Last-Modified'), timeout=604800)
+
         return feedparser.parse(response.content)
+        
     except requests.exceptions.RequestException as e:
         logger.error(f"HTTP Error fetching {feed_type} feed from {clean_url}: {e}", exc_info=True)
         raise
@@ -299,16 +328,38 @@ def run_ingest(podcast, stdout, enhancer=None):
     stdout.write(f"--- Harvesting: {podcast.title} ---")
 
     sub_data = None
+    public_data = None
+    
+    # 1. Initial Conditional Fetch
     if podcast.subscriber_feed_url:
-        sub_data = get_feed(podcast.subscriber_feed_url, "PRIVATE", stdout)
+        sub_data = get_feed(podcast.subscriber_feed_url, "PRIVATE", podcast.id, stdout)
         if hasattr(sub_data, 'status') and sub_data.status == 401:
             logger.error(f"Auth Failed on Private Feed for podcast: {podcast.title}")
             stdout.write("[ERROR] Auth Failed on Private Feed.")
             return
 
-    public_data = None
     if podcast.public_feed_url:
-        public_data = get_feed(podcast.public_feed_url, "PUBLIC", stdout)
+        public_data = get_feed(podcast.public_feed_url, "PUBLIC", podcast.id, stdout)
+
+    # 2. Evaluate 304 Statuses
+    is_sub_304 = (sub_data == 304)
+    is_pub_304 = (public_data == 304)
+
+    # Exit entirely if all requested feeds returned 304 Not Modified
+    if (not podcast.subscriber_feed_url or is_sub_304) and (not podcast.public_feed_url or is_pub_304):
+        stdout.write("  [CACHE HIT] All feeds are unmodified. Skipping ingestion.")
+        logger.info(f"Ingestion skipped for {podcast.title} (304 Not Modified).")
+        return
+
+    # If one feed updated but the other didn't, we MUST force-fetch the 304 feed
+    # so we have both sets of XML entries in memory to execute the merge logic.
+    if is_sub_304 and podcast.subscriber_feed_url:
+        stdout.write("  [FORCE FETCH] Public feed updated. Forcing Private feed download for merge logic.")
+        sub_data = get_feed(podcast.subscriber_feed_url, "PRIVATE", podcast.id, stdout, force_fetch=True)
+        
+    if is_pub_304 and podcast.public_feed_url:
+        stdout.write("  [FORCE FETCH] Private feed updated. Forcing Public feed download for merge logic.")
+        public_data = get_feed(podcast.public_feed_url, "PUBLIC", podcast.id, stdout, force_fetch=True)
 
     # 3. Dynamic Title & Artwork Extraction
     feed_image = ""

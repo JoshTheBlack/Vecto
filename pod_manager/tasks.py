@@ -67,7 +67,6 @@ def task_smart_poll_feeds():
 
 @shared_task
 def task_ingest_feed(show_id):
-    from pod_manager.views import invalidate_show_cache
     task_id = f"import_logs_{show_id}"
     stream = CacheLogStream(task_id)
     try:
@@ -314,7 +313,7 @@ def sweep_analytics_buffer():
     
 @shared_task
 def task_sync_network_patrons(network_id):
-    from pod_manager.views import sync_network_patrons
+    from pod_manager.services.patreon import sync_network_patrons
     try:
         network = Network.objects.get(id=network_id)
         count, error = sync_network_patrons(network)
@@ -339,7 +338,7 @@ def task_clean_mix_images():
 @shared_task
 def task_rebuild_episode_fragments(episode_id, base_url):
     """Rebuilds just a single episode (Fast). Used for Inbox Approvals."""
-    from pod_manager.views import get_or_build_episode_fragment
+    from pod_manager.views.feeds import get_or_build_episode_fragment
     try:
         ep = Episode.objects.get(id=episode_id)
         cache.delete(f"ep_frag_public_{ep.id}")
@@ -355,7 +354,7 @@ def task_rebuild_episode_fragments(episode_id, base_url):
 @shared_task
 def task_rebuild_podcast_fragments(podcast_id, base_url):
     """Rebuilds all fragments for a show (Heavy). Used for Footer Updates."""
-    from pod_manager.views import get_or_build_feed_shell, get_or_build_episode_fragment
+    from pod_manager.views.feeds import get_or_build_feed_shell, get_or_build_episode_fragment
     try:
         pod = Podcast.objects.get(id=podcast_id)
         
@@ -379,7 +378,7 @@ def task_rebuild_podcast_fragments(podcast_id, base_url):
 @shared_task
 def task_rebuild_podcast_shell(podcast_id, base_url):
     """Rebuilds ONLY the <channel> shell. Used for title/desc/art updates."""
-    from pod_manager.views import get_or_build_feed_shell
+    from pod_manager.views.feeds import get_or_build_feed_shell
     try:
         pod = Podcast.objects.get(id=podcast_id)
         

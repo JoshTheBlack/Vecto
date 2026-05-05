@@ -26,9 +26,9 @@ from podgen import Podcast as PodgenPodcast, Episode as PodgenEpisode, Media, Pe
 from lxml import etree
 
 from ..models import (
-    PatronProfile, NetworkMembership, Podcast, Episode, NetworkMix, UserMix,
+    PatronProfile, Podcast, Episode, NetworkMix, UserMix,
 )
-from ..services.access import _evaluate_access, _build_episode_description
+from ..services.access import _evaluate_access, _build_episode_description, _evaluate_mix_access
 from ..services.analytics import _record_active_user
 
 warnings.filterwarnings("ignore", message=".*Image URL must end with.*")
@@ -355,11 +355,7 @@ def generate_network_mix_feed(request, network_slug, mix_slug):
     profile = PatronProfile.objects.filter(feed_token=feed_token).first() if feed_token else None
     user = profile.user if profile else request.user
 
-    mix_req_cents = network_mix.required_tier.minimum_cents if network_mix.required_tier else 0
-    mix_membership = NetworkMembership.objects.filter(user=user, network=network_mix.network).first() if user.is_authenticated else None
-    user_cents = mix_membership.patreon_pledge_cents if mix_membership else 0
-    is_owner = network_mix.network.owners.filter(id=user.id).exists() if user.is_authenticated else False
-    user_meets_mix_tier = is_owner or (mix_req_cents == 0) or (user_cents >= mix_req_cents)
+    user_meets_mix_tier = _evaluate_mix_access(user, network_mix)
 
     base_url = request.build_absolute_uri('/')[:-1]
     cache_key = f"shell_net_mix_{network_mix.id}"

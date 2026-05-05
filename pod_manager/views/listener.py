@@ -18,10 +18,34 @@ from ..models import (
     PatronProfile, NetworkMembership, Podcast, Episode, NetworkMix, UserMix,
     EpisodeEditSuggestion,
 )
-from ..services.access import _evaluate_access, _build_episode_description
+from ..services.access import _evaluate_access, _build_episode_description, _evaluate_mix_access
 from ..services.analytics import get_live_user_stats
 
 logger = logging.getLogger(__name__)
+
+
+def _get_user_networks(user):
+    """Returns all networks the user has access to via membership or ownership, deduplicated."""
+    if not user.is_authenticated:
+        return []
+    membership_networks = [m.network for m in user.network_memberships.select_related('network')]
+    seen = {n.id for n in membership_networks}
+    owned = [n for n in user.owned_networks.all() if n.id not in seen]
+    return membership_networks + owned
+
+
+def _build_feed_base_url(podcast, request):
+    """Returns the base URL for a podcast's feed endpoint.
+
+    Uses the current request's domain for podcasts on request.network.
+    Falls back to the podcast network's custom_domain for cross-network podcasts.
+    Returns None if no domain is resolvable.
+    """
+    if podcast.network_id == request.network.id:
+        return request.build_absolute_uri('/')[:-1]
+    if podcast.network.custom_domain:
+        return f"{request.scheme}://{podcast.network.custom_domain}"
+    return None
 
 
 def home(request):
@@ -32,14 +56,14 @@ def home(request):
 
     tenant_profile = getattr(request, 'tenant_profile', None)
 
-    user_networks = [m.network for m in request.user.network_memberships.select_related('network')] if request.user.is_authenticated else []
+    user_networks = _get_user_networks(request.user)
     selected_networks = request.GET.getlist('network')
 
     # Determine which networks to query based on UI selection and user access
     if 'all' in selected_networks:
         target_network_slugs = [n.slug for n in user_networks] if user_networks else [request.network.slug]
     elif selected_networks:
-        valid_slugs = [n.slug for n in user_networks]
+        valid_slugs = {n.slug for n in user_networks}
         target_network_slugs = [slug for slug in selected_networks if slug in valid_slugs] or [request.network.slug]
     else:
         # Default to the current network only
@@ -145,57 +169,76 @@ def user_feeds(request):
             mix.delete()
             messages.warning(request, "Custom mix deleted.")
 
-        return redirect('user_feeds')
+        network_qs = '&'.join(f'network={s}' for s in request.GET.getlist('network'))
+        redirect_url = reverse('user_feeds')
+        if network_qs:
+            redirect_url += f'?{network_qs}'
+        return redirect(redirect_url)
 
     # --- 2. GENERATE GET DATA ---
     feed_data = []
     available_podcasts = []
 
-    user_networks = [m.network for m in request.user.network_memberships.select_related('network')] if request.user.is_authenticated else []
+    user_networks = _get_user_networks(request.user)
     selected_networks = request.GET.getlist('network')
 
     if 'all' in selected_networks:
         target_network_slugs = [n.slug for n in user_networks] if user_networks else [request.network.slug]
     elif selected_networks:
-        valid_slugs = [n.slug for n in user_networks]
+        valid_slugs = {n.slug for n in user_networks}
         target_network_slugs = [slug for slug in selected_networks if slug in valid_slugs] or [request.network.slug]
     else:
         # Default to the current network only
         target_network_slugs = [request.network.slug]
         selected_networks = [request.network.slug]
 
+    # Pre-fetch access data to avoid N+1 in the mix and podcast loops
+    if request.user.is_authenticated:
+        memberships_by_network = {
+            m.network_id: m
+            for m in request.user.network_memberships.filter(
+                network__slug__in=target_network_slugs
+            ).select_related('network')
+        }
+        owned_network_ids = set(request.user.owned_networks.values_list('id', flat=True))
+    else:
+        memberships_by_network = {}
+        owned_network_ids = set()
+
     # PROCESS NETWORK MIXES FIRST (So they group at the top of the UI)
     network_mixes = NetworkMix.objects.filter(network__slug__in=target_network_slugs).select_related('network', 'required_tier')
     for mix in network_mixes:
-        mix_req_cents = mix.required_tier.minimum_cents if mix.required_tier else 0
-        user_cents = tenant_profile.patreon_pledge_cents if tenant_profile else 0
-        is_owner = mix.network.owners.filter(id=request.user.id).exists() if request.user.is_authenticated else False
-
-        mix.has_access = is_owner or (mix_req_cents == 0) or (user_cents >= mix_req_cents)
-        mix.feed_url = request.build_absolute_uri(reverse('network_mix_feed', args=[mix.network.slug, mix.slug])) + (f"?auth={profile.feed_token}" if profile else "")
-
+        mix.has_access = _evaluate_mix_access(
+            request.user, mix,
+            membership=memberships_by_network.get(mix.network_id),
+            is_owner=mix.network_id in owned_network_ids,
+        )
+        mix.feed_url = (
+            request.build_absolute_uri(reverse('network_mix_feed', args=[mix.network.slug, mix.slug]))
+            + (f"?auth={profile.feed_token}" if profile else "")
+        )
         feed_data.append({
             'is_network_mix': True,
             'mix': mix,
             'has_access': mix.has_access,
-            'feed_url': mix.feed_url
+            'feed_url': mix.feed_url,
         })
 
     # PROCESS STANDARD PODCASTS
     for podcast in Podcast.objects.filter(network__slug__in=target_network_slugs).select_related('network', 'required_tier'):
-        has_access, is_owner = _evaluate_access(request.user, podcast, podcast.network)
+        has_access, _ = _evaluate_access(request.user, podcast, podcast.network)
+        available_podcasts.append({'podcast': podcast, 'has_access': has_access})
 
-        available_podcasts.append({
-            'podcast': podcast,
-            'has_access': has_access
-        })
+        feed_base = _build_feed_base_url(podcast, request)
+        if feed_base is None:
+            continue
 
         if profile is not None:
             raw_url = reverse('custom_feed') + f"?auth={profile.feed_token}&show={podcast.slug}"
-            feed_data.append({'is_network_mix': False, 'podcast': podcast, 'has_access': has_access, 'feed_url': request.build_absolute_uri(raw_url)})
+            feed_data.append({'is_network_mix': False, 'podcast': podcast, 'has_access': has_access, 'feed_url': feed_base + raw_url})
         elif not podcast.required_tier or podcast.public_feed_url:
             raw_url = reverse('public_feed', args=[podcast.slug])
-            feed_data.append({'is_network_mix': False, 'podcast': podcast, 'has_access': False, 'feed_url': request.build_absolute_uri(raw_url)})
+            feed_data.append({'is_network_mix': False, 'podcast': podcast, 'has_access': False, 'feed_url': feed_base + raw_url})
 
     user_mixes = UserMix.objects.filter(user=request.user, network__slug__in=target_network_slugs, is_active=True).prefetch_related('selected_podcasts') if request.user.is_authenticated else []
 

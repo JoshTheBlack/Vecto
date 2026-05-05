@@ -32,8 +32,22 @@ def home(request):
 
     tenant_profile = getattr(request, 'tenant_profile', None)
 
-    query = Episode.objects.select_related('podcast', 'podcast__network', 'podcast__required_tier').filter(podcast__network=request.network)
-    podcasts = Podcast.objects.filter(network=request.network).order_by('title')
+    user_networks = [m.network for m in request.user.network_memberships.select_related('network')] if request.user.is_authenticated else []
+    selected_networks = request.GET.getlist('network')
+
+    # Determine which networks to query based on UI selection and user access
+    if 'all' in selected_networks:
+        target_network_slugs = [n.slug for n in user_networks] if user_networks else [request.network.slug]
+    elif selected_networks:
+        valid_slugs = [n.slug for n in user_networks]
+        target_network_slugs = [slug for slug in selected_networks if slug in valid_slugs] or [request.network.slug]
+    else:
+        # Default to the current network only
+        target_network_slugs = [request.network.slug]
+        selected_networks = [request.network.slug]
+
+    query = Episode.objects.select_related('podcast', 'podcast__network', 'podcast__required_tier').filter(podcast__network__slug__in=target_network_slugs)
+    podcasts = Podcast.objects.filter(network__slug__in=target_network_slugs).order_by('title')
 
     # Apply Podcast & Text Filters
     if show_slug:
@@ -62,7 +76,7 @@ def home(request):
     custom_page_range = range(start_page, end_page + 1)
 
     for ep in page_obj:
-        ep.user_has_access, is_owner = _evaluate_access(request.user, ep.podcast, request.network)
+        ep.user_has_access, is_owner = _evaluate_access(request.user, ep.podcast, ep.podcast.network)
 
     context = {
         'episodes': page_obj, 'page_obj': page_obj, 'podcasts': podcasts,
@@ -71,6 +85,8 @@ def home(request):
         'older_than': older_than,
         'newer_than': newer_than,
         'custom_page_range': custom_page_range,
+        'user_networks': user_networks,
+        'selected_networks': selected_networks,
     }
     return render(request, 'pod_manager/home.html', context)
 
@@ -135,15 +151,28 @@ def user_feeds(request):
     feed_data = []
     available_podcasts = []
 
+    user_networks = [m.network for m in request.user.network_memberships.select_related('network')] if request.user.is_authenticated else []
+    selected_networks = request.GET.getlist('network')
+
+    if 'all' in selected_networks:
+        target_network_slugs = [n.slug for n in user_networks] if user_networks else [request.network.slug]
+    elif selected_networks:
+        valid_slugs = [n.slug for n in user_networks]
+        target_network_slugs = [slug for slug in selected_networks if slug in valid_slugs] or [request.network.slug]
+    else:
+        # Default to the current network only
+        target_network_slugs = [request.network.slug]
+        selected_networks = [request.network.slug]
+
     # PROCESS NETWORK MIXES FIRST (So they group at the top of the UI)
-    network_mixes = NetworkMix.objects.filter(network=request.network)
+    network_mixes = NetworkMix.objects.filter(network__slug__in=target_network_slugs).select_related('network', 'required_tier')
     for mix in network_mixes:
         mix_req_cents = mix.required_tier.minimum_cents if mix.required_tier else 0
         user_cents = tenant_profile.patreon_pledge_cents if tenant_profile else 0
-        is_owner = request.network.owners.filter(id=request.user.id).exists() if request.user.is_authenticated else False
+        is_owner = mix.network.owners.filter(id=request.user.id).exists() if request.user.is_authenticated else False
 
         mix.has_access = is_owner or (mix_req_cents == 0) or (user_cents >= mix_req_cents)
-        mix.feed_url = request.build_absolute_uri(reverse('network_mix_feed', args=[request.network.slug, mix.slug])) + (f"?auth={profile.feed_token}" if profile else "")
+        mix.feed_url = request.build_absolute_uri(reverse('network_mix_feed', args=[mix.network.slug, mix.slug])) + (f"?auth={profile.feed_token}" if profile else "")
 
         feed_data.append({
             'is_network_mix': True,
@@ -153,8 +182,8 @@ def user_feeds(request):
         })
 
     # PROCESS STANDARD PODCASTS
-    for podcast in Podcast.objects.filter(network=request.network).select_related('network', 'required_tier'):
-        has_access, is_owner = _evaluate_access(request.user, podcast, request.network)
+    for podcast in Podcast.objects.filter(network__slug__in=target_network_slugs).select_related('network', 'required_tier'):
+        has_access, is_owner = _evaluate_access(request.user, podcast, podcast.network)
 
         available_podcasts.append({
             'podcast': podcast,
@@ -168,7 +197,7 @@ def user_feeds(request):
             raw_url = reverse('public_feed', args=[podcast.slug])
             feed_data.append({'is_network_mix': False, 'podcast': podcast, 'has_access': False, 'feed_url': request.build_absolute_uri(raw_url)})
 
-    user_mixes = UserMix.objects.filter(user=request.user, network=request.network, is_active=True).prefetch_related('selected_podcasts') if request.user.is_authenticated else []
+    user_mixes = UserMix.objects.filter(user=request.user, network__slug__in=target_network_slugs, is_active=True).prefetch_related('selected_podcasts') if request.user.is_authenticated else []
 
     context = {
         'profile': profile,
@@ -176,7 +205,9 @@ def user_feeds(request):
         'feed_data': feed_data,
         'user_mixes': user_mixes,
         'current_network': request.network,
-        'available_podcasts': available_podcasts
+        'available_podcasts': available_podcasts,
+        'user_networks': user_networks,
+        'selected_networks': selected_networks,
     }
     return render(request, 'pod_manager/user_feeds.html', context)
 

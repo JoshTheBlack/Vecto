@@ -213,6 +213,9 @@ def patreon_webhook(request):
     if not secret:
         return HttpResponseForbidden("Webhook secret not configured")
 
+    # MD5 is Patreon's documented webhook spec — not our choice. The HMAC
+    # construction still provides integrity; only collision-resistance is weak,
+    # which is not the threat model here (attacker cannot choose the body).
     expected = hmac.new(secret.encode('utf-8'), request.body, hashlib.md5).hexdigest()
     if not hmac.compare_digest(expected, signature): return HttpResponseForbidden("Invalid signature")
 
@@ -239,6 +242,9 @@ def patreon_webhook(request):
 
         return HttpResponse("Success", status=200)
     except PatronProfile.DoesNotExist:
+        # User hasn't registered with Vecto yet. Their membership will be
+        # bootstrapped on first login — no retry needed.
+        logger.debug(f"Webhook for unregistered Patreon user {patreon_user_id!r}; discarding.")
         return HttpResponse("User not found.", status=200)
     except Exception as e:
         logger.error(f"Webhook Error: {str(e)}", exc_info=True)

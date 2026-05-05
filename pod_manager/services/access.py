@@ -5,16 +5,24 @@ Used by views and feed builders; never touches request/response objects.
 from ..models import NetworkMembership
 
 
-def _evaluate_access(user, podcast, network=None):
+def _evaluate_access(user, podcast, network=None, *, membership=None, is_owner=None):
+    """Check episode-level access for a user against a podcast's tier.
+
+    Pass pre-fetched `membership` and `is_owner` to avoid per-call queries when
+    iterating over many podcasts/episodes in a view loop.
+    """
     if not user.is_authenticated:
         return False, False
 
     net = network or podcast.network
-    is_owner = net.owners.filter(id=user.id).exists()
+
+    if is_owner is None:
+        is_owner = net.owners.filter(id=user.id).exists()
     if is_owner:
         return True, True
 
-    membership = NetworkMembership.objects.filter(user=user, network=net).first()
+    if membership is None:
+        membership = NetworkMembership.objects.filter(user=user, network=net).first()
     if not membership:
         return False, False
 

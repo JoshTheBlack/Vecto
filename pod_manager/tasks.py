@@ -74,6 +74,7 @@ def task_ingest_feed(show_id):
         call_command('ingest_feed', show_id, stdout=stream, stderr=stream, no_color=True)
     except Exception as e:
         stream.write(f"\n[ERROR] {str(e)}\n")
+        raise  # Let Celery record the failure; finally still writes [DONE]
     finally:
         stream.write("[DONE]")
 

@@ -20,6 +20,7 @@ from ..models import (
 )
 from ..services.access import _evaluate_access, _build_episode_description, _evaluate_mix_access
 from ..services.analytics import get_live_user_stats
+from ..utils import validate_public_url
 
 logger = logging.getLogger(__name__)
 
@@ -99,8 +100,24 @@ def home(request):
     end_page = min(total_pages, page_number + 3)
     custom_page_range = range(start_page, end_page + 1)
 
+    # Pre-fetch access data once for all episodes on this page
+    if request.user.is_authenticated:
+        page_network_ids = {ep.podcast.network_id for ep in page_obj}
+        home_memberships = {
+            m.network_id: m
+            for m in request.user.network_memberships.filter(network_id__in=page_network_ids)
+        }
+        home_owned_ids = set(request.user.owned_networks.values_list('id', flat=True))
+    else:
+        home_memberships = {}
+        home_owned_ids = set()
+
     for ep in page_obj:
-        ep.user_has_access, is_owner = _evaluate_access(request.user, ep.podcast, ep.podcast.network)
+        ep.user_has_access, _ = _evaluate_access(
+            request.user, ep.podcast, ep.podcast.network,
+            membership=home_memberships.get(ep.podcast.network_id),
+            is_owner=ep.podcast.network_id in home_owned_ids,
+        )
 
     context = {
         'episodes': page_obj, 'page_obj': page_obj, 'podcasts': podcasts,
@@ -126,11 +143,17 @@ def user_feeds(request):
 
         if request.POST.get('create_mix'):
             mix_name = request.POST.get('mix_name', '').strip() or f"{request.user.first_name}'s Custom Mix"
+            raw_image_url = request.POST.get('mix_image', '').strip()
+            if raw_image_url:
+                ok, reason = validate_public_url(raw_image_url)
+                if not ok:
+                    messages.warning(request, f"Mix image URL ignored: {reason}")
+                    raw_image_url = ''
             mix = UserMix.objects.create(
                 user=request.user,
                 network=request.network,
                 name=mix_name,
-                image_url=request.POST.get('mix_image', '')
+                image_url=raw_image_url,
             )
             if 'mix_image_upload' in request.FILES:
                 mix.image_upload = request.FILES['mix_image_upload']
@@ -149,9 +172,14 @@ def user_feeds(request):
                 mix.image_upload = request.FILES['mix_image_upload']
                 mix.image_url = ""
             elif request.POST.get('mix_image'):
-                mix.image_url = request.POST.get('mix_image')
-                if mix.image_upload:
-                    mix.image_upload.delete(save=False)
+                raw_image_url = request.POST.get('mix_image').strip()
+                ok, reason = validate_public_url(raw_image_url)
+                if not ok:
+                    messages.warning(request, f"Mix image URL ignored: {reason}")
+                else:
+                    mix.image_url = raw_image_url
+                    if mix.image_upload:
+                        mix.image_upload.delete(save=False)
 
             cache.delete(f"shell_user_mix_{mix.id}")
             mix.selected_podcasts.set(request.POST.getlist('podcasts'))
@@ -226,7 +254,11 @@ def user_feeds(request):
 
     # PROCESS STANDARD PODCASTS
     for podcast in Podcast.objects.filter(network__slug__in=target_network_slugs).select_related('network', 'required_tier'):
-        has_access, _ = _evaluate_access(request.user, podcast, podcast.network)
+        has_access, _ = _evaluate_access(
+            request.user, podcast, podcast.network,
+            membership=memberships_by_network.get(podcast.network_id),
+            is_owner=podcast.network_id in owned_network_ids,
+        )
         available_podcasts.append({'podcast': podcast, 'has_access': has_access})
 
         feed_base = _build_feed_base_url(podcast, request)

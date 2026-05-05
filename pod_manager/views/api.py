@@ -20,7 +20,9 @@ from django.http import (
 from django.shortcuts import redirect
 from django.views.decorators.http import require_POST
 
-from ..models import NetworkMembership, Network, PatronProfile
+from django.shortcuts import get_object_or_404
+
+from ..models import NetworkMembership, Network, PatronProfile, Podcast
 from ..tasks import task_ingest_feed
 from ..utils import validate_public_url
 
@@ -105,6 +107,7 @@ def traefik_config_api(request):
 
 @login_required(login_url='/login/')
 def stream_feed_import(request, show_id):
+    get_object_or_404(Podcast, id=show_id, network=request.network)
     task_id = f"import_logs_{show_id}"
 
     if not cache.get(task_id):
@@ -113,7 +116,14 @@ def stream_feed_import(request, show_id):
 
     async def event_stream():
         last_length = 0
+        loop = asyncio.get_event_loop()
+        deadline = loop.time() + 120
         while True:
+            if loop.time() >= deadline:
+                yield "data: [ERROR] Timed out waiting for Celery worker. Is the worker running?\n\n"
+                yield "data: [DONE]\n\n"
+                await cache.adelete(task_id)
+                break
             logs = await cache.aget(task_id, "")
             if len(logs) > last_length:
                 new_logs = logs[last_length:]

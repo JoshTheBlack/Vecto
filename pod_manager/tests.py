@@ -21,6 +21,10 @@ from pod_manager.models import (
     Network, PatronProfile, Podcast, Episode, NetworkMembership, NetworkMix, UserMix,
     EpisodeEditSuggestion,
 )
+from pod_manager.services.edits import (
+    apply_approved_edit, parse_chapter_payload, snapshot_episode,
+    update_contribution_stats,
+)
 
 
 # Use locmem so tests don't depend on Redis being up.
@@ -1319,3 +1323,429 @@ class SubmitEpisodeEditPendingPathTests(TestCase):
         chaps = suggestion.suggested_data.get('chapters', {}).get('chapters', [])
         self.assertEqual(len(chaps), 1)
         self.assertEqual(chaps[0]['title'], 'Valid')
+
+
+# ---------------------------------------------------------------------------
+# services/edits.py unit tests
+# ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# RSSFeedBuilder._finalize_xml unit tests
+# ---------------------------------------------------------------------------
+
+@override_settings(CACHES=TEST_CACHES)
+class FinalizeXmlTests(TestCase):
+    """_finalize_xml handles namespace injection, lxml pollution stripping,
+    category attachment, and chapter URL insertion independently of podgen."""
+
+    PODCAST_NS = "https://podcastindex.org/namespace/1.0"
+
+    # Minimal RSS skeleton with one item whose <guid> we can control.
+    RSS_TMPL = (
+        "<?xml version='1.0' encoding='UTF-8'?>"
+        '<rss version="2.0"{ns_attr}>'
+        "<channel><title>T</title>"
+        "<item><guid>{guid}</guid><title>Ep</title></item>"
+        "</channel></rss>"
+    )
+
+    def _builder(self):
+        from pod_manager.views.feeds import RSSFeedBuilder
+        from unittest.mock import MagicMock
+        net = MagicMock()
+        net.name = "TestNet"
+        net.summary = ""
+        net.website_url = "https://example.com"
+        net.default_image_url = ""
+        net.contact_email = "test@example.com"
+        return RSSFeedBuilder("https://example.com", "T", "D", "", net, feed_type='public')
+
+    def _rss(self, guid="ep-1", with_ns=False):
+        ns_attr = f' xmlns:podcast="{self.PODCAST_NS}"' if with_ns else ""
+        return self.RSS_TMPL.format(guid=guid, ns_attr=ns_attr)
+
+    def test_namespace_injected_when_absent(self):
+        builder = self._builder()
+        result = builder._finalize_xml(self._rss(), {}, None)
+        self.assertIn(f'xmlns:podcast="{self.PODCAST_NS}"', result)
+
+    def test_namespace_not_duplicated_when_already_present(self):
+        builder = self._builder()
+        result = builder._finalize_xml(self._rss(with_ns=True), {}, None)
+        self.assertEqual(result.count(f'xmlns:podcast="{self.PODCAST_NS}"'), 1)
+
+    def test_empty_tag_map_returns_without_lxml_parse(self):
+        builder = self._builder()
+        # Deliberately malformed inner XML that lxml would choke on —
+        # empty tag_map must short-circuit before any parsing.
+        raw = self._rss()
+        result = builder._finalize_xml(raw, {}, None)
+        self.assertIn('<rss', result)
+
+    def test_inline_namespace_pollution_stripped(self):
+        # Simulate what lxml produces when a child element uses the namespace:
+        # it re-declares xmlns:podcast on the child. We must strip those.
+        # A non-empty tag_map is required so that the lxml roundtrip runs.
+        from unittest.mock import MagicMock
+        raw = (
+            "<?xml version='1.0' encoding='UTF-8'?>"
+            f'<rss version="2.0" xmlns:podcast="{self.PODCAST_NS}">'
+            "<channel><title>T</title>"
+            f'<item xmlns:podcast="{self.PODCAST_NS}"><guid>ep-1</guid></item>'
+            "</channel></rss>"
+        )
+        ep = MagicMock()
+        ep.tags = []
+        ep.podcast_id = 1
+        ep.chapters_public = None
+        ep.chapters_private = None
+        builder = self._builder()
+        result = builder._finalize_xml(raw, {'ep-1': ep}, None)
+        # The declaration should appear exactly once, on the root <rss> tag.
+        self.assertEqual(result.count(f'xmlns:podcast="{self.PODCAST_NS}"'), 1)
+
+    def test_category_tags_added_for_episode(self):
+        from unittest.mock import MagicMock
+        ep = MagicMock()
+        ep.tags = ['comedy', 'tech']
+        ep.podcast_id = 1
+        ep.chapters_public = None
+        ep.chapters_private = None
+
+        builder = self._builder()
+        result = builder._finalize_xml(self._rss(guid='ep-1'), {'ep-1': ep}, None)
+        self.assertEqual(result.count('<category>'), 2)
+        self.assertIn('comedy', result)
+        self.assertIn('tech', result)
+
+    def test_no_category_tags_when_episode_has_none(self):
+        from unittest.mock import MagicMock
+        ep = MagicMock()
+        ep.tags = []
+        ep.podcast_id = 1
+        ep.chapters_public = None
+        ep.chapters_private = None
+
+        builder = self._builder()
+        result = builder._finalize_xml(self._rss(guid='ep-1'), {'ep-1': ep}, None)
+        self.assertNotIn('<category>', result)
+
+    def test_chapter_url_added_when_chapters_exist(self):
+        from unittest.mock import MagicMock
+        ep = MagicMock()
+        ep.id = 42
+        ep.tags = []
+        ep.podcast_id = 1
+        ep.chapters_public = {'version': '1.2.0', 'chapters': []}
+        ep.chapters_private = None
+
+        builder = self._builder()
+        result = builder._finalize_xml(self._rss(guid='ep-1'), {'ep-1': ep}, None)
+        self.assertIn('podcast:chapters', result)
+        self.assertIn('/42/', result)
+        self.assertIn('application/json+chapters', result)
+
+    def test_no_chapter_elem_when_no_chapters(self):
+        from unittest.mock import MagicMock
+        ep = MagicMock()
+        ep.tags = []
+        ep.podcast_id = 1
+        ep.chapters_public = None
+        ep.chapters_private = None
+
+        builder = self._builder()
+        result = builder._finalize_xml(self._rss(guid='ep-1'), {'ep-1': ep}, None)
+        self.assertNotIn('podcast:chapters', result)
+
+    def test_access_map_controls_chapter_feed_type(self):
+        from unittest.mock import MagicMock
+        ep = MagicMock()
+        ep.id = 99
+        ep.tags = []
+        ep.podcast_id = 7
+        ep.chapters_public = [{'startTime': 0, 'title': 'A'}]
+        ep.chapters_private = None
+
+        builder = self._builder()
+        result = builder._finalize_xml(
+            self._rss(guid='ep-1'), {'ep-1': ep},
+            access_map={7: True},
+        )
+        self.assertIn('/chapters/private.json', result)
+
+    def test_unknown_guid_item_left_untouched(self):
+        from unittest.mock import MagicMock
+        ep = MagicMock()
+        ep.tags = ['x']
+        ep.podcast_id = 1
+        ep.chapters_public = None
+        ep.chapters_private = None
+
+        builder = self._builder()
+        # tag_map has 'other-guid', XML has 'ep-1' — no match, no mutation
+        result = builder._finalize_xml(self._rss(guid='ep-1'), {'other-guid': ep}, None)
+        self.assertNotIn('<category>', result)
+
+
+class ParseChapterPayloadTests(TestCase):
+    """parse_chapter_payload normalises list and dict inputs."""
+
+    def test_empty_list_returns_empty_chapters(self):
+        result = parse_chapter_payload([])
+        self.assertEqual(result, {'version': '1.2.0', 'chapters': []})
+
+    def test_empty_dict_returns_empty_chapters(self):
+        result = parse_chapter_payload({'chapters': [], 'version': '1.2.0'})
+        self.assertEqual(result, {'version': '1.2.0', 'chapters': []})
+
+    def test_valid_list_chapter_parsed(self):
+        result = parse_chapter_payload([{'startTime': 0.0, 'title': 'Intro'}])
+        self.assertEqual(result['chapters'][0], {'startTime': 0, 'title': 'Intro'})
+
+    def test_float_start_time_preserved_when_not_integer(self):
+        result = parse_chapter_payload([{'startTime': 1.5, 'title': 'Mid'}])
+        self.assertEqual(result['chapters'][0]['startTime'], 1.5)
+
+    def test_integer_start_time_stored_as_int(self):
+        result = parse_chapter_payload([{'startTime': 60.0, 'title': 'A'}])
+        self.assertIsInstance(result['chapters'][0]['startTime'], int)
+
+    def test_invalid_start_time_chapter_dropped(self):
+        result = parse_chapter_payload([
+            {'startTime': 0.0, 'title': 'Good'},
+            {'startTime': 'bad', 'title': 'Drop me'},
+        ])
+        self.assertEqual(len(result['chapters']), 1)
+        self.assertEqual(result['chapters'][0]['title'], 'Good')
+
+    def test_chapter_missing_title_dropped(self):
+        result = parse_chapter_payload([{'startTime': 0.0}])
+        self.assertEqual(result['chapters'], [])
+
+    def test_chapter_missing_start_time_dropped(self):
+        result = parse_chapter_payload([{'title': 'No time'}])
+        self.assertEqual(result['chapters'], [])
+
+    def test_url_accepted_when_http(self):
+        result = parse_chapter_payload([{'startTime': 0.0, 'title': 'A', 'url': 'https://example.com'}])
+        self.assertEqual(result['chapters'][0]['url'], 'https://example.com')
+
+    def test_url_rejected_when_non_http(self):
+        result = parse_chapter_payload([{'startTime': 0.0, 'title': 'A', 'url': 'javascript:alert(1)'}])
+        self.assertNotIn('url', result['chapters'][0])
+
+    def test_img_accepted_when_http(self):
+        result = parse_chapter_payload([{'startTime': 0.0, 'title': 'A', 'img': 'https://cdn.example.com/art.jpg'}])
+        self.assertEqual(result['chapters'][0]['img'], 'https://cdn.example.com/art.jpg')
+
+    def test_img_rejected_when_non_http(self):
+        result = parse_chapter_payload([{'startTime': 0.0, 'title': 'A', 'img': 'data:image/png;base64,abc'}])
+        self.assertNotIn('img', result['chapters'][0])
+
+    def test_toc_false_preserved(self):
+        result = parse_chapter_payload([{'startTime': 0.0, 'title': 'A', 'toc': False}])
+        self.assertFalse(result['chapters'][0]['toc'])
+
+    def test_toc_true_not_included(self):
+        # Only toc=False is meaningful per the spec; toc=True is the default.
+        result = parse_chapter_payload([{'startTime': 0.0, 'title': 'A', 'toc': True}])
+        self.assertNotIn('toc', result['chapters'][0])
+
+    def test_location_included_when_name_and_geo_present(self):
+        chap = {'startTime': 0.0, 'title': 'A', 'location': {'name': 'Berlin', 'geo': 'geo:52,13', 'osm': 'R62422'}}
+        result = parse_chapter_payload([chap])
+        loc = result['chapters'][0]['location']
+        self.assertEqual(loc['name'], 'Berlin')
+        self.assertEqual(loc['geo'], 'geo:52,13')
+        self.assertEqual(loc['osm'], 'R62422')
+
+    def test_location_omitted_when_geo_missing(self):
+        chap = {'startTime': 0.0, 'title': 'A', 'location': {'name': 'Berlin'}}
+        result = parse_chapter_payload([chap])
+        self.assertNotIn('location', result['chapters'][0])
+
+    def test_dict_format_waypoints_flag_propagated(self):
+        payload = {'version': '1.2.0', 'chapters': [{'startTime': 0.0, 'title': 'A'}], 'waypoints': True}
+        result = parse_chapter_payload(payload)
+        self.assertTrue(result.get('waypoints'))
+
+    def test_dict_format_without_waypoints_flag_omits_key(self):
+        payload = {'version': '1.2.0', 'chapters': [{'startTime': 0.0, 'title': 'A'}]}
+        result = parse_chapter_payload(payload)
+        self.assertNotIn('waypoints', result)
+
+    def test_end_time_included_when_valid(self):
+        result = parse_chapter_payload([{'startTime': 0.0, 'title': 'A', 'endTime': 30.0}])
+        self.assertEqual(result['chapters'][0]['endTime'], 30)
+
+    def test_end_time_omitted_when_none(self):
+        result = parse_chapter_payload([{'startTime': 0.0, 'title': 'A', 'endTime': None}])
+        self.assertNotIn('endTime', result['chapters'][0])
+
+
+@override_settings(CACHES=TEST_CACHES)
+class ApplyApprovedEditTests(TestCase):
+    """apply_approved_edit writes all fields and locks metadata."""
+
+    def setUp(self):
+        self.network = Network.objects.create(name='N', slug='n')
+        self.podcast = Podcast.objects.create(network=self.network, title='Show', slug='s')
+        self.episode = Episode.objects.create(
+            podcast=self.podcast, title='Original', pub_date=timezone.now(),
+            raw_description='hi', clean_description='<p>hi</p>',
+            audio_url_public='https://cdn.example.com/audio.mp3',
+            tags=['old'], chapters_public=[], chapters_private=[],
+        )
+
+    def test_fields_updated_and_saved(self):
+        new_chapters = {'version': '1.2.0', 'chapters': [{'startTime': 0, 'title': 'Intro'}]}
+        apply_approved_edit(self.episode, {
+            'title': 'New Title',
+            'description': '<p>new</p>',
+            'tags': ['new'],
+            'chapters': new_chapters,
+        })
+        self.episode.refresh_from_db()
+        self.assertEqual(self.episode.title, 'New Title')
+        self.assertEqual(self.episode.clean_description, '<p>new</p>')
+        self.assertEqual(self.episode.tags, ['new'])
+        self.assertEqual(self.episode.chapters_public, new_chapters)
+        self.assertEqual(self.episode.chapters_private, new_chapters)
+        self.assertTrue(self.episode.is_metadata_locked)
+
+    def test_missing_key_leaves_field_unchanged(self):
+        apply_approved_edit(self.episode, {})
+        self.episode.refresh_from_db()
+        self.assertEqual(self.episode.title, 'Original')
+
+
+@override_settings(CACHES=TEST_CACHES)
+class UpdateContributionStatsTests(TestCase):
+    """update_contribution_stats increments counters and awards trust correctly."""
+
+    def setUp(self):
+        self.user = User.objects.create_user(username='contrib')
+        self.network = Network.objects.create(name='N', slug='n2')
+        self.membership = NetworkMembership.objects.create(
+            user=self.user, network=self.network,
+            trust_score=10, edits_title=0, edits_tags=0,
+            edits_chapters=0, edits_descriptions=0, first_responder_count=0,
+        )
+        self.original = {'title': 'Old', 'description': '<p>old</p>', 'tags': ['a'], 'chapters': []}
+
+    def _call(self, suggested, *, is_first=False):
+        update_contribution_stats(self.membership, suggested, self.original, is_first=is_first)
+        self.membership.refresh_from_db()
+
+    def test_trust_always_incremented_by_five(self):
+        self._call({'title': 'Old', 'description': '<p>old</p>', 'tags': ['a'], 'chapters': []})
+        self.assertEqual(self.membership.trust_score, 15)
+
+    def test_title_change_increments_edits_title(self):
+        self._call({'title': 'New', 'description': '<p>old</p>', 'tags': ['a'], 'chapters': []})
+        self.assertEqual(self.membership.edits_title, 1)
+
+    def test_no_title_change_leaves_edits_title_unchanged(self):
+        self._call({'title': 'Old', 'description': '<p>old</p>', 'tags': ['a'], 'chapters': []})
+        self.assertEqual(self.membership.edits_title, 0)
+
+    def test_tag_added_counts_one(self):
+        self._call({'title': 'Old', 'description': '<p>old</p>', 'tags': ['a', 'b'], 'chapters': []})
+        self.assertEqual(self.membership.edits_tags, 1)
+
+    def test_tag_removed_counts_one(self):
+        self._call({'title': 'Old', 'description': '<p>old</p>', 'tags': [], 'chapters': []})
+        self.assertEqual(self.membership.edits_tags, 1)
+
+    def test_two_tags_added_one_removed_counts_three(self):
+        # original=['a'], new=['b','c'] → removed={'a'}, added={'b','c'} → delta=3
+        self._call({'title': 'Old', 'description': '<p>old</p>', 'tags': ['b', 'c'], 'chapters': []})
+        self.assertEqual(self.membership.edits_tags, 3)
+
+    def test_chapter_change_counts_chapter_items(self):
+        new_chaps = {'version': '1.2.0', 'chapters': [{'startTime': 0, 'title': 'A'}, {'startTime': 60, 'title': 'B'}]}
+        self._call({'title': 'Old', 'description': '<p>old</p>', 'tags': ['a'], 'chapters': new_chaps})
+        self.assertEqual(self.membership.edits_chapters, 2)
+
+    def test_description_change_increments_edits_descriptions(self):
+        self._call({'title': 'Old', 'description': '<p>new</p>', 'tags': ['a'], 'chapters': []})
+        self.assertEqual(self.membership.edits_descriptions, 1)
+
+    def test_first_responder_flag_increments_count(self):
+        self._call({'title': 'Old', 'description': '<p>old</p>', 'tags': ['a'], 'chapters': []}, is_first=True)
+        self.assertEqual(self.membership.first_responder_count, 1)
+
+    def test_not_first_responder_leaves_count_unchanged(self):
+        self._call({'title': 'Old', 'description': '<p>old</p>', 'tags': ['a'], 'chapters': []}, is_first=False)
+        self.assertEqual(self.membership.first_responder_count, 0)
+
+
+@override_settings(CACHES=TEST_CACHES)
+class SubmitEpisodeEditTrustedPathTests(TestCase):
+    """Trusted users (trust_score >= threshold) get instant approval, episode
+    mutation, +5 trust, and correct edit counters."""
+
+    def setUp(self):
+        self.factory = RequestFactory()
+        self.user = User.objects.create_user(username='trusted')
+        self.network = Network.objects.create(name='Net', slug='nt', auto_approve_trust_threshold=10)
+        self.podcast = Podcast.objects.create(network=self.network, title='Show', slug='st')
+        self.episode = Episode.objects.create(
+            podcast=self.podcast, title='Original', pub_date=timezone.now(),
+            raw_description='hi', clean_description='<p>hi</p>',
+            audio_url_public='https://cdn.example.com/audio.mp3',
+            tags=['old'],
+        )
+        NetworkMembership.objects.create(user=self.user, network=self.network, trust_score=50)
+
+    def _submit(self, payload):
+        import json as _json
+        from django.contrib.messages.storage.fallback import FallbackStorage
+        from django.contrib.sessions.backends.cache import SessionStore
+        req = self.factory.post(
+            reverse('submit_episode_edit', args=[self.episode.id]),
+            data={'payload': _json.dumps(payload)},
+        )
+        req.user = self.user
+        req.network = self.network
+        req.session = SessionStore()
+        req.session.create()
+        setattr(req, '_messages', FallbackStorage(req))
+        with mock.patch('pod_manager.views.creator.main.task_rebuild_episode_fragments') as m:
+            resp = views.submit_episode_edit(req, self.episode.id)
+        return resp, m
+
+    def test_trusted_edit_approved_and_episode_mutated(self):
+        resp, _ = self._submit({'title': 'Updated', 'description': '<p>new</p>', 'tags': ['new'], 'chapters': []})
+        self.episode.refresh_from_db()
+        self.assertEqual(self.episode.title, 'Updated')
+        suggestion = EpisodeEditSuggestion.objects.get(episode=self.episode)
+        self.assertEqual(suggestion.status, 'approved')
+
+    def test_trusted_edit_awards_trust_and_increments_title_counter(self):
+        self._submit({'title': 'Updated', 'description': '<p>hi</p>', 'tags': ['old'], 'chapters': []})
+        mem = NetworkMembership.objects.get(user=self.user, network=self.network)
+        self.assertEqual(mem.trust_score, 55)
+        self.assertEqual(mem.edits_title, 1)
+
+    def test_trusted_edit_counts_tag_delta_not_just_one(self):
+        # original=['old'], new=['old','extra'] → 1 tag added
+        self._submit({'title': 'Original', 'description': '<p>hi</p>', 'tags': ['old', 'extra'], 'chapters': []})
+        mem = NetworkMembership.objects.get(user=self.user, network=self.network)
+        self.assertEqual(mem.edits_tags, 1)
+
+    def test_trusted_edit_triggers_fragment_rebuild(self):
+        _, mock_task = self._submit({'title': 'X', 'description': '<p>hi</p>', 'tags': ['old'], 'chapters': []})
+        mock_task.delay.assert_called_once_with(self.episode.id, mock.ANY)
+
+    def test_first_responder_flag_set_on_suggestion(self):
+        resp, _ = self._submit({'title': 'X', 'description': '<p>hi</p>', 'tags': ['old'], 'chapters': []})
+        suggestion = EpisodeEditSuggestion.objects.get(episode=self.episode)
+        self.assertTrue(suggestion.is_first_responder)
+
+    def test_second_edit_is_not_first_responder(self):
+        self._submit({'title': 'First', 'description': '<p>hi</p>', 'tags': ['old'], 'chapters': []})
+        self._submit({'title': 'Second', 'description': '<p>hi</p>', 'tags': ['old'], 'chapters': []})
+        suggestions = list(EpisodeEditSuggestion.objects.filter(episode=self.episode).order_by('id'))
+        self.assertTrue(suggestions[0].is_first_responder)
+        self.assertFalse(suggestions[1].is_first_responder)

@@ -41,8 +41,10 @@ from .feeds import (
 from .creator import (
     creator_settings,
     submit_episode_edit,
-    _handle_inbox_action,
-    _handle_rollback,
+    _handle_approve_edit,
+    _handle_reject_edit,
+    _handle_rollback_single_edit,
+    _handle_bulk_rollback,
 )
 
 from .listener import (

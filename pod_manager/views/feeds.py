@@ -112,48 +112,52 @@ class RSSFeedBuilder:
 
     def render(self, access_map=None):
         raw_xml = self.feed.rss_str()
+        tag_map = {str(ep.guid_public or ep.guid_private or ep.id): ep for ep in self.episodes_data}
+        return self._finalize_xml(raw_xml, tag_map, access_map)
+
+    def _finalize_xml(self, raw_xml: str, tag_map: dict, access_map) -> str:
+        """Applies the podcast namespace and attaches per-episode metadata
+        (category tags, chapter URLs) that podgen cannot emit on its own.
+
+        lxml will re-inline the namespace on child elements during serialisation;
+        we strip those and re-anchor the declaration at the root so that
+        PocketCasts and other strict parsers see exactly one declaration."""
+        podcast_ns = "https://podcastindex.org/namespace/1.0"
 
         if 'xmlns:podcast=' not in raw_xml:
-            raw_xml = raw_xml.replace('<rss ', '<rss xmlns:podcast="https://podcastindex.org/namespace/1.0" ', 1)
+            raw_xml = raw_xml.replace('<rss ', f'<rss xmlns:podcast="{podcast_ns}" ', 1)
 
-        tag_map = {str(ep.guid_public or ep.guid_private or ep.id): ep for ep in self.episodes_data}
-        if not tag_map: return raw_xml
+        if not tag_map:
+            return raw_xml
 
-        root = etree.fromstring(raw_xml.encode('utf-8'))
-        podcast_ns = "https://podcastindex.org/namespace/1.0"
         etree.register_namespace('podcast', podcast_ns)
+        root = etree.fromstring(raw_xml.encode('utf-8'))
 
         for item in root.findall('.//item'):
             guid_elem = item.find('guid')
-            if guid_elem is not None and guid_elem.text in tag_map:
-                ep = tag_map[guid_elem.text]
+            if guid_elem is None or guid_elem.text not in tag_map:
+                continue
+            ep = tag_map[guid_elem.text]
 
-                for tag in ep.tags:
-                    cat_elem = etree.SubElement(item, 'category')
-                    cat_elem.text = etree.CDATA(str(tag))
+            for tag in ep.tags:
+                cat_elem = etree.SubElement(item, 'category')
+                cat_elem.text = etree.CDATA(str(tag))
 
-                ep_access = access_map.get(ep.podcast_id, False) if access_map else (self.feed_type == 'private')
-                ftype = 'private' if ep_access else 'public'
+            ep_access = access_map.get(ep.podcast_id, False) if access_map else (self.feed_type == 'private')
+            ftype = 'private' if ep_access else 'public'
 
-                if ep.chapters_private or ep.chapters_public:
-                    # Swap request object for base_url
-                    chapter_url = f"{self.base_url}{reverse('episode_chapters', args=[ep.id, ftype])}"
-                    chap_elem = etree.SubElement(item, f'{{{podcast_ns}}}chapters')
-                    chap_elem.set('url', chapter_url)
+            if ep.chapters_private or ep.chapters_public:
+                chapter_url = f"{self.base_url}{reverse('episode_chapters', args=[ep.id, ftype])}"
+                chap_elem = etree.SubElement(item, f'{{{podcast_ns}}}chapters')
+                chap_elem.set('url', chapter_url)
+                chap_elem.set('type', 'application/json+chapters')
 
-                    # Updated to the official Podcasting 2.0 MIME type requirement
-                    chap_elem.set('type', 'application/json+chapters')
-
-        # 1. Convert the lxml tree back into a raw string
         final_xml = etree.tostring(root, encoding='utf-8', xml_declaration=True).decode('utf-8')
-
-        # 2. Strip the inline namespace lxml tried to force onto the child tags
+        # Strip the inline namespace lxml forces onto child elements, then
+        # re-anchor it at the root <rss> tag where parsers expect it.
         final_xml = final_xml.replace(f' xmlns:podcast="{podcast_ns}"', '')
-
-        # 3. Force it into the root <rss> tag exactly where PocketCasts expects it
         if 'xmlns:podcast' not in final_xml:
             final_xml = final_xml.replace('<rss ', f'<rss xmlns:podcast="{podcast_ns}" ', 1)
-
         return final_xml
 
 
@@ -225,9 +229,13 @@ def episode_chapters(request, episode_id, feed_type):
     return response
 
 
+def get_podcast_for_request(request, slug: str):
+    return get_object_or_404(Podcast, slug=slug, network=request.network)
+
+
 def generate_custom_feed(request):
     feed_token = request.GET.get('auth')
-    podcast = get_object_or_404(Podcast, slug=request.GET.get('show'), network=request.network)
+    podcast = get_podcast_for_request(request, request.GET.get('show'))
     profile = get_object_or_404(PatronProfile, feed_token=feed_token)
     has_access, _ = _evaluate_access(profile.user, podcast, podcast.network)
 
@@ -261,7 +269,7 @@ def generate_custom_feed(request):
 
 
 def generate_public_feed(request, podcast_slug):
-    podcast = get_object_or_404(Podcast, slug=podcast_slug, network=request.network)
+    podcast = get_podcast_for_request(request, podcast_slug)
     base_url = request.build_absolute_uri('/')[:-1]
 
     header, footer = get_or_build_feed_shell(podcast, base_url, False)

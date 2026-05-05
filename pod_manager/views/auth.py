@@ -524,10 +524,8 @@ def stop_impersonation(request):
 
 @login_required(login_url='/login/')
 def generate_qr_code(request):
-    """Creates a new unverified device and renders its QR code."""
-    TOTPDevice.objects.filter(user=request.user, confirmed=False).delete()
-
-    device = TOTPDevice.objects.create(user=request.user, confirmed=False, name="Vecto")
+    """Returns (or creates) an unverified device and renders its QR code."""
+    device, _ = TOTPDevice.objects.get_or_create(user=request.user, confirmed=False, name="Vecto")
 
     url = device.config_url
 

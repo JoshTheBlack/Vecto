@@ -39,154 +39,195 @@ def _check_scalar_approval(request, approve_key, value_key, snapshot_val, ep_fie
     return 1
 
 
-def _handle_inbox_action(request, current_network, action):
+def _handle_approve_edit(request, current_network):
     edit_id = request.POST.get('edit_id')
     edit = get_object_or_404(EpisodeEditSuggestion, id=edit_id, episode__podcast__network=current_network)
     membership, _ = NetworkMembership.objects.get_or_create(user=edit.user, network=current_network)
 
-    if action == 'approve_edit':
-        ep = edit.episode
-        points = 0
+    ep = edit.episode
+    points = 0
 
-        # Snapshot the live episode state RIGHT NOW, before any field is touched.
-        # This becomes the new edit.original_data after approval, so single-edit
-        # rollback restores the actual pre-approval state.
-        pre_approval_snapshot = {
-            'title': ep.title,
-            'description': ep.clean_description or '',
-            'tags': list(ep.tags or []),
-            'chapters': ep.chapters_public if ep.chapters_public is not None else [],
-        }
-        # User's submission-time snapshot, used to compute deltas.
-        user_snapshot = edit.original_data or {}
+    # Snapshot the live episode state RIGHT NOW, before any field is touched.
+    # This becomes the new edit.original_data after approval, so single-edit
+    # rollback restores the actual pre-approval state.
+    pre_approval_snapshot = {
+        'title': ep.title,
+        'description': ep.clean_description or '',
+        'tags': list(ep.tags or []),
+        'chapters': ep.chapters_public if ep.chapters_public is not None else [],
+    }
+    # User's submission-time snapshot, used to compute deltas.
+    user_snapshot = edit.original_data or {}
 
-        # 0. PROCESS TITLE
-        points += _check_scalar_approval(
-            request, 'approve_title', 'edited_title', pre_approval_snapshot['title'],
-            'title', 'title', ep, edit, membership, 'edits_title',
-        )
+    # 0. PROCESS TITLE
+    points += _check_scalar_approval(
+        request, 'approve_title', 'edited_title', pre_approval_snapshot['title'],
+        'title', 'title', ep, edit, membership, 'edits_title',
+    )
 
-        # 1. PROCESS DESCRIPTION
-        points += _check_scalar_approval(
-            request, 'approve_description', 'edited_description', pre_approval_snapshot['description'],
-            'clean_description', 'description', ep, edit, membership, 'edits_descriptions', sanitize=True,
-        )
+    # 1. PROCESS DESCRIPTION
+    points += _check_scalar_approval(
+        request, 'approve_description', 'edited_description', pre_approval_snapshot['description'],
+        'clean_description', 'description', ep, edit, membership, 'edits_descriptions', sanitize=True,
+    )
 
-        # 2. PROCESS TAGS — set-delta merge.
-        if request.POST.get('approve_tags') == 'on':
-            raw_tags = request.POST.get('edited_tags', '[]')
+    # 2. PROCESS TAGS — set-delta merge.
+    if request.POST.get('approve_tags') == 'on':
+        raw_tags = request.POST.get('edited_tags', '[]')
+        try:
+            user_intended_tags = json.loads(raw_tags)
+            user_baseline_tags = user_snapshot.get('tags') or []
+
+            if isinstance(user_intended_tags, list):
+                added = [t for t in user_intended_tags if t not in user_baseline_tags]
+                removed = set(user_baseline_tags) - set(user_intended_tags)
+
+                current_list = list(ep.tags or [])
+                merged = [t for t in current_list if t not in removed]
+                for t in added:
+                    if t not in merged:
+                        merged.append(t)
+
+                if merged != current_list:
+                    ep.tags = merged
+                    edit.suggested_data['tags'] = merged
+                    points += 1
+
+                    if added:
+                        membership.edits_tags += len(added)
+        except Exception as e:
+            logger.error(f"Failed to parse tags from inbox: {e}")
+
+    # 3. PROCESS CHAPTERS — full replacement (order-sensitive, can't merge cleanly).
+    if request.POST.get('approve_chapters') == 'on':
+        raw_chapters = request.POST.get('edited_chapters', '')
+        if raw_chapters:
             try:
-                user_intended_tags = json.loads(raw_tags)
-                user_baseline_tags = user_snapshot.get('tags') or []
+                new_chapters = json.loads(raw_chapters)
+                if new_chapters != pre_approval_snapshot['chapters']:
+                    # Mirror to both columns; see submit_episode_edit
+                    ep.chapters_public = new_chapters
+                    ep.chapters_private = new_chapters
+                    edit.suggested_data['chapters'] = new_chapters
+                    points += 1
 
-                if isinstance(user_intended_tags, list):
-                    added = [t for t in user_intended_tags if t not in user_baseline_tags]
-                    removed = set(user_baseline_tags) - set(user_intended_tags)
-
-                    current_list = list(ep.tags or [])
-                    merged = [t for t in current_list if t not in removed]
-                    for t in added:
-                        if t not in merged:
-                            merged.append(t)
-
-                    if merged != current_list:
-                        ep.tags = merged
-                        edit.suggested_data['tags'] = merged
-                        points += 1
-
-                        if added:
-                            membership.edits_tags += len(added)
+                    if isinstance(new_chapters, dict):
+                        membership.edits_chapters += len(new_chapters.get('chapters', []))
+                    elif isinstance(new_chapters, list):
+                        membership.edits_chapters += len(new_chapters)
             except Exception as e:
-                logger.error(f"Failed to parse tags from inbox: {e}")
+                logger.error(f"Failed to parse chapters from inbox: {e}")
 
-        # 3. PROCESS CHAPTERS — full replacement (order-sensitive, can't merge cleanly).
-        if request.POST.get('approve_chapters') == 'on':
-            raw_chapters = request.POST.get('edited_chapters', '')
-            if raw_chapters:
-                try:
-                    new_chapters = json.loads(raw_chapters)
-                    if new_chapters != pre_approval_snapshot['chapters']:
-                        # Mirror to both columns; see submit_episode_edit
-                        ep.chapters_public = new_chapters
-                        ep.chapters_private = new_chapters
-                        edit.suggested_data['chapters'] = new_chapters
-                        points += 1
-
-                        if isinstance(new_chapters, dict):
-                            membership.edits_chapters += len(new_chapters.get('chapters', []))
-                        elif isinstance(new_chapters, list):
-                            membership.edits_chapters += len(new_chapters)
-                except Exception as e:
-                    logger.error(f"Failed to parse chapters from inbox: {e}")
-
-        # --- THE ZERO-APPROVAL TRAP ---
-        if points == 0:
-            edit.status = 'rejected'
-            edit.resolved_at = timezone.now()
-            edit.save()
-            membership.trust_score = max(0, membership.trust_score - 2)
-            membership.save()
-            messages.warning(request, "No sections selected for approval. Edit converted to rejection. User penalized -2 Trust.")
-            return
-
-        # --- PERFECT SWEEP BONUS ---
-        if points == 3:
-            points += 2
-
-        # Lock metadata and finalize approval
-        ep.is_metadata_locked = True
-        ep.save()
-
-        # Rewrite original_data to the pre-approval snapshot so single-edit
-        # rollback restores the state that existed right before this approval.
-        edit.original_data = pre_approval_snapshot
-        edit.status = 'approved'
-        edit.resolved_at = timezone.now()
-        edit.save()
-
-        membership.trust_score += points
-        if edit.is_first_responder:
-            membership.first_responder_count += 1
-        membership.save()
-
-        messages.success(request, f"Partial edit approved! User awarded +{points} Trust Score.")
-
-        base_url = request.build_absolute_uri('/')[:-1]
-        task_rebuild_episode_fragments.delay(ep.id, base_url)
-
-    elif action == 'reject_edit':
+    # --- THE ZERO-APPROVAL TRAP ---
+    if points == 0:
         edit.status = 'rejected'
         edit.resolved_at = timezone.now()
         edit.save()
         membership.trust_score = max(0, membership.trust_score - 2)
         membership.save()
-        messages.warning(request, "Edit rejected. User penalized -2 Trust.")
+        messages.warning(request, "No sections selected for approval. Edit converted to rejection. User penalized -2 Trust.")
+        return
+
+    # --- PERFECT SWEEP BONUS ---
+    if points == 3:
+        points += 2
+
+    # Lock metadata and finalize approval
+    ep.is_metadata_locked = True
+    ep.save()
+
+    # Rewrite original_data to the pre-approval snapshot so single-edit
+    # rollback restores the state that existed right before this approval.
+    edit.original_data = pre_approval_snapshot
+    edit.status = 'approved'
+    edit.resolved_at = timezone.now()
+    edit.save()
+
+    membership.trust_score += points
+    if edit.is_first_responder:
+        membership.first_responder_count += 1
+    membership.save()
+
+    messages.success(request, f"Partial edit approved! User awarded +{points} Trust Score.")
+
+    base_url = request.build_absolute_uri('/')[:-1]
+    task_rebuild_episode_fragments.delay(ep.id, base_url)
 
 
-def _handle_rollback(request, current_network, action):
-    if action == 'rollback_single_edit':
-        edit = get_object_or_404(EpisodeEditSuggestion, id=request.POST.get('edit_id'), episode__podcast__network=current_network, status='approved')
-        membership, _ = NetworkMembership.objects.get_or_create(user=edit.user, network=current_network)
+def _handle_reject_edit(request, current_network):
+    edit_id = request.POST.get('edit_id')
+    edit = get_object_or_404(EpisodeEditSuggestion, id=edit_id, episode__podcast__network=current_network)
+    membership, _ = NetworkMembership.objects.get_or_create(user=edit.user, network=current_network)
+    edit.status = 'rejected'
+    edit.resolved_at = timezone.now()
+    edit.save()
+    membership.trust_score = max(0, membership.trust_score - 2)
+    membership.save()
+    messages.warning(request, "Edit rejected. User penalized -2 Trust.")
 
-        # Block when newer approved edits exist on the same episode.
-        newer_approved = EpisodeEditSuggestion.objects.filter(
-            episode=edit.episode,
-            status='approved',
-            resolved_at__gt=edit.resolved_at,
-        ).select_related('user').order_by('resolved_at')
 
-        if newer_approved.exists():
-            blockers = ", ".join(
-                f"#{e.id} by {e.user.username}" for e in newer_approved[:5]
-            )
-            extra = "" if newer_approved.count() <= 5 else f" (and {newer_approved.count() - 5} more)"
-            messages.error(
-                request,
-                f"Cannot roll back edit #{edit.id}: later approved edits exist on this episode "
-                f"({blockers}{extra}). Roll those back first, or leave this edit in place."
-            )
-            return
+def _handle_rollback_single_edit(request, current_network):
+    edit = get_object_or_404(EpisodeEditSuggestion, id=request.POST.get('edit_id'), episode__podcast__network=current_network, status='approved')
+    membership, _ = NetworkMembership.objects.get_or_create(user=edit.user, network=current_network)
 
+    # Block when newer approved edits exist on the same episode.
+    newer_approved = EpisodeEditSuggestion.objects.filter(
+        episode=edit.episode,
+        status='approved',
+        resolved_at__gt=edit.resolved_at,
+    ).select_related('user').order_by('resolved_at')
+
+    if newer_approved.exists():
+        blockers = ", ".join(
+            f"#{e.id} by {e.user.username}" for e in newer_approved[:5]
+        )
+        extra = "" if newer_approved.count() <= 5 else f" (and {newer_approved.count() - 5} more)"
+        messages.error(
+            request,
+            f"Cannot roll back edit #{edit.id}: later approved edits exist on this episode "
+            f"({blockers}{extra}). Roll those back first, or leave this edit in place."
+        )
+        return
+
+    ep = edit.episode
+    ep.title = edit.original_data.get('title', ep.title)
+    ep.clean_description = edit.original_data.get('description', ep.clean_description)
+    ep.tags = edit.original_data.get('tags', ep.tags)
+    ep.chapters_public = edit.original_data.get('chapters', ep.chapters_public)
+    ep.save()
+
+    base_url = request.build_absolute_uri('/')[:-1]
+    task_rebuild_episode_fragments.delay(ep.id, base_url)
+
+    edit.status = 'rolled_back'
+    edit.resolved_at = timezone.now()
+    edit.save()
+
+    membership.trust_score = max(0, membership.trust_score - 5)
+    if edit.suggested_data.get('title') != edit.original_data.get('title'): membership.edits_title = max(0, membership.edits_title - 1)
+    if edit.suggested_data.get('chapters') != edit.original_data.get('chapters'): membership.edits_chapters = max(0, membership.edits_chapters - len(edit.suggested_data.get('chapters', [])))
+    if edit.suggested_data.get('tags') != edit.original_data.get('tags'): membership.edits_tags = max(0, membership.edits_tags - 1)
+    if edit.suggested_data.get('description') != edit.original_data.get('description'): membership.edits_descriptions = max(0, membership.edits_descriptions - 1)
+    if edit.is_first_responder: membership.first_responder_count = max(0, membership.first_responder_count - 1)
+    membership.save()
+    messages.success(request, "Edit rolled back and user penalized.")
+
+
+def _handle_bulk_rollback(request, current_network):
+    spammer_id = request.POST.get('spammer_id')
+    spammer = get_object_or_404(User, id=spammer_id)
+    membership, _ = NetworkMembership.objects.get_or_create(user=spammer, network=current_network)
+
+    approved_edits = EpisodeEditSuggestion.objects.filter(
+        user=spammer,
+        episode__podcast__network=current_network,
+        status='approved'
+    )
+
+    base_url = request.build_absolute_uri('/')[:-1]
+
+    count = 0
+    for edit in approved_edits:
         ep = edit.episode
         ep.title = edit.original_data.get('title', ep.title)
         ep.clean_description = edit.original_data.get('description', ep.clean_description)
@@ -194,60 +235,22 @@ def _handle_rollback(request, current_network, action):
         ep.chapters_public = edit.original_data.get('chapters', ep.chapters_public)
         ep.save()
 
-        base_url = request.build_absolute_uri('/')[:-1]
         task_rebuild_episode_fragments.delay(ep.id, base_url)
 
         edit.status = 'rolled_back'
         edit.resolved_at = timezone.now()
         edit.save()
+        count += 1
 
-        membership.trust_score = max(0, membership.trust_score - 5)
-        if edit.suggested_data.get('title') != edit.original_data.get('title'): membership.edits_title = max(0, membership.edits_title - 1)
-        if edit.suggested_data.get('chapters') != edit.original_data.get('chapters'): membership.edits_chapters = max(0, membership.edits_chapters - len(edit.suggested_data.get('chapters', [])))
-        if edit.suggested_data.get('tags') != edit.original_data.get('tags'): membership.edits_tags = max(0, membership.edits_tags - 1)
-        if edit.suggested_data.get('description') != edit.original_data.get('description'): membership.edits_descriptions = max(0, membership.edits_descriptions - 1)
-        if edit.is_first_responder: membership.first_responder_count = max(0, membership.first_responder_count - 1)
-        membership.save()
-        messages.success(request, "Edit rolled back and user penalized.")
+    # Nuke their stats for this network
+    membership.trust_score = 0
+    membership.edits_chapters = 0
+    membership.edits_tags = 0
+    membership.edits_descriptions = 0
+    membership.first_responder_count = 0
+    membership.save()
 
-    elif action == 'bulk_rollback':
-        spammer_id = request.POST.get('spammer_id')
-        spammer = get_object_or_404(User, id=spammer_id)
-        membership, _ = NetworkMembership.objects.get_or_create(user=spammer, network=current_network)
-
-        approved_edits = EpisodeEditSuggestion.objects.filter(
-            user=spammer,
-            episode__podcast__network=current_network,
-            status='approved'
-        )
-
-        base_url = request.build_absolute_uri('/')[:-1]
-
-        count = 0
-        for edit in approved_edits:
-            ep = edit.episode
-            ep.title = edit.original_data.get('title', ep.title)
-            ep.clean_description = edit.original_data.get('description', ep.clean_description)
-            ep.tags = edit.original_data.get('tags', ep.tags)
-            ep.chapters_public = edit.original_data.get('chapters', ep.chapters_public)
-            ep.save()
-
-            task_rebuild_episode_fragments.delay(ep.id, base_url)
-
-            edit.status = 'rolled_back'
-            edit.resolved_at = timezone.now()
-            edit.save()
-            count += 1
-
-        # Nuke their stats for this network
-        membership.trust_score = 0
-        membership.edits_chapters = 0
-        membership.edits_tags = 0
-        membership.edits_descriptions = 0
-        membership.first_responder_count = 0
-        membership.save()
-
-        messages.success(request, f"Bulk rollback complete. Reverted {count} edits and dropped trust score to 0.")
+    messages.success(request, f"Bulk rollback complete. Reverted {count} edits and dropped trust score to 0.")
 
 
 def handle_run_manual_sync(request, current_network):
@@ -471,10 +474,10 @@ def handle_generate_s3_report(request, current_network):
 
 
 ACTION_HANDLERS = {
-    'approve_edit':         lambda req, net: _handle_inbox_action(req, net, 'approve_edit'),
-    'reject_edit':          lambda req, net: _handle_inbox_action(req, net, 'reject_edit'),
-    'rollback_single_edit': lambda req, net: _handle_rollback(req, net, 'rollback_single_edit'),
-    'bulk_rollback':        lambda req, net: _handle_rollback(req, net, 'bulk_rollback'),
+    'approve_edit':         _handle_approve_edit,
+    'reject_edit':          _handle_reject_edit,
+    'rollback_single_edit': _handle_rollback_single_edit,
+    'bulk_rollback':        _handle_bulk_rollback,
     'run_manual_sync':      handle_run_manual_sync,
     'update_network':       handle_update_network,
     'update_show':          handle_update_show,

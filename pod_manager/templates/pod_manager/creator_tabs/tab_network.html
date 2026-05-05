@@ -3,7 +3,7 @@
                         <h4 class="mb-0 fw-bold">{{ current_network.name }} Settings</h4>
                     </div>
                     <div class="card-body">
-                        <form id="networkSettingsForm" method="POST" action="{% url 'creator_settings' %}">
+                        <form id="networkSettingsForm" method="POST" action="{% url 'creator_settings' %}?network={{ current_network.slug }}">
                             {% csrf_token %}
                             <input type="hidden" name="action" value="update_network">
                             <input type="hidden" name="network_id" value="{{ current_network.id }}">

@@ -1,563 +1,649 @@
 {% extends 'pod_manager/base.html' %}
-
 {% load static %}
 
 {% block content %}
 <style>
-    /* Button & Dropdown Polish */
-    .btn-add-to-app {
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        padding-right: 12px;
-        min-width: 60px;
-    }
-
-    .app-preview-tray {
-        display: flex;
-        gap: 6px;
-        border-left: 1px solid rgba(0,0,0,0.2);
-        padding-left: 8px;
-        margin-left: 8px;
-    }
-
-    .dropdown-item-podcast {
-        display: flex;
-        align-items: center;
-        padding: 10px 16px;
-        font-weight: 500;
-        transition: background 0.2s;
-    }
-
-    .dropdown-item-podcast:hover {
-        background-color: rgba(255, 193, 7, 0.1) !important;
-    }
-
-    .icon-brand {
-        width: 20px !important;
-        height: 20px !important;
-        background-size: contain;
-        background-repeat: no-repeat;
-        background-position: center;
-        margin-right: 12px;
-        display: inline-block !important;
-        border-radius: 6px !important;
-        overflow: hidden;
-    }
+    /* ── Inheriting Vecto Theme Variables ── */
     
-    .icon-mini {
-        width: 14px !important;
-        height: 14px !important;
-        background-size: contain;
-        background-repeat: no-repeat;
-        background-position: center;
-        display: inline-block !important;
-        border-radius: 3px !important;
-        overflow: hidden;
+    /* ── Utility Classes ── */
+    .meta-text { color: #cbd5e1 !important; } /* Lighter contrast text for meta info */
+    
+    /* Input Contrast Fixes */
+    .dark-input { 
+        background-color: rgba(0, 0, 0, 0.45) !important; 
+        border: 1px solid rgba(255, 255, 255, 0.15) !important; 
+        color: #ffffff !important; 
+    }
+    .dark-input:focus-within, .dark-input:focus {
+        border-color: var(--vecto-primary, #ffc107) !important; 
+        box-shadow: none !important; /* Removes the faint yellow glow */
+    }
+    #feedSearch:focus {
+        /* Strictly kills any nested Bootstrap focus rings */
+        box-shadow: none !important;
+        border-color: transparent !important;
+    }
+    .dark-input::placeholder { 
+        color: rgba(255, 255, 255, 0.75) !important; /* Much higher contrast placeholder */
+        opacity: 1; 
+    }
+    .dark-input:focus { 
+        border-color: var(--vecto-primary, #ffc107) !important; 
+        box-shadow: none !important; 
     }
 
-    /* Podcast App Icon Paths */
-    .icon-apple { background-image: url("{% static 'pod_manager/img/icons/applepodcasts.svg' %}"); }
-    .icon-castro { background-image: url("{% static 'pod_manager/img/icons/castro.svg' %}"); }
-    .icon-downcast { background-image: url("{% static 'pod_manager/img/icons/downcast.svg' %}"); }
-    .icon-overcast { background-image: url("{% static 'pod_manager/img/icons/overcast.svg' %}"); }
-    .icon-pocketcasts { background-image: url("{% static 'pod_manager/img/icons/pocketcasts.svg' %}"); }
-    .icon-podcastaddict { background-image: url("{% static 'pod_manager/img/icons/podcastaddict.svg' %}"); }
-    .icon-podcastrepublic { background-image: url("{% static 'pod_manager/img/icons/podcastrepublic.svg' %}"); }
-    .icon-podkicker { background-image: url("{% static 'pod_manager/img/icons/podkicker.svg' %}"); }
-    .icon-rssradio { background-image: url("{% static 'pod_manager/img/icons/rssradio.svg' %}"); }
-    .icon-youtubemusic { background-image: url("{% static 'pod_manager/img/icons/youtubemusic.svg' %}"); }
-    .icon-rss { background-image: url("{% static 'pod_manager/img/icons/rss.svg' %}"); }
-
-    .copy-btn {
-        background-color: rgba(255, 255, 255, 0.05) !important;
+    /* ── Pills Navigation ── */
+    .pills-container {
+        display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 24px;
+    }
+    .pill-tab {
+        background: var(--vecto-surface-bg, #32373c); 
+        color: var(--vecto-surface-text, #ffffff);
+        border: 1px solid var(--bs-border-color); 
+        padding: 6px 14px;
+        cursor: pointer; font-weight: 600; font-size: 13px; 
+        border-radius: 999px;
+        display: flex; align-items: center; gap: 8px; 
         transition: all 0.2s ease;
     }
-    .copy-btn:hover {
-        background-color: var(--vecto-primary) !important;
-        color: var(--vecto-primary-text) !important;
-        border-color: var(--vecto-primary) !important;
+    .pill-tab:hover { background: rgba(255,255,255,0.05); }
+    .pill-tab.active {
+        background: var(--vecto-primary, #ffc107); 
+        color: var(--vecto-primary-text, #000000);
+        border-color: var(--vecto-primary, #ffc107);
     }
-    /* Allows the modal to grow horizontally to fit long podcast names */
-    .modal-flexible {
-        max-width: 95vw !important;
-        width: fit-content !important;
-        min-width: 500px;
+    .badge-count {
+        font-size: 11px; padding: 2px 7px; border-radius: 12px;
+        background: rgba(255,255,255,0.12); font-family: ui-monospace, monospace;
+    }
+    .pill-tab.active .badge-count { background: rgba(0,0,0,0.2); }
+
+    /* ── Hover Marquee for Overflowing Titles ── */
+    .marquee-container {
+        flex: 1 1 0%;
+        min-width: 0; /* Critical for stopping flexbox expansion */
+        overflow: hidden;
+        mask-image: linear-gradient(to right, black 90%, transparent 100%);
+        -webkit-mask-image: linear-gradient(to right, black 90%, transparent 100%);
+    }
+    .feed-header .min-w-0 > .d-flex {
+        /* Forces the title row to strictly obey boundaries without pushing siblings */
+        min-width: 0; 
+        max-width: 100%;
+    }
+    .feed-header > .d-flex:last-child {
+        /* Protects the episode count area from being crushed or overwritten */
+        flex-shrink: 0;
+        margin-left: 12px;
+        background: transparent;
+        z-index: 2;
+    }
+    /* ── Hover Marquee for Overflowing Titles ── */
+    .marquee-container {
+        flex: 1 1 0%;
+        min-width: 0; 
+        overflow: hidden;
+        mask-image: linear-gradient(to right, black 85%, transparent 100%);
+        -webkit-mask-image: linear-gradient(to right, black 85%, transparent 100%);
+    }
+    .marquee-text {
+        white-space: nowrap;
+        display: inline-block;
+    }
+    .feed-row:hover .marquee-text {
+        animation: textScroll 4s linear infinite alternate;
+    }
+    @keyframes textScroll {
+        0%, 15% { transform: translateX(0); }
+        85%, 100% { transform: translateX(min(0px, calc(150px - 100%))); }
+    }
+
+    /* ── Grid Layout & Comfy Density ── */
+    .feed-grid {
+        /* minmax(0, 1fr) locks columns, preventing text overflow from warping the grid */
+        display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 0;
+        background: var(--vecto-surface-bg, #32373c);
+        border: 1px solid var(--bs-border-color);
+        border-radius: 12px; overflow: hidden;
+    }
+    @media (max-width: 768px) {
+        .feed-grid { grid-template-columns: 1fr; }
+        .feed-grid > .feed-row:nth-child(odd) { border-right: none; }
+    }
+
+    .feed-row {
+        border-bottom: 1px solid var(--bs-border-color);
+        border-right: 1px solid var(--bs-border-color);
+        background: transparent;
+        transition: background 0.15s ease;
+    }
+    .feed-grid > .feed-row:nth-child(2n) { border-right: none; } 
+    .feed-row:hover { background: rgba(255,255,255,0.03); }
+    .feed-row.open { background: rgba(0,0,0,0.15); }
+
+    .feed-header {
+        cursor: pointer; padding: 14px 16px;
+        /* CRITICAL: minmax(0, 1fr) allows text truncation instead of expanding the grid */
+        display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 14px;
+        color: var(--vecto-surface-text, #ffffff);
+        transition: align-items 0.25s ease;
+    }
+    .feed-header span[style*="border"] { flex-shrink: 0; }
+    
+    /* Shift alignment to top when open so artwork can grow downward */
+    .feed-row.open .feed-header { align-items: flex-start; }
+    .feed-row.open .feed-header > .d-flex:last-child { margin-top: 4px; } /* Aligns chevron with top text */
+    
+    .feed-art-container {
+        width: 44px; height: 44px; border-radius: 8px; overflow: hidden; 
+        background: #000; flex-shrink: 0; border: 1px solid rgba(255,255,255,0.1);
+        transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+    }
+    /* Grow artwork ~2.5x */
+    .feed-row.open .feed-art-container {
+        width: 150px; height: 150px;
+        box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+    }
+    .feed-art-container img { width: 100%; height: 100%; object-fit: cover; }
+    
+    /* ── On Air Dot ── */
+    .on-air-dot {
+        width: 8px; height: 8px; border-radius: 99px; flex-shrink: 0;
+        background: transparent; margin-right: 8px;
+    }
+    .on-air-dot.active {
+        background: #0d6efd; 
+        box-shadow: 0 0 0 3px rgba(13, 110, 253, 0.25);
+    }
+
+    /* ── Accordion Expansion ── */
+    .feed-details-expanded { 
+        display: none; 
+        padding: 0 16px 20px 16px; /* Spans full width safely below the artwork */
+        animation: feedExpand 0.25s cubic-bezier(0.4, 0, 0.2, 1); 
     }
     
-    /* Ensures the podcast selection labels stay on a single line */
-    .text-nowrap-label {
-        white-space: nowrap !important;
-        display: flex;
-        align-items: center;
+    /* Dedicated class for the dynamically moved description */
+    .feed-description {
+        display: none;
+        margin-top: 8px;
+        white-space: normal !important; /* Forces text to wrap instead of truncating */
     }
+    .feed-row.open .feed-description {
+        display: block;
+        animation: feedExpand 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+    }
+    .feed-row.open .feed-details-expanded { display: block; }
+    .feed-row.open .chevron { transform: rotate(180deg); }
+
+    @keyframes feedExpand { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: translateY(0); } }
+
+    /* ── Inputs and Buttons ── */
+    .copy-box {
+        display: flex; background: rgba(0,0,0,0.25);
+        border: 1px solid var(--bs-border-color); border-radius: 6px; overflow: hidden;
+    }
+    .copy-box input {
+        flex: 1; min-width: 0; padding: 8px 12px; font-size: 12px;
+        background: transparent; border: none; color: var(--vecto-surface-text, #fff);
+        font-family: ui-monospace, monospace; outline: none;
+    }
+    .copy-box button {
+        padding: 0 14px; border: none; border-left: 1px solid var(--bs-border-color);
+        background: rgba(255,255,255,0.05); color: var(--vecto-surface-text, #fff);
+        font-size: 12px; font-weight: 600; cursor: pointer; transition: background 0.15s;
+    }
+    .copy-box button:hover { background: rgba(255,255,255,0.15); }
+    .copy-box button.copied { background: #198754 !important; color: #fff !important; }
+
+    .app-btn {
+        display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+        padding: 6px 12px; font-size: 12px; font-weight: 600;
+        background: rgba(255,255,255,0.1); color: var(--vecto-surface-text, #fff);
+        border: 1px solid var(--bs-border-color); border-radius: 6px; cursor: pointer; transition: all 0.15s;
+    }
+    .app-btn:hover { background: rgba(255,255,255,0.15); color: #fff; }
+    
+    .dropdown-menu-apps { background: var(--vecto-surface-bg); border: 1px solid var(--bs-border-color); }
+    .dropdown-menu-apps .dropdown-item { color: var(--vecto-surface-text); padding: 8px 16px; font-weight: 500; }
+    .dropdown-menu-apps .dropdown-item:hover { background: rgba(255,255,255,0.08); color: #fff; }
+
+    /* ── Dropdown Expansion & Placeholder Fix ── */
+    .extra-apps-container {
+        max-height: 0;
+        overflow: hidden;
+        transition: max-height 0.3s ease-out;
+    }
+    .dark-input input::placeholder {
+        color: rgba(255, 255, 255, 0.75) !important;
+    }
+
+    /* ── App Icons ── */
+    .icon-brand {
+        display: inline-block; background-size: contain; background-repeat: no-repeat;
+        background-position: center; border-radius: 4px; overflow: hidden; flex-shrink: 0;
+        width: 16px; height: 16px;
+    }
+    
+    
+    .icon-apple          { background-image: url("{% static 'pod_manager/img/icons/applepodcasts.svg' %}"); }
+    .icon-castro         { background-image: url("{% static 'pod_manager/img/icons/castro.svg' %}"); }
+    .icon-downcast       { background-image: url("{% static 'pod_manager/img/icons/downcast.svg' %}"); }
+    .icon-overcast       { background-image: url("{% static 'pod_manager/img/icons/overcast.svg' %}"); }
+    .icon-pocketcasts    { background-image: url("{% static 'pod_manager/img/icons/pocketcasts.svg' %}"); }
+    .icon-podcastaddict  { background-image: url("{% static 'pod_manager/img/icons/podcastaddict.svg' %}"); }
+    .icon-podcastrepublic{ background-image: url("{% static 'pod_manager/img/icons/podcastrepublic.svg' %}"); }
+    .icon-podkicker      { background-image: url("{% static 'pod_manager/img/icons/podkicker.svg' %}"); }
+    .icon-rssradio       { background-image: url("{% static 'pod_manager/img/icons/rssradio.svg' %}"); }
+    .icon-youtubemusic   { background-image: url("{% static 'pod_manager/img/icons/youtubemusic.svg' %}"); }
+    .icon-rss            { background-image: url("{% static 'pod_manager/img/icons/rss.svg' %}"); }
 </style>
 
-<div class="row mb-4 align-items-center">
-    <div class="{% if user_networks|length > 1 %}col-md-5{% else %}col-md-8{% endif %} mb-3 mb-md-0">
-        <h2 class="fw-bold mb-1">Listener Dashboard</h2>
-        <p class="text-muted mb-0">Welcome back, {{ request.user.first_name|default:"Listener" }}! Manage your podcast feeds below.</p>
-    </div>
+<div class="container-fluid py-4" style="max-width: 1180px; margin: 0 auto;">
+    
+    <div class="row mb-4 align-items-center gap-3">
+        <div class="col-md-6">
+            <h2 class="fw-bold mb-1">Listener Dashboard</h2>
+            <p class="text-muted mb-0" style="font-size: 14px;">Welcome back, {{ request.user.first_name|default:"Listener" }}.</p>
+        </div>
 
-    {% if user.is_authenticated %}
-    <div class="{% if user_networks|length > 1 %}col-md-3{% else %}col-md-4 text-md-end{% endif %} mb-3 mb-md-0">
-        <div class="card bg-warning text-white border-0 shadow-sm h-100">
-            <div class="card-body py-2 text-start">
-                <span class="text-white-50 small text-uppercase fw-bold">Active Patreon Pledge</span>
-                <h4 class="text-white mb-0 fw-bold">${% widthratio tenant_profile.patreon_pledge_cents|default:0 100 1 %}.00 <span class="fs-6 text-white-50 fw-normal">/ month</span></h4>
+        <div class="col-md ms-md-auto text-md-end">
+            <div class="d-inline-block text-start rounded p-2 px-3 shadow-sm" style="background: var(--vecto-primary, #ffc107); color: var(--vecto-primary-text, #000);">
+                <span class="text-uppercase fw-bold d-block" style="font-size: 10px; opacity: 0.8; letter-spacing: 1px;">Patreon Pledge</span>
+                <span style="font-size: 18px; font-weight: 800;">
+                    ${% widthratio tenant_profile.patreon_pledge_cents|default:0 100 1 %}.00
+                </span>
             </div>
         </div>
     </div>
-    {% endif %}
 
-    {% if user_networks|length > 1 %}
-    <div class="col-md-4">
-        <div class="card border-secondary shadow-sm bg-dark h-100 text-start">
-            <div class="card-body p-2">
-                <h6 class="text-muted fw-bold text-uppercase mb-1 small"><i class="bi bi-globe"></i> Active Network</h6>
-                <div class="dropdown d-grid">
-                    <button class="btn btn-outline-warning btn-sm dropdown-toggle text-start d-flex justify-content-between align-items-center" type="button" data-bs-toggle="dropdown" data-bs-auto-close="outside">
-                        <span class="text-light text-truncate pe-2">
-                            {% if not selected_networks  or "all" in selected_networks%} All My Networks (Blended)
-                            {% elif selected_networks|length == 1 %} {% for net in user_networks %}{% if net.slug in selected_networks %}{{ net.name }}{% endif %}{% endfor %}
-                            {% else %} Multiple Networks ({{ selected_networks|length }}) {% endif %}
-                        </span>
-                    </button>
-                    <ul class="dropdown-menu dropdown-menu-dark w-100 border-warning shadow p-3">
-                        <form method="GET" action="">
-                            <li class="mb-2 pb-2 border-bottom border-secondary">
-                                <a class="text-warning text-decoration-none small fw-bold" href="?network=all">
-                                    <i class="bi bi-x-circle"></i> Blended View (All My Networks)
-                                </a>
-                            </li>
-                            {% for net in user_networks %}
-                            <li class="mb-2">
-                                <div class="form-check">
-                                    <input class="form-check-input" type="checkbox" name="network" value="{{ net.slug }}" id="check-{{ net.slug }}" {% if net.slug in selected_networks %}checked{% endif %}>
-                                    <label class="form-check-label text-light small" for="check-{{ net.slug }}">{{ net.name }}</label>
-                                </div>
-                            </li>
-                            {% endfor %}
-                            <li class="mt-3"><button type="submit" class="btn btn-warning btn-sm w-100 fw-bold">Update Filter</button></li>
-                        </form>
-                    </ul>
-                </div>
-            </div>
+    <div class="d-flex flex-wrap gap-3 mb-4">
+        <div class="flex-grow-1 d-flex align-items-center dark-input shadow-sm" style="border-radius: 8px; padding: 0 16px;">
+            <i class="bi bi-search flex-shrink-0" style="color: rgba(255,255,255,0.5);"></i>
+            <input type="text" id="feedSearch" class="bg-transparent border-0 text-white w-100" style="font-size: 14px; padding: 12px 10px; outline: none;" placeholder="Filter feeds...">
         </div>
-    </div>
-    {% endif %}
-</div>
-
-<div class="mb-3">
-    <div class="input-group">
-        <span class="input-group-text bg-black border-secondary text-muted"><i class="bi bi-funnel"></i></span>
-        <input type="text" id="feedSearch" class="form-control bg-black text-light border-secondary" placeholder="Type to filter feeds...">
-    </div>
-</div>
-
-<div class="card shadow-sm mb-5">
-    <div class="card-header bg-dark border-bottom border-secondary">
-        <h5 class="mb-0"><i class="bi bi-rss-fill text-warning"></i> Your Feeds</h5>
-    </div>
-    <ul class="list-group list-group-flush bg-dark">
-        {% for item in feed_data %}
-            
-            {% ifchanged item.is_network_mix %}
-                <li class="list-group-item bg-black py-2 border-secondary small fw-bold text-uppercase {% if item.is_network_mix %}text-warning{% else %}text-muted{% endif %}" style="letter-spacing: 1px;">
-                    {% if item.is_network_mix %}
-                        <i class="bi bi-star-fill me-1"></i> Network Super Feeds
-                    {% else %}
-                        <i class="bi bi-mic-fill me-1"></i> Standard Podcasts
-                    {% endif %}
-                </li>
-            {% endifchanged %}
-
-            <li class="list-group-item bg-transparent text-light py-3 feed-item">
-                <div class="row align-items-center">
-                    <div class="col-md-4 d-flex align-items-center">
-                        {% if item.is_network_mix %}
-                            {% if item.mix.display_image %}
-                                <img src="{{ item.mix.display_image }}" class="rounded me-3 shadow-sm border border-secondary" style="width: 56px; height: 56px; object-fit: cover;">
-                            {% else %}
-                                <div class="rounded bg-black d-flex justify-content-center align-items-center me-3 border border-secondary shadow-sm" style="width: 56px; height: 56px;">
-                                    <i class="bi bi-collection-play text-warning fs-4"></i>
-                                </div>
-                            {% endif %}
-                            <div>
-                                <h5 class="mb-1 fw-bold feed-title">{{ item.mix.name }}</h5>
-                                <p class="mb-0 text-muted small">{{ item.mix.network.name }} Super Feed</p>
-                            </div>
-                        {% else %}
-                            {% if item.podcast.image_url %}
-                                <img src="{{ item.podcast.image_url }}" class="rounded me-3 shadow-sm border border-secondary" style="width: 56px; height: 56px; object-fit: cover;">
-                            {% elif item.podcast.network.default_image_url %}
-                                <img src="{{ item.podcast.network.default_image_url }}" class="rounded me-3 shadow-sm border border-secondary" style="width: 56px; height: 56px; object-fit: cover;">
-                            {% else %}
-                                <div class="rounded bg-black d-flex justify-content-center align-items-center me-3 border border-secondary shadow-sm" style="width: 56px; height: 56px;">
-                                    <i class="bi bi-mic text-warning fs-4"></i>
-                                </div>
-                            {% endif %}
-                            <div>
-                                <h5 class="mb-1 fw-bold feed-title">{{ item.podcast.title }}</h5>
-                                <p class="mb-0 text-muted small">{{ item.podcast.network.name }} Network</p>
-                            </div>
-                        {% endif %}
-                    </div>
-                    
-                    <div class="col-md-8 mt-3 mt-md-0">
-                        <div class="input-group">
-                            <input type="text" class="form-control bg-black text-light border-secondary" id="feed-{{ forloop.counter }}" value="{{ item.feed_url }}" readonly>
-                            <button class="btn bg-dark text-light border-secondary copy-btn" type="button" onclick="copyFeed(this, 'feed-{{ forloop.counter }}')">
-                                <i class="bi bi-clipboard"></i> Copy
-                            </button>
-                            
-                            <button class="btn btn-warning dropdown-toggle fw-bold text-dark btn-add-to-app shadow-sm" type="button" data-bs-toggle="dropdown">
-                                <i class="icon-mini icon-pocketcasts"></i>
-                            </button>
-                            <ul class="dropdown-menu dropdown-menu-dark dropdown-menu-end border-secondary shadow p-2" style="min-width: 240px;">
-                                <li><a class="dropdown-item dropdown-item-podcast rounded" href="#" onclick="openPodcastApp('apple', '{{ item.feed_url }}')">
-                                    <i class="icon-brand icon-apple"></i> Apple Podcasts</a></li>
-                                <li><a class="dropdown-item dropdown-item-podcast rounded" href="#" onclick="openPodcastApp('youtubemusic', '{{ item.feed_url }}')">
-                                    <i class="icon-brand icon-youtubemusic"></i> YouTube Music</a></li>
-                                <li><a class="dropdown-item dropdown-item-podcast rounded" href="#" onclick="openPodcastApp('pocketcasts', '{{ item.feed_url }}')">
-                                    <i class="icon-brand icon-pocketcasts"></i> Pocket Casts</a></li>
-                                <li><a class="dropdown-item dropdown-item-podcast rounded" href="#" onclick="openPodcastApp('overcast', '{{ item.feed_url }}')">
-                                    <i class="icon-brand icon-overcast"></i> Overcast</a></li>
-                                <li><a class="dropdown-item dropdown-item-podcast rounded" href="#" onclick="openPodcastApp('castro', '{{ item.feed_url }}')">
-                                    <i class="icon-brand icon-castro"></i> Castro</a></li>
-                                <li><a class="dropdown-item dropdown-item-podcast rounded" href="#" onclick="openPodcastApp('podcastaddict', '{{ item.feed_url }}')">
-                                    <i class="icon-brand icon-podcastaddict"></i> Podcast Addict</a></li>
-                                <li><a class="dropdown-item dropdown-item-podcast rounded" href="#" onclick="openPodcastApp('downcast', '{{ item.feed_url }}')">
-                                    <i class="icon-brand icon-downcast"></i> Downcast</a></li>
-                                <li><a class="dropdown-item dropdown-item-podcast rounded" href="#" onclick="openPodcastApp('podcastrepublic', '{{ item.feed_url }}')">
-                                    <i class="icon-brand icon-podcastrepublic"></i> Podcast Republic</a></li>
-                                <li><a class="dropdown-item dropdown-item-podcast rounded" href="#" onclick="openPodcastApp('podkicker', '{{ item.feed_url }}')">
-                                    <i class="icon-brand icon-podkicker"></i> Podkicker</a></li>
-                                <li><a class="dropdown-item dropdown-item-podcast rounded" href="#" onclick="openPodcastApp('rssradio', '{{ item.feed_url }}')">
-                                    <i class="icon-brand icon-rssradio"></i> RSSRadio</a></li>
-
-                                <li><hr class="dropdown-divider border-secondary"></li>
-                                <li><a class="dropdown-item dropdown-item-podcast rounded fw-bold text-warning" href="#" onclick="openPodcastApp('rss', '{{ item.feed_url }}')">
-                                    <i class="icon-brand icon-rss"></i> RSS Feed</a></li>
-                            </ul>
-                        </div>
-                        
-                        {% if item.has_access %}
-                            {% if item.is_network_mix %}
-                                <small class="text-success mt-1 d-block"><i class="bi bi-star-fill"></i> Network Super Feed (Premium Unlocked)</small>
-                            {% else %}
-                                <small class="text-success mt-1 d-block"><i class="bi bi-star-fill"></i> Premium Unlocked via Patreon.</small>
-                            {% endif %}
-                        {% else %}
-                            {% if item.is_network_mix %}
-                                <div class="mt-2 p-2 bg-dark rounded border border-secondary d-flex align-items-center justify-content-between">
-                                    <small class="text-muted mb-0"><i class="bi bi-info-circle"></i> Requires <strong>${% widthratio item.mix.required_tier.minimum_cents|default:0 100 1 %}.00</strong> pledge.</small>
-                                    {% if item.mix.required_tier.checkout_url %}
-                                        <a href="{{ item.mix.required_tier.checkout_url }}" target="_blank" class="btn btn-sm btn-outline-warning fw-bold py-0" style="font-size: 0.75rem;">Unlock</a>
-                                    {% endif %}
-                                </div>
-                            {% else %}
-                                <div class="mt-2 p-2 bg-dark rounded border border-secondary d-flex align-items-center justify-content-between">
-                                    <small class="text-muted mb-0"><i class="bi bi-info-circle"></i> Requires <strong>${% widthratio item.podcast.required_tier.minimum_cents|default:0 100 1 %}.00</strong> pledge.</small>
-                                    {% if item.podcast.required_tier.checkout_url %}
-                                        <a href="{{ item.podcast.required_tier.checkout_url }}" target="_blank" class="btn btn-sm btn-outline-warning fw-bold py-0" style="font-size: 0.75rem;">Unlock</a>
-                                    {% endif %}
-                                </div>
-                            {% endif %}
-                        {% endif %}
-                    </div>
-                </div>
-            </li>
-        {% endfor %}
-    </ul>
-</div>
-
-{% if user.is_authenticated %}
-<div class="card shadow-sm mb-5">
-    <div class="card-header bg-dark border-bottom border-secondary d-flex justify-content-between align-items-center py-3">
-        <h5 class="mb-0"><i class="bi bi-collection-play-fill text-warning"></i> Your Custom Mixes</h5>
         
-        {% if user.is_authenticated %}
-        <button class="btn btn-warning btn-sm fw-bold shadow-sm" data-bs-toggle="modal" data-bs-target="#createMixModal">
-            <i class="bi bi-plus-lg"></i> Add Mix
-        </button>
-        {% else %}
-        <a href="{% url 'patreon_login' %}" class="btn btn-outline-warning btn-sm fw-bold shadow-sm">
-            Login to Mix
-        </a>
+        {% if user_networks|length > 1 %}
+        <div style="min-width: 220px; flex-shrink: 0;">
+            <select class="form-select dark-input shadow-sm h-100" style="font-size: 14px; padding: 12px 36px 12px 16px; border-radius: 8px; cursor: pointer;" onchange="window.location.href='?network=' + this.value">
+                <option value="all" {% if not selected_networks or "all" in selected_networks %}selected{% endif %} style="background: #111; color: #fff;">All Networks</option>
+                {% for net in user_networks %}
+                <option value="{{ net.slug }}" {% if net.slug in selected_networks %}selected{% endif %} style="background: #111; color: #fff;">{{ net.name }}</option>
+                {% endfor %}
+            </select>
+        </div>
         {% endif %}
     </div>
-    
-    {% if user_mixes %}
-        <ul class="list-group list-group-flush bg-dark">
-            {% for mix in user_mixes %}
-            <li class="list-group-item bg-transparent text-light py-3 feed-item">
-                <div class="row align-items-center">
-                    <div class="col-md-4 d-flex align-items-center">
-                        {% if mix.display_image %}
-                            <img src="{{ mix.display_image }}" class="rounded me-3 shadow-sm border border-secondary" style="width: 56px; height: 56px; object-fit: cover;">
-                        {% else %}
-                            <div class="rounded bg-black d-flex justify-content-center align-items-center me-3 border border-secondary shadow-sm" style="width: 56px; height: 56px;">
-                                <i class="bi bi-music-note-list text-warning fs-4"></i>
+
+    <div class="pills-container" role="tablist">
+        <button class="pill-tab active" data-tab="all">
+            All <span class="badge-count" id="count-all">0</span>
+        </button>
+        <button class="pill-tab" data-tab="supermix">
+            Supermix <span class="badge-count" id="count-supermix">0</span>
+        </button>
+        <button class="pill-tab" data-tab="standard">
+            Standard <span class="badge-count" id="count-standard">0</span>
+        </button>
+        <button class="pill-tab" data-tab="exclusive">
+            Exclusive <span class="badge-count" id="count-exclusive">0</span>
+        </button>
+        <button class="pill-tab" data-tab="usermixes">
+            Usermixes <span class="badge-count" id="count-usermixes">0</span>
+        </button>
+    </div>
+
+    <div class="feed-grid shadow-sm" id="feedGrid">
+        
+        {% for item in feed_data %}
+            {% if item.is_network_mix %}
+                <div class="feed-row" data-type="supermix" data-title="{{ item.mix.name|lower }}" data-lastep="">
+                    <div class="feed-header" onclick="toggleFeed(this)">
+                        <div class="feed-art-container">
+                            <img src="{{ item.mix.display_image|default:item.mix.network.default_image_url }}" alt="Art">
+                        </div>
+                        <div class="min-w-0 flex-grow-1">
+                            <div class="d-flex align-items-center">
+                                <span class="on-air-dot"></span>
+                                    <div class="marquee-container"><h6 class="mb-0 fw-bold marquee-text" style="font-size: 14px;">{{ item.mix.name }}</h6></div>                                {% if not item.has_access %}
+                                    <span class="ms-2" style="font-size:9px; border: 1px solid var(--vecto-primary, #ffc107); color: var(--vecto-primary, #ffc107); padding: 1px 5px; border-radius: 4px; font-weight: bold;">LOCKED</span>
+                                {% endif %}
                             </div>
-                        {% endif %}
-                        <div>
-                            <h5 class="fw-bold text-light mb-1 feed-title">{{ mix.name }}</h5>
-                            <p class="text-muted small mb-0 text-truncate" style="max-width: 250px;" title="{% for show in mix.selected_podcasts.all %}{{ show.title }}{% if not forloop.last %}, {% endif %}{% endfor %}">
-                                {% for show in mix.selected_podcasts.all %}
-                                    {{ show.title }}{% if not forloop.last %}, {% endif %}
-                                {% empty %}
-                                    No shows selected
-                                {% endfor %}
-                            </p>
+                            <div class="meta-text mt-1 text-truncate d-flex align-items-center gap-1" style="font-size: 12px;">
+                                <span>{{ item.mix.network.name }}</span>
+                                <span class="last-ep-time" style="opacity: 0.85;"></span>
+                            </div>
+                        </div>
+                        <div class="d-flex align-items-center gap-3 meta-text">
+                            <span style="font-size: 12px; font-variant-numeric: tabular-nums;">
+                                {{ item.mix.selected_podcasts.count }} shows
+                            </span>
+                            <i class="bi bi-chevron-down chevron transition"></i>
                         </div>
                     </div>
-                    
-                    <div class="col-md-8 mt-3 mt-md-0">
-                        <div class="input-group">
-                            {% url 'mix_feed' mix.unique_id as mix_path %}
-                            <input type="text" class="form-control bg-black text-light border-secondary" id="mix-feed-{{ mix.id }}" value="{{ request.scheme }}://{{ request.get_host }}{{ mix_path }}?auth={{ profile.feed_token }}" readonly>
-                            <button class="btn bg-dark text-light border-secondary copy-btn" type="button" onclick="copyFeed(this, 'mix-feed-{{ mix.id }}')">
+                    <div class="feed-details-expanded">
+                        <p class="meta-text mb-3" style="font-size: 13px;">A curated Super Feed of {{ item.mix.network.name }}'s best content.</p>
+                        <div class="copy-box mb-3">
+                            <input type="text" value="{{ item.feed_url }}" readonly id="url-{{ forloop.counter }}" onclick="this.select()">
+                            <button type="button" onclick="copyToClipboard('url-{{ forloop.counter }}', this)">
                                 <i class="bi bi-clipboard"></i> Copy
                             </button>
-                            
-                            <button class="btn btn-warning dropdown-toggle fw-bold text-dark btn-add-to-app shadow-sm" type="button" data-bs-toggle="dropdown">
-                                <i class="icon-mini icon-pocketcasts"></i>
-                            </button>
-                            <ul class="dropdown-menu dropdown-menu-dark dropdown-menu-end border-secondary shadow p-2" style="min-width: 240px;">
-                                <li class="px-3 py-1 small text-muted text-uppercase fw-bold" style="font-size: 0.65rem;">Most Popular</li>
-                                <li><a class="dropdown-item dropdown-item-podcast rounded" href="#" onclick="openPodcastApp('apple', document.getElementById('mix-feed-{{ mix.id }}').value)">
-                                    <i class="icon-brand icon-apple"></i> Apple Podcasts</a></li>
-                                <li><a class="dropdown-item dropdown-item-podcast rounded" href="#" onclick="openPodcastApp('youtubemusic', document.getElementById('mix-feed-{{ mix.id }}').value)">
-                                    <i class="icon-brand icon-youtubemusic"></i> YouTube Music</a></li>
-                                <li><a class="dropdown-item dropdown-item-podcast rounded" href="#" onclick="openPodcastApp('pocketcasts', document.getElementById('mix-feed-{{ mix.id }}').value)">
-                                    <i class="icon-brand icon-pocketcasts"></i> Pocket Casts</a></li>
-                                
-                                <li><hr class="dropdown-divider border-secondary"></li>
-                                <li class="px-3 py-1 small text-muted text-uppercase fw-bold" style="font-size: 0.65rem;">Specialty Clients</li>
-                                <li><a class="dropdown-item dropdown-item-podcast rounded" href="#" onclick="openPodcastApp('overcast', document.getElementById('mix-feed-{{ mix.id }}').value)"><i class="icon-brand icon-overcast"></i> Overcast</a></li>
-                                <li><a class="dropdown-item dropdown-item-podcast rounded" href="#" onclick="openPodcastApp('castro', document.getElementById('mix-feed-{{ mix.id }}').value)"><i class="icon-brand icon-castro"></i> Castro</a></li>
-                                
-                                <li><hr class="dropdown-divider border-secondary"></li>
-                                <li class="px-3 py-1 small text-muted text-uppercase fw-bold" style="font-size: 0.65rem;">Manage Mix</li>
-                                <li>
-                                    <a class="dropdown-item rounded text-info" href="#" data-bs-toggle="modal" data-bs-target="#editMixModal-{{ mix.id }}">
-                                        <i class="bi bi-pencil-square me-2"></i> Edit Mix Settings
-                                    </a>
-                                </li>
-                                <li>
-                                    <a class="dropdown-item rounded text-danger" href="#" onclick="if(confirm('Are you sure you want to delete this mix?')) { document.getElementById('delete-mix-form-{{ mix.id }}').submit(); }">
-                                        <i class="bi bi-trash me-2"></i> Delete Mix
-                                    </a>
-                                    <form id="delete-mix-form-{{ mix.id }}" method="POST" action="{% url 'user_feeds' %}?{% for slug in selected_networks %}network={{ slug }}{% if not forloop.last %}&{% endif %}{% endfor %}" class="d-none">
-                                        {% csrf_token %}
-                                        <input type="hidden" name="delete_mix" value="1">
-                                        <input type="hidden" name="mix_id" value="{{ mix.id }}">
-                                    </form>
-                                </li>
-                            </ul>
                         </div>
-                        <small class="text-success mt-1 d-block"><i class="bi bi-magic"></i> Custom Mixed Feed</small>
+                        <div class="app-injector d-flex flex-wrap gap-2 align-items-center" data-feed="{{ item.feed_url }}"></div>
                     </div>
                 </div>
-            </li>
-
-            <div class="modal fade" id="editMixModal-{{ mix.id }}" tabindex="-1">
-                <div class="modal-dialog modal-lg modal-flexible">
-                    <div class="modal-content bg-dark border-secondary">
-                        <form method="POST" action="{% url 'user_feeds' %}?{% for slug in selected_networks %}network={{ slug }}{% if not forloop.last %}&{% endif %}{% endfor %}" enctype="multipart/form-data">
-                            {% csrf_token %}
-                            <input type="hidden" name="edit_mix" value="1">
-                            <input type="hidden" name="mix_id" value="{{ mix.id }}">
-                            <div class="modal-header border-bottom border-secondary bg-black">
-                                <h5 class="modal-title text-info fw-bold"><i class="bi bi-pencil"></i> Edit "{{ mix.name }}"</h5>
-                                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+            {% else %}
+                {% with is_standard=item.podcast.public_feed_url %}
+                <div class="feed-row" 
+                     data-type="{% if is_standard %}standard{% else %}exclusive{% endif %}" 
+                     data-title="{{ item.podcast.title|lower }}" 
+                     data-lastep="{{ item.podcast.episodes.first.pub_date|date:'c' }}">
+                    <div class="feed-header" onclick="toggleFeed(this)">
+                        <div class="feed-art-container">
+                            <img src="{{ item.podcast.image_url|default:item.podcast.network.default_image_url }}" alt="Art">
+                        </div>
+                        <div class="min-w-0 flex-grow-1">
+                            <div class="d-flex align-items-center">
+                                <span class="on-air-dot"></span>
+                                <div class="marquee-container"><h6 class="mb-0 fw-bold marquee-text" style="font-size: 14px;">{{ item.podcast.title }}</h6></div>
+                                {% if not item.has_access %}
+                                    <span class="ms-2" style="font-size:9px; border: 1px solid var(--vecto-primary, #ffc107); color: var(--vecto-primary, #ffc107); padding: 1px 5px; border-radius: 4px; font-weight: bold;">LOCKED</span>
+                                {% endif %}
                             </div>
-                            <div class="modal-body p-4">
-                                <div class="mb-3">
-                                    <label class="form-label text-light small fw-bold">Mix Name</label>
-                                    <input type="text" class="form-control bg-black text-light border-secondary" name="mix_name" value="{{ mix.name }}" placeholder="Leave blank to auto-generate">
-                                </div>
-                                <div class="mb-4">
-                                    <label class="form-label text-light small fw-bold">Custom Artwork</label>
-                                    <input type="file" class="form-control bg-black text-light border-secondary mb-2" name="mix_image_upload" accept="image/*">
-                                    <div class="form-text text-muted mb-2">Note: Images should be a perfect square (e.g., 500x500) for best results.</div>
-                                    <input type="url" class="form-control bg-black text-light border-secondary" name="mix_image" value="{{ mix.image_url }}" placeholder="Or paste an image URL (https://...)">
-                                </div>
-                                
-                                <h6 class="text-muted small fw-bold text-uppercase mb-2">Select Shows to Include:</h6>
-                                <div class="bg-black border border-secondary rounded p-3" style="max-height: 250px; overflow-y: auto;">
-                                    {% for avail_item in available_podcasts %}
-                                    <div class="form-check mb-2">
-                                        <input class="form-check-input" type="checkbox" name="podcasts" value="{{ avail_item.podcast.id }}" id="edit-show-{{ mix.id }}-{{ avail_item.podcast.id }}"
-                                            {% if avail_item.podcast in mix.selected_podcasts.all %}checked{% endif %}>
-                                        <label class="form-check-label text-light text-nowrap-label" for="edit-show-{{ mix.id }}-{{ avail_item.podcast.id }}">
-                                            <span class="fw-bold">{{ avail_item.podcast.title }}</span>
-                                            <small class="text-muted ms-1">({{ avail_item.podcast.network.name }})</small>
-                                            
-                                            {% if not avail_item.has_access %}
-                                                <span class="badge bg-secondary ms-2" style="font-size: 0.65rem;">Public</span>
-                                            {% else %}
-                                                <span class="badge bg-success ms-2" style="font-size: 0.65rem;"><i class="bi bi-star-fill"></i></span>
-                                            {% endif %}
-                                        </label>
-                                    </div>
-                                    {% endfor %}
-                                </div>
+                            <div class="meta-text mt-1 text-truncate d-flex align-items-center gap-1" style="font-size: 12px;">
+                                <span>{{ item.podcast.network.name }}</span>
+                                <span class="last-ep-time" style="opacity: 0.85;"></span>
                             </div>
-                            <div class="modal-footer border-top border-secondary">
-                                <button type="button" class="btn btn-outline-light" data-bs-dismiss="modal">Cancel</button>
-                                <button type="submit" class="btn btn-info fw-bold"><i class="bi bi-floppy"></i> Save Changes</button>
-                            </div>
-                        </form>
+                        </div>
+                        <div class="d-flex align-items-center gap-3 meta-text">
+                            <span style="font-size: 12px; font-variant-numeric: tabular-nums;">
+                                {{ item.podcast.episodes.count }} eps
+                            </span>
+                            <i class="bi bi-chevron-down chevron transition"></i>
+                        </div>
                     </div>
+                    <div class="feed-details-expanded">
+                        <p class="meta-text mb-3" style="font-size: 13px;">{{ item.podcast.description|default:"No description available." }}</p>
+                        <div class="copy-box mb-3">
+                            <input type="text" value="{{ item.feed_url }}" readonly id="url-{{ forloop.counter }}" onclick="this.select()">
+                            <button type="button" onclick="copyToClipboard('url-{{ forloop.counter }}', this)">
+                                <i class="bi bi-clipboard"></i> Copy
+                            </button>
+                        </div>
+                        <div class="app-injector d-flex flex-wrap gap-2 align-items-center" data-feed="{{ item.feed_url }}"></div>
+                    </div>
+                </div>
+                {% endwith %}
+            {% endif %}
+        {% endfor %}
+        
+        {% for mix in user_mixes %}
+        <div class="feed-row" data-type="usermixes" data-title="{{ mix.name|lower }}" data-lastep="">
+            <div class="feed-header" onclick="toggleFeed(this)">
+                <div class="feed-art-container">
+                    <img src="{{ mix.display_image|default:current_network.default_image_url }}" alt="Art">
+                </div>
+                <div class="min-w-0 flex-grow-1">
+                    <div class="d-flex align-items-center">
+                        <span class="on-air-dot"></span>
+                        <div class="marquee-container"><h6 class="mb-0 fw-bold marquee-text" style="font-size: 14px;">{{ mix.name }}</h6></div>
+                    </div>
+                    <div class="meta-text mt-1 text-truncate d-flex align-items-center gap-1" style="font-size: 12px;">
+                        <span>Custom Mix</span>
+                        <span class="last-ep-time" style="opacity: 0.85;"></span>
+                    </div>
+                </div>
+                <div class="d-flex align-items-center gap-3 meta-text">
+                    <span style="font-size: 12px; font-variant-numeric: tabular-nums;">
+                        {{ mix.selected_podcasts.count }} shows
+                    </span>
+                    <i class="bi bi-chevron-down chevron transition"></i>
                 </div>
             </div>
-            {% endfor %}
-        </ul>        <div class="card-body text-center py-5 bg-black border border-secondary border-top-0 rounded-bottom">
-            <i class="bi bi-inbox fs-1 d-block mb-2 text-secondary"></i>
-            {% if user.is_authenticated %}
-            <p class="text-muted mb-0">You haven't created any custom mixes yet.<br>Click "Add Mix" to combine your favorite shows into a single feed!</p>
-            {% else %}
-            <p class="text-muted mb-0">Custom mixes allow you to blend multiple shows into a single feed.<br>Connect your Patreon account to build your first mix!</p>
-            {% endif %}
+            <div class="feed-details-expanded">
+                <p class="meta-text mb-3" style="font-size: 13px;">
+                    Shows: 
+                    {% for show in mix.selected_podcasts.all %}
+                        {{ show.title }}{% if not forloop.last %}, {% endif %}
+                    {% empty %}
+                        No shows selected
+                    {% endfor %}
+                </p>
+                {% url 'mix_feed' mix.unique_id as mix_path %}
+                {% with mix_full_url=request.scheme|add:"://"|add:request.get_host|add:mix_path|add:"?auth="|add:profile.feed_token %}
+                <div class="copy-box mb-3">
+                    <input type="text" value="{{ mix_full_url }}" readonly id="url-mix-{{ mix.id }}" onclick="this.select()">
+                    <button type="button" onclick="copyToClipboard('url-mix-{{ mix.id }}', this)">
+                        <i class="bi bi-clipboard"></i> Copy
+                    </button>
+                </div>
+                <div class="app-injector d-flex flex-wrap gap-2 align-items-center" data-feed="{{ mix_full_url }}"></div>
+                {% endwith %}
+            </div>
         </div>
-    {% endif %}
-</div>
-{% endif %}
-
-{% if user.is_authenticated %}
-<div class="modal fade" id="createMixModal" tabindex="-1">
-    <div class="modal-dialog modal-lg modal-flexible">
-        <div class="modal-content bg-dark border-secondary">
-            <form method="POST" action="{% url 'user_feeds' %}?{% for slug in selected_networks %}network={{ slug }}{% if not forloop.last %}&{% endif %}{% endfor %}" enctype="multipart/form-data">
-                {% csrf_token %}
-                <input type="hidden" name="create_mix" value="1">
-                <div class="modal-header border-bottom border-secondary bg-black">
-                    <h5 class="modal-title text-warning fw-bold"><i class="bi bi-magic"></i> Create Custom Mix</h5>
-                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
-                </div>
-                <div class="modal-body p-4">
-                    <div class="mb-3">
-                        <label class="form-label text-light small fw-bold">Mix Name</label>
-                        <input type="text" class="form-control bg-black text-light border-secondary" name="mix_name" placeholder="Leave blank to auto-generate">
-                    </div>
-                    <div class="mb-4">
-                        <label class="form-label text-light small fw-bold">Custom Artwork</label>
-                        <input type="file" class="form-control bg-black text-light border-secondary mb-2" name="mix_image_upload" accept="image/*">
-                        <div class="form-text text-muted mb-2">Note: Images should be a perfect square (e.g., 500x500) for best results.</div>
-                        <input type="url" class="form-control bg-black text-light border-secondary" name="mix_image" placeholder="Or paste an image URL (https://...)">
-                        <div class="form-text text-muted">Upload a square image or provide a URL to use as the podcast cover art.</div>
-                    </div>
-                    
-                    <h6 class="text-muted small fw-bold text-uppercase mb-2">Select Shows to Include:</h6>
-                    <div class="bg-black border border-secondary rounded p-3" style="max-height: 250px; overflow-y: auto;">
-                        {% for avail_item in available_podcasts %}
-                        <div class="form-check mb-2">
-                            <input class="form-check-input" type="checkbox" name="podcasts" value="{{ avail_item.podcast.id }}" id="modal-show-{{ avail_item.podcast.id }}">
-                            <label class="form-check-label text-light text-nowrap-label" for="modal-show-{{ avail_item.podcast.id }}">
-                                <span class="fw-bold">{{ avail_item.podcast.title }}</span>
-                                <small class="text-muted ms-1">({{ avail_item.podcast.network.name }})</small>
-                                
-                                {% if not avail_item.has_access %}
-                                    <span class="badge bg-secondary ms-2" style="font-size: 0.65rem;">Public</span>
-                                {% else %}
-                                    <span class="badge bg-success ms-2" style="font-size: 0.65rem;"><i class="bi bi-star-fill"></i></span>
-                                {% endif %}
-                            </label>
-                        </div>
-                        {% empty %}
-                        <div class="text-muted small p-2">No shows are available on this network yet.</div>
-                        {% endfor %}
-                    </div>
-                </div>
-                <div class="modal-footer border-top border-secondary">
-                    <button type="button" class="btn btn-outline-light" data-bs-dismiss="modal">Cancel</button>
-                    <button type="submit" class="btn btn-warning fw-bold"><i class="bi bi-floppy"></i> Save Mix</button>
-                </div>
-            </form>
-        </div>
+        {% endfor %}
     </div>
 </div>
-{% endif %}
 
 <script>
-function copyFeed(btn, elementId) {
-    var copyText = document.getElementById(elementId);
-    copyText.select();
-    copyText.setSelectionRange(0, 99999); // For mobile devices
-    
-    // 1. Try modern Clipboard API first (HTTPS or localhost)
-    if (navigator.clipboard && window.isSecureContext) {
-        navigator.clipboard.writeText(copyText.value);
-    } else {
-        // 2. Fallback for insecure local development (e.g., http://bm.local)
-        try {
-            document.execCommand('copy');
-        } catch (err) {
-            console.error('Fallback copy failed', err);
-        }
-    }
-    
-    // Save the original HTML and exact CSS classes
-    var originalHTML = btn.innerHTML;
-    var originalClasses = btn.className; 
-    
-    // Swap to the success state
-    btn.innerHTML = '<i class="bi bi-check2"></i> Copied!';
-    btn.className = 'btn btn-success fw-bold border-success text-white shadow-sm';
-    
-    // Restore back to original after 2 seconds
-    setTimeout(function() {
-        btn.innerHTML = originalHTML;
-        btn.className = originalClasses; 
-    }, 2000);
-}
-
-function openPodcastApp(app, feedUrl) {
-    let cleanUrl = feedUrl.replace(/^https?:\/\//, '');
-    let encodedUrl = encodeURIComponent(feedUrl);
-    
-    // btoa() converts the URL to Base64 for YouTube Music
-    let base64Url = btoa(feedUrl); 
-    
-    let appUrl = '';
-
-    switch(app) {
-        case 'apple': appUrl = 'podcast://' + cleanUrl; break;
-        case 'pocketcasts': appUrl = 'pktc://subscribe/' + cleanUrl; break;
-        case 'overcast': appUrl = 'overcast://x-callback-url/add?url=' + encodedUrl; break;
-        case 'castro': appUrl = 'castro://subscribe/' + cleanUrl; break;
-        case 'podcastaddict': appUrl = 'podcastaddict://' + cleanUrl; break;
-        case 'youtubemusic': appUrl = 'https://music.youtube.com/library/podcasts?addrssfeed=' + base64Url; break;
-        case 'downcast': appUrl = 'downcast://' + cleanUrl; break;
-        case 'podcastrepublic': appUrl = 'podcastrepublic://' + cleanUrl; break;
-        case 'podkicker': appUrl = 'pdk://' + cleanUrl; break;
-        case 'rssradio': appUrl = 'rssradio://' + cleanUrl; break;            
-        case 'rss': window.open(feedUrl, '_blank'); return;
-    }
-    
-    if (appUrl) {
-        window.location.href = appUrl;
-    }
-}
-
-document.getElementById('feedSearch').addEventListener('keyup', function() {
-    const filter = this.value.toLowerCase();
-    const items = document.querySelectorAll('.feed-item');
-    
-    items.forEach(item => {
-        const titleElement = item.querySelector('.feed-title');
-        if (titleElement) {
-            const title = titleElement.innerText.toLowerCase();
-            // Use Bootstrap's d-none to immediately hide/show
-            if (title.includes(filter)) {
-                item.classList.remove('d-none');
-            } else {
-                item.classList.add('d-none');
+    document.addEventListener("DOMContentLoaded", () => {
+        // ── 0. Layout Restructure for Expanded Art ──
+        // Moves ONLY the description next to the art. Leaves URL/Apps full-width below.
+        document.querySelectorAll('.feed-row').forEach(row => {
+            const details = row.querySelector('.feed-details-expanded');
+            const middleCol = row.querySelector('.min-w-0');
+            
+            if (details && middleCol) {
+                details.addEventListener('click', e => e.stopPropagation()); 
+                
+                // Extract only the description paragraph and tuck it under the title
+                const desc = details.querySelector('p.meta-text');
+                if (desc) {
+                    desc.classList.add('feed-description');
+                    desc.classList.remove('mb-3'); // Removes excess bottom margin
+                    middleCol.appendChild(desc);
+                }
             }
-        }
+        });
+
+        // ── 1. Dynamic Platform Detection ──
+        const ua = navigator.userAgent;
+        let platform = 'desktop';
+        if (/iPhone|iPad|iPod/i.test(ua)) platform = 'ios';
+        else if (/Android/i.test(ua)) platform = 'android';
+
+        // ── 2. Comprehensive App Catalog ──
+        const APPS = [
+            { id: 'apple', name: 'Apple Podcasts', platforms: ['ios', 'desktop'], icon: 'icon-apple', url: (u) => `pcast://${u.replace(/^https?:\/\//, '')}` },
+            { id: 'pocketcasts', name: 'Pocket Casts', platforms: ['ios', 'android', 'desktop'], icon: 'icon-pocketcasts', url: (u) => `https://pca.st/subscribe-to/${u.replace(/^https?:\/\//, '')}` },
+            { id: 'youtubemusic', name: 'YouTube Music', platforms: ['ios', 'android', 'desktop'], icon: 'icon-youtubemusic', url: (u) => `https://music.youtube.com/library/podcasts?addrssfeed=${btoa(u)}` },
+            { id: 'podcastaddict', name: 'Podcast Addict', platforms: ['android'], icon: 'icon-podcastaddict', url: (u) => `podcastaddict://${u.replace(/^https?:\/\//, '')}` },
+            { id: 'overcast', name: 'Overcast', platforms: ['ios'], icon: 'icon-overcast', url: (u) => `overcast://x-callback-url/add?url=${encodeURIComponent(u)}` },
+            { id: 'castro', name: 'Castro', platforms: ['ios'], icon: 'icon-castro', url: (u) => `castro://subscribe/${u.replace(/^https?:\/\//, '')}` },
+            { id: 'downcast', name: 'Downcast', platforms: ['ios', 'desktop'], icon: 'icon-downcast', url: (u) => `downcast://${u.replace(/^https?:\/\//, '')}` },
+            { id: 'podcastrepublic', name: 'Podcast Republic', platforms: ['android'], icon: 'icon-podcastrepublic', url: (u) => `podcastrepublic://${u.replace(/^https?:\/\//, '')}` },
+            { id: 'podkicker', name: 'Podkicker', platforms: ['android'], icon: 'icon-podkicker', url: (u) => `pdk://${u.replace(/^https?:\/\//, '')}` },
+            { id: 'rssradio', name: 'RSSRadio', platforms: ['ios'], icon: 'icon-rssradio', url: (u) => `rssradio://${u.replace(/^https?:\/\//, '')}` },
+            // Replaced isBi with custom svg class for consistency
+            { id: 'rss', name: 'Copy RSS', platforms: ['ios', 'android', 'desktop'], icon: 'icon-rss', url: (u) => u }
+        ];
+
+        window.buildApps = function(container) {
+            const feedUrl = container.dataset.feed;
+            const available = APPS.filter(a => a.platforms.includes(platform));
+            const primary = available.slice(0, 2);
+            const secondary = available.slice(2);
+            const extra = APPS.filter(a => !a.platforms.includes(platform));
+
+            let html = `<span class="meta-text text-uppercase fw-bold me-1" style="font-size:10px; letter-spacing:0.8px;">Add to</span>`;
+            
+            primary.forEach(app => {
+                html += `<button class="app-btn" onclick="window.location.href='${app.url(feedUrl)}'; event.stopPropagation();"><i class="icon-brand ${app.icon}"></i> ${app.name}</button>`;
+            });
+
+            if (secondary.length > 0 || extra.length > 0) {
+                html += `<div class="dropdown d-inline-block">
+                    <button class="app-btn dropdown-toggle" type="button" data-bs-toggle="dropdown" data-bs-auto-close="outside" onclick="event.stopPropagation();">More apps</button>
+                    <ul class="dropdown-menu dropdown-menu-apps shadow">`;
+                
+                secondary.forEach(app => {
+                    html += `<li><a class="dropdown-item d-flex align-items-center gap-2" href="${app.url(feedUrl)}" onclick="event.stopPropagation();"><i class="icon-brand ${app.icon}"></i> ${app.name}</a></li>`;
+                });
+
+                if (extra.length > 0) {
+                    if (secondary.length > 0) {
+                        html += `<li class="see-all-divider"><hr class="dropdown-divider border-secondary m-0"></li>`;
+                    }
+                    html += `<li class="see-all-btn"><button class="dropdown-item text-center text-muted" style="font-size:12px; padding: 8px;" onclick="expandApps(this); event.stopPropagation();">See all apps</button></li>`;
+                    
+                    // The animated hidden container
+                    html += `<div class="extra-apps-container">`;
+                    extra.forEach(app => {
+                        html += `<li><a class="dropdown-item d-flex align-items-center gap-2 text-muted" href="${app.url(feedUrl)}" onclick="event.stopPropagation();"><i class="icon-brand ${app.icon}" style="opacity: 0.6;"></i> ${app.name}</a></li>`;
+                    });
+                    html += `</div>`;
+                }
+                
+                html += `</ul></div>`;
+            }
+            container.innerHTML = html;
+        };
+
+        // Triggers the CSS height transition and intercepts the click
+        window.expandApps = function(btn, event) {
+            if (event) {
+                event.preventDefault();
+                event.stopPropagation();
+            }
+            const ul = btn.closest('.dropdown-menu');
+            const container = ul.querySelector('.extra-apps-container');
+            const divider = ul.querySelector('.see-all-divider');
+            
+            container.style.maxHeight = container.scrollHeight + "px";
+            btn.closest('.see-all-btn').style.display = 'none';
+            if (divider) divider.style.display = 'none';
+        };
+
+        // Hooks into Bootstrap to reset the dropdown state when it closes
+        document.addEventListener('hidden.bs.dropdown', function (event) {
+            const ul = event.target.nextElementSibling;
+            if (ul && ul.classList.contains('dropdown-menu-apps')) {
+                const container = ul.querySelector('.extra-apps-container');
+                const seeAllBtn = ul.querySelector('.see-all-btn');
+                const divider = ul.querySelector('.see-all-divider');
+                
+                if (container) container.style.maxHeight = '0';
+                if (seeAllBtn) seeAllBtn.style.display = 'block';
+                if (divider) divider.style.display = 'block';
+            }
+        });
+
+        document.querySelectorAll('.app-injector').forEach(container => buildApps(container));
+
+        // ── 3. Time Ago, Blue Dot, & Sorting ──
+        const grid = document.getElementById('feedGrid');
+        const rows = Array.from(grid.querySelectorAll('.feed-row'));
+        const now = new Date();
+        const fourteenDaysMs = 14 * 24 * 60 * 60 * 1000;
+
+        rows.forEach(row => {
+            const dateStr = row.dataset.lastep;
+            if (dateStr) {
+                const epDate = new Date(dateStr);
+                if (!isNaN(epDate)) {
+                    const msAgo = now - epDate;
+                    const daysAgo = Math.floor(msAgo / (1000 * 60 * 60 * 24));
+                    
+                    const timeEl = row.querySelector('.last-ep-time');
+                    if (timeEl) timeEl.innerText = `• ${daysAgo === 0 ? 'Today' : daysAgo + 'd ago'}`;
+
+                    if (msAgo <= fourteenDaysMs) {
+                        row.dataset.onAir = "true";
+                        row.querySelector('.on-air-dot').classList.add('active');
+                    } else {
+                        row.dataset.onAir = "false";
+                    }
+                } else {
+                    row.dataset.onAir = "false";
+                }
+            } else {
+                row.dataset.onAir = "false";
+            }
+        });
+
+        // Sort: On-Air first, then Alphabetical
+        rows.sort((a, b) => {
+            const aOn = a.dataset.onAir === "true";
+            const bOn = b.dataset.onAir === "true";
+            if (aOn !== bOn) return aOn ? -1 : 1; 
+            return a.dataset.title.localeCompare(b.dataset.title);
+        });
+
+        rows.forEach(row => grid.appendChild(row));
+        updateCounts();
     });
-});
+
+    // ── 4. Accordion Toggle ──
+    window.toggleFeed = function(el) {
+        const row = el.closest('.feed-row');
+        const wasOpen = row.classList.contains('open');
+        document.querySelectorAll('.feed-row.open').forEach(r => r.classList.remove('open'));
+        if (!wasOpen) row.classList.add('open');
+    };
+
+    // ── 5. Search and Tab Logic ──
+    const tabs = document.querySelectorAll('.pill-tab');
+    const searchInput = document.getElementById('feedSearch');
+
+    function filterFeeds() {
+        const activeTab = document.querySelector('.pill-tab.active').dataset.tab;
+        const query = searchInput.value.toLowerCase();
+        
+        document.querySelectorAll('.feed-row').forEach(row => {
+            const matchesTab = activeTab === 'all' || row.dataset.type === activeTab;
+            const matchesSearch = row.dataset.title.includes(query);
+            row.style.display = (matchesTab && matchesSearch) ? 'block' : 'none';
+        });
+    }
+
+    function updateCounts() {
+        ['all', 'supermix', 'standard', 'exclusive', 'usermixes'].forEach(type => {
+            const count = type === 'all' 
+                ? document.querySelectorAll('.feed-row').length 
+                : document.querySelectorAll(`.feed-row[data-type="${type}"]`).length;
+            document.getElementById(`count-${type}`).innerText = count;
+        });
+    }
+
+    tabs.forEach(tab => tab.addEventListener('click', () => {
+        tabs.forEach(t => t.classList.remove('active'));
+        tab.classList.add('active');
+        filterFeeds();
+    }));
+
+    searchInput.addEventListener('input', filterFeeds);
+
+    // ── 6. Copy to Clipboard (HTTP Safe) ──
+    window.copyToClipboard = function(id, btn) {
+        const copyInput = document.getElementById(id);
+        
+        // Use modern API if secure, fallback to execCommand for local HTTP
+        if (navigator.clipboard && window.isSecureContext) {
+            navigator.clipboard.writeText(copyInput.value);
+        } else {
+            copyInput.select();
+            copyInput.setSelectionRange(0, 99999); // Mobile compatibility
+            document.execCommand('copy');
+            window.getSelection().removeAllRanges(); // Deselect cleanly
+        }
+
+        const originalHTML = btn.innerHTML;
+        btn.innerHTML = '<i class="bi bi-check2"></i> Copied';
+        btn.classList.add('copied');
+        setTimeout(() => {
+            btn.innerHTML = originalHTML;
+            btn.classList.remove('copied');
+        }, 2000);
+    };
 </script>
 {% endblock %}

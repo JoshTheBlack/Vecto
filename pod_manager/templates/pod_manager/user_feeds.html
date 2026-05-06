@@ -104,7 +104,16 @@
         display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 0;
         background: var(--vecto-surface-bg, #32373c);
         border: 1px solid var(--bs-border-color);
-        border-radius: 12px; overflow: hidden;
+        border-radius: 12px; 
+        /* Removed overflow: hidden so dropdowns can escape the grid bounds */
+    }
+    
+    /* Round the hover backgrounds of the top rows to maintain the radius */
+    .feed-row:first-child { border-top-left-radius: 12px; }
+    .feed-row:nth-child(2) { border-top-right-radius: 12px; }
+    @media (max-width: 768px) {
+        .feed-row:first-child { border-top-right-radius: 12px; }
+        .feed-row:nth-child(2) { border-top-right-radius: 0; }
     }
     @media (max-width: 768px) {
         .feed-grid { grid-template-columns: 1fr; }
@@ -275,22 +284,30 @@
         {% endif %}
     </div>
 
-    <div class="pills-container" role="tablist">
-        <button class="pill-tab active" data-tab="all">
-            All <span class="badge-count" id="count-all">0</span>
+    <div class="d-flex justify-content-between align-items-center mb-4 flex-wrap gap-3">
+        <div class="pills-container mb-0" role="tablist">
+            <button class="pill-tab active" data-tab="all">
+                All <span class="badge-count" id="count-all">0</span>
+            </button>
+            <button class="pill-tab" data-tab="supermix">
+                Supermix <span class="badge-count" id="count-supermix">0</span>
+            </button>
+            <button class="pill-tab" data-tab="standard">
+                Standard <span class="badge-count" id="count-standard">0</span>
+            </button>
+            <button class="pill-tab" data-tab="exclusive">
+                Exclusive <span class="badge-count" id="count-exclusive">0</span>
+            </button>
+            <button class="pill-tab" data-tab="usermixes">
+                Usermixes <span class="badge-count" id="count-usermixes">0</span>
+            </button>
+        </div>
+        
+        {% if user.is_authenticated %}
+        <button class="app-btn ms-auto shadow-sm" style="background: transparent; border: 1px solid var(--vecto-primary, #ffc107); color: var(--vecto-primary, #ffc107);" data-bs-toggle="modal" data-bs-target="#createMixModal">
+            <i class="bi bi-plus-lg"></i> Create Mix
         </button>
-        <button class="pill-tab" data-tab="supermix">
-            Supermix <span class="badge-count" id="count-supermix">0</span>
-        </button>
-        <button class="pill-tab" data-tab="standard">
-            Standard <span class="badge-count" id="count-standard">0</span>
-        </button>
-        <button class="pill-tab" data-tab="exclusive">
-            Exclusive <span class="badge-count" id="count-exclusive">0</span>
-        </button>
-        <button class="pill-tab" data-tab="usermixes">
-            Usermixes <span class="badge-count" id="count-usermixes">0</span>
-        </button>
+        {% endif %}
     </div>
 
     <div class="feed-grid shadow-sm" id="feedGrid">
@@ -410,20 +427,27 @@
                     {% endfor %}
                 </p>
                 {% url 'mix_feed' mix.unique_id as mix_path %}
-                {% with mix_full_url=request.scheme|add:"://"|add:request.get_host|add:mix_path|add:"?auth="|add:profile.feed_token %}
                 <div class="copy-box mb-3">
-                    <input type="text" value="{{ mix_full_url }}" readonly id="url-mix-{{ mix.id }}" onclick="this.select()">
+                    <input type="text" value="{{ request.scheme }}://{{ request.get_host }}{{ mix_path }}?auth={{ profile.feed_token }}" readonly id="url-mix-{{ mix.id }}" onclick="this.select()">
                     <button type="button" onclick="copyToClipboard('url-mix-{{ mix.id }}', this)">
                         <i class="bi bi-clipboard"></i> Copy
                     </button>
                 </div>
-                <div class="app-injector d-flex flex-wrap gap-2 align-items-center" data-feed="{{ mix_full_url }}"></div>
-                {% endwith %}
+                
+                <div class="d-flex align-items-center justify-content-between flex-wrap gap-3">
+                    <div class="app-injector d-flex flex-wrap gap-2 align-items-center" data-feed="{{ request.scheme }}://{{ request.get_host }}{{ mix_path }}?auth={{ profile.feed_token }}"></div>
+                    
+                    <button class="app-btn ms-auto" style="background: rgba(255,255,255,0.05); border-color: rgba(255,255,255,0.15);" data-bs-toggle="modal" data-bs-target="#editMixModal-{{ mix.id }}">
+                        <i class="bi bi-pencil"></i> Edit Mix
+                    </button>
+                </div>
             </div>
         </div>
         {% endfor %}
     </div>
 </div>
+
+{% include 'pod_manager/snippets/mix_modals.html' %}
 
 <script>
     document.addEventListener("DOMContentLoaded", () => {

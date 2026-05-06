@@ -233,6 +233,30 @@ def get_podcast_for_request(request, slug: str):
     return get_object_or_404(Podcast, slug=slug, network=request.network)
 
 
+def _parse_feed_date(value: str):
+    """Parse YYYYMMDD or YYYY-MM-DD into an aware datetime, or return None."""
+    from datetime import datetime as _dt
+    for fmt in ('%Y%m%d', '%Y-%m-%d'):
+        try:
+            return timezone.make_aware(_dt.strptime(value.strip(), fmt))
+        except (ValueError, AttributeError):
+            continue
+    return None
+
+
+def _parse_feed_limit(value: str, default: int = 500):
+    """Return a slice limit integer, None (no cap), or the default on invalid input."""
+    if not value:
+        return default
+    if value.strip().lower() == 'none':
+        return None
+    try:
+        n = int(value.strip())
+        return n if n > 0 else default
+    except ValueError:
+        return default
+
+
 def generate_custom_feed(request):
     feed_token = request.GET.get('auth')
     podcast = get_podcast_for_request(request, request.GET.get('show'))
@@ -242,8 +266,16 @@ def generate_custom_feed(request):
     base_url = request.build_absolute_uri('/')[:-1]
     header, footer = get_or_build_feed_shell(podcast, base_url, has_access)
 
-    # Get valid episodes
-    episodes = [ep for ep in podcast.episodes.all().order_by('-pub_date')[:1000] if ep.has_public_audio or ep.is_premium]
+    episode_qs = podcast.episodes.all().order_by('-pub_date')
+    before_date = _parse_feed_date(request.GET.get('before', ''))
+    after_date = _parse_feed_date(request.GET.get('after', ''))
+    limit = _parse_feed_limit(request.GET.get('limit', ''), default=500)
+    if before_date:
+        episode_qs = episode_qs.filter(pub_date__lt=before_date)
+    if after_date:
+        episode_qs = episode_qs.filter(pub_date__gt=after_date)
+
+    episodes = [ep for ep in (episode_qs if limit is None else episode_qs[:limit]) if ep.has_public_audio or ep.is_premium]
     if not has_access: episodes = [ep for ep in episodes if ep.has_public_audio]
 
     header = pin_last_build_date(header, episodes)
@@ -273,7 +305,17 @@ def generate_public_feed(request, podcast_slug):
     base_url = request.build_absolute_uri('/')[:-1]
 
     header, footer = get_or_build_feed_shell(podcast, base_url, False)
-    episodes = [ep for ep in podcast.episodes.all().order_by('-pub_date')[:500] if ep.has_public_audio]
+
+    episode_qs = podcast.episodes.all().order_by('-pub_date')
+    before_date = _parse_feed_date(request.GET.get('before', ''))
+    after_date = _parse_feed_date(request.GET.get('after', ''))
+    limit = _parse_feed_limit(request.GET.get('limit', ''), default=500)
+    if before_date:
+        episode_qs = episode_qs.filter(pub_date__lt=before_date)
+    if after_date:
+        episode_qs = episode_qs.filter(pub_date__gt=after_date)
+
+    episodes = [ep for ep in (episode_qs if limit is None else episode_qs[:limit]) if ep.has_public_audio]
 
     header = pin_last_build_date(header, episodes)
 
@@ -317,7 +359,15 @@ def generate_mix_feed(request, unique_id):
 
     header, footer = shell
 
-    episodes = Episode.objects.filter(podcast__in=user_mix.selected_podcasts.all()).select_related('podcast', 'podcast__network').order_by('-pub_date')[:500]
+    before_date = _parse_feed_date(request.GET.get('before', ''))
+    after_date = _parse_feed_date(request.GET.get('after', ''))
+    limit = _parse_feed_limit(request.GET.get('limit', ''), default=500)
+    episode_qs = Episode.objects.filter(podcast__in=user_mix.selected_podcasts.all()).select_related('podcast', 'podcast__network').order_by('-pub_date')
+    if before_date:
+        episode_qs = episode_qs.filter(pub_date__lt=before_date)
+    if after_date:
+        episode_qs = episode_qs.filter(pub_date__gt=after_date)
+    episodes = episode_qs if limit is None else episode_qs[:limit]
     if episodes:
         latest_date_str = format_datetime(episodes[0].pub_date)
         header = re.sub(r'<lastBuildDate>.*?</lastBuildDate>', f'<lastBuildDate>{latest_date_str}</lastBuildDate>', header)
@@ -369,7 +419,15 @@ def generate_network_mix_feed(request, network_slug, mix_slug):
 
     header, footer = shell
 
-    episodes = Episode.objects.filter(podcast__in=network_mix.selected_podcasts.all()).select_related('podcast', 'podcast__network').order_by('-pub_date')[:5000]
+    before_date = _parse_feed_date(request.GET.get('before', ''))
+    after_date = _parse_feed_date(request.GET.get('after', ''))
+    limit = _parse_feed_limit(request.GET.get('limit', ''), default=1000)
+    episode_qs = Episode.objects.filter(podcast__in=network_mix.selected_podcasts.all()).select_related('podcast', 'podcast__network').order_by('-pub_date')
+    if before_date:
+        episode_qs = episode_qs.filter(pub_date__lt=before_date)
+    if after_date:
+        episode_qs = episode_qs.filter(pub_date__gt=after_date)
+    episodes = episode_qs if limit is None else episode_qs[:limit]
     if episodes:
         latest_date_str = format_datetime(episodes[0].pub_date)
         header = re.sub(r'<lastBuildDate>.*?</lastBuildDate>', f'<lastBuildDate>{latest_date_str}</lastBuildDate>', header)

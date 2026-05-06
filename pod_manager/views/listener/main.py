@@ -28,10 +28,15 @@ logger = logging.getLogger(__name__)
 def _get_user_networks(user):
     if not user.is_authenticated:
         return []
-    membership_networks = [m.network for m in user.network_memberships.select_related('network')]
-    seen = {n.id for n in membership_networks}
+    # Only include networks with active paid membership; a free NetworkMembership
+    # row grants no extra access over an anonymous user, so it shouldn't qualify
+    # the user for cross-network browsing.
+    premium_networks = [
+        m.network for m in user.network_memberships.filter(is_active_patron=True).select_related('network')
+    ]
+    seen = {n.id for n in premium_networks}
     owned = [n for n in user.owned_networks.all() if n.id not in seen]
-    return membership_networks + owned
+    return premium_networks + owned
 
 
 def _build_feed_base_url(podcast, request):

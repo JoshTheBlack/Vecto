@@ -45,6 +45,10 @@ urlpatterns = [
     path('login/legacy/', views.recurly_login, name='recurly_login'),
     path('api/check-audio/', views.check_audio_status, name='check_audio_status'),
 
+    # Creator publishing
+    path('creator/publish/', views.publish_episode, name='publish_episode'),
+    path('creator/episode/<int:episode_id>/manage/', views.manage_episode, name='manage_episode'),
+
     # Staff tools
     path('staff/logs/', views.log_viewer, name='log_viewer'),
     path('staff/logs/stream/', views.log_stream, name='log_stream'),

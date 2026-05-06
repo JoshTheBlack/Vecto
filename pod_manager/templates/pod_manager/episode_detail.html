@@ -181,9 +181,26 @@
                                 </div>
                             </div>
                         </div>
+                        {% if ep.user_has_access and ep.is_gdrive_recovery %}
+                            <div class="alert alert-warning border-warning shadow-sm d-flex align-items-center justify-content-between mb-3">
+                                <div>
+                                    <i class="bi bi-exclamation-triangle-fill me-2 fs-5"></i>
+                                    <strong>Recovery Audio Detected:</strong> This subscriber file is temporarily hosted on Google Drive and cannot be streamed inline. Use the button to listen.
+                                </div>
+                                <a href="{{ ep.gdrive_preview_url }}" target="_blank" class="btn btn-warning fw-bold text-dark ms-3 text-nowrap">
+                                    <i class="bi bi-play-circle me-1"></i> Open on Google Drive
+                                </a>
+                            </div>
+                            {% if ep.audio_url_public %}
+                            <audio class="js-player" controls>
+                                <source src="{{ ep.audio_url_public }}" type="audio/mpeg">
+                            </audio>
+                            {% endif %}
+                        {% else %}
                         <audio class="js-player" controls>
                             <source src="{% if ep.user_has_access %}{{ ep.audio_url_subscriber }}{% else %}{{ ep.audio_url_public }}{% endif %}" type="audio/mpeg">
                         </audio>
+                        {% endif %}
                         <div class="mt-2 mb-4 text-muted small" style="word-break: break-all; user-select: all; font-family: monospace;">
                             <i class="bi bi-link-45deg"></i> Source URL: {{ ep.raw_audio_url }}
                         </div>
@@ -299,13 +316,86 @@
                             </button>
                         </div>
 
+                        <div class="mb-4 pt-3 border-top border-secondary">
+                            <h5 class="text-light fw-bold mb-3">
+                                <i class="bi bi-collection-play text-warning me-1"></i> iTunes / Sequence Metadata
+                            </h5>
+                            <div class="row g-3">
+                                <div class="col-sm-4">
+                                    <label class="form-label text-light">Season #</label>
+                                    <input type="number" id="editSeason" min="1" class="form-control bg-dark text-light border-secondary"
+                                           value="{{ ep.season_number|default:'' }}" placeholder="e.g. 2">
+                                </div>
+                                <div class="col-sm-4">
+                                    <label class="form-label text-light">Episode #</label>
+                                    <input type="number" id="editEpisodeNum" min="1" class="form-control bg-dark text-light border-secondary"
+                                           value="{{ ep.episode_number|default:'' }}" placeholder="e.g. 14">
+                                </div>
+                                <div class="col-sm-4">
+                                    <label class="form-label text-light">Type</label>
+                                    <select id="editEpisodeType" class="form-select bg-dark text-light border-secondary">
+                                        <option value="full" {% if ep.episode_type == 'full' or not ep.episode_type %}selected{% endif %}>Full</option>
+                                        <option value="trailer" {% if ep.episode_type == 'trailer' %}selected{% endif %}>Trailer</option>
+                                        <option value="bonus" {% if ep.episode_type == 'bonus' %}selected{% endif %}>Bonus</option>
+                                    </select>
+                                </div>
+                            </div>
+                        </div>
+
                         <div class="d-grid gap-2 d-md-flex justify-content-md-end mt-5 pt-3 border-top border-secondary">
                             <button type="submit" class="btn btn-warning btn-lg"><i class="bi bi-send"></i> Submit Edit Suggestion</button>
                         </div>
                     </form>
 
+                    {% if is_owner %}
+                    <div class="mt-4 pt-3 border-top border-secondary">
+                        <h6 class="text-muted text-uppercase small fw-bold mb-3">
+                            <i class="bi bi-shield-lock me-1"></i>Owner Controls
+                            {% if ep.is_published %}<span class="badge bg-success ms-2 fw-normal">Published</span>
+                            {% elif ep.scheduled_at %}<span class="badge bg-warning text-dark ms-2 fw-normal">Scheduled {{ ep.scheduled_at|date:"M j H:i" }}</span>
+                            {% else %}<span class="badge bg-secondary ms-2 fw-normal">Draft</span>
+                            {% endif %}
+                        </h6>
+                        <div class="d-flex flex-wrap gap-3">
+                            {% if not ep.is_published %}
+                            <form method="POST" action="{% url 'manage_episode' ep.id %}">
+                                {% csrf_token %}
+                                <input type="hidden" name="action" value="publish_now">
+                                <button type="submit" class="btn btn-success">
+                                    <i class="bi bi-broadcast me-1"></i>Publish Now
+                                </button>
+                            </form>
+                            {% endif %}
+                            {% if ep.is_published %}
+                            <form method="POST" action="{% url 'manage_episode' ep.id %}"
+                                  onsubmit="return confirm('Unpublish this episode? It will be hidden from all feeds.')">
+                                {% csrf_token %}
+                                <input type="hidden" name="action" value="unpublish">
+                                <button type="submit" class="btn btn-outline-secondary">
+                                    <i class="bi bi-eye-slash me-1"></i>Unpublish
+                                </button>
+                            </form>
+                            {% endif %}
+                            <form method="POST" action="{% url 'manage_episode' ep.id %}" class="d-flex gap-2 align-items-end flex-wrap">
+                                {% csrf_token %}
+                                <input type="hidden" name="action" value="schedule">
+                                <div>
+                                    <label class="form-label text-muted small mb-1">Schedule Publish At</label>
+                                    <input type="datetime-local" name="scheduled_at"
+                                           class="form-control form-control-sm bg-dark text-light border-secondary"
+                                           value="{% if ep.scheduled_at %}{{ ep.scheduled_at|date:'Y-m-d' }}T{{ ep.scheduled_at|time:'H:i' }}{% endif %}">
+                                </div>
+                                <button type="submit" class="btn btn-outline-warning btn-sm">
+                                    <i class="bi bi-calendar-event me-1"></i>{% if ep.scheduled_at %}Reschedule{% else %}Schedule{% endif %}
+                                </button>
+                            </form>
+                        </div>
+                    </div>
+                    {% endif %}
+
                 </div>
                 {% endif %}
+
 
             </div>
         </div>
@@ -591,12 +681,18 @@
                 }
                 
                 const titleInput = document.getElementById('editTitle').value.trim();
+                const seasonVal = document.getElementById('editSeason').value.trim();
+                const episodeNumVal = document.getElementById('editEpisodeNum').value.trim();
+                const episodeTypeVal = document.getElementById('editEpisodeType').value;
 
                 const finalPayload = {
                     title: titleInput,
                     description: descInput,
                     tags: tagsArray,
-                    chapters: finalChaptersPayload
+                    chapters: finalChaptersPayload,
+                    season_number: seasonVal ? parseInt(seasonVal, 10) : null,
+                    episode_number: episodeNumVal ? parseInt(episodeNumVal, 10) : null,
+                    episode_type: episodeTypeVal,
                 };
 
                 payloadInput.value = JSON.stringify(finalPayload);

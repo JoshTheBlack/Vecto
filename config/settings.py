@@ -350,6 +350,10 @@ CELERY_BEAT_SCHEDULE = {
         'task': 'pod_manager.tasks.task_prune_logs',
         'schedule': 86400,  # seconds (24 h)
     },
+    'publish-scheduled-episodes': {
+        'task': 'pod_manager.tasks.task_publish_scheduled_episodes',
+        'schedule': 60,  # every minute
+    },
 }
 
 # Django Celery Beat for Scheduled Tasks

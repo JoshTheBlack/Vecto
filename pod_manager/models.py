@@ -224,7 +224,19 @@ class Episode(models.Model):
     # Podcast Chapters (JSON)
     chapters_public = models.JSONField(blank=True, null=True, help_text="Podcast Index Namespace Chapters for public feed")
     chapters_private = models.JSONField(blank=True, null=True, help_text="Podcast Index Namespace Chapters for private feed")
-    
+
+    # iTunes / Podcast 2.0 sequence metadata
+    EPISODE_TYPE_CHOICES = [('full', 'Full'), ('trailer', 'Trailer'), ('bonus', 'Bonus')]
+    season_number  = models.PositiveSmallIntegerField(null=True, blank=True)
+    episode_number = models.PositiveSmallIntegerField(null=True, blank=True)
+    episode_type   = models.CharField(max_length=10, choices=EPISODE_TYPE_CHOICES, default='full', blank=True)
+
+    # Publication status
+    is_published = models.BooleanField(default=True, db_index=True,
+        help_text="Uncheck to hide this episode from all RSS feeds.")
+    scheduled_at = models.DateTimeField(null=True, blank=True, db_index=True,
+        help_text="If set and is_published=False, Celery will publish at this time.")
+
     class Meta:
         indexes = [
             models.Index(fields=['podcast', '-pub_date']),
@@ -248,6 +260,23 @@ class Episode(models.Model):
     def is_premium(self):
         """Returns True if a subscriber audio URL exists AND it is different from the public one."""
         return bool(self.audio_url_subscriber) and self.audio_url_subscriber != self.audio_url_public
+    
+    @property
+    def is_gdrive_recovery(self):
+        """Identifies if the premium audio is a temporary Google Drive link."""
+        return bool(self.audio_url_subscriber and 'docs.google.com' in self.audio_url_subscriber)
+
+    @property
+    def gdrive_preview_url(self):
+        """Generates the native Google Drive web player link for validation."""
+        if self.is_gdrive_recovery:
+            try:
+                # Extracts FILE_ID from https://docs.google.com/uc?export=download&id=FILE_ID
+                file_id = self.audio_url_subscriber.split('id=')[1].split('&')[0]
+                return f"https://drive.google.com/file/d/{file_id}/view"
+            except IndexError:
+                pass
+        return None
 
 def mix_cover_path(instance, filename):
     """Always name the file exactly <UUID>.<ext>"""

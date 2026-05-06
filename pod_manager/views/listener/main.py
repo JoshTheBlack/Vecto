@@ -69,7 +69,7 @@ def home(request):
         target_network_slugs = [request.network.slug]
         selected_networks = [request.network.slug]
 
-    query = Episode.objects.select_related('podcast', 'podcast__network', 'podcast__required_tier').filter(podcast__network__slug__in=target_network_slugs)
+    query = Episode.objects.select_related('podcast', 'podcast__network', 'podcast__required_tier').filter(podcast__network__slug__in=target_network_slugs, is_published=True)
     podcasts = Podcast.objects.filter(network__slug__in=target_network_slugs).order_by('title')
 
     if show_slug:
@@ -221,9 +221,20 @@ def episode_detail(request, episode_id):
     if ep.podcast.network != request.network and not ep.user_has_access:
         raise Http404("No Episode matches the given query.")
 
+    is_owner = (
+        request.user.is_authenticated and (
+            request.user.is_superuser or
+            ep.podcast.network.owners.filter(pk=request.user.pk).exists()
+        )
+    )
+
+    if not ep.is_published and not is_owner:
+        raise Http404("No Episode matches the given query.")
+
     ep.display_description = _build_episode_description(ep, ep.user_has_access)
     ep.raw_audio_url = ep.audio_url_subscriber if (ep.user_has_access and ep.audio_url_subscriber) else ep.audio_url_public
-    return render(request, 'pod_manager/episode_detail.html', {'ep': ep})
+
+    return render(request, 'pod_manager/episode_detail.html', {'ep': ep, 'is_owner': is_owner})
 
 
 @login_required(login_url='/login/')

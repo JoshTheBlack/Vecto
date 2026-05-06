@@ -47,10 +47,10 @@ class NetworkMembershipAdmin(admin.ModelAdmin):
 
 @admin.register(Episode)
 class EpisodeAdmin(admin.ModelAdmin):
-    list_display = ('title', 'podcast', 'pub_date', 'match_reason', 'is_metadata_locked', 'has_public_audio', 'has_premium_audio')
-    list_filter = ('podcast__network', 'podcast', S3SubscriberAudioFilter, 'pub_date', 'match_reason')
+    list_display = ('title', 'podcast', 'pub_date', 'is_published', 'scheduled_at', 'episode_type', 'match_reason', 'is_metadata_locked', 'has_public_audio', 'has_premium_audio')
+    list_filter = ('podcast__network', 'podcast', 'is_published', 'episode_type', S3SubscriberAudioFilter, 'pub_date', 'match_reason')
     search_fields = ('title', 'raw_description', 'guid_public', 'guid_private')
-    list_editable = ('is_metadata_locked',) # Allows you to check the box directly from the list view!
+    list_editable = ('is_metadata_locked', 'is_published')
     
     def get_queryset(self, request):
         qs = super().get_queryset(request)

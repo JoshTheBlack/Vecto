@@ -41,6 +41,8 @@ from .feeds import (
 from .creator import (
     creator_settings,
     submit_episode_edit,
+    publish_episode,
+    manage_episode,
     _handle_approve_edit,
     _handle_reject_edit,
     _handle_rollback_single_edit,

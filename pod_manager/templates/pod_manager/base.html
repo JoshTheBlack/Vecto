@@ -251,6 +251,13 @@
                 <ul class="navbar-nav me-auto align-items-center">
                     <li class="nav-item"><a class="nav-link" href="{% url 'home' %}">Dashboard</a></li>
                     <li class="nav-item"><a class="nav-link" href="{% url 'user_feeds' %}">Your Feeds</a></li>
+                    {% if request.user.is_authenticated and request.user.owned_networks.exists or request.user.is_superuser %}
+                        <li class="nav-item">
+                            <a class="nav-link" href="{% url 'publish_episode' %}">
+                                <i class="bi bi-plus-circle-fill me-1" style="color:var(--vecto-primary);"></i>Publish
+                            </a>
+                        </li>
+                    {% endif %}
                     {% if request.user.is_staff %}
                         <li class="nav-item">
                             <a class="nav-link" href="/staff/logs/">

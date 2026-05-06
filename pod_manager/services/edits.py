@@ -59,6 +59,9 @@ def snapshot_episode(ep) -> dict:
         'description': ep.clean_description,
         'tags': ep.tags or [],
         'chapters': ep.chapters_public or [],
+        'season_number': ep.season_number,
+        'episode_number': ep.episode_number,
+        'episode_type': ep.episode_type,
     }
 
 
@@ -70,6 +73,12 @@ def apply_approved_edit(ep, suggested_data):
     new_chapters = suggested_data.get('chapters', ep.chapters_public)
     ep.chapters_public = new_chapters
     ep.chapters_private = new_chapters
+    if 'season_number' in suggested_data:
+        ep.season_number = suggested_data['season_number']
+    if 'episode_number' in suggested_data:
+        ep.episode_number = suggested_data['episode_number']
+    if 'episode_type' in suggested_data and suggested_data['episode_type'] in ('full', 'trailer', 'bonus'):
+        ep.episode_type = suggested_data['episode_type']
     ep.is_metadata_locked = True
     ep.save()
 

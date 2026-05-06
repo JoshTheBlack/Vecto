@@ -89,6 +89,16 @@ def submit_episode_edit(request, episode_id):
         suggested_data['chapters'] = parse_chapter_payload(suggested_data.get('chapters', []))
         if 'description' in suggested_data:
             suggested_data['description'] = sanitize_user_html(suggested_data.get('description') or '')
+        for int_field in ('season_number', 'episode_number'):
+            if int_field in suggested_data:
+                try:
+                    val = suggested_data[int_field]
+                    suggested_data[int_field] = int(val) if val not in (None, '', 0) else None
+                except (ValueError, TypeError):
+                    suggested_data.pop(int_field)
+        if 'episode_type' in suggested_data:
+            if suggested_data['episode_type'] not in ('full', 'trailer', 'bonus'):
+                suggested_data.pop('episode_type')
 
         network = ep.podcast.network
         membership, _ = NetworkMembership.objects.get_or_create(user=request.user, network=network)

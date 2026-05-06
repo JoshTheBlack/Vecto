@@ -1,0 +1,529 @@
+{% extends 'pod_manager/base.html' %}
+{% load static %}
+
+{% block content %}
+<link href="https://cdn.quilljs.com/1.3.7/quill.snow.css" rel="stylesheet">
+<style>
+    .ql-toolbar.ql-snow  { border-color: #444 !important; background:#212529; border-radius:.375rem .375rem 0 0; }
+    .ql-container.ql-snow{ border-color: #444 !important; border-radius:0 0 .375rem .375rem; min-height:200px; font-size:1rem; }
+    .ql-snow .ql-stroke  { stroke:#f8f9fa; }
+    .ql-snow .ql-fill, .ql-snow .ql-stroke.ql-fill { fill:#f8f9fa; }
+    .ql-snow .ql-picker    { color:#f8f9fa; }
+    .ql-snow .ql-picker-options { background:#212529; border-color:#444; }
+
+    .tag-input-wrapper {
+        display:flex; flex-wrap:wrap; gap:.4rem; align-items:center;
+        padding:.5rem; border:1px solid #444; border-radius:.375rem;
+        background:#212529; min-height:2.75rem; cursor:text;
+    }
+    .tag-input-wrapper:focus-within { border-color:var(--vecto-primary,#ffc107); box-shadow:0 0 0 .2rem rgba(255,193,7,.15); }
+    .tag-input-wrapper .tag-input-field { flex:1 1 8rem; min-width:6rem; border:0; outline:0; background:transparent; color:#f8f9fa; padding:.15rem .25rem; font-size:.95rem; }
+    .tag-input-wrapper .tag-input-field::placeholder { color:rgba(248,249,250,.4); }
+    .tag-pill { display:inline-flex; align-items:center; gap:.4rem; padding:.3rem .7rem; border:1px solid #444; border-radius:999px; background:rgba(255,255,255,.06); color:#f8f9fa; font-size:.875rem; line-height:1.2; }
+    .tag-pill .tag-remove { background:none; border:0; color:#f8f9fa; opacity:.5; cursor:pointer; padding:0; font-weight:bold; line-height:1; font-size:1rem; }
+    .tag-pill .tag-remove:hover { opacity:1; color:#dc3545; }
+
+    .chapter-row { transition:all .2s ease-in-out; }
+    .chapter-row:hover { background:rgba(255,255,255,.04); }
+
+    .pub-mode-btn { opacity:.55; border:1px solid #444; }
+    .pub-mode-btn.selected { opacity:1; border-color:var(--vecto-primary,#ffc107); box-shadow:0 0 0 .15rem rgba(255,193,7,.25); }
+
+    .sched-row { transition:background .15s; }
+    .sched-row:hover { background:rgba(255,255,255,.04); }
+</style>
+
+<!-- Page header -->
+<div class="d-flex justify-content-between align-items-center mb-4 border-bottom border-secondary pb-3">
+    <h2 class="fw-bold mb-0">
+        <i class="bi bi-broadcast-pin me-2" style="color:var(--vecto-primary,#ffc107);"></i>Publish Episode
+    </h2>
+    <!-- Network selector -->
+    {% if networks|length > 1 %}
+    <div class="dropdown">
+        <button class="btn btn-outline-warning dropdown-toggle fw-bold" type="button" data-bs-toggle="dropdown">
+            <i class="bi bi-globe2 me-1"></i>{{ current_network.name }}
+        </button>
+        <ul class="dropdown-menu dropdown-menu-dark dropdown-menu-end border-secondary shadow">
+            {% for net in networks %}
+            <li>
+                <a class="dropdown-item {% if current_network.id == net.id %}active bg-warning text-dark fw-bold{% endif %}"
+                   href="?network={{ net.slug }}">{{ net.name }}</a>
+            </li>
+            {% endfor %}
+        </ul>
+    </div>
+    {% else %}
+    <span class="badge bg-dark border border-secondary fs-6 px-3">{{ current_network.name }}</span>
+    {% endif %}
+</div>
+
+{% if messages %}
+<div class="mb-3">
+    {% for msg in messages %}
+    <div class="alert alert-{% if msg.tags == 'error' %}danger{% else %}success{% endif %} alert-dismissible fade show py-2" role="alert">
+        {{ msg }}<button type="button" class="btn-close btn-close-white" data-bs-dismiss="alert"></button>
+    </div>
+    {% endfor %}
+</div>
+{% endif %}
+
+<!-- Tabs -->
+<ul class="nav nav-tabs border-secondary mb-0" id="pubTabs" role="tablist">
+    <li class="nav-item" role="presentation">
+        <button class="nav-link {% if request.GET.tab != 'scheduled' %}active text-light bg-dark{% else %}text-muted{% endif %} border-secondary"
+                id="compose-tab" data-bs-toggle="tab" data-bs-target="#compose" type="button">
+            <i class="bi bi-pencil-square me-1"></i>
+            {% if edit_ep %}Edit Draft / Scheduled{% else %}Compose{% endif %}
+        </button>
+    </li>
+    <li class="nav-item" role="presentation">
+        <button class="nav-link {% if request.GET.tab == 'scheduled' %}active text-light bg-dark{% else %}text-muted{% endif %} border-secondary"
+                id="scheduled-tab" data-bs-toggle="tab" data-bs-target="#scheduled" type="button">
+            <i class="bi bi-clock-history me-1"></i>Drafts & Scheduled
+            {% if scheduled %}<span class="badge bg-warning text-dark ms-1">{{ scheduled|length }}</span>{% endif %}
+        </button>
+    </li>
+</ul>
+
+<div class="tab-content">
+
+<!-- ── Compose tab ──────────────────────────────────────────────────── -->
+<div class="tab-pane fade {% if request.GET.tab != 'scheduled' %}show active{% endif %}" id="compose" role="tabpanel">
+<form id="publishForm" method="POST" action="{% url 'publish_episode' %}?network={{ current_network.slug }}">
+    {% csrf_token %}
+    <input type="hidden" name="network_slug"  value="{{ current_network.slug }}">
+    <input type="hidden" name="action"        id="formAction" value="publish">
+    <input type="hidden" name="tags_json"     id="tagsJson">
+    <input type="hidden" name="chapters_json" id="chaptersJson">
+    <input type="hidden" name="description"   id="descJson">
+    {% if edit_ep %}<input type="hidden" name="episode_id" value="{{ edit_ep.id }}">{% endif %}
+
+    <!-- Podcast selector -->
+    <div class="card border-secondary mt-3 mb-3">
+        <div class="card-body py-3">
+            <label class="form-label fw-bold text-light mb-2"><i class="bi bi-mic me-1 text-warning"></i>Podcast</label>
+            <select name="podcast_id" class="form-select bg-dark text-light border-secondary" required>
+                {% for pod in podcasts %}
+                <option value="{{ pod.id }}" {% if edit_ep and edit_ep.podcast_id == pod.id %}selected{% endif %}>{{ pod.title }}</option>
+                {% endfor %}
+            </select>
+        </div>
+    </div>
+
+    <!-- Content -->
+    <div class="card border-secondary mb-3">
+        <div class="card-header border-secondary py-2">
+            <span class="fw-bold text-light"><i class="bi bi-file-text me-1 text-warning"></i>Content</span>
+        </div>
+        <div class="card-body">
+            <div class="mb-3">
+                <label class="form-label fw-bold text-light">Title <span class="text-danger">*</span></label>
+                <input type="text" name="title" class="form-control bg-dark text-light border-secondary"
+                       value="{% if edit_ep %}{{ edit_ep.title }}{% endif %}" required placeholder="Episode title…">
+            </div>
+
+            <div class="mb-3">
+                <label class="form-label fw-bold text-light">Description</label>
+                <div id="descEditor" class="bg-dark text-light">{% if edit_ep %}{{ edit_ep.clean_description|safe }}{% endif %}</div>
+            </div>
+
+            <div class="mb-1">
+                <label class="form-label fw-bold text-light">Tags <small class="text-muted fw-normal">(Enter or comma to add; paste a comma-separated list)</small></label>
+                <div id="tagWrapper" class="tag-input-wrapper">
+                    <input type="text" class="tag-input-field" id="tagInput" placeholder="Type a tag…">
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Audio -->
+    <div class="card border-secondary mb-3">
+        <div class="card-header border-secondary py-2">
+            <span class="fw-bold text-light"><i class="bi bi-music-note-beamed me-1 text-warning"></i>Audio Files</span>
+        </div>
+        <div class="card-body">
+            <div class="mb-3">
+                <label class="form-label text-light">Public Audio URL <small class="text-muted fw-normal">(optional)</small></label>
+                <input type="url" name="audio_url_public" class="form-control bg-dark text-light border-secondary"
+                       value="{% if edit_ep %}{{ edit_ep.audio_url_public|default:'' }}{% endif %}"
+                       placeholder="https://example.com/episode.mp3">
+                <div class="form-text text-muted">Served to all listeners. Can be added later once the episode is live on Megaphone.</div>
+            </div>
+            <div class="mb-1">
+                <label class="form-label text-light">Premium / Ad-Free Audio URL <small class="text-muted fw-normal">(optional)</small></label>
+                <input type="url" name="audio_url_subscriber" class="form-control bg-dark text-light border-secondary"
+                       value="{% if edit_ep %}{{ edit_ep.audio_url_subscriber|default:'' }}{% endif %}"
+                       placeholder="https://example.com/episode-adfree.mp3">
+                <div class="form-text text-muted">If set and different from public URL, served to paying subscribers. The feed ingestor will match this with the public URL on first sync.</div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Metadata -->
+    <div class="card border-secondary mb-3">
+        <div class="card-header border-secondary py-2">
+            <span class="fw-bold text-light"><i class="bi bi-card-list me-1 text-warning"></i>Episode Metadata</span>
+        </div>
+        <div class="card-body">
+            <div class="row g-3">
+                <div class="col-sm-3">
+                    <label class="form-label text-light">Season #</label>
+                    <input type="number" name="season_number" min="1" class="form-control bg-dark text-light border-secondary"
+                           value="{% if edit_ep %}{{ edit_ep.season_number|default:'' }}{% endif %}" placeholder="e.g. 2">
+                </div>
+                <div class="col-sm-3">
+                    <label class="form-label text-light">Episode #</label>
+                    <input type="number" name="episode_number" min="1" class="form-control bg-dark text-light border-secondary"
+                           value="{% if edit_ep %}{{ edit_ep.episode_number|default:'' }}{% endif %}" placeholder="e.g. 14">
+                </div>
+                <div class="col-sm-3">
+                    <label class="form-label text-light">Type</label>
+                    <select name="episode_type" class="form-select bg-dark text-light border-secondary">
+                        <option value="full"    {% if not edit_ep or edit_ep.episode_type == 'full'    %}selected{% endif %}>Full</option>
+                        <option value="trailer" {% if edit_ep and edit_ep.episode_type == 'trailer' %}selected{% endif %}>Trailer</option>
+                        <option value="bonus"   {% if edit_ep and edit_ep.episode_type == 'bonus'   %}selected{% endif %}>Bonus</option>
+                    </select>
+                </div>
+                <div class="col-sm-3">
+                    <label class="form-label text-light">Duration</label>
+                    <input type="text" name="duration" class="form-control bg-dark text-light border-secondary"
+                           value="{% if edit_ep %}{{ edit_ep.duration|default:'' }}{% endif %}" placeholder="HH:MM:SS">
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Chapters -->
+    <div class="card border-secondary mb-3">
+        <div class="card-header border-secondary py-2 d-flex justify-content-between align-items-center">
+            <span class="fw-bold text-light"><i class="bi bi-list-ol me-1 text-warning"></i>Chapters <small class="text-muted fw-normal">(optional)</small></span>
+            <button class="btn btn-sm btn-outline-secondary" type="button" data-bs-toggle="collapse" data-bs-target="#chaptersCollapse">
+                <i class="bi bi-chevron-down"></i>
+            </button>
+        </div>
+        <div class="collapse {% if edit_ep and edit_ep.chapters_public %}show{% endif %}" id="chaptersCollapse">
+            <div class="card-body">
+                <div class="form-check form-switch mb-3 pb-2 border-bottom border-secondary" id="globalWaypointsWrapper">
+                    <input class="form-check-input ms-1" type="checkbox" role="switch" id="globalWaypoints">
+                    <label class="form-check-label ms-2 text-light fw-bold" for="globalWaypoints">
+                        Enable Waypoints <small class="text-muted fw-normal">(route map)</small>
+                    </label>
+                </div>
+                <div id="chapterContainer"></div>
+                <button type="button" class="btn btn-sm btn-outline-success w-100 mt-2" onclick="addChapterRow()">
+                    <i class="bi bi-plus-lg"></i> Add Chapter
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Publish settings -->
+    <div class="card border-secondary mb-4">
+        <div class="card-header border-secondary py-2">
+            <span class="fw-bold text-light"><i class="bi bi-send me-1 text-warning"></i>Publish Settings</span>
+        </div>
+        <div class="card-body">
+            <div class="d-flex gap-3 flex-wrap mb-3">
+                <button type="button" class="btn pub-mode-btn selected rounded-3 px-4 py-3 text-start" id="modePublish"
+                        onclick="selectMode('publish')" style="flex:1;min-width:160px;">
+                    <div class="fw-bold text-light mb-1"><i class="bi bi-broadcast me-1 text-success"></i>Publish Now</div>
+                    <div class="text-muted small">Goes live immediately in all feeds.</div>
+                </button>
+                <button type="button" class="btn pub-mode-btn rounded-3 px-4 py-3 text-start" id="modeDraft"
+                        onclick="selectMode('draft')" style="flex:1;min-width:160px;">
+                    <div class="fw-bold text-light mb-1"><i class="bi bi-file-earmark me-1 text-secondary"></i>Save as Draft</div>
+                    <div class="text-muted small">Hidden from feeds until you publish.</div>
+                </button>
+                <button type="button" class="btn pub-mode-btn rounded-3 px-4 py-3 text-start" id="modeSchedule"
+                        onclick="selectMode('schedule')" style="flex:1;min-width:160px;">
+                    <div class="fw-bold text-light mb-1"><i class="bi bi-calendar-event me-1 text-warning"></i>Schedule</div>
+                    <div class="text-muted small">Auto-publishes at a chosen date &amp; time.</div>
+                </button>
+            </div>
+            <div id="scheduleDateRow" class="d-none">
+                <label class="form-label text-light fw-bold">Publish At</label>
+                <input type="datetime-local" name="scheduled_at" id="scheduledAt"
+                       class="form-control bg-dark text-light border-secondary"
+                       value="{% if edit_ep and edit_ep.scheduled_at %}{{ edit_ep.scheduled_at|date:'Y-m-d' }}T{{ edit_ep.scheduled_at|time:'H:i' }}{% endif %}">
+                <div class="form-text text-muted">Server timezone: {{ now|date:"T" }}. Times are local to the server.</div>
+            </div>
+        </div>
+    </div>
+
+    <div class="d-flex gap-2 justify-content-end">
+        <a href="{% url 'publish_episode' %}?network={{ current_network.slug }}" class="btn btn-outline-secondary">Cancel</a>
+        <button type="submit" class="btn btn-warning fw-bold px-5" id="submitBtn">
+            <i class="bi bi-broadcast me-1"></i><span id="submitLabel">Publish Now</span>
+        </button>
+    </div>
+</form>
+</div><!-- /compose -->
+
+<!-- ── Scheduled & Drafts tab ──────────────────────────────────────── -->
+<div class="tab-pane fade {% if request.GET.tab == 'scheduled' %}show active{% endif %}" id="scheduled" role="tabpanel">
+<div class="card border-secondary mt-3">
+    <div class="card-body p-0">
+        {% if scheduled %}
+        <table class="table table-dark table-hover mb-0 align-middle">
+            <thead class="border-secondary">
+                <tr>
+                    <th class="ps-3">Episode</th>
+                    <th>Podcast</th>
+                    <th>Status</th>
+                    <th class="text-end pe-3">Actions</th>
+                </tr>
+            </thead>
+            <tbody>
+            {% for ep in scheduled %}
+            <tr class="sched-row border-secondary">
+                <td class="ps-3 py-3">
+                    <div class="fw-semibold text-light">{{ ep.title|truncatechars:60 }}</div>
+                    {% if ep.season_number or ep.episode_number %}
+                    <div class="text-muted small">
+                        {% if ep.season_number %}S{{ ep.season_number }}{% endif %}{% if ep.episode_number %}E{{ ep.episode_number }}{% endif %}
+                        &nbsp;·&nbsp;{{ ep.get_episode_type_display }}
+                    </div>
+                    {% endif %}
+                </td>
+                <td class="text-muted small">{{ ep.podcast.title }}</td>
+                <td>
+                    {% if ep.scheduled_at %}
+                        <span class="badge bg-warning text-dark">
+                            <i class="bi bi-clock me-1"></i>{{ ep.scheduled_at|date:"M j, Y H:i" }}
+                        </span>
+                    {% else %}
+                        <span class="badge bg-secondary"><i class="bi bi-file-earmark me-1"></i>Draft</span>
+                    {% endif %}
+                </td>
+                <td class="text-end pe-3">
+                    <div class="d-flex gap-2 justify-content-end">
+                        <a href="{% url 'publish_episode' %}?network={{ current_network.slug }}&edit={{ ep.id }}"
+                           class="btn btn-sm btn-outline-secondary" title="Edit">
+                            <i class="bi bi-pencil"></i>
+                        </a>
+                        <form method="POST" action="{% url 'publish_episode' %}?network={{ current_network.slug }}&tab=scheduled" class="d-inline">
+                            {% csrf_token %}
+                            <input type="hidden" name="network_slug" value="{{ current_network.slug }}">
+                            <input type="hidden" name="action" value="publish_now">
+                            <input type="hidden" name="episode_id" value="{{ ep.id }}">
+                            <button type="submit" class="btn btn-sm btn-outline-success" title="Publish Now">
+                                <i class="bi bi-broadcast"></i>
+                            </button>
+                        </form>
+                        <form method="POST" action="{% url 'publish_episode' %}?network={{ current_network.slug }}&tab=scheduled"
+                              class="d-inline" onsubmit="return confirm('Delete this episode?')">
+                            {% csrf_token %}
+                            <input type="hidden" name="network_slug" value="{{ current_network.slug }}">
+                            <input type="hidden" name="action" value="delete">
+                            <input type="hidden" name="episode_id" value="{{ ep.id }}">
+                            <button type="submit" class="btn btn-sm btn-outline-danger" title="Delete">
+                                <i class="bi bi-trash"></i>
+                            </button>
+                        </form>
+                    </div>
+                </td>
+            </tr>
+            {% endfor %}
+            </tbody>
+        </table>
+        {% else %}
+        <div class="text-center py-5 text-muted">
+            <i class="bi bi-clock-history fs-1 d-block mb-3"></i>No drafts or scheduled episodes.
+        </div>
+        {% endif %}
+    </div>
+</div>
+</div><!-- /scheduled -->
+
+</div><!-- /tab-content -->
+
+{% if edit_ep %}{{ edit_ep.tags|json_script:"initial-tags" }}{% else %}<script id="initial-tags" type="application/json">[]</script>{% endif %}
+{% if edit_ep and edit_ep.chapters_public %}{{ edit_ep.chapters_public|json_script:"initial-chapters" }}{% else %}<script id="initial-chapters" type="application/json">null</script>{% endif %}
+
+<script src="https://cdn.quilljs.com/1.3.7/quill.min.js"></script>
+<script>
+document.addEventListener('DOMContentLoaded', function () {
+    /* ── Quill ─────────────────────────────────────────────── */
+    const quill = new Quill('#descEditor', {
+        theme: 'snow',
+        modules: { toolbar: [
+            ['bold','italic','underline','strike'],
+            ['blockquote','code-block'],
+            [{'list':'ordered'},{'list':'bullet'}],
+            [{'header':[2,3,false]}],
+            ['link','clean']
+        ]}
+    });
+
+    /* ── Publish mode selector ──────────────────────────────── */
+    const modeIds    = ['modePublish','modeDraft','modeSchedule'];
+    const modeValues = ['publish',    'draft',    'schedule'];
+    const actionInput = document.getElementById('formAction');
+    const submitLabel = document.getElementById('submitLabel');
+    const schedRow    = document.getElementById('scheduleDateRow');
+
+    const labels = { publish:'Publish Now', draft:'Save as Draft', schedule:'Schedule' };
+
+    window.selectMode = function(mode) {
+        modeIds.forEach((id, i) => {
+            document.getElementById(id).classList.toggle('selected', modeValues[i] === mode);
+        });
+        actionInput.value = mode;
+        submitLabel.textContent = labels[mode];
+        schedRow.classList.toggle('d-none', mode !== 'schedule');
+        {% if edit_ep and edit_ep.scheduled_at %}
+        // pre-select schedule if editing a scheduled episode
+        {% endif %}
+    };
+
+    {% if edit_ep and edit_ep.scheduled_at %}
+    selectMode('schedule');
+    {% elif edit_ep %}
+    selectMode('draft');
+    {% endif %}
+
+    /* ── Tag pill widget ────────────────────────────────────── */
+    const tagWrapper = document.getElementById('tagWrapper');
+    const tagInput   = document.getElementById('tagInput');
+    let currentTags  = [];
+
+    try {
+        const raw = document.getElementById('initial-tags');
+        if (raw) {
+            const parsed = JSON.parse(raw.textContent);
+            currentTags = Array.isArray(parsed) ? parsed : [];
+        }
+    } catch (e) { currentTags = []; }
+
+    function renderTags() {
+        tagWrapper.querySelectorAll('.tag-pill').forEach(p => p.remove());
+        currentTags.forEach((tag, idx) => {
+            const pill = document.createElement('span');
+            pill.className = 'tag-pill';
+            pill.innerHTML = '<span class="tag-text"></span><button type="button" class="tag-remove">&times;</button>';
+            pill.querySelector('.tag-text').textContent = tag;
+            pill.querySelector('.tag-remove').addEventListener('click', () => { currentTags.splice(idx, 1); renderTags(); });
+            tagWrapper.insertBefore(pill, tagInput);
+        });
+    }
+
+    function commitTag() {
+        const raw = tagInput.value.trim().replace(/,$/, '').trim();
+        if (!raw) return;
+        raw.split(',').map(t => t.trim()).filter(Boolean).forEach(t => {
+            if (!currentTags.includes(t)) currentTags.push(t);
+        });
+        tagInput.value = '';
+        renderTags();
+    }
+
+    tagInput.addEventListener('keydown', e => {
+        if (e.key === 'Enter' || e.key === ',') { e.preventDefault(); commitTag(); }
+        else if (e.key === 'Backspace' && !tagInput.value && currentTags.length) { currentTags.pop(); renderTags(); }
+    });
+    tagInput.addEventListener('blur', commitTag);
+    tagWrapper.addEventListener('click', e => { if (e.target === tagWrapper) tagInput.focus(); });
+    renderTags();
+
+    /* ── Chapter engine ─────────────────────────────────────── */
+    const chapterContainer = document.getElementById('chapterContainer');
+
+    function formatTime(s) {
+        if (!s) return '00:00:00';
+        const h = Math.floor(s/3600).toString().padStart(2,'0');
+        const m = Math.floor((s%3600)/60).toString().padStart(2,'0');
+        const sc = Math.floor(s%60).toString().padStart(2,'0');
+        return `${h}:${m}:${sc}`;
+    }
+    function parseTime(str) {
+        const p = str.split(':').reverse();
+        return (parseInt(p[0]||0)) + (parseInt(p[1]||0)*60) + (parseInt(p[2]||0)*3600);
+    }
+
+    window.addChapterRow = function(startTime=0, endTime='', title='', url='', img='', toc=true, location=null) {
+        const row = document.createElement('div');
+        row.className = 'row g-2 align-items-center mb-3 chapter-row p-3 rounded bg-dark border border-secondary';
+        const ln = location || {};
+        row.innerHTML = `
+            <div class="col-md-2"><label class="form-label small text-muted mb-1">Start</label>
+                <input type="text" class="form-control form-control-sm bg-black text-light border-secondary chap-time" value="${formatTime(startTime)}"></div>
+            <div class="col-md-2"><label class="form-label small text-muted mb-1">End</label>
+                <input type="text" class="form-control form-control-sm bg-black text-light border-secondary chap-endtime" placeholder="Optional" value="${endTime?formatTime(endTime):''}"></div>
+            <div class="col-md-6"><label class="form-label small text-muted mb-1">Title</label>
+                <input type="text" class="form-control form-control-sm bg-black text-light border-secondary chap-title" placeholder="Required" value="${title}"></div>
+            <div class="col-md-2 text-end mt-4 d-flex justify-content-end gap-2">
+                <button type="button" class="btn btn-sm btn-outline-info" title="Location" onclick="this.closest('.chapter-row').querySelector('.location-fields').classList.toggle('d-none')"><i class="bi bi-geo-alt"></i></button>
+                <button type="button" class="btn btn-sm btn-outline-danger" onclick="this.closest('.chapter-row').remove()"><i class="bi bi-trash"></i></button>
+            </div>
+            <div class="col-md-5 mt-2"><input type="url" class="form-control form-control-sm bg-black text-light border-secondary chap-url" placeholder="Link URL" value="${url}"></div>
+            <div class="col-md-5 mt-2"><input type="url" class="form-control form-control-sm bg-black text-light border-secondary chap-img" placeholder="Image URL" value="${img}"></div>
+            <div class="col-md-2 mt-2 d-flex align-items-center">
+                <div class="form-check form-switch ms-2">
+                    <input class="form-check-input chap-toc" type="checkbox" role="switch" ${toc!==false?'checked':''}>
+                    <label class="form-check-label small text-muted">TOC</label>
+                </div>
+            </div>
+            <div class="col-12 mt-2 location-fields ${(ln.name||ln.geo)?'':'d-none'}">
+                <div class="p-2 border border-info rounded bg-black d-flex gap-2">
+                    <input type="text" class="form-control form-control-sm bg-dark text-light border-secondary chap-loc-name" placeholder="Location name" value="${ln.name||''}">
+                    <input type="text" class="form-control form-control-sm bg-dark text-light border-secondary chap-loc-geo" placeholder="GeoURI" value="${ln.geo||''}">
+                    <input type="text" class="form-control form-control-sm bg-dark text-light border-secondary chap-loc-osm" placeholder="OSM URL" value="${ln.osm||''}">
+                </div>
+            </div>`;
+        chapterContainer.appendChild(row);
+    };
+
+    // Pre-load chapters
+    try {
+        const raw = JSON.parse(document.getElementById('initial-chapters').textContent);
+        const list = Array.isArray(raw) ? raw : (raw && raw.chapters ? raw.chapters : []);
+        const hasWp = raw && !Array.isArray(raw) && raw.waypoints;
+        if (hasWp) document.getElementById('globalWaypoints').checked = true;
+        if (list.length) list.forEach(c => addChapterRow(c.startTime, c.endTime, c.title, c.url||'', c.img||'', c.toc, c.location));
+    } catch (e) { /* no chapters */ }
+
+    /* ── Form submission ────────────────────────────────────── */
+    document.getElementById('publishForm').addEventListener('submit', e => {
+        commitTag();
+        document.getElementById('tagsJson').value    = JSON.stringify(currentTags);
+        document.getElementById('descJson').value     = quill.root.innerHTML;
+
+        const rows = [];
+        document.querySelectorAll('.chapter-row').forEach(row => {
+            const ts = row.querySelector('.chap-time').value;
+            const title = row.querySelector('.chap-title').value.trim();
+            if (!title || !ts) return;
+            const c = { startTime: parseTime(ts), title };
+            const et = row.querySelector('.chap-endtime').value.trim();
+            if (et) { const p = parseTime(et); if (p > c.startTime) c.endTime = p; }
+            const url = row.querySelector('.chap-url').value.trim();
+            const img = row.querySelector('.chap-img').value.trim();
+            if (url.startsWith('http')) c.url = url;
+            if (img.startsWith('http')) c.img = img;
+            if (!row.querySelector('.chap-toc').checked) c.toc = false;
+            const ln = row.querySelector('.chap-loc-name').value.trim();
+            const lg = row.querySelector('.chap-loc-geo').value.trim();
+            if (ln && lg) { c.location = { name: ln, geo: lg }; const lo = row.querySelector('.chap-loc-osm').value.trim(); if (lo) c.location.osm = lo; }
+            rows.push(c);
+        });
+        rows.sort((a,b) => a.startTime - b.startTime);
+        const payload = { version: '1.2.0', chapters: rows };
+        if (document.getElementById('globalWaypoints').checked) payload.waypoints = true;
+        document.getElementById('chaptersJson').value = JSON.stringify(payload);
+    });
+
+    /* Tab switcher styling */
+    document.querySelectorAll('button[data-bs-toggle="tab"]').forEach(btn => {
+        btn.addEventListener('shown.bs.tab', e => {
+            document.querySelectorAll('button[data-bs-toggle="tab"]').forEach(b => {
+                b.classList.remove('active','text-light','bg-dark');
+                b.classList.add('text-muted');
+            });
+            e.target.classList.remove('text-muted');
+            e.target.classList.add('active','text-light','bg-dark');
+        });
+    });
+});
+</script>
+{% endblock %}

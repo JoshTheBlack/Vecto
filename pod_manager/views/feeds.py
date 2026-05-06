@@ -117,12 +117,13 @@ class RSSFeedBuilder:
 
     def _finalize_xml(self, raw_xml: str, tag_map: dict, access_map) -> str:
         """Applies the podcast namespace and attaches per-episode metadata
-        (category tags, chapter URLs) that podgen cannot emit on its own.
+        (category tags, chapter URLs, iTunes season/episode/type) that podgen
+        cannot emit on its own.
 
-        lxml will re-inline the namespace on child elements during serialisation;
-        we strip those and re-anchor the declaration at the root so that
-        PocketCasts and other strict parsers see exactly one declaration."""
+        lxml will re-inline namespaces on child elements during serialisation;
+        we strip those and re-anchor declarations at the root."""
         podcast_ns = "https://podcastindex.org/namespace/1.0"
+        itunes_ns  = "http://www.itunes.com/dtds/podcast-1.0.dtd"
 
         if 'xmlns:podcast=' not in raw_xml:
             raw_xml = raw_xml.replace('<rss ', f'<rss xmlns:podcast="{podcast_ns}" ', 1)
@@ -131,6 +132,7 @@ class RSSFeedBuilder:
             return raw_xml
 
         etree.register_namespace('podcast', podcast_ns)
+        etree.register_namespace('itunes',  itunes_ns)
         root = etree.fromstring(raw_xml.encode('utf-8'))
 
         for item in root.findall('.//item'):
@@ -152,10 +154,17 @@ class RSSFeedBuilder:
                 chap_elem.set('url', chapter_url)
                 chap_elem.set('type', 'application/json+chapters')
 
+            if ep.season_number:
+                etree.SubElement(item, f'{{{itunes_ns}}}season').text = str(ep.season_number)
+            if ep.episode_number:
+                etree.SubElement(item, f'{{{itunes_ns}}}episode').text = str(ep.episode_number)
+            if ep.episode_type and ep.episode_type != 'full':
+                etree.SubElement(item, f'{{{itunes_ns}}}episodeType').text = ep.episode_type
+
         final_xml = etree.tostring(root, encoding='utf-8', xml_declaration=True).decode('utf-8')
-        # Strip the inline namespace lxml forces onto child elements, then
-        # re-anchor it at the root <rss> tag where parsers expect it.
+        # Strip inline namespace re-declarations lxml adds to child elements.
         final_xml = final_xml.replace(f' xmlns:podcast="{podcast_ns}"', '')
+        final_xml = final_xml.replace(f' xmlns:itunes="{itunes_ns}"', '')
         if 'xmlns:podcast' not in final_xml:
             final_xml = final_xml.replace('<rss ', f'<rss xmlns:podcast="{podcast_ns}" ', 1)
         return final_xml
@@ -268,7 +277,7 @@ def generate_custom_feed(request):
     base_url = request.build_absolute_uri('/')[:-1]
     header, footer = get_or_build_feed_shell(podcast, base_url, has_access)
 
-    episode_qs = podcast.episodes.all().order_by('-pub_date')
+    episode_qs = podcast.episodes.filter(is_published=True).order_by('-pub_date')
     before_date = _parse_feed_date(request.GET.get('before', ''))
     after_date = _parse_feed_date(request.GET.get('after', ''))
     limit = _parse_feed_limit(request.GET.get('limit', ''), default=500)
@@ -308,7 +317,7 @@ def generate_public_feed(request, podcast_slug):
 
     header, footer = get_or_build_feed_shell(podcast, base_url, False)
 
-    episode_qs = podcast.episodes.all().order_by('-pub_date')
+    episode_qs = podcast.episodes.filter(is_published=True).order_by('-pub_date')
     before_date = _parse_feed_date(request.GET.get('before', ''))
     after_date = _parse_feed_date(request.GET.get('after', ''))
     limit = _parse_feed_limit(request.GET.get('limit', ''), default=500)
@@ -364,7 +373,7 @@ def generate_mix_feed(request, unique_id):
     before_date = _parse_feed_date(request.GET.get('before', ''))
     after_date = _parse_feed_date(request.GET.get('after', ''))
     limit = _parse_feed_limit(request.GET.get('limit', ''), default=500)
-    episode_qs = Episode.objects.filter(podcast__in=user_mix.selected_podcasts.all()).select_related('podcast', 'podcast__network').order_by('-pub_date')
+    episode_qs = Episode.objects.filter(podcast__in=user_mix.selected_podcasts.all(), is_published=True).select_related('podcast', 'podcast__network').order_by('-pub_date')
     if before_date:
         episode_qs = episode_qs.filter(pub_date__lt=before_date)
     if after_date:
@@ -424,7 +433,7 @@ def generate_network_mix_feed(request, network_slug, mix_slug):
     before_date = _parse_feed_date(request.GET.get('before', ''))
     after_date = _parse_feed_date(request.GET.get('after', ''))
     limit = _parse_feed_limit(request.GET.get('limit', ''), default=1000)
-    episode_qs = Episode.objects.filter(podcast__in=network_mix.selected_podcasts.all()).select_related('podcast', 'podcast__network').order_by('-pub_date')
+    episode_qs = Episode.objects.filter(podcast__in=network_mix.selected_podcasts.all(), is_published=True).select_related('podcast', 'podcast__network').order_by('-pub_date')
     if before_date:
         episode_qs = episode_qs.filter(pub_date__lt=before_date)
     if after_date:

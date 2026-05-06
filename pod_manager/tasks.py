@@ -463,6 +463,28 @@ def task_sync_discord_avatar(discord_id, membership_id):
 
 
 @shared_task
+def task_publish_scheduled_episodes():
+    """Publishes episodes whose scheduled_at has passed."""
+    now = timezone.now()
+    episodes = list(
+        Episode.objects.filter(is_published=False, scheduled_at__lte=now)
+        .select_related('podcast')
+    )
+    if not episodes:
+        return
+    for ep in episodes:
+        ep.is_published = True
+        ep.pub_date = ep.scheduled_at
+        ep.scheduled_at = None
+        ep.save(update_fields=['is_published', 'pub_date', 'scheduled_at'])
+        cache.delete(f"ep_frag_public_{ep.id}")
+        cache.delete(f"ep_frag_private_{ep.id}")
+        cache.delete(f"feed_shell_public_{ep.podcast_id}")
+        cache.delete(f"feed_shell_private_{ep.podcast_id}")
+    logger.info(f"Published {len(episodes)} scheduled episode(s).")
+
+
+@shared_task
 def task_prune_logs():
     retention_days = getattr(settings, 'LOG_RETENTION_DAYS', 30)
     cutoff = timezone.now() - timedelta(days=retention_days)

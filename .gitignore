@@ -7,6 +7,7 @@ venv/
 
 # Environment secrets (CRITICAL)
 .env
+.claude/
 
 # Database
 db.sqlite3

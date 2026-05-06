@@ -82,4 +82,4 @@ from ..security import (
 )
 from ..utils import validate_public_url, sanitize_user_html
 
-from .staff import log_viewer, log_stream, log_level_toggle
+from .staff import log_viewer, log_stream, log_level_toggle, log_resources

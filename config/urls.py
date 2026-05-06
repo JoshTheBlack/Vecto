@@ -49,6 +49,7 @@ urlpatterns = [
     path('staff/logs/', views.log_viewer, name='log_viewer'),
     path('staff/logs/stream/', views.log_stream, name='log_stream'),
     path('staff/logs/level/', views.log_level_toggle, name='log_level_toggle'),
+    path('staff/logs/resources/', views.log_resources, name='log_resources'),
 ]
 
 urlpatterns += [

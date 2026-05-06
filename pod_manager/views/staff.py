@@ -1,10 +1,12 @@
 import json
+import os
 import time
 from functools import wraps
 
 from django.conf import settings
 from django.contrib.auth.views import redirect_to_login
 from django.core.cache import cache
+from django.db import connection
 from django.http import HttpResponseForbidden, JsonResponse, StreamingHttpResponse
 from django.shortcuts import render
 from django.views.decorators.http import require_GET, require_POST
@@ -116,3 +118,68 @@ def log_stream(request):
     response['Cache-Control'] = 'no-cache'
     response['X-Accel-Buffering'] = 'no'
     return response
+
+
+@staff_required
+@require_GET
+def log_resources(request):
+    data = {}
+
+    try:
+        import psutil
+        data['cpu_percent'] = psutil.cpu_percent(interval=None)
+        vm = psutil.virtual_memory()
+        data['ram'] = {
+            'total': vm.total,
+            'used': vm.used,
+            'available': vm.available,
+            'percent': vm.percent,
+        }
+        disk = psutil.disk_usage('/')
+        data['disk'] = {
+            'total': disk.total,
+            'used': disk.used,
+            'free': disk.free,
+            'percent': disk.percent,
+        }
+    except ImportError:
+        data['psutil_missing'] = True
+
+    redis_url = getattr(settings, 'REDIS_URL', None)
+    if redis_url:
+        try:
+            import redis as redis_lib
+            r = redis_lib.from_url(redis_url, socket_timeout=1)
+            info = r.info()
+            data['redis'] = {
+                'used_memory': info['used_memory'],
+                'used_memory_peak': info['used_memory_peak'],
+                'connected_clients': info['connected_clients'],
+                'keyspace_hits': info.get('keyspace_hits', 0),
+                'keyspace_misses': info.get('keyspace_misses', 0),
+                'uptime_seconds': info.get('uptime_in_seconds', 0),
+            }
+        except Exception as exc:
+            data['redis'] = {'error': str(exc)}
+    else:
+        data['redis'] = None
+
+    try:
+        engine = connection.settings_dict.get('ENGINE', '')
+        if 'postgresql' in engine:
+            with connection.cursor() as cursor:
+                cursor.execute("SELECT pg_database_size(current_database())")
+                db_size = cursor.fetchone()[0]
+                cursor.execute(
+                    "SELECT count(*) FROM pg_stat_activity WHERE state = 'active'"
+                )
+                active_conns = cursor.fetchone()[0]
+            data['db'] = {'size': db_size, 'active_connections': active_conns, 'engine': 'postgresql'}
+        else:
+            db_path = connection.settings_dict.get('NAME', '')
+            size = os.path.getsize(db_path) if db_path and os.path.exists(str(db_path)) else None
+            data['db'] = {'size': size, 'engine': 'sqlite'}
+    except Exception as exc:
+        data['db'] = {'error': str(exc)}
+
+    return JsonResponse(data)

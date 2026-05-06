@@ -62,30 +62,206 @@
     </div>
 </div>
 
-<style>
-    .level-btn { border: 1px solid #444; color: #ccc; background: transparent; }
-    .level-btn:hover { filter: brightness(1.3); }
-    .level-btn.active { color: #000 !important; font-weight: bold; }
-    .level-btn[data-level="DEBUG"].active  { background:#6c757d; border-color:#6c757d; }
-    .level-btn[data-level="INFO"].active   { background:#0dcaf0; border-color:#0dcaf0; }
-    .level-btn[data-level="WARNING"].active{ background:#ffc107; border-color:#ffc107; }
-    .level-btn[data-level="ERROR"].active  { background:#dc3545; border-color:#dc3545; }
-    .level-btn[data-level="CRITICAL"].active{ background:#6f42c1; border-color:#6f42c1; }
+<!-- ── Resource panel (fixed, right margin) ─────────────────────────── -->
+<div id="res-panel" class="res-panel">
+    <!-- Collapse tab — always visible -->
+    <button id="res-toggle" class="res-toggle" title="Toggle resource monitor">
+        <i class="bi bi-activity" id="res-toggle-icon"></i>
+    </button>
 
-    .log-line { padding: 1px 0; border-bottom: 1px solid #1a1a1a; line-height: 1.5; }
-    .log-ts   { color: #555; }
-    .log-lvl-DEBUG    { color: #6c757d; }
-    .log-lvl-INFO     { color: #0dcaf0; }
-    .log-lvl-WARNING  { color: #ffc107; }
-    .log-lvl-ERROR    { color: #dc3545; }
-    .log-lvl-CRITICAL { color: #cf6fff; font-weight: bold; }
-    .log-loc  { color: #555; font-size: 0.75rem; }
-    .log-user { color: #7cb; font-size: 0.75rem; }
-    .log-msg  { color: #e0e0e0; white-space: pre-wrap; word-break: break-all; }
+    <!-- Panel body -->
+    <div id="res-body" class="res-body">
+        <div class="res-header">
+            <span><i class="bi bi-speedometer2 me-1"></i>Resources</span>
+            <span class="res-updated" id="res-updated">–</span>
+        </div>
+
+        <!-- CPU -->
+        <div class="res-card">
+            <div class="res-row">
+                <span class="res-label"><i class="bi bi-cpu me-1"></i>CPU</span>
+                <span class="res-val" id="cpu-val">–</span>
+            </div>
+            <div class="progress res-bar-wrap">
+                <div id="cpu-bar" class="progress-bar" style="width:0%;transition:width 0.5s;"></div>
+            </div>
+        </div>
+
+        <!-- RAM -->
+        <div class="res-card">
+            <div class="res-row">
+                <span class="res-label"><i class="bi bi-memory me-1"></i>RAM</span>
+                <span class="res-val" id="ram-val">–</span>
+            </div>
+            <div class="progress res-bar-wrap">
+                <div id="ram-bar" class="progress-bar" style="width:0%;transition:width 0.5s;background:#0dcaf0;"></div>
+            </div>
+            <div class="res-sub">
+                <span>Used <span id="ram-used">–</span></span>
+                <span>/ <span id="ram-total">–</span></span>
+            </div>
+        </div>
+
+        <!-- Disk -->
+        <div class="res-card">
+            <div class="res-row">
+                <span class="res-label"><i class="bi bi-hdd me-1"></i>Disk</span>
+                <span class="res-val" id="disk-val">–</span>
+            </div>
+            <div class="progress res-bar-wrap">
+                <div id="disk-bar" class="progress-bar" style="width:0%;transition:width 0.5s;background:#ffc107;"></div>
+            </div>
+            <div class="res-sub">
+                <span>Used <span id="disk-used">–</span></span>
+                <span>Free <span id="disk-free">–</span></span>
+            </div>
+        </div>
+
+        <!-- Redis -->
+        <div class="res-card" id="redis-card">
+            <div class="res-row">
+                <span class="res-label"><i class="bi bi-lightning-charge me-1"></i>Redis</span>
+                <span class="res-val" id="redis-clients">–</span>
+            </div>
+            <div class="res-sub">
+                <span>Mem <span id="redis-mem">–</span></span>
+                <span>Peak <span id="redis-peak">–</span></span>
+            </div>
+            <div class="res-sub">
+                <span>Hits <span id="redis-hits">–</span></span>
+                <span>Miss <span id="redis-misses">–</span></span>
+            </div>
+        </div>
+
+        <!-- Database -->
+        <div class="res-card">
+            <div class="res-row">
+                <span class="res-label"><i class="bi bi-database me-1"></i>Database</span>
+                <span class="res-val" id="db-size">–</span>
+            </div>
+            <div class="res-sub" id="db-conns-row">
+                <span>Active conns</span>
+                <span id="db-conns">–</span>
+            </div>
+        </div>
+
+        <div class="res-footer">
+            <button class="btn btn-link btn-sm p-0 text-muted" id="res-pause-btn">
+                <i class="bi bi-pause-circle" id="res-pause-icon"></i> <span id="res-pause-label">Pause</span>
+            </button>
+        </div>
+    </div>
+</div>
+
+<style>
+/* ── Log level buttons ─────────────────────────── */
+.level-btn { border:1px solid #444; color:#ccc; background:transparent; }
+.level-btn:hover { filter:brightness(1.3); }
+.level-btn.active { color:#000 !important; font-weight:bold; }
+.level-btn[data-level="DEBUG"].active   { background:#6c757d; border-color:#6c757d; }
+.level-btn[data-level="INFO"].active    { background:#0dcaf0; border-color:#0dcaf0; }
+.level-btn[data-level="WARNING"].active { background:#ffc107; border-color:#ffc107; }
+.level-btn[data-level="ERROR"].active   { background:#dc3545; border-color:#dc3545; }
+.level-btn[data-level="CRITICAL"].active{ background:#6f42c1; border-color:#6f42c1; }
+
+/* ── Log feed lines ────────────────────────────── */
+.log-line { padding:1px 0; border-bottom:1px solid #1a1a1a; line-height:1.5; }
+.log-ts   { color:#555; }
+.log-lvl-DEBUG    { color:#6c757d; }
+.log-lvl-INFO     { color:#0dcaf0; }
+.log-lvl-WARNING  { color:#ffc107; }
+.log-lvl-ERROR    { color:#dc3545; }
+.log-lvl-CRITICAL { color:#cf6fff; font-weight:bold; }
+.log-loc  { color:#555; font-size:0.75rem; }
+.log-user { color:#7cb; font-size:0.75rem; }
+.log-msg  { color:#e0e0e0; white-space:pre-wrap; word-break:break-all; }
+
+/* ── Resource panel ────────────────────────────── */
+.res-panel {
+    position: fixed;
+    right: 0;
+    top: 70px;          /* below navbar */
+    z-index: 1040;
+    display: flex;
+    flex-direction: row;
+    align-items: flex-start;
+}
+
+.res-toggle {
+    width: 28px;
+    padding: 10px 0;
+    background: #1e1e1e;
+    border: 1px solid #333;
+    border-right: none;
+    border-radius: 6px 0 0 6px;
+    color: #aaa;
+    cursor: pointer;
+    font-size: 0.85rem;
+    line-height: 1;
+    writing-mode: vertical-rl;
+    text-orientation: mixed;
+    letter-spacing: 0.05em;
+    transition: background 0.15s, color 0.15s;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+.res-toggle:hover { background:#2a2a2a; color:#fff; }
+
+.res-body {
+    width: 230px;
+    background: #141414;
+    border: 1px solid #333;
+    border-right: none;
+    border-radius: 6px 0 0 6px;
+    overflow: hidden;
+    transition: width 0.25s ease, opacity 0.2s;
+}
+.res-body.collapsed { width: 0; opacity: 0; pointer-events: none; overflow: hidden; }
+
+.res-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    padding: 7px 10px 5px;
+    border-bottom: 1px solid #2a2a2a;
+    font-size: 0.78rem;
+    font-weight: 600;
+    color: #bbb;
+}
+.res-updated { font-size: 0.68rem; color: #555; font-weight: normal; }
+
+.res-card {
+    padding: 7px 10px;
+    border-bottom: 1px solid #1e1e1e;
+}
+.res-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 3px;
+}
+.res-label { font-size: 0.75rem; color: #888; }
+.res-val   { font-size: 0.8rem; font-weight: 600; color: #ddd; }
+.res-sub {
+    display: flex;
+    justify-content: space-between;
+    font-size: 0.68rem;
+    color: #555;
+    margin-top: 2px;
+}
+.res-bar-wrap { height: 4px; background: #2a2a2a; border-radius: 2px; margin-bottom: 4px; }
+.res-bar-wrap .progress-bar { border-radius: 2px; }
+
+.res-footer {
+    padding: 5px 10px;
+    text-align: right;
+}
 </style>
 
 <script>
 (function () {
+    /* ── Log stream ─────────────────────────────────────── */
     const feed       = document.getElementById('log-feed');
     const countEl    = document.getElementById('entry-count');
     const statusEl   = document.getElementById('status-badge');
@@ -101,8 +277,6 @@
     let es           = null;
     let userDebounce = null;
 
-    const LEVEL_ORDER = ['DEBUG','INFO','WARNING','ERROR','CRITICAL'];
-
     function setStatus(text, cls) {
         statusEl.textContent = text;
         statusEl.className = 'badge ' + cls;
@@ -111,6 +285,10 @@
     function activateLevel(lvl) {
         currentLevel = lvl;
         levelBtns.forEach(b => b.classList.toggle('active', b.dataset.level === lvl));
+    }
+
+    function escHtml(s) {
+        return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
     }
 
     function appendLine(entry) {
@@ -126,20 +304,13 @@
             `<span class="log-ts">${entry.ts}</span> ` +
             `<span class="log-lvl-${entry.level}">${entry.level.padEnd(8)}</span> ` +
             userTag +
-            `<span class="log-loc">[${entry.module}.${entry.func}:${entry.line}]</span> ` +
+            `<span class="log-loc">[${escHtml(entry.module)}.${escHtml(entry.func)}:${entry.line}]</span> ` +
             `<span class="log-msg"> ${escHtml(entry.message)}</span>`;
         feed.appendChild(div);
 
         entryCount++;
         countEl.textContent = entryCount;
-
-        if (autoScroll.checked) {
-            feed.scrollTop = feed.scrollHeight;
-        }
-    }
-
-    function escHtml(s) {
-        return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+        if (autoScroll.checked) feed.scrollTop = feed.scrollHeight;
     }
 
     function clearFeed() {
@@ -150,66 +321,42 @@
 
     function connect(resetDisplay = false) {
         if (es) es.close();
-        if (resetDisplay) {
-            clearFeed();
-            lastId = 0; // tell server to bootstrap last 20 entries
-        }
+        if (resetDisplay) { clearFeed(); lastId = 0; }
         setStatus('Connecting…', 'bg-secondary');
-
         const userParam = currentUser ? `&user=${encodeURIComponent(currentUser)}` : '';
         const url = `{% url 'log_stream' %}?level=${currentLevel}&last_id=${lastId}${userParam}`;
         es = new EventSource(url);
-
-        es.onopen = () => setStatus('Live', 'bg-success');
-
-        es.onmessage = (e) => {
-            const entry = JSON.parse(e.data);
-            lastId = entry.id;
-            appendLine(entry);
-        };
-
-        es.onerror = () => {
-            setStatus('Reconnecting…', 'bg-warning text-dark');
-        };
+        es.onopen    = () => setStatus('Live', 'bg-success');
+        es.onmessage = (e) => { const entry = JSON.parse(e.data); lastId = entry.id; appendLine(entry); };
+        es.onerror   = () => setStatus('Reconnecting…', 'bg-warning text-dark');
     }
 
-    levelBtns.forEach(btn => {
-        btn.addEventListener('click', () => {
-            activateLevel(btn.dataset.level);
-            connect(true);
-        });
-    });
+    levelBtns.forEach(btn => btn.addEventListener('click', () => {
+        activateLevel(btn.dataset.level);
+        connect(true);
+    }));
 
     userFilter.addEventListener('input', () => {
         clearTimeout(userDebounce);
-        userDebounce = setTimeout(() => {
-            currentUser = userFilter.value.trim();
-            connect(true);
-        }, 500);
+        userDebounce = setTimeout(() => { currentUser = userFilter.value.trim(); connect(true); }, 500);
     });
 
     clearBtn.addEventListener('click', clearFeed);
-
-    // Kick off at INFO
     activateLevel('INFO');
     connect();
 
-    // Debug mode toggle — use delegation so it survives innerHTML replacement
+    // Debug toggle — event delegation so it survives innerHTML replacement
     const debugBanner = document.getElementById('debug-banner');
     if (debugBanner) {
         debugBanner.addEventListener('click', (e) => {
             const btn = e.target.closest('#debugToggleBtn');
             if (!btn) return;
             const isActive = btn.dataset.active === 'true';
-            const action = isActive ? 'disable_debug' : 'enable_debug';
             btn.disabled = true;
             fetch("{% url 'log_level_toggle' %}", {
                 method: 'POST',
-                headers: {
-                    'Content-Type': 'application/x-www-form-urlencoded',
-                    'X-CSRFToken': '{{ csrf_token }}',
-                },
-                body: `action=${action}`,
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'X-CSRFToken': '{{ csrf_token }}' },
+                body: `action=${isActive ? 'disable_debug' : 'enable_debug'}`,
             })
             .then(r => r.json())
             .then(data => {
@@ -226,15 +373,121 @@
                     debugBanner.className = 'alert alert-secondary d-flex align-items-center gap-3 py-2 mb-3';
                     debugBanner.innerHTML = `
                         <i class="bi bi-bug fs-5"></i>
-                        <span>DB logging level: <code>${data.level}</code> (configured default). Enable debug to capture DEBUG-level entries without restarting.</span>
+                        <span>DB logging level: <code>${data.level}</code> (configured default). Enable debug without restarting.</span>
                         <button class="btn btn-sm btn-outline-warning ms-auto fw-bold" id="debugToggleBtn" data-active="false">
                             <i class="bi bi-toggle-off me-1"></i>Enable Debug (2h)
                         </button>`;
                 }
-                connect(true); // clear feed and reconnect so new level takes effect immediately
+                connect(true);
             });
         });
     }
+
+    /* ── Resource panel ─────────────────────────────────── */
+    const resBody     = document.getElementById('res-body');
+    const resToggle   = document.getElementById('res-toggle');
+    const pauseBtn    = document.getElementById('res-pause-btn');
+    const pauseIcon   = document.getElementById('res-pause-icon');
+    const pauseLabel  = document.getElementById('res-pause-label');
+
+    let resPaused   = false;
+    let resExpanded = true;
+    let resTimer    = null;
+
+    resToggle.addEventListener('click', () => {
+        resExpanded = !resExpanded;
+        resBody.classList.toggle('collapsed', !resExpanded);
+    });
+
+    pauseBtn.addEventListener('click', () => {
+        resPaused = !resPaused;
+        pauseIcon.className  = resPaused ? 'bi bi-play-circle text-success' : 'bi bi-pause-circle';
+        pauseLabel.textContent = resPaused ? 'Resume' : 'Pause';
+        if (!resPaused) { clearTimeout(resTimer); refreshResources(); }
+    });
+
+    function humanBytes(b) {
+        if (b == null) return '–';
+        if (b >= 1073741824) return (b / 1073741824).toFixed(1) + ' GB';
+        if (b >= 1048576)    return (b / 1048576).toFixed(1) + ' MB';
+        if (b >= 1024)       return (b / 1024).toFixed(1) + ' KB';
+        return b + ' B';
+    }
+
+    function levelColor(pct, warn, crit) {
+        return pct >= crit ? '#dc3545' : pct >= warn ? '#ffc107' : '#0dcaf0';
+    }
+
+    function refreshResources() {
+        if (resPaused) return;
+        fetch("{% url 'log_resources' %}")
+            .then(r => r.json())
+            .then(d => {
+                const now = new Date();
+                document.getElementById('res-updated').textContent =
+                    now.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit', second:'2-digit'});
+
+                if (d.cpu_percent != null) {
+                    const pct = Math.round(d.cpu_percent);
+                    document.getElementById('cpu-val').textContent = pct + '%';
+                    const bar = document.getElementById('cpu-bar');
+                    bar.style.width      = pct + '%';
+                    bar.style.background = levelColor(pct, 70, 90);
+                }
+
+                if (d.ram) {
+                    const pct = Math.round(d.ram.percent);
+                    document.getElementById('ram-val').textContent   = pct + '%';
+                    document.getElementById('ram-used').textContent  = humanBytes(d.ram.used);
+                    document.getElementById('ram-total').textContent = humanBytes(d.ram.total);
+                    const bar = document.getElementById('ram-bar');
+                    bar.style.width      = pct + '%';
+                    bar.style.background = levelColor(pct, 75, 90);
+                }
+
+                if (d.disk) {
+                    const pct = Math.round(d.disk.percent);
+                    document.getElementById('disk-val').textContent  = pct + '%';
+                    document.getElementById('disk-used').textContent = humanBytes(d.disk.used);
+                    document.getElementById('disk-free').textContent = humanBytes(d.disk.free);
+                    const bar = document.getElementById('disk-bar');
+                    bar.style.width      = pct + '%';
+                    bar.style.background = levelColor(pct, 75, 90);
+                }
+
+                const rc = document.getElementById('redis-card');
+                if (d.redis === null) {
+                    rc.style.display = 'none';
+                } else if (d.redis && !d.redis.error) {
+                    rc.style.display = '';
+                    document.getElementById('redis-clients').textContent =
+                        d.redis.connected_clients + (d.redis.connected_clients === 1 ? ' client' : ' clients');
+                    document.getElementById('redis-mem').textContent    = humanBytes(d.redis.used_memory);
+                    document.getElementById('redis-peak').textContent   = humanBytes(d.redis.used_memory_peak);
+                    document.getElementById('redis-hits').textContent   = d.redis.keyspace_hits.toLocaleString();
+                    document.getElementById('redis-misses').textContent = d.redis.keyspace_misses.toLocaleString();
+                } else {
+                    rc.style.display = '';
+                    document.getElementById('redis-clients').textContent = 'error';
+                }
+
+                if (d.db && !d.db.error) {
+                    document.getElementById('db-size').textContent = humanBytes(d.db.size);
+                    const connsRow = document.getElementById('db-conns-row');
+                    if (d.db.active_connections != null) {
+                        connsRow.style.display = '';
+                        document.getElementById('db-conns').textContent = d.db.active_connections;
+                    } else {
+                        connsRow.style.display = 'none';
+                    }
+                }
+            })
+            .catch(() => {});
+
+        resTimer = setTimeout(refreshResources, 5000);
+    }
+
+    refreshResources();
 })();
 </script>
 {% endblock %}

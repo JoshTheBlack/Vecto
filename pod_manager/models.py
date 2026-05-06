@@ -5,7 +5,7 @@ from django.contrib.auth.models import User
 from django.core.cache import cache
 from django.core.files.base import ContentFile
 from django.core.files.storage import FileSystemStorage
-from django.db.models.signals import post_delete
+from django.db.models.signals import post_delete, pre_save
 from django.dispatch import receiver
 from cryptography.fernet import Fernet, InvalidToken
 import hashlib
@@ -13,6 +13,8 @@ from PIL import Image
 from io import BytesIO
 
 from django.conf import settings
+
+from .services.images import process_image_field
 
 logger = logging.getLogger(__name__)
 
@@ -190,12 +192,6 @@ class Podcast(models.Model):
     class Meta:
         unique_together = ('network', 'slug')
 
-    def save(self, *args, **kwargs):
-        if not self.required_tier and self.network_id:
-            default_tier = PatreonTier.objects.filter(network=self.network, is_default=True).first()
-            if default_tier:
-                self.required_tier = default_tier
-        super().save(*args, **kwargs)
 
     def __str__(self):
         return self.title
@@ -293,43 +289,11 @@ class UserMix(models.Model):
     def save(self, *args, **kwargs):
         logger.debug(f"Saving UserMix: '{self.name}' for user {self.user.username}")
         super().save(*args, **kwargs)
-
-        # Post-process (Crop & Resize)
         if self.image_upload:
             try:
-                logger.debug(f"Processing image upload for mix: {self.unique_id}")
-                
-                with Image.open(self.image_upload) as img:
-                    original_format = img.format or 'JPEG'
-                    
-                    width, height = img.size
-                    if width != height:
-                        logger.debug("Image is not square. Cropping...")
-                        new_size = min(width, height)
-                        left = (width - new_size) / 2
-                        top = (height - new_size) / 2
-                        right = (width + new_size) / 2
-                        bottom = (height + new_size) / 2
-                        img = img.crop((left, top, right, bottom))
-                    
-                    if img.height > 500 or img.width > 500:
-                        logger.debug("Image exceeds 500x500. Resizing...")
-                        img.thumbnail((500, 500), Image.Resampling.LANCZOS)
-                    
-                    if original_format == 'JPEG' and img.mode in ('RGBA', 'LA', 'P'):
-                        logger.debug("Converting image to RGB to safely save as JPEG.")
-                        img = img.convert('RGB')
-                        
-                    from io import BytesIO
-                    temp_handle = BytesIO()
-                    img.save(temp_handle, format=original_format)
-                    temp_handle.seek(0)
-                    
+                data = process_image_field(self.image_upload, 500)
                 self.image_upload.close()
-                
-                self.image_upload.save(self.image_upload.name, ContentFile(temp_handle.read()), save=False)
-                logger.debug(f"Image processing complete for mix: {self.unique_id}")
-                
+                self.image_upload.save(self.image_upload.name, ContentFile(data), save=False)
             except Exception as e:
                 logger.error(f"Image processing failed for mix {self.unique_id}: {e}", exc_info=True)
     
@@ -447,39 +411,12 @@ class NetworkMembership(models.Model):
 
     def save(self, *args, **kwargs):
         super().save(*args, **kwargs)
-
-        # Post-process Custom Avatar (Crop & Resize to 256x256)
         if self.custom_image_upload:
             try:
-                from PIL import Image
-                from io import BytesIO
-                from django.core.files.base import ContentFile
-
-                with Image.open(self.custom_image_upload) as img:
-                    original_format = img.format or 'JPEG'
-                    width, height = img.size
-                    
-                    if width != height:
-                        new_size = min(width, height)
-                        left = (width - new_size) / 2
-                        top = (height - new_size) / 2
-                        right = (width + new_size) / 2
-                        bottom = (height + new_size) / 2
-                        img = img.crop((left, top, right, bottom))
-                    
-                    if img.height > 256 or img.width > 256:
-                        img.thumbnail((256, 256), Image.Resampling.LANCZOS)
-                    
-                    if original_format == 'JPEG' and img.mode in ('RGBA', 'LA', 'P'):
-                        img = img.convert('RGB')
-                        
-                    temp_handle = BytesIO()
-                    img.save(temp_handle, format=original_format)
-                    temp_handle.seek(0)
-                    
-                # Save without triggering another save() recursion
+                data = process_image_field(self.custom_image_upload, 256)
                 self.custom_image_upload.close()
-                self.custom_image_upload.file = ContentFile(temp_handle.read())
+                self.custom_image_upload.file = ContentFile(data)
+                # Use update() to avoid triggering save() recursion.
                 NetworkMembership.objects.filter(id=self.id).update(custom_image_upload=self.custom_image_upload.name)
             except Exception as e:
                 logger.error(f"Avatar processing failed for membership {self.id}: {e}", exc_info=True)
@@ -545,51 +482,28 @@ class NetworkMix(models.Model):
 
     def save(self, *args, **kwargs):
         super().save(*args, **kwargs)
-        # Post-process (Crop & Resize) using the exact same logic as UserMix
         if self.image_upload:
             try:
-                with Image.open(self.image_upload) as img:
-                    original_format = img.format or 'JPEG'
-                    width, height = img.size
-                    if width != height:
-                        new_size = min(width, height)
-                        left = (width - new_size) / 2
-                        top = (height - new_size) / 2
-                        right = (width + new_size) / 2
-                        bottom = (height + new_size) / 2
-                        img = img.crop((left, top, right, bottom))
-                    if img.height > 500 or img.width > 500:
-                        img.thumbnail((500, 500), Image.Resampling.LANCZOS)
-                    if original_format == 'JPEG' and img.mode in ('RGBA', 'LA', 'P'):
-                        img = img.convert('RGB')
-                        
-                    from io import BytesIO
-                    temp_handle = BytesIO()
-                    img.save(temp_handle, format=original_format)
-                    temp_handle.seek(0)
-                    
+                data = process_image_field(self.image_upload, 500)
                 self.image_upload.close()
-                self.image_upload.save(self.image_upload.name, ContentFile(temp_handle.read()), save=False)
+                self.image_upload.save(self.image_upload.name, ContentFile(data), save=False)
             except Exception as e:
                 logger.error(f"Image processing failed for network mix {self.unique_id}: {e}", exc_info=True)
 
 class EpisodeEditSuggestion(models.Model):
-    STATUS_CHOICES = [
-        ('pending', 'Pending'),
-        ('approved', 'Approved'),
-        ('rejected', 'Rejected'),
-        ('rolled_back', 'Rolled Back'),
-    ]
+    class Status(models.TextChoices):
+        PENDING = 'pending', 'Pending'
+        APPROVED = 'approved', 'Approved'
+        REJECTED = 'rejected', 'Rejected'
+        ROLLED_BACK = 'rolled_back', 'Rolled Back'
 
     episode = models.ForeignKey(Episode, on_delete=models.CASCADE, related_name='edit_suggestions')
     user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='submitted_edits')
-    
-    # Store the proposed changes (e.g., {"description": "New text", "tags": "new, tags"})
+
     suggested_data = models.JSONField(default=dict)
-    # Store the exact state of the fields BEFORE the edit was applied, used for rollbacks
     original_data = models.JSONField(default=dict, null=True, blank=True)
-    
-    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='pending')
+
+    status = models.CharField(max_length=20, choices=Status.choices, default=Status.PENDING)
     is_first_responder = models.BooleanField(default=False)
     
     created_at = models.DateTimeField(auto_now_add=True)
@@ -605,3 +519,11 @@ def auto_delete_file_on_delete_network_mix(sender, instance, **kwargs):
             instance.image_upload.storage.delete(instance.image_upload.name)
         except Exception:
             pass
+
+
+@receiver(pre_save, sender=Podcast)
+def assign_default_tier(sender, instance, **kwargs):
+    if not instance.required_tier and instance.network_id:
+        default_tier = PatreonTier.objects.filter(network=instance.network, is_default=True).first()
+        if default_tier:
+            instance.required_tier = default_tier

@@ -153,22 +153,9 @@ def _scan_keys(redis_client, pattern, batch=500):
             break
 
 
-@shared_task
-def sweep_analytics_buffer():
-    logger.info("Starting Multi-Tenant Analytics Buffer Sweep...")
-
-    cache_backend = settings.CACHES['default'].get('BACKEND', '').lower()
-    if 'locmem' in cache_backend or 'dummy' in cache_backend:
-        logger.info("Local memory cache detected, skipping Redis sweep.")
-        return
-
-    redis_url = settings.CACHES['default']['LOCATION']
-    redis_client = redis.from_url(redis_url)
-
-    # Don't early-return when there are no play keys — the billing and
-    # analytics:rss sweeps below also need to run (a quiet day with web
-    # visits and RSS polls but no playback would otherwise leave
-    # last_active_date unchanged and undercount active users).
+def _sweep_play_analytics(redis_client):
+    """Drains analytics:play:* keys and writes playback stats to NetworkMembership rows."""
+    # Don't early-return on empty play keys — _sweep_presence_keys must still run.
     play_keys = list(_scan_keys(redis_client, "analytics:play:*"))
 
     raw_play_data = []
@@ -182,7 +169,6 @@ def sweep_analytics_buffer():
     for key_bytes in play_keys:
         key_str = key_bytes.decode('utf-8')
         hits = redis_client.get(key_bytes)
-        
         if hits:
             clean_key = key_str.split('analytics:play:')[-1]
             parts = clean_key.split(':')
@@ -192,7 +178,6 @@ def sweep_analytics_buffer():
                 profile_ids.add(p_id)
                 episode_ids.add(e_id)
                 podcast_ids.add(pod_id)
-                
         keys_to_delete.append(key_bytes)
 
     profile_to_user = dict(PatronProfile.objects.filter(id__in=profile_ids).values_list('id', 'user_id'))
@@ -206,7 +191,6 @@ def sweep_analytics_buffer():
     for data in raw_play_data:
         user_id = profile_to_user.get(data['p_id'])
         network_id = podcast_to_network.get(data['pod_id'])
-        
         if user_id and network_id:
             mem_key = (user_id, network_id)
             membership_updates[mem_key]['play_hits'] += data['hits']
@@ -219,26 +203,25 @@ def sweep_analytics_buffer():
 
     for (user_id, network_id), data in membership_updates.items():
         membership, _ = NetworkMembership.objects.get_or_create(user_id=user_id, network_id=network_id)
-        
         membership.total_playback_hits = (membership.total_playback_hits or 0) + data['play_hits']
-        
+
         hours_gained = 0.0
         for e_id in data['episodes_played']:
             if e_id in episodes:
                 hours_gained += parse_duration_to_hours(episodes[e_id].duration)
         membership.total_hours_accessed = (membership.total_hours_accessed or 0.0) + hours_gained
-        
+
         if data['play_hits'] > 0:
             if membership.last_playback_date == today - timedelta(days=1):
                 membership.streak_days = (membership.streak_days or 0) + 1
             elif membership.last_playback_date != today:
-                membership.streak_days = 1 
+                membership.streak_days = 1
             membership.last_playback_date = today
-            
+
             if membership.last_play_week == current_iso_week - 1:
                 membership.streak_weeks = (membership.streak_weeks or 0) + 1
             elif membership.last_play_week != current_iso_week:
-                membership.streak_weeks = 1 
+                membership.streak_weeks = 1
             membership.last_play_week = current_iso_week
 
         if data['podcast_hits']:
@@ -249,42 +232,45 @@ def sweep_analytics_buffer():
 
     if memberships_to_save:
         NetworkMembership.objects.bulk_update(
-            memberships_to_save, 
-            ['total_playback_hits', 'total_hours_accessed', 'streak_days', 'streak_weeks', 'last_playback_date', 'last_play_week', 'current_obsession_id']
+            memberships_to_save,
+            ['total_playback_hits', 'total_hours_accessed', 'streak_days', 'streak_weeks',
+             'last_playback_date', 'last_play_week', 'current_obsession_id']
         )
 
-    # ==========================================
-    # ACTIVE-USER PRESENCE SWEEP
-    # ==========================================
-    # Two key shapes feed last_active_date:
-    #   billing:active:{net_id}:{user_id}:{date}      <- web visits (middleware)
-    #   analytics:rss:{net_id}:{user_id}:{date}       <- RSS polls (feed views)
-    # Both encode the activity date in the key itself, so we can drain them
-    # together. Deduplicate across (net_id, user_id) and write the most
-    # recent date we saw for each.
+    if keys_to_delete:
+        redis_client.delete(*keys_to_delete)
+
+
+def _sweep_presence_keys(redis_client):
+    """Drains billing:active:* and analytics:rss:* keys and updates last_active_date.
+
+    Key shapes:
+      billing:active:{net_id}:{user_id}:{date}   <- web visits (middleware)
+      analytics:rss:{net_id}:{user_id}:{date}    <- RSS polls (feed views)
+    The activity date is encoded in the key; we keep only the most recent per member.
+    """
     presence_by_member = {}  # (net_id, user_id) -> latest date_str seen
-    presence_keys_to_delete = []
+    keys_to_delete = []
 
     for pattern in ("billing:active:*", "analytics:rss:*"):
         for key_bytes in _scan_keys(redis_client, pattern):
             key_str = key_bytes.decode('utf-8')
             parts = key_str.split(':')
             if len(parts) != 5:
-                presence_keys_to_delete.append(key_bytes)
+                keys_to_delete.append(key_bytes)
                 continue
             try:
                 net_id = int(parts[2])
                 user_id = int(parts[3])
             except ValueError:
-                presence_keys_to_delete.append(key_bytes)
+                keys_to_delete.append(key_bytes)
                 continue
             date_str = parts[4]
             mem_key = (net_id, user_id)
             existing = presence_by_member.get(mem_key)
-            # Keep the most recent date if a member has multiple keys.
             if existing is None or date_str > existing:
                 presence_by_member[mem_key] = date_str
-            presence_keys_to_delete.append(key_bytes)
+            keys_to_delete.append(key_bytes)
 
     if presence_by_member:
         member_keys = list(presence_by_member.keys())
@@ -303,12 +289,24 @@ def sweep_analytics_buffer():
             NetworkMembership.objects.bulk_update(billing_updates, ['last_active_date'])
             logger.info(f"Updated {len(billing_updates)} active-user timestamps.")
 
-    if presence_keys_to_delete:
-        redis_client.delete(*presence_keys_to_delete)
-
-    # Drain the play-analytics keys we processed earlier in the function.
     if keys_to_delete:
         redis_client.delete(*keys_to_delete)
+
+
+@shared_task
+def sweep_analytics_buffer():
+    logger.info("Starting Multi-Tenant Analytics Buffer Sweep...")
+
+    cache_backend = settings.CACHES['default'].get('BACKEND', '').lower()
+    if 'locmem' in cache_backend or 'dummy' in cache_backend:
+        logger.info("Local memory cache detected, skipping Redis sweep.")
+        return
+
+    redis_url = settings.CACHES['default']['LOCATION']
+    redis_client = redis.from_url(redis_url)
+
+    _sweep_play_analytics(redis_client)
+    _sweep_presence_keys(redis_client)
 
     logger.info("Sweep complete.")
     

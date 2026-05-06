@@ -24,7 +24,7 @@ from django.shortcuts import get_object_or_404
 
 from ..models import NetworkMembership, Network, PatronProfile, Podcast
 from ..tasks import task_ingest_feed
-from ..utils import validate_public_url
+from ..utils import get_membership, validate_public_url
 
 logger = logging.getLogger(__name__)
 
@@ -59,7 +59,7 @@ def update_avatar_preference(request):
 @login_required(login_url='/login/')
 @require_POST
 def upload_custom_avatar(request):
-    membership = NetworkMembership.objects.filter(user=request.user, network=request.network).first()
+    membership = get_membership(request)
     if membership:
         if 'custom_image_upload' in request.FILES and request.FILES['custom_image_upload']:
             if membership.custom_image_upload:

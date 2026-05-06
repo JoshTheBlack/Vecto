@@ -97,3 +97,13 @@ def sanitize_user_html(html_str: str) -> str:
         attributes=_ALLOWED_DESC_ATTRS,
         link_rel='noopener noreferrer nofollow',
     )
+
+
+# ---------------------------------------------------------------------------
+# Request-context shortcuts
+# ---------------------------------------------------------------------------
+
+def get_membership(request):
+    """Return the NetworkMembership for (request.user, request.network), or None."""
+    from .models import NetworkMembership
+    return NetworkMembership.objects.filter(user=request.user, network=request.network).first()

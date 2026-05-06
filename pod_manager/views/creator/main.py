@@ -93,12 +93,12 @@ def submit_episode_edit(request, episode_id):
         network = ep.podcast.network
         membership, _ = NetworkMembership.objects.get_or_create(user=request.user, network=network)
         original_data = snapshot_episode(ep)
-        is_first = not EpisodeEditSuggestion.objects.filter(episode=ep, status='approved').exists()
+        is_first = not EpisodeEditSuggestion.objects.filter(episode=ep, status=EpisodeEditSuggestion.Status.APPROVED).exists()
         is_trusted = membership.trust_score >= network.auto_approve_trust_threshold
 
         EpisodeEditSuggestion.objects.create(
             episode=ep, user=request.user, suggested_data=suggested_data,
-            original_data=original_data, status='approved' if is_trusted else 'pending',
+            original_data=original_data, status=EpisodeEditSuggestion.Status.APPROVED if is_trusted else EpisodeEditSuggestion.Status.PENDING,
             is_first_responder=is_first,
             resolved_at=timezone.now() if is_trusted else None,
         )

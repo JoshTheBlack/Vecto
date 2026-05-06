@@ -31,7 +31,7 @@ def gather_manage_podcasts(current_network):
 @diagnostic_timer("2. Gather Inbox")
 def gather_inbox(current_network):
     pending_edits = EpisodeEditSuggestion.objects.filter(
-        episode__podcast__network=current_network, status='pending'
+        episode__podcast__network=current_network, status=EpisodeEditSuggestion.Status.PENDING
     ).select_related('episode', 'episode__podcast', 'user')
 
     user_ids = [e.user_id for e in pending_edits]
@@ -125,7 +125,7 @@ def gather_merge_desk(request, current_network):
 def gather_audit_log(request, current_network):
     audit_query = EpisodeEditSuggestion.objects.filter(
         episode__podcast__network=current_network
-    ).exclude(status='pending').select_related('episode', 'episode__podcast', 'user')
+    ).exclude(status=EpisodeEditSuggestion.Status.PENDING).select_related('episode', 'episode__podcast', 'user')
 
     audit_q = request.GET.get('audit_q', '').strip()
     audit_status = request.GET.get('audit_status', '').strip()

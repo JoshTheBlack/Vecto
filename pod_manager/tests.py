@@ -852,7 +852,7 @@ class CreatorInboxActionTests(TestCase):
 
     def _make_pending_edit(self):
         return EpisodeEditSuggestion.objects.create(
-            episode=self.episode, user=self.submitter, status='pending',
+            episode=self.episode, user=self.submitter, status=EpisodeEditSuggestion.Status.PENDING,
             original_data={
                 'title': self.episode.title,
                 'description': self.episode.clean_description,
@@ -957,7 +957,7 @@ class CreatorRollbackTests(TestCase):
 
     def _approved_edit(self, episode, original_title, resolved_at=None):
         return EpisodeEditSuggestion.objects.create(
-            episode=episode, user=self.spammer, status='approved',
+            episode=episode, user=self.spammer, status=EpisodeEditSuggestion.Status.APPROVED,
             original_data={'title': original_title, 'description': 'x', 'tags': [], 'chapters': []},
             suggested_data={'title': 'Vandalized', 'description': 'x', 'tags': [], 'chapters': []},
             resolved_at=resolved_at or timezone.now(),
@@ -1001,7 +1001,7 @@ class CreatorRollbackTests(TestCase):
         self.assertEqual(self.membership.trust_score, 0)
         self.assertEqual(self.membership.edits_chapters, 0)
         reverted = EpisodeEditSuggestion.objects.filter(
-            user=self.spammer, status='rolled_back'
+            user=self.spammer, status=EpisodeEditSuggestion.Status.ROLLED_BACK
         ).count()
         self.assertEqual(reverted, 3)
 
@@ -1225,7 +1225,7 @@ class GatherInboxConflictFlagTests(TestCase):
 
     def _make_pending_edit(self, original_data):
         return EpisodeEditSuggestion.objects.create(
-            episode=self.episode, user=self.submitter, status='pending',
+            episode=self.episode, user=self.submitter, status=EpisodeEditSuggestion.Status.PENDING,
             original_data=original_data,
             suggested_data={'title': 'X', 'description': 'X', 'tags': [], 'chapters': []},
         )

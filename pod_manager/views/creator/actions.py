@@ -120,7 +120,7 @@ def _handle_approve_edit(request, current_network):
 
     # --- THE ZERO-APPROVAL TRAP ---
     if points == 0:
-        edit.status = 'rejected'
+        edit.status = EpisodeEditSuggestion.Status.REJECTED
         edit.resolved_at = timezone.now()
         edit.save()
         membership.trust_score = max(0, membership.trust_score - 2)
@@ -139,7 +139,7 @@ def _handle_approve_edit(request, current_network):
     # Rewrite original_data to the pre-approval snapshot so single-edit
     # rollback restores the state that existed right before this approval.
     edit.original_data = pre_approval_snapshot
-    edit.status = 'approved'
+    edit.status = EpisodeEditSuggestion.Status.APPROVED
     edit.resolved_at = timezone.now()
     edit.save()
 
@@ -158,7 +158,7 @@ def _handle_reject_edit(request, current_network):
     edit_id = request.POST.get('edit_id')
     edit = get_object_or_404(EpisodeEditSuggestion, id=edit_id, episode__podcast__network=current_network)
     membership, _ = NetworkMembership.objects.get_or_create(user=edit.user, network=current_network)
-    edit.status = 'rejected'
+    edit.status = EpisodeEditSuggestion.Status.REJECTED
     edit.resolved_at = timezone.now()
     edit.save()
     membership.trust_score = max(0, membership.trust_score - 2)
@@ -167,13 +167,13 @@ def _handle_reject_edit(request, current_network):
 
 
 def _handle_rollback_single_edit(request, current_network):
-    edit = get_object_or_404(EpisodeEditSuggestion, id=request.POST.get('edit_id'), episode__podcast__network=current_network, status='approved')
+    edit = get_object_or_404(EpisodeEditSuggestion, id=request.POST.get('edit_id'), episode__podcast__network=current_network, status=EpisodeEditSuggestion.Status.APPROVED)
     membership, _ = NetworkMembership.objects.get_or_create(user=edit.user, network=current_network)
 
     # Block when newer approved edits exist on the same episode.
     newer_approved = EpisodeEditSuggestion.objects.filter(
         episode=edit.episode,
-        status='approved',
+        status=EpisodeEditSuggestion.Status.APPROVED,
         resolved_at__gt=edit.resolved_at,
     ).select_related('user').order_by('resolved_at')
 
@@ -199,7 +199,7 @@ def _handle_rollback_single_edit(request, current_network):
     base_url = request.build_absolute_uri('/')[:-1]
     task_rebuild_episode_fragments.delay(ep.id, base_url)
 
-    edit.status = 'rolled_back'
+    edit.status = EpisodeEditSuggestion.Status.ROLLED_BACK
     edit.resolved_at = timezone.now()
     edit.save()
 
@@ -221,7 +221,7 @@ def _handle_bulk_rollback(request, current_network):
     approved_edits = EpisodeEditSuggestion.objects.filter(
         user=spammer,
         episode__podcast__network=current_network,
-        status='approved'
+        status=EpisodeEditSuggestion.Status.APPROVED,
     )
 
     base_url = request.build_absolute_uri('/')[:-1]
@@ -237,7 +237,7 @@ def _handle_bulk_rollback(request, current_network):
 
         task_rebuild_episode_fragments.delay(ep.id, base_url)
 
-        edit.status = 'rolled_back'
+        edit.status = EpisodeEditSuggestion.Status.ROLLED_BACK
         edit.resolved_at = timezone.now()
         edit.save()
         count += 1

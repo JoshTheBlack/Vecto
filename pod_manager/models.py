@@ -512,6 +512,39 @@ class EpisodeEditSuggestion(models.Model):
     def __str__(self):
         return f"Edit by {self.user.username} for {self.episode.title} ({self.status})"
 
+class LogEntry(models.Model):
+    class Level(models.TextChoices):
+        DEBUG = 'DEBUG', 'Debug'
+        INFO = 'INFO', 'Info'
+        WARNING = 'WARNING', 'Warning'
+        ERROR = 'ERROR', 'Error'
+        CRITICAL = 'CRITICAL', 'Critical'
+
+    level = models.CharField(max_length=10, choices=Level.choices, db_index=True)
+    level_no = models.IntegerField(db_index=True)
+    logger_name = models.CharField(max_length=200)
+    module = models.CharField(max_length=200)
+    func_name = models.CharField(max_length=200)
+    lineno = models.IntegerField()
+    message = models.TextField()
+    user = models.ForeignKey(
+        'auth.User',
+        null=True, blank=True,
+        on_delete=models.SET_NULL,
+        related_name='log_entries',
+        db_index=True,
+    )
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+
+    class Meta:
+        ordering = ['-created_at']
+        verbose_name_plural = 'log entries'
+
+    def __str__(self):
+        ts = self.created_at.strftime('%Y-%m-%d %H:%M:%S') if self.created_at else '?'
+        return f"[{self.level}] {ts} - {self.message[:80]}"
+
+
 @receiver(post_delete, sender=NetworkMix)
 def auto_delete_file_on_delete_network_mix(sender, instance, **kwargs):
     if instance.image_upload:

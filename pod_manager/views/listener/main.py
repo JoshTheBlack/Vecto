@@ -45,6 +45,7 @@ def _build_feed_base_url(podcast, request):
         return request.build_absolute_uri('/')[:-1]
     if podcast.network.custom_domain:
         return f"{request.scheme}://{podcast.network.custom_domain}"
+    logger.warning(f"Cannot build feed URL for podcast '{podcast.title}' (id={podcast.id}): cross-network with no custom domain")
     return None
 
 

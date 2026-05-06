@@ -479,14 +479,13 @@
         // ── 2. Comprehensive App Catalog ──
         const APPS = [
             { id: 'apple', name: 'Apple Podcasts', platforms: ['ios', 'desktop'], icon: 'icon-apple', url: (u) => `pcast://${u.replace(/^https?:\/\//, '')}` },
-            { id: 'pocketcasts', name: 'Pocket Casts', platforms: ['ios', 'android', 'desktop'], icon: 'icon-pocketcasts', url: (u) => `https://pca.st/subscribe-to/${u.replace(/^https?:\/\//, '')}` },
-            { id: 'youtubemusic', name: 'YouTube Music', platforms: ['ios', 'android', 'desktop'], icon: 'icon-youtubemusic', url: (u) => `https://music.youtube.com/library/podcasts?addrssfeed=${btoa(u)}` },
+            { id: 'pocketcasts', name: 'Pocket Casts', platforms: ['ios', 'android', 'desktop'], icon: 'icon-pocketcasts', url: (u) => `pktc://subscribe/${u.replace(/^https?:\/\//, '')}` },            { id: 'youtubemusic', name: 'YouTube Music', platforms: ['ios', 'android', 'desktop'], icon: 'icon-youtubemusic', url: (u) => `https://music.youtube.com/library/podcasts?addrssfeed=${btoa(u)}` },
             { id: 'podcastaddict', name: 'Podcast Addict', platforms: ['android'], icon: 'icon-podcastaddict', url: (u) => `podcastaddict://${u.replace(/^https?:\/\//, '')}` },
             { id: 'overcast', name: 'Overcast', platforms: ['ios'], icon: 'icon-overcast', url: (u) => `overcast://x-callback-url/add?url=${encodeURIComponent(u)}` },
-            { id: 'castro', name: 'Castro', platforms: ['ios'], icon: 'icon-castro', url: (u) => `castro://subscribe/${u.replace(/^https?:\/\//, '')}` },
+            { id: 'castro', name: 'Castro', platforms: ['ios'], icon: 'icon-castro', url: (u) => `castros://subscribe/${u.replace(/^https?:\/\//, '')}` },
             { id: 'downcast', name: 'Downcast', platforms: ['ios', 'desktop'], icon: 'icon-downcast', url: (u) => `downcast://${u.replace(/^https?:\/\//, '')}` },
             { id: 'podcastrepublic', name: 'Podcast Republic', platforms: ['android'], icon: 'icon-podcastrepublic', url: (u) => `podcastrepublic://${u.replace(/^https?:\/\//, '')}` },
-            { id: 'podkicker', name: 'Podkicker', platforms: ['android'], icon: 'icon-podkicker', url: (u) => `pdk://${u.replace(/^https?:\/\//, '')}` },
+            { id: 'podkicker', name: 'Podkicker', platforms: ['android'], icon: 'icon-podkicker', url: (u) => `pkr://${u.replace(/^https?:\/\//, '')}` },
             { id: 'rssradio', name: 'RSSRadio', platforms: ['ios'], icon: 'icon-rssradio', url: (u) => `rssradio://${u.replace(/^https?:\/\//, '')}` },
             // Replaced isBi with custom svg class for consistency
             { id: 'rss', name: 'Copy RSS', platforms: ['ios', 'android', 'desktop'], icon: 'icon-rss', url: (u) => u }

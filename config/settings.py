@@ -142,8 +142,9 @@ MIDDLEWARE = [
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
     'pod_manager.middleware.ImpersonationMiddleware',
-    'pod_manager.middleware.NetworkMiddleware', 
-    'pod_manager.middleware.BillingPresenceMiddleware', 
+    'pod_manager.middleware.RequestUserLogMiddleware',  # after Impersonation — captures effective user
+    'pod_manager.middleware.NetworkMiddleware',
+    'pod_manager.middleware.BillingPresenceMiddleware',
 ]
 
 ROOT_URLCONF = 'config.urls'
@@ -258,6 +259,7 @@ LOGOUT_REDIRECT_URL = 'home'
 # ==========================================
 # Use LOG_LEVEL=DEBUG in your .env for verbose output, default to INFO for production
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
+LOG_RETENTION_DAYS = int(os.getenv("LOG_RETENTION_DAYS", "30"))
 
 LOGGING = {
     'version': 1,
@@ -269,9 +271,24 @@ LOGGING = {
             'datefmt': '%Y-%m-%d %H:%M:%S',
         },
     },
+    'filters': {
+        # Keeps console output at the configured LOG_LEVEL even though the
+        # pod_manager logger itself runs at DEBUG so the DB handler can receive
+        # everything and apply its own live-togglable level gate.
+        'console_level': {
+            '()': 'pod_manager.log_handler.MinLevelFilter',
+            'min_level': LOG_LEVEL,
+        },
+    },
     'handlers': {
         'console': {
             'class': 'logging.StreamHandler',
+            'formatter': 'verbose',
+            'filters': ['console_level'],
+        },
+        'database': {
+            'class': 'pod_manager.log_handler.DatabaseLogHandler',
+            'level': 'DEBUG',
             'formatter': 'verbose',
         },
     },
@@ -286,8 +303,10 @@ LOGGING = {
             'propagate': False,
         },
         'pod_manager': {
-            'handlers': ['console'],
-            'level': LOG_LEVEL,
+            'handlers': ['console', 'database'],
+            # Always DEBUG so every record reaches the handlers; each handler
+            # applies its own level gate independently.
+            'level': 'DEBUG',
             'propagate': False,
         },
     },
@@ -326,6 +345,10 @@ CELERY_BEAT_SCHEDULE = {
     'sync-bot-avatar-hourly': {
         'task': 'pod_manager.tasks.task_sync_bot_avatar',
         'schedule': 3600,  # seconds
+    },
+    'prune-log-entries-daily': {
+        'task': 'pod_manager.tasks.task_prune_logs',
+        'schedule': 86400,  # seconds (24 h)
     },
 }
 

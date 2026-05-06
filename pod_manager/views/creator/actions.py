@@ -96,7 +96,7 @@ def _handle_approve_edit(request, current_network):
                     if added:
                         membership.edits_tags += len(added)
         except Exception as e:
-            logger.error(f"Failed to parse tags from inbox: {e}")
+            logger.warning(f"Failed to parse tags from inbox for edit #{edit_id}: {e}")
 
     # 3. PROCESS CHAPTERS — full replacement (order-sensitive, can't merge cleanly).
     if request.POST.get('approve_chapters') == 'on':
@@ -116,7 +116,7 @@ def _handle_approve_edit(request, current_network):
                     elif isinstance(new_chapters, list):
                         membership.edits_chapters += len(new_chapters)
             except Exception as e:
-                logger.error(f"Failed to parse chapters from inbox: {e}")
+                logger.warning(f"Failed to parse chapters from inbox for edit #{edit_id}: {e}")
 
     # --- THE ZERO-APPROVAL TRAP ---
     if points == 0:
@@ -148,6 +148,7 @@ def _handle_approve_edit(request, current_network):
         membership.first_responder_count += 1
     membership.save()
 
+    logger.info(f"Edit #{edit.id} approved for episode '{ep.title}' — user {edit.user.username} awarded +{points} trust")
     messages.success(request, f"Partial edit approved! User awarded +{points} Trust Score.")
 
     base_url = request.build_absolute_uri('/')[:-1]
@@ -163,6 +164,7 @@ def _handle_reject_edit(request, current_network):
     edit.save()
     membership.trust_score = max(0, membership.trust_score - 2)
     membership.save()
+    logger.info(f"Edit #{edit.id} rejected for episode '{edit.episode.title}' — user {edit.user.username} penalized -2 trust")
     messages.warning(request, "Edit rejected. User penalized -2 Trust.")
 
 
@@ -210,6 +212,7 @@ def _handle_rollback_single_edit(request, current_network):
     if edit.suggested_data.get('description') != edit.original_data.get('description'): membership.edits_descriptions = max(0, membership.edits_descriptions - 1)
     if edit.is_first_responder: membership.first_responder_count = max(0, membership.first_responder_count - 1)
     membership.save()
+    logger.info(f"Edit #{edit.id} rolled back on episode '{ep.title}' — user {edit.user.username} penalized -5 trust")
     messages.success(request, "Edit rolled back and user penalized.")
 
 
@@ -250,14 +253,17 @@ def _handle_bulk_rollback(request, current_network):
     membership.first_responder_count = 0
     membership.save()
 
+    logger.warning(f"Bulk rollback: reverted {count} edits by {spammer.username} on network '{current_network.name}' — trust zeroed")
     messages.success(request, f"Bulk rollback complete. Reverted {count} edits and dropped trust score to 0.")
 
 
 def handle_run_manual_sync(request, current_network):
     count, error = sync_network_patrons(current_network)
     if error:
+        logger.error(f"Manual patron sync failed for network '{current_network.name}': {error}")
         messages.error(request, f"Sync Failed: {error}")
     else:
+        logger.info(f"Manual patron sync complete for '{current_network.name}': {count} patrons updated")
         messages.success(request, f"Synced {count} patrons.")
 
 
@@ -312,6 +318,7 @@ def handle_add_show(request, current_network):
         subscriber_feed_url=request.POST.get('subscriber_feed_url'),
         required_tier=req_tier,
     )
+    logger.info(f"Show '{title}' (id={new_show.id}) added to network '{current_network.name}' by {request.user.username}")
     messages.success(request, f"Show '{title}' added! Starting live ingestion...")
     return redirect(f"{reverse('creator_settings')}?network={current_network.slug}&auto_import={new_show.id}")
 
@@ -331,6 +338,7 @@ def handle_merge_episodes(request, current_network):
         priv_ep.delete()
         base_url = request.build_absolute_uri('/')[:-1]
         task_rebuild_episode_fragments.delay(pub_ep.id, base_url)
+        logger.info(f"Episodes merged: '{priv_ep.title}' (id={priv_id}) into '{pub_ep.title}' (id={pub_id}) by {request.user.username}")
         messages.success(request, f"Successfully merged '{priv_ep.title}' into '{pub_ep.title}'.")
 
 
@@ -351,6 +359,7 @@ def handle_split_episode(request, current_network):
     base_url = request.build_absolute_uri('/')[:-1]
     task_rebuild_episode_fragments.delay(ep.id, base_url)
     task_rebuild_episode_fragments.delay(new_ep.id, base_url)
+    logger.info(f"Episode split: '{ep.title}' (id={ep.id}) → new episode id={new_ep.id} by {request.user.username}")
     messages.success(request, f"Successfully split '{ep.title}'.")
 
 
@@ -392,6 +401,7 @@ def handle_move_episodes(request, current_network):
 
     eps = Episode.objects.filter(id__in=episode_ids, podcast__network=current_network)
     count = eps.update(podcast=target_pod)
+    logger.info(f"Moved {count} episodes to '{target_pod.title}' (id={target_pod.id}) by {request.user.username}")
     messages.success(request, f"Successfully moved and locked {count} episodes to '{target_pod.title}'.")
 
     base_url = request.build_absolute_uri('/')[:-1]

@@ -1,0 +1,240 @@
+{% extends "pod_manager/base.html" %}
+{% block content %}
+<div class="d-flex align-items-center justify-content-between mb-3">
+    <h4 class="mb-0"><i class="bi bi-terminal-fill me-2 text-warning"></i>Live Log Viewer</h4>
+    <div class="d-flex align-items-center gap-2">
+        <span id="status-badge" class="badge bg-secondary">Connecting…</span>
+        <a href="{% url 'admin:pod_manager_logentry_changelist' %}" class="btn btn-sm btn-outline-secondary">
+            <i class="bi bi-database me-1"></i>Log Archive
+        </a>
+    </div>
+</div>
+
+{% if debug_active %}
+<div class="alert alert-warning d-flex align-items-center gap-3 py-2 mb-3" id="debug-banner">
+    <i class="bi bi-bug-fill fs-5"></i>
+    <span><strong>Debug Mode Active</strong> — DB logging level is <code>DEBUG</code>. Auto-expires in 2 hours.</span>
+    <button class="btn btn-sm btn-warning ms-auto fw-bold" id="debugToggleBtn" data-active="true">
+        <i class="bi bi-toggle-on me-1"></i>Disable Debug
+    </button>
+</div>
+{% else %}
+<div class="alert alert-secondary d-flex align-items-center gap-3 py-2 mb-3" id="debug-banner">
+    <i class="bi bi-bug fs-5"></i>
+    <span>DB logging level: <code>{{ effective_level }}</code> (configured default). Enable debug to capture DEBUG-level entries without restarting.</span>
+    <button class="btn btn-sm btn-outline-warning ms-auto fw-bold" id="debugToggleBtn" data-active="false">
+        <i class="bi bi-toggle-off me-1"></i>Enable Debug (2h)
+    </button>
+</div>
+{% endif %}
+
+<!-- Controls -->
+<div class="card mb-3">
+    <div class="card-body py-2 d-flex flex-wrap align-items-center gap-2">
+        <span class="text-muted me-1" style="font-size:0.85rem;">Level:</span>
+        <button class="btn btn-sm level-btn" data-level="DEBUG"    style="min-width:80px;">DEBUG</button>
+        <button class="btn btn-sm level-btn" data-level="INFO"     style="min-width:80px;">INFO</button>
+        <button class="btn btn-sm level-btn" data-level="WARNING"  style="min-width:80px;">WARNING</button>
+        <button class="btn btn-sm level-btn" data-level="ERROR"    style="min-width:80px;">ERROR</button>
+        <button class="btn btn-sm level-btn" data-level="CRITICAL" style="min-width:80px;">CRITICAL</button>
+        <div class="ms-auto d-flex align-items-center gap-3 flex-wrap">
+            <div class="input-group input-group-sm" style="width:200px;">
+                <span class="input-group-text bg-transparent border-secondary text-muted"><i class="bi bi-person"></i></span>
+                <input type="text" class="form-control form-control-sm" id="userFilter" placeholder="Filter by user…" style="background:rgba(0,0,0,0.3);color:#e0e0e0;border-color:#444;">
+            </div>
+            <div class="form-check form-switch mb-0">
+                <input class="form-check-input" type="checkbox" id="autoScrollToggle" checked>
+                <label class="form-check-label text-muted" for="autoScrollToggle" style="font-size:0.85rem;">Auto-scroll</label>
+            </div>
+            <span class="text-muted" style="font-size:0.85rem;"><span id="entry-count">0</span> entries</span>
+            <button class="btn btn-sm btn-outline-danger" id="clearBtn"><i class="bi bi-trash"></i> Clear</button>
+        </div>
+    </div>
+</div>
+
+<!-- Log feed -->
+<div class="card">
+    <div class="card-body p-0">
+        <div id="log-feed"
+             style="height:65vh; overflow-y:auto; background:#0d0d0d; font-family:monospace; font-size:0.8rem; padding:10px;">
+            <span class="text-muted">Waiting for log entries…</span>
+        </div>
+    </div>
+</div>
+
+<style>
+    .level-btn { border: 1px solid #444; color: #ccc; background: transparent; }
+    .level-btn:hover { filter: brightness(1.3); }
+    .level-btn.active { color: #000 !important; font-weight: bold; }
+    .level-btn[data-level="DEBUG"].active  { background:#6c757d; border-color:#6c757d; }
+    .level-btn[data-level="INFO"].active   { background:#0dcaf0; border-color:#0dcaf0; }
+    .level-btn[data-level="WARNING"].active{ background:#ffc107; border-color:#ffc107; }
+    .level-btn[data-level="ERROR"].active  { background:#dc3545; border-color:#dc3545; }
+    .level-btn[data-level="CRITICAL"].active{ background:#6f42c1; border-color:#6f42c1; }
+
+    .log-line { padding: 1px 0; border-bottom: 1px solid #1a1a1a; line-height: 1.5; }
+    .log-ts   { color: #555; }
+    .log-lvl-DEBUG    { color: #6c757d; }
+    .log-lvl-INFO     { color: #0dcaf0; }
+    .log-lvl-WARNING  { color: #ffc107; }
+    .log-lvl-ERROR    { color: #dc3545; }
+    .log-lvl-CRITICAL { color: #cf6fff; font-weight: bold; }
+    .log-loc  { color: #555; font-size: 0.75rem; }
+    .log-user { color: #7cb; font-size: 0.75rem; }
+    .log-msg  { color: #e0e0e0; white-space: pre-wrap; word-break: break-all; }
+</style>
+
+<script>
+(function () {
+    const feed       = document.getElementById('log-feed');
+    const countEl    = document.getElementById('entry-count');
+    const statusEl   = document.getElementById('status-badge');
+    const clearBtn   = document.getElementById('clearBtn');
+    const autoScroll = document.getElementById('autoScrollToggle');
+    const levelBtns  = document.querySelectorAll('.level-btn');
+    const userFilter = document.getElementById('userFilter');
+
+    let currentLevel = 'INFO';
+    let currentUser  = '';
+    let lastId       = 0;
+    let entryCount   = 0;
+    let es           = null;
+    let userDebounce = null;
+
+    const LEVEL_ORDER = ['DEBUG','INFO','WARNING','ERROR','CRITICAL'];
+
+    function setStatus(text, cls) {
+        statusEl.textContent = text;
+        statusEl.className = 'badge ' + cls;
+    }
+
+    function activateLevel(lvl) {
+        currentLevel = lvl;
+        levelBtns.forEach(b => b.classList.toggle('active', b.dataset.level === lvl));
+    }
+
+    function appendLine(entry) {
+        const isFirst = feed.querySelector('span.text-muted');
+        if (isFirst) isFirst.remove();
+
+        const div = document.createElement('div');
+        div.className = 'log-line';
+        const userTag = entry.user
+            ? `<span class="log-user">[${escHtml(entry.user)}]</span> `
+            : '';
+        div.innerHTML =
+            `<span class="log-ts">${entry.ts}</span> ` +
+            `<span class="log-lvl-${entry.level}">${entry.level.padEnd(8)}</span> ` +
+            userTag +
+            `<span class="log-loc">[${entry.module}.${entry.func}:${entry.line}]</span> ` +
+            `<span class="log-msg"> ${escHtml(entry.message)}</span>`;
+        feed.appendChild(div);
+
+        entryCount++;
+        countEl.textContent = entryCount;
+
+        if (autoScroll.checked) {
+            feed.scrollTop = feed.scrollHeight;
+        }
+    }
+
+    function escHtml(s) {
+        return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    }
+
+    function clearFeed() {
+        feed.innerHTML = '<span class="text-muted">Waiting for log entries…</span>';
+        entryCount = 0;
+        countEl.textContent = 0;
+    }
+
+    function connect(resetDisplay = false) {
+        if (es) es.close();
+        if (resetDisplay) {
+            clearFeed();
+            lastId = 0; // tell server to bootstrap last 20 entries
+        }
+        setStatus('Connecting…', 'bg-secondary');
+
+        const userParam = currentUser ? `&user=${encodeURIComponent(currentUser)}` : '';
+        const url = `{% url 'log_stream' %}?level=${currentLevel}&last_id=${lastId}${userParam}`;
+        es = new EventSource(url);
+
+        es.onopen = () => setStatus('Live', 'bg-success');
+
+        es.onmessage = (e) => {
+            const entry = JSON.parse(e.data);
+            lastId = entry.id;
+            appendLine(entry);
+        };
+
+        es.onerror = () => {
+            setStatus('Reconnecting…', 'bg-warning text-dark');
+        };
+    }
+
+    levelBtns.forEach(btn => {
+        btn.addEventListener('click', () => {
+            activateLevel(btn.dataset.level);
+            connect(true);
+        });
+    });
+
+    userFilter.addEventListener('input', () => {
+        clearTimeout(userDebounce);
+        userDebounce = setTimeout(() => {
+            currentUser = userFilter.value.trim();
+            connect(true);
+        }, 500);
+    });
+
+    clearBtn.addEventListener('click', clearFeed);
+
+    // Kick off at INFO
+    activateLevel('INFO');
+    connect();
+
+    // Debug mode toggle — use delegation so it survives innerHTML replacement
+    const debugBanner = document.getElementById('debug-banner');
+    if (debugBanner) {
+        debugBanner.addEventListener('click', (e) => {
+            const btn = e.target.closest('#debugToggleBtn');
+            if (!btn) return;
+            const isActive = btn.dataset.active === 'true';
+            const action = isActive ? 'disable_debug' : 'enable_debug';
+            btn.disabled = true;
+            fetch("{% url 'log_level_toggle' %}", {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/x-www-form-urlencoded',
+                    'X-CSRFToken': '{{ csrf_token }}',
+                },
+                body: `action=${action}`,
+            })
+            .then(r => r.json())
+            .then(data => {
+                if (data.error) return;
+                if (data.active) {
+                    debugBanner.className = 'alert alert-warning d-flex align-items-center gap-3 py-2 mb-3';
+                    debugBanner.innerHTML = `
+                        <i class="bi bi-bug-fill fs-5"></i>
+                        <span><strong>Debug Mode Active</strong> — DB logging level is <code>DEBUG</code>. Auto-expires in ${data.ttl_hours}h.</span>
+                        <button class="btn btn-sm btn-warning ms-auto fw-bold" id="debugToggleBtn" data-active="true">
+                            <i class="bi bi-toggle-on me-1"></i>Disable Debug
+                        </button>`;
+                } else {
+                    debugBanner.className = 'alert alert-secondary d-flex align-items-center gap-3 py-2 mb-3';
+                    debugBanner.innerHTML = `
+                        <i class="bi bi-bug fs-5"></i>
+                        <span>DB logging level: <code>${data.level}</code> (configured default). Enable debug to capture DEBUG-level entries without restarting.</span>
+                        <button class="btn btn-sm btn-outline-warning ms-auto fw-bold" id="debugToggleBtn" data-active="false">
+                            <i class="bi bi-toggle-off me-1"></i>Enable Debug (2h)
+                        </button>`;
+                }
+                connect(true); // clear feed and reconnect so new level takes effect immediately
+            });
+        });
+    }
+})();
+</script>
+{% endblock %}

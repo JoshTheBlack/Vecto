@@ -44,6 +44,11 @@ urlpatterns = [
     path('play/<int:episode_id>.mp3', views.play_episode, name='play_episode'),
     path('login/legacy/', views.recurly_login, name='recurly_login'),
     path('api/check-audio/', views.check_audio_status, name='check_audio_status'),
+
+    # Staff tools
+    path('staff/logs/', views.log_viewer, name='log_viewer'),
+    path('staff/logs/stream/', views.log_stream, name='log_stream'),
+    path('staff/logs/level/', views.log_level_toggle, name='log_level_toggle'),
 ]
 
 urlpatterns += [

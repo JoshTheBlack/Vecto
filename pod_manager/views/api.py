@@ -41,8 +41,10 @@ def process_mix_image_url(image_url, mix_instance):
             mix_instance.image_upload.save(temp_name, ContentFile(res.content), save=False)
             mix_instance.image_url = ""
             return None
+        logger.warning(f"Mix image fetch returned {res.status_code} for URL: {image_url}")
         return f"Server returned status {res.status_code}."
-    except requests.exceptions.RequestException:
+    except requests.exceptions.RequestException as e:
+        logger.warning(f"Mix image fetch failed for URL {image_url}: {e}")
         return "URL invalid or unreachable."
 
 
@@ -169,4 +171,5 @@ def toggle_totp_mode(request):
     profile, _ = PatronProfile.objects.get_or_create(user=request.user)
     profile.totp_mode = mode
     profile.save(update_fields=['totp_mode'])
+    logger.info(f"TOTP mode set to '{mode}' for user {request.user.username}")
     return JsonResponse({'ok': True, 'totp_mode': mode})

@@ -235,6 +235,8 @@ def patreon_callback(request):
             'first_name': user_data.get('attributes', {}).get('first_name', ''),
             'last_name': user_data.get('attributes', {}).get('last_name', '')
         })
+        if created:
+            logger.info(f"New user account created via Patreon OAuth: {email}")
 
         profile = _sync_patron_profile(user, user_data, included_data, current_network=request.network)
 
@@ -329,7 +331,7 @@ class RecurlyLoginView(View):
             return redirect('recurly_login')
 
         try:
-            logger.info(f"[Recurly Auth] Lookup initiated for email: {email}")
+            logger.debug(f"[Recurly Auth] Lookup initiated for email: {email}")
             client = recurly.Client(settings.RECURLY_API_KEY)
             accounts = client.list_accounts(params={'email': email})
             account_id = next((acc.id for acc in accounts.items()), None)
@@ -341,7 +343,7 @@ class RecurlyLoginView(View):
 
             user = User.objects.filter(username__iexact=email).first()
             has_totp = user and user.totpdevice_set.filter(confirmed=True).exists()
-            logger.info(f"[Recurly Auth] User found: {bool(user)} | has_totp: {has_totp}")
+            logger.debug(f"[Recurly Auth] User found: {bool(user)} | has_totp: {has_totp}")
             cache.delete(f"recurly_otp_attempts:{email}")
 
             if has_totp:
@@ -464,7 +466,8 @@ class RecurlyLoginView(View):
             else:
                 request.session.pop(_LOGIN_SESSION_KEY, None)
                 messages.error(request, "Session expired. Please start over.")
-        except Exception:
+        except Exception as e:
+            logger.error(f"[Recurly Auth] Exception in TOTP fallback for {email}: {e}", exc_info=True)
             request.session.pop(_LOGIN_SESSION_KEY, None)
             messages.error(request, "System error during fallback. Please start over.")
         return redirect('recurly_login')
@@ -478,7 +481,7 @@ class RecurlyLoginView(View):
         cache.set(f"recurly_otp_{email}", f"{otp}|{account_id}", timeout=600)
         from ..tasks import task_send_otp_email
         task_send_otp_email.delay(email, otp, request.network.name, request.network.theme_config)
-        logger.info(f"[Recurly Auth] OTP sent for {email}")
+        logger.debug(f"[Recurly Auth] OTP sent for {email}")
 
     def _complete_login(self, request, email, account_id, success_msg, user=None):
         if user is None:
@@ -556,9 +559,11 @@ def verify_authenticator(request):
         if device and device.verify_token(code):
             device.confirmed = True
             device.save()
+            logger.info(f"Authenticator app confirmed for user {request.user.username}")
             messages.success(request, "Authenticator App successfully linked!")
             return redirect('user_profile')
 
+        logger.warning(f"Failed authenticator verification attempt for user {request.user.username}")
         messages.error(request, "Invalid code. Please try again.")
     return redirect('generate_qr_code')
 
@@ -568,5 +573,6 @@ def remove_authenticator(request):
     """Destroys all devices, falling the user back to email login."""
     if request.method == 'POST':
         TOTPDevice.objects.filter(user=request.user).delete()
+        logger.info(f"Authenticator app removed for user {request.user.username}")
         messages.success(request, "Authenticator App removed. You will now log in via Email Links.")
     return redirect('user_profile')

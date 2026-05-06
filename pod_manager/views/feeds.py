@@ -40,14 +40,14 @@ logger = logging.getLogger(__name__)
 def etag_xml_response(request, xml_bytes: bytes) -> HttpResponse:
     etag = f'"{hashlib.md5(xml_bytes).hexdigest()}"'
     if request.META.get('HTTP_IF_NONE_MATCH') == etag:
-        logger.info(f"[ETag MATCH] {request.path} | Served: 0 bytes")
+        logger.debug(f"[ETag MATCH] {request.path} | Served: 0 bytes")
         resp = HttpResponseNotModified()
     else:
         resp = HttpResponse(xml_bytes, content_type='application/xml')
         resp['ETag'] = etag
         resp['Cache-Control'] = 'public, max-age=0, must-revalidate'
         size_mb = len(xml_bytes) / (1024 * 1024)
-        logger.info(f"[ETag MISS] {request.path} | New Hash: {etag} | Served: {size_mb:.2f} MB")
+        logger.debug(f"[ETag MISS] {request.path} | New Hash: {etag} | Served: {size_mb:.2f} MB")
     resp['Access-Control-Allow-Origin'] = '*'
     return resp
 
@@ -197,6 +197,8 @@ def get_or_build_episode_fragment(episode, base_url, has_access):
 
     # Use robust regex to extract the item block, ignoring whitespace/attributes
     match = re.search(r'(<item.*?>.*?</item>)', raw_xml, re.DOTALL | re.IGNORECASE)
+    if not match:
+        logger.warning(f"Fragment extraction failed for episode {episode.id} ({feed_type}); caching empty string.")
     fragment = match.group(1) if match else ""
 
     cache.set(cache_key, fragment, timeout=604800) # 7 Days

@@ -38,7 +38,7 @@ def update_global_profile_from_patreon(user, user_data) -> 'PatronProfile':
     if profile.patreon_id != patreon_id:
         profile.patreon_id = patreon_id
     profile.save()
-    logger.info(f"[Patreon Sync] Global profile saved for {user.email}")
+    logger.debug(f"[Patreon Sync] Global profile saved for {user.email}")
     return profile
 
 
@@ -50,14 +50,14 @@ def apply_membership_updates(profile, included_data, current_network=None) -> se
     # Even $0 patrons become registered free listeners on the current network.
     if current_network:
         _, created = NetworkMembership.objects.get_or_create(user=user, network=current_network)
-        logger.info(f"[Patreon Sync] Default membership for '{current_network.name}' ensured (created={created})")
+        logger.debug(f"[Patreon Sync] Default membership for '{current_network.name}' ensured (created={created})")
 
     # Exclude empty strings to prevent dictionary overwrite bugs.
     known_campaigns = {
         str(n.patreon_campaign_id): n
         for n in Network.objects.exclude(patreon_campaign_id__isnull=True).exclude(patreon_campaign_id__exact='')
     }
-    logger.info(f"[Patreon Sync] Known campaigns: {list(known_campaigns.keys())}")
+    logger.debug(f"[Patreon Sync] Known campaigns: {list(known_campaigns.keys())}")
 
     seen_campaigns: set = set()
 
@@ -90,11 +90,11 @@ def apply_membership_updates(profile, included_data, current_network=None) -> se
                     membership.patreon_join_date = timezone.datetime.fromisoformat(start_date_str.replace('Z', '+00:00'))
                 except Exception as e:
                     logger.error(f"[Patreon Sync] Date parsing failed for {network.name}: {e}")
-            logger.info(f"[Patreon Sync] Active pledge on '{network.name}': {cents} cents")
+            logger.debug(f"[Patreon Sync] Active pledge on '{network.name}': {cents} cents")
         else:
             membership.patreon_pledge_cents = 0
             membership.is_active_patron = False
-            logger.info(f"[Patreon Sync] Inactive status '{attrs.get('patron_status')}' on '{network.name}' — zeroing pledge")
+            logger.debug(f"[Patreon Sync] Inactive status '{attrs.get('patron_status')}' on '{network.name}' — zeroing pledge")
 
         membership.save()
 
@@ -136,15 +136,20 @@ def sync_network_patrons(network):
     while url:
         res = requests.get(url, headers=headers)
         if res.status_code == 401 or "Unauthorized" in res.text:
+            logger.warning(f"[Patreon Sync] Token expired for network '{network.name}' — disabling sync")
             network.patreon_sync_enabled = False
             network.save()
             return updated_count, "Patreon authorization permanently expired."
 
         if res.status_code == 429:
-            time.sleep(int(res.headers.get('Retry-After', 5)))
+            retry_after = int(res.headers.get('Retry-After', 5))
+            logger.warning(f"[Patreon Sync] Rate-limited for network '{network.name}'; retrying after {retry_after}s")
+            time.sleep(retry_after)
             continue
 
-        if res.status_code != 200: return updated_count, f"API Error: {res.text}"
+        if res.status_code != 200:
+            logger.error(f"[Patreon Sync] API error for network '{network.name}': {res.status_code} {res.text[:200]}")
+            return updated_count, f"API Error: {res.text}"
 
         data = res.json()
         included = {i['id']: i for i in data.get('included', []) if i['type'] == 'user'}
@@ -199,9 +204,12 @@ def refresh_patreon_token(network):
             network.patreon_creator_access_token = tokens['access_token']
             if 'refresh_token' in tokens: network.patreon_creator_refresh_token = tokens['refresh_token']
             network.save()
+            logger.info(f"[Patreon Sync] Access token refreshed for network '{network.name}'")
             return True
+        logger.warning(f"[Patreon Sync] Token refresh failed for network '{network.name}': {res.status_code} {res.text[:200]}")
         return False
-    except Exception:
+    except Exception as e:
+        logger.error(f"[Patreon Sync] Exception during token refresh for network '{network.name}': {e}", exc_info=True)
         return False
 
 
@@ -239,6 +247,7 @@ def patreon_webhook(request):
                 membership.patreon_pledge_cents = final_amount
                 membership.is_active_patron = (final_amount > 0)
                 membership.save()
+                logger.info(f"[Webhook] Membership updated for {profile.user.email} on '{network.name}': status={status}, cents={final_amount}")
 
         return HttpResponse("Success", status=200)
     except PatronProfile.DoesNotExist:

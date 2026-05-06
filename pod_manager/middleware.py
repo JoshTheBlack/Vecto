@@ -102,6 +102,23 @@ class ImpersonationMiddleware(MiddlewareMixin):
             except User.DoesNotExist:
                 del request.session['impersonated_user_id']
 
+class RequestUserLogMiddleware:
+    """Stores the effective request user ID in a thread-local so DatabaseLogHandler
+    can tag log entries with the user who triggered them. Must sit after
+    ImpersonationMiddleware so it sees the swapped (effective) user."""
+    def __init__(self, get_response):
+        self.get_response = get_response
+
+    def __call__(self, request):
+        from .log_handler import set_current_user, clear_current_user
+        user = getattr(request, 'user', None)
+        set_current_user(user.id if user and user.is_authenticated else None)
+        try:
+            return self.get_response(request)
+        finally:
+            clear_current_user()
+
+
 class BillingPresenceMiddleware:
     def __init__(self, get_response):
         self.get_response = get_response

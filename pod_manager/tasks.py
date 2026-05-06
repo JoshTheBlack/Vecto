@@ -16,7 +16,7 @@ from django.utils.html import strip_tags
 from django.core.files.base import ContentFile
 from django.template.loader import render_to_string
 
-from .models import Network, PatronProfile, Invoice, Podcast, Episode, NetworkMembership
+from .models import Network, PatronProfile, Invoice, Podcast, Episode, NetworkMembership, LogEntry
 
 logger = logging.getLogger(__name__)
 
@@ -460,6 +460,14 @@ def task_sync_discord_avatar(discord_id, membership_id):
             logger.error(f"Failed to fetch Discord user {discord_id}: {res.status_code} - {res.text}")
     except Exception as e:
         logger.error(f"Error fetching Discord avatar for {discord_id}: {e}", exc_info=True)
+
+
+@shared_task
+def task_prune_logs():
+    retention_days = getattr(settings, 'LOG_RETENTION_DAYS', 30)
+    cutoff = timezone.now() - timedelta(days=retention_days)
+    deleted, _ = LogEntry.objects.filter(created_at__lt=cutoff).delete()
+    logger.info(f"Log pruning complete: removed {deleted} entries older than {retention_days} days.")
 
 
 @shared_task

@@ -7,7 +7,7 @@ from django.contrib.auth.models import User
 from django.db.models import Q, F, BooleanField, ExpressionWrapper
 from django.utils.html import format_html, mark_safe
 from django.urls import reverse
-from .models import Network, PatreonTier, Podcast, Episode, UserMix, PatronProfile, EpisodeEditSuggestion, NetworkMembership
+from .models import Network, PatreonTier, Podcast, Episode, UserMix, PatronProfile, EpisodeEditSuggestion, NetworkMembership, LogEntry
 
 class S3SubscriberAudioFilter(SimpleListFilter):
     title = 'S3 Hosted Audio (Affected)'
@@ -168,3 +168,39 @@ class EpisodeEditSuggestionAdmin(admin.ModelAdmin):
             'fields': ('created_at', 'resolved_at')
         }),
     )
+
+
+_LEVEL_COLORS = {
+    'DEBUG': '#6c757d',
+    'INFO': '#0dcaf0',
+    'WARNING': '#ffc107',
+    'ERROR': '#dc3545',
+    'CRITICAL': '#6f42c1',
+}
+
+@admin.register(LogEntry)
+class LogEntryAdmin(admin.ModelAdmin):
+    list_display = ('created_at', 'level_badge', 'user', 'logger_name', 'module', 'short_message')
+    list_filter = ('level', 'user')
+    search_fields = ('message', 'logger_name', 'module', 'func_name', 'user__username', 'user__email')
+    date_hierarchy = 'created_at'
+    readonly_fields = ('level', 'level_no', 'logger_name', 'module', 'func_name', 'lineno', 'message', 'user', 'created_at')
+    ordering = ('-created_at',)
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return False
+
+    def level_badge(self, obj):
+        color = _LEVEL_COLORS.get(obj.level, '#6c757d')
+        return format_html(
+            '<span style="background:{};color:#fff;padding:2px 8px;border-radius:3px;font-size:0.75rem;font-weight:bold;">{}</span>',
+            color, obj.level,
+        )
+    level_badge.short_description = 'Level'
+
+    def short_message(self, obj):
+        return obj.message[:120]
+    short_message.short_description = 'Message'

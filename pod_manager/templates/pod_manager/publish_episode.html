@@ -31,6 +31,28 @@
 
     .sched-row { transition:background .15s; }
     .sched-row:hover { background:rgba(255,255,255,.04); }
+
+    /* Duration widget */
+    .duration-widget { display:inline-flex; align-items:flex-end; gap:4px; padding:6px 10px; background:#212529; border:1px solid #444; border-radius:.375rem; }
+    .duration-widget:focus-within { border-color:var(--vecto-primary,#ffc107); box-shadow:0 0 0 .2rem rgba(255,193,7,.15); }
+    .dur-unit { display:flex; flex-direction:column; align-items:center; gap:0; }
+    .dur-field { display:flex; flex-direction:column; align-items:center; }
+    .dur-input { width:48px; background:transparent; border:none; color:#f8f9fa; font-size:1.05rem; font-family:var(--bs-font-monospace,monospace); text-align:center; outline:none; padding:2px 0; -moz-appearance:textfield; }
+    .dur-input::-webkit-outer-spin-button, .dur-input::-webkit-inner-spin-button { -webkit-appearance:none; }
+    .dur-adj { background:none; border:none; color:#666; cursor:pointer; padding:0 6px; line-height:1; font-size:.6rem; display:block; }
+    .dur-adj:hover { color:#ffc107; }
+    .dur-sep { color:#555; font-size:1.05rem; font-weight:bold; padding-bottom:6px; }
+    .dur-label { font-size:.65rem; color:#555; text-transform:uppercase; letter-spacing:.06em; margin-top:1px; }
+
+    /* Episode type chip selector */
+    .type-chip-group { display:flex; flex-wrap:wrap; gap:6px; align-items:center; padding:.4rem 0; min-height:2.25rem; }
+    .type-chip { padding:.3rem .8rem; border:1px solid #444; border-radius:999px; background:rgba(255,255,255,.05); color:#aaa; font-size:.875rem; cursor:pointer; user-select:none; transition:all .15s; white-space:nowrap; }
+    .type-chip:hover { border-color:#888; color:#f8f9fa; }
+    .type-chip.selected { border-color:#ffc107; background:rgba(255,193,7,.14); color:#ffc107; }
+    .type-chip.custom .chip-remove { margin-left:.35rem; opacity:.5; cursor:pointer; }
+    .type-chip.custom .chip-remove:hover { opacity:1; color:#dc3545; }
+    .type-add-input { background:transparent; border:none; outline:none; color:#f8f9fa; font-size:.875rem; min-width:70px; width:90px; padding:.3rem .2rem; }
+    .type-add-input::placeholder { color:rgba(248,249,250,.3); }
 </style>
 
 <!-- Page header -->
@@ -92,11 +114,12 @@
 <div class="tab-pane fade {% if request.GET.tab != 'scheduled' %}show active{% endif %}" id="compose" role="tabpanel">
 <form id="publishForm" method="POST" action="{% url 'publish_episode' %}?network={{ current_network.slug }}">
     {% csrf_token %}
-    <input type="hidden" name="network_slug"  value="{{ current_network.slug }}">
-    <input type="hidden" name="action"        id="formAction" value="publish">
-    <input type="hidden" name="tags_json"     id="tagsJson">
-    <input type="hidden" name="chapters_json" id="chaptersJson">
-    <input type="hidden" name="description"   id="descJson">
+    <input type="hidden" name="network_slug"   value="{{ current_network.slug }}">
+    <input type="hidden" name="action"         id="formAction" value="publish">
+    <input type="hidden" name="tags_json"      id="tagsJson">
+    <input type="hidden" name="chapters_json"  id="chaptersJson">
+    <input type="hidden" name="description"    id="descJson">
+    <input type="hidden" name="episode_type"   id="episodeTypeHidden" value="">
     {% if edit_ep %}<input type="hidden" name="episode_id" value="{{ edit_ep.id }}">{% endif %}
 
     <!-- Podcast selector -->
@@ -177,18 +200,42 @@
                     <input type="number" name="episode_number" min="1" class="form-control bg-dark text-light border-secondary"
                            value="{% if edit_ep %}{{ edit_ep.episode_number|default:'' }}{% endif %}" placeholder="e.g. 14">
                 </div>
-                <div class="col-sm-3">
-                    <label class="form-label text-light">Type</label>
-                    <select name="episode_type" class="form-select bg-dark text-light border-secondary">
-                        <option value="full"    {% if not edit_ep or edit_ep.episode_type == 'full'    %}selected{% endif %}>Full</option>
-                        <option value="trailer" {% if edit_ep and edit_ep.episode_type == 'trailer' %}selected{% endif %}>Trailer</option>
-                        <option value="bonus"   {% if edit_ep and edit_ep.episode_type == 'bonus'   %}selected{% endif %}>Bonus</option>
-                    </select>
-                </div>
-                <div class="col-sm-3">
+                <div class="col-sm-6">
                     <label class="form-label text-light">Duration</label>
-                    <input type="text" name="duration" class="form-control bg-dark text-light border-secondary"
-                           value="{% if edit_ep %}{{ edit_ep.duration|default:'' }}{% endif %}" placeholder="HH:MM:SS">
+                    <div class="duration-widget" id="durationWidget"
+                         data-init="{% if edit_ep %}{{ edit_ep.duration|default:'' }}{% endif %}">
+                        <div class="dur-unit">
+                            <button type="button" class="dur-adj" data-target="durH" data-delta="1">&#9650;</button>
+                            <input type="number" id="durH" class="dur-input" min="0" max="99" placeholder="0">
+                            <button type="button" class="dur-adj" data-target="durH" data-delta="-1">&#9660;</button>
+                            <span class="dur-label">h</span>
+                        </div>
+                        <span class="dur-sep">:</span>
+                        <div class="dur-unit">
+                            <button type="button" class="dur-adj" data-target="durM" data-delta="1">&#9650;</button>
+                            <input type="number" id="durM" class="dur-input" min="0" max="59" placeholder="0">
+                            <button type="button" class="dur-adj" data-target="durM" data-delta="-1">&#9660;</button>
+                            <span class="dur-label">m</span>
+                        </div>
+                        <span class="dur-sep">:</span>
+                        <div class="dur-unit">
+                            <button type="button" class="dur-adj" data-target="durS" data-delta="1">&#9650;</button>
+                            <input type="number" id="durS" class="dur-input" min="0" max="59" placeholder="0">
+                            <button type="button" class="dur-adj" data-target="durS" data-delta="-1">&#9660;</button>
+                            <span class="dur-label">s</span>
+                        </div>
+                    </div>
+                    <input type="hidden" name="duration" id="durationHidden">
+                </div>
+                <div class="col-12">
+                    <label class="form-label text-light">Type <small class="text-muted fw-normal">(blank is valid — Enter to add custom)</small></label>
+                    <div id="typeChipGroup" class="type-chip-group"
+                         data-init="{% if edit_ep %}{{ edit_ep.episode_type|default:'' }}{% endif %}"
+                         data-network="{{ current_network.slug }}">
+                        <span class="type-chip" data-value="" data-builtin="true">Blank</span>
+                        <!-- user-defined types injected from localStorage by JS -->
+                        <input type="text" id="typeAddInput" class="type-add-input" placeholder="+ Add type…" maxlength="50">
+                    </div>
                 </div>
             </div>
         </div>
@@ -242,11 +289,19 @@
                 </button>
             </div>
             <div id="scheduleDateRow" class="d-none">
-                <label class="form-label text-light fw-bold">Publish At</label>
-                <input type="datetime-local" name="scheduled_at" id="scheduledAt"
-                       class="form-control bg-dark text-light border-secondary"
-                       value="{% if edit_ep and edit_ep.scheduled_at %}{{ edit_ep.scheduled_at|date:'Y-m-d' }}T{{ edit_ep.scheduled_at|time:'H:i' }}{% endif %}">
-                <div class="form-text text-muted">Server timezone: {{ now|date:"T" }}. Times are local to the server.</div>
+                <div class="d-flex align-items-center gap-2 flex-wrap mb-2">
+                    <label class="form-label text-light fw-bold mb-0">Publish At</label>
+                    <select id="tzSelector" class="form-select form-select-sm bg-dark text-light border-secondary" style="width:auto;min-width:180px;max-width:240px;"></select>
+                    <span class="ms-auto text-muted small font-monospace">UTC now: <span id="utcClock" class="text-warning"></span></span>
+                </div>
+                <input type="hidden" id="scheduledAtHidden" name="scheduled_at"
+                       value="{% if edit_ep and edit_ep.scheduled_at %}{{ edit_ep.scheduled_at|date:'Y-m-d' }}T{{ edit_ep.scheduled_at|time:'H:i:s' }}+00:00{% endif %}">
+                <input type="datetime-local" id="scheduledAtLocal"
+                       class="form-control bg-dark text-light border-secondary">
+                <div class="d-flex justify-content-between mt-1">
+                    <div class="form-text text-muted">Time is interpreted in the selected timezone. Celery publishes within 60 seconds of the scheduled moment.</div>
+                    <div class="form-text text-success ms-3 text-nowrap" id="schedUtcEquiv"></div>
+                </div>
             </div>
         </div>
     </div>
@@ -282,7 +337,7 @@
                     {% if ep.season_number or ep.episode_number %}
                     <div class="text-muted small">
                         {% if ep.season_number %}S{{ ep.season_number }}{% endif %}{% if ep.episode_number %}E{{ ep.episode_number }}{% endif %}
-                        &nbsp;·&nbsp;{{ ep.get_episode_type_display }}
+                        {% if ep.episode_type %}&nbsp;·&nbsp;{{ ep.episode_type|capfirst }}{% endif %}
                     </div>
                     {% endif %}
                 </td>
@@ -290,7 +345,7 @@
                 <td>
                     {% if ep.scheduled_at %}
                         <span class="badge bg-warning text-dark">
-                            <i class="bi bi-clock me-1"></i>{{ ep.scheduled_at|date:"M j, Y H:i" }}
+                            <i class="bi bi-clock me-1"></i>{{ ep.scheduled_at|date:"M j, Y H:i" }} UTC
                         </span>
                     {% else %}
                         <span class="badge bg-secondary"><i class="bi bi-file-earmark me-1"></i>Draft</span>
@@ -362,7 +417,6 @@ document.addEventListener('DOMContentLoaded', function () {
     const actionInput = document.getElementById('formAction');
     const submitLabel = document.getElementById('submitLabel');
     const schedRow    = document.getElementById('scheduleDateRow');
-
     const labels = { publish:'Publish Now', draft:'Save as Draft', schedule:'Schedule' };
 
     window.selectMode = function(mode) {
@@ -372,15 +426,10 @@ document.addEventListener('DOMContentLoaded', function () {
         actionInput.value = mode;
         submitLabel.textContent = labels[mode];
         schedRow.classList.toggle('d-none', mode !== 'schedule');
-        {% if edit_ep and edit_ep.scheduled_at %}
-        // pre-select schedule if editing a scheduled episode
-        {% endif %}
     };
 
-    {% if edit_ep and edit_ep.scheduled_at %}
-    selectMode('schedule');
-    {% elif edit_ep %}
-    selectMode('draft');
+    {% if edit_ep and edit_ep.scheduled_at %}selectMode('schedule');
+    {% elif edit_ep %}selectMode('draft');
     {% endif %}
 
     /* ── Tag pill widget ────────────────────────────────────── */
@@ -390,10 +439,7 @@ document.addEventListener('DOMContentLoaded', function () {
 
     try {
         const raw = document.getElementById('initial-tags');
-        if (raw) {
-            const parsed = JSON.parse(raw.textContent);
-            currentTags = Array.isArray(parsed) ? parsed : [];
-        }
+        if (raw) { const parsed = JSON.parse(raw.textContent); currentTags = Array.isArray(parsed) ? parsed : []; }
     } catch (e) { currentTags = []; }
 
     function renderTags() {
@@ -407,17 +453,12 @@ document.addEventListener('DOMContentLoaded', function () {
             tagWrapper.insertBefore(pill, tagInput);
         });
     }
-
     function commitTag() {
         const raw = tagInput.value.trim().replace(/,$/, '').trim();
         if (!raw) return;
-        raw.split(',').map(t => t.trim()).filter(Boolean).forEach(t => {
-            if (!currentTags.includes(t)) currentTags.push(t);
-        });
-        tagInput.value = '';
-        renderTags();
+        raw.split(',').map(t => t.trim()).filter(Boolean).forEach(t => { if (!currentTags.includes(t)) currentTags.push(t); });
+        tagInput.value = ''; renderTags();
     }
-
     tagInput.addEventListener('keydown', e => {
         if (e.key === 'Enter' || e.key === ',') { e.preventDefault(); commitTag(); }
         else if (e.key === 'Backspace' && !tagInput.value && currentTags.length) { currentTags.pop(); renderTags(); }
@@ -428,13 +469,9 @@ document.addEventListener('DOMContentLoaded', function () {
 
     /* ── Chapter engine ─────────────────────────────────────── */
     const chapterContainer = document.getElementById('chapterContainer');
-
     function formatTime(s) {
         if (!s) return '00:00:00';
-        const h = Math.floor(s/3600).toString().padStart(2,'0');
-        const m = Math.floor((s%3600)/60).toString().padStart(2,'0');
-        const sc = Math.floor(s%60).toString().padStart(2,'0');
-        return `${h}:${m}:${sc}`;
+        return [Math.floor(s/3600),Math.floor((s%3600)/60),Math.floor(s%60)].map(n=>String(n).padStart(2,'0')).join(':');
     }
     function parseTime(str) {
         const p = str.split(':').reverse();
@@ -473,21 +510,210 @@ document.addEventListener('DOMContentLoaded', function () {
             </div>`;
         chapterContainer.appendChild(row);
     };
-
-    // Pre-load chapters
     try {
         const raw = JSON.parse(document.getElementById('initial-chapters').textContent);
         const list = Array.isArray(raw) ? raw : (raw && raw.chapters ? raw.chapters : []);
-        const hasWp = raw && !Array.isArray(raw) && raw.waypoints;
-        if (hasWp) document.getElementById('globalWaypoints').checked = true;
+        if (raw && !Array.isArray(raw) && raw.waypoints) document.getElementById('globalWaypoints').checked = true;
         if (list.length) list.forEach(c => addChapterRow(c.startTime, c.endTime, c.title, c.url||'', c.img||'', c.toc, c.location));
-    } catch (e) { /* no chapters */ }
+    } catch (e) {}
+
+    /* ── Episode type chip selector (localStorage-backed) ──── */
+    const typeChipGroup     = document.getElementById('typeChipGroup');
+    const typeAddInput      = document.getElementById('typeAddInput');
+    const episodeTypeHidden = document.getElementById('episodeTypeHidden');
+    const EP_TYPES_KEY      = 'vecto_ep_types_' + typeChipGroup.dataset.network;
+    let selectedType        = typeChipGroup.dataset.init || '';
+
+    function loadEpTypes()       { try { return JSON.parse(localStorage.getItem(EP_TYPES_KEY)) || []; } catch { return []; } }
+    function saveEpTypes(types)  { localStorage.setItem(EP_TYPES_KEY, JSON.stringify(types)); }
+
+    function escChip(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+
+    function selectTypeChip(value) {
+        selectedType = value;
+        episodeTypeHidden.value = value;
+        typeChipGroup.querySelectorAll('.type-chip').forEach(c => c.classList.toggle('selected', c.dataset.value === value));
+    }
+
+    function renderStoredChip(value) {
+        const chip = document.createElement('span');
+        chip.className = 'type-chip';
+        chip.dataset.value = value;
+        chip.innerHTML = `${escChip(value)}<span class="chip-remove" title="Remove"> &times;</span>`;
+        chip.addEventListener('click', e => {
+            if (e.target.classList.contains('chip-remove')) {
+                e.stopPropagation();
+                saveEpTypes(loadEpTypes().filter(t => t !== value));
+                if (selectedType === value) selectTypeChip('');
+                chip.remove();
+                return;
+            }
+            selectTypeChip(value);
+        });
+        typeChipGroup.insertBefore(chip, typeAddInput);
+    }
+
+    function addTypeChip(value) {
+        value = value.trim().slice(0, 50);
+        if (!value) return;
+        const existing = [...typeChipGroup.querySelectorAll('.type-chip')].find(c => c.dataset.value === value);
+        if (existing) { selectTypeChip(value); return; }
+        const types = loadEpTypes();
+        if (!types.includes(value)) { types.push(value); saveEpTypes(types); }
+        renderStoredChip(value);
+        selectTypeChip(value);
+    }
+
+    // Attach Blank chip handler
+    typeChipGroup.querySelector('.type-chip[data-builtin]').addEventListener('click', () => selectTypeChip(''));
+
+    // Load and render stored types; ensure current episode's type is in the list
+    const storedTypes = loadEpTypes();
+    if (selectedType && !storedTypes.includes(selectedType)) { storedTypes.push(selectedType); saveEpTypes(storedTypes); }
+    storedTypes.forEach(t => renderStoredChip(t));
+
+    typeAddInput.addEventListener('keydown', e => {
+        if (e.key === 'Enter') { e.preventDefault(); addTypeChip(typeAddInput.value); typeAddInput.value = ''; }
+    });
+
+    selectTypeChip(selectedType);
+
+    /* ── Duration widget ────────────────────────────────────── */
+    const durH = document.getElementById('durH');
+    const durM = document.getElementById('durM');
+    const durS = document.getElementById('durS');
+    const durationHidden = document.getElementById('durationHidden');
+
+    function buildDurationStr() {
+        const h = parseInt(durH.value, 10) || 0;
+        const m = parseInt(durM.value, 10) || 0;
+        const s = parseInt(durS.value, 10) || 0;
+        durationHidden.value = (h || m || s)
+            ? [h,m,s].map(n => String(n).padStart(2,'0')).join(':') : '';
+    }
+    [durH, durM, durS].forEach(el => {
+        const max = el === durH ? 99 : 59;
+        el.addEventListener('change', () => {
+            let v = parseInt(el.value, 10);
+            el.value = isNaN(v) ? '' : Math.max(0, Math.min(max, v)) || '';
+            buildDurationStr();
+        });
+        el.addEventListener('input', buildDurationStr);
+        el.addEventListener('wheel', e => {
+            e.preventDefault();
+            let v = (parseInt(el.value, 10) || 0) + (e.deltaY < 0 ? 1 : -1);
+            el.value = Math.max(0, Math.min(max, v)) || '';
+            buildDurationStr();
+        }, { passive: false });
+    });
+    document.querySelectorAll('.dur-adj').forEach(btn => {
+        btn.addEventListener('click', () => {
+            const el = document.getElementById(btn.dataset.target);
+            const max = el === durH ? 99 : 59;
+            let v = (parseInt(el.value, 10) || 0) + parseInt(btn.dataset.delta, 10);
+            el.value = Math.max(0, Math.min(max, v)) || '';
+            buildDurationStr();
+        });
+    });
+    (function initDuration() {
+        const raw = document.getElementById('durationWidget').dataset.init;
+        if (!raw) return;
+        const parts = raw.split(':').map(x => parseInt(x, 10) || 0);
+        if (parts.length >= 3) { durH.value = parts[0] || ''; durM.value = parts[1] || ''; durS.value = parts[2] || ''; }
+        else if (parts.length === 2) { durM.value = parts[0] || ''; durS.value = parts[1] || ''; }
+        buildDurationStr();
+    })();
+
+    /* ── Timezone selector + scheduled datetime ─────────────── */
+    const TZ_LIST = [
+        {label:'UTC',                          tz:'UTC'},
+        {label:'Eastern (US & Canada)',         tz:'America/New_York'},
+        {label:'Central (US & Canada)',         tz:'America/Chicago'},
+        {label:'Mountain (US & Canada)',        tz:'America/Denver'},
+        {label:'Pacific (US & Canada)',         tz:'America/Los_Angeles'},
+        {label:'Alaska',                        tz:'America/Anchorage'},
+        {label:'Hawaii',                        tz:'Pacific/Honolulu'},
+        {label:'London',                        tz:'Europe/London'},
+        {label:'Central Europe (Paris/Berlin)', tz:'Europe/Paris'},
+        {label:'Eastern Europe (Helsinki)',     tz:'Europe/Helsinki'},
+        {label:'Moscow',                        tz:'Europe/Moscow'},
+        {label:'Dubai (GST)',                   tz:'Asia/Dubai'},
+        {label:'Mumbai (IST)',                  tz:'Asia/Kolkata'},
+        {label:'Bangkok (ICT)',                 tz:'Asia/Bangkok'},
+        {label:'Singapore / KL',               tz:'Asia/Singapore'},
+        {label:'Tokyo / Seoul',                tz:'Asia/Tokyo'},
+        {label:'Sydney (AEST/AEDT)',            tz:'Australia/Sydney'},
+        {label:'Auckland (NZST/NZDT)',          tz:'Pacific/Auckland'},
+        {label:'São Paulo (BRT)',               tz:'America/Sao_Paulo'},
+        {label:'Buenos Aires (ART)',            tz:'America/Argentina/Buenos_Aires'},
+    ];
+
+    const tzSelect = document.getElementById('tzSelector');
+    TZ_LIST.forEach(t => { const o = document.createElement('option'); o.value = t.tz; o.textContent = t.label; tzSelect.appendChild(o); });
+    const browserTz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    tzSelect.value = TZ_LIST.some(t => t.tz === browserTz) ? browserTz : 'UTC';
+
+    function utcDateToLocalStr(utcDate, tz) {
+        return new Intl.DateTimeFormat('sv', {
+            timeZone: tz, year:'numeric', month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit'
+        }).format(utcDate).replace(' ', 'T');
+    }
+    function localStrToUtcDate(localStr, tz) {
+        if (!localStr) return null;
+        let approx = new Date(localStr + ':00Z');
+        if (isNaN(approx)) return null;
+        for (let i = 0; i < 2; i++) {
+            const diff = new Date(localStr + ':00Z') - new Date(utcDateToLocalStr(approx, tz) + ':00Z');
+            approx = new Date(approx.getTime() + diff);
+        }
+        return approx;
+    }
+
+    const scheduledAtLocal  = document.getElementById('scheduledAtLocal');
+    const scheduledAtHidden = document.getElementById('scheduledAtHidden');
+    const schedUtcEquiv     = document.getElementById('schedUtcEquiv');
+    const utcClockEl        = document.getElementById('utcClock');
+
+    function updateSchedDisplay() {
+        const utcDate = localStrToUtcDate(scheduledAtLocal.value, tzSelect.value);
+        if (!utcDate) { schedUtcEquiv.textContent = ''; scheduledAtHidden.value = ''; return; }
+        scheduledAtHidden.value = utcDate.toISOString();
+        schedUtcEquiv.textContent = '→ ' + utcDate.toLocaleString(undefined, {
+            year:'numeric', month:'short', day:'numeric',
+            hour:'2-digit', minute:'2-digit', timeZone:'UTC', timeZoneName:'short'
+        });
+    }
+    (function initScheduleValue() {
+        const stored = scheduledAtHidden.value;
+        if (!stored) return;
+        const d = new Date(stored);
+        if (!isNaN(d)) scheduledAtLocal.value = utcDateToLocalStr(d, tzSelect.value);
+        updateSchedDisplay();
+    })();
+
+    scheduledAtLocal.addEventListener('input', updateSchedDisplay);
+    tzSelect.addEventListener('change', () => {
+        if (scheduledAtHidden.value) {
+            const d = new Date(scheduledAtHidden.value);
+            if (!isNaN(d)) scheduledAtLocal.value = utcDateToLocalStr(d, tzSelect.value);
+        }
+        updateSchedDisplay();
+    });
+
+    function padZ(n) { return String(n).padStart(2, '0'); }
+    function tickUtcClock() {
+        const n = new Date();
+        utcClockEl.textContent = `${n.getUTCFullYear()}-${padZ(n.getUTCMonth()+1)}-${padZ(n.getUTCDate())} ${padZ(n.getUTCHours())}:${padZ(n.getUTCMinutes())}:${padZ(n.getUTCSeconds())}`;
+    }
+    tickUtcClock(); setInterval(tickUtcClock, 1000);
 
     /* ── Form submission ────────────────────────────────────── */
-    document.getElementById('publishForm').addEventListener('submit', e => {
+    document.getElementById('publishForm').addEventListener('submit', () => {
         commitTag();
-        document.getElementById('tagsJson').value    = JSON.stringify(currentTags);
-        document.getElementById('descJson').value     = quill.root.innerHTML;
+        document.getElementById('tagsJson').value = JSON.stringify(currentTags);
+        document.getElementById('descJson').value  = quill.root.innerHTML;
+        buildDurationStr();
+        if (actionInput.value === 'schedule') updateSchedDisplay();
 
         const rows = [];
         document.querySelectorAll('.chapter-row').forEach(row => {
@@ -504,24 +730,22 @@ document.addEventListener('DOMContentLoaded', function () {
             if (!row.querySelector('.chap-toc').checked) c.toc = false;
             const ln = row.querySelector('.chap-loc-name').value.trim();
             const lg = row.querySelector('.chap-loc-geo').value.trim();
-            if (ln && lg) { c.location = { name: ln, geo: lg }; const lo = row.querySelector('.chap-loc-osm').value.trim(); if (lo) c.location.osm = lo; }
+            if (ln && lg) { c.location = {name:ln, geo:lg}; const lo = row.querySelector('.chap-loc-osm').value.trim(); if (lo) c.location.osm = lo; }
             rows.push(c);
         });
         rows.sort((a,b) => a.startTime - b.startTime);
-        const payload = { version: '1.2.0', chapters: rows };
+        const payload = { version:'1.2.0', chapters:rows };
         if (document.getElementById('globalWaypoints').checked) payload.waypoints = true;
         document.getElementById('chaptersJson').value = JSON.stringify(payload);
     });
 
-    /* Tab switcher styling */
+    /* ── Tab switcher styling ───────────────────────────────── */
     document.querySelectorAll('button[data-bs-toggle="tab"]').forEach(btn => {
         btn.addEventListener('shown.bs.tab', e => {
             document.querySelectorAll('button[data-bs-toggle="tab"]').forEach(b => {
-                b.classList.remove('active','text-light','bg-dark');
-                b.classList.add('text-muted');
+                b.classList.remove('active','text-light','bg-dark'); b.classList.add('text-muted');
             });
-            e.target.classList.remove('text-muted');
-            e.target.classList.add('active','text-light','bg-dark');
+            e.target.classList.remove('text-muted'); e.target.classList.add('active','text-light','bg-dark');
         });
     });
 });

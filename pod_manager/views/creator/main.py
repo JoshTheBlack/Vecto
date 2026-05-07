@@ -97,8 +97,7 @@ def submit_episode_edit(request, episode_id):
                 except (ValueError, TypeError):
                     suggested_data.pop(int_field)
         if 'episode_type' in suggested_data:
-            if suggested_data['episode_type'] not in ('full', 'trailer', 'bonus'):
-                suggested_data.pop('episode_type')
+            suggested_data['episode_type'] = str(suggested_data['episode_type'])[:50]
 
         network = ep.podcast.network
         membership, _ = NetworkMembership.objects.get_or_create(user=request.user, network=network)

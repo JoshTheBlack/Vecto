@@ -122,6 +122,46 @@ def log_stream(request):
 
 @staff_required
 @require_GET
+def log_poll(request):
+    """Regular JSON endpoint polled every 2 s by the log viewer.
+    More reliable than SSE with gunicorn sync workers behind Traefik."""
+    level = request.GET.get('level', 'INFO').upper()
+    last_id = int(request.GET.get('last_id', 0))
+    username = request.GET.get('user', '').strip()
+    min_level = _LEVEL_MAP.get(level, 20)
+
+    qs = LogEntry.objects.filter(level_no__gte=min_level)
+    if username:
+        qs = qs.filter(user__username__iexact=username)
+    qs = qs.select_related('user')
+
+    if last_id == 0:
+        entries = list(qs.order_by('-id')[:50])
+        entries.reverse()
+    else:
+        entries = list(qs.filter(id__gt=last_id).order_by('id')[:100])
+
+    return JsonResponse({
+        'entries': [
+            {
+                'id': e.id,
+                'level': e.level,
+                'logger': e.logger_name,
+                'module': e.module,
+                'func': e.func_name,
+                'line': e.lineno,
+                'message': e.message,
+                'ts': e.created_at.strftime('%H:%M:%S'),
+                'user': e.user.username if e.user else None,
+            }
+            for e in entries
+        ],
+        'last_id': entries[-1].id if entries else last_id,
+    })
+
+
+@staff_required
+@require_GET
 def log_resources(request):
     data = {}
 

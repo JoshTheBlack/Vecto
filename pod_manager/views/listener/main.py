@@ -234,7 +234,16 @@ def episode_detail(request, episode_id):
     ep.display_description = _build_episode_description(ep, ep.user_has_access)
     ep.raw_audio_url = ep.audio_url_subscriber if (ep.user_has_access and ep.audio_url_subscriber) else ep.audio_url_public
 
-    return render(request, 'pod_manager/episode_detail.html', {'ep': ep, 'is_owner': is_owner})
+    trust_score = None
+    if request.user.is_authenticated:
+        membership = request.user.network_memberships.filter(network=ep.podcast.network).first()
+        trust_score = membership.trust_score if membership else 0
+
+    return render(request, 'pod_manager/episode_detail.html', {
+        'ep': ep,
+        'is_owner': is_owner,
+        'trust_score': trust_score,
+    })
 
 
 @login_required(login_url='/login/')

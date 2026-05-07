@@ -226,10 +226,9 @@ class Episode(models.Model):
     chapters_private = models.JSONField(blank=True, null=True, help_text="Podcast Index Namespace Chapters for private feed")
 
     # iTunes / Podcast 2.0 sequence metadata
-    EPISODE_TYPE_CHOICES = [('full', 'Full'), ('trailer', 'Trailer'), ('bonus', 'Bonus')]
     season_number  = models.PositiveSmallIntegerField(null=True, blank=True)
     episode_number = models.PositiveSmallIntegerField(null=True, blank=True)
-    episode_type   = models.CharField(max_length=10, choices=EPISODE_TYPE_CHOICES, default='full', blank=True)
+    episode_type   = models.CharField(max_length=50, default='', blank=True)
 
     # Publication status
     is_published = models.BooleanField(default=True, db_index=True,

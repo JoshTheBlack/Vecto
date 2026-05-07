@@ -2,6 +2,7 @@
 Network-owner episode publishing: create, schedule, draft, and manage
 unpublished/scheduled episodes.
 """
+import datetime
 import json
 import logging
 import uuid
@@ -132,9 +133,7 @@ def _handle_publish_post(request, current_network, podcasts, networks):
     except ValueError:
         episode_number = None
 
-    episode_type = request.POST.get('episode_type', 'full')
-    if episode_type not in ('full', 'trailer', 'bonus'):
-        episode_type = 'full'
+    episode_type = request.POST.get('episode_type', '').strip()[:50]
 
     # Resolve existing episode (update) or create new
     episode_id = request.POST.get('episode_id')
@@ -166,7 +165,7 @@ def _handle_publish_post(request, current_network, podcasts, networks):
             return redirect(f"{reverse('publish_episode')}?network={current_network.slug}")
         # Make timezone-aware if naive
         if timezone.is_naive(scheduled_dt):
-            scheduled_dt = timezone.make_aware(scheduled_dt)
+            scheduled_dt = scheduled_dt.replace(tzinfo=datetime.timezone.utc)
         ep.is_published = False
         ep.scheduled_at = scheduled_dt
         ep.pub_date     = scheduled_dt
@@ -205,7 +204,22 @@ def manage_episode(request, episode_id):
 
     action = request.POST.get('action')
 
-    if action == 'update_meta':
+    if action == 'update_audio':
+        from django.core.cache import cache
+        audio_public = request.POST.get('audio_url_public', '').strip() or None
+        audio_subscriber = request.POST.get('audio_url_subscriber', '').strip() or None
+        ep.audio_url_public = audio_public
+        ep.audio_url_subscriber = (
+            audio_subscriber if audio_subscriber and audio_subscriber != audio_public else None
+        )
+        ep.save(update_fields=['audio_url_public', 'audio_url_subscriber'])
+        cache.delete(f"ep_frag_public_{ep.id}")
+        cache.delete(f"ep_frag_private_{ep.id}")
+        base_url = request.build_absolute_uri('/')
+        task_rebuild_episode_fragments.delay(ep.id, base_url)
+        messages.success(request, "Audio URLs updated.")
+
+    elif action == 'update_meta':
         try:
             ep.season_number  = int(request.POST.get('season_number') or 0) or None
         except ValueError:
@@ -214,9 +228,7 @@ def manage_episode(request, episode_id):
             ep.episode_number = int(request.POST.get('episode_number') or 0) or None
         except ValueError:
             ep.episode_number = None
-        ep.episode_type = request.POST.get('episode_type', 'full')
-        if ep.episode_type not in ('full', 'trailer', 'bonus'):
-            ep.episode_type = 'full'
+        ep.episode_type = request.POST.get('episode_type', '').strip()[:50]
         ep.save(update_fields=['season_number', 'episode_number', 'episode_type'])
         # Invalidate cached fragments so the feed picks up new iTunes tags
         from django.core.cache import cache

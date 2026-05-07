@@ -77,8 +77,8 @@ def apply_approved_edit(ep, suggested_data):
         ep.season_number = suggested_data['season_number']
     if 'episode_number' in suggested_data:
         ep.episode_number = suggested_data['episode_number']
-    if 'episode_type' in suggested_data and suggested_data['episode_type'] in ('full', 'trailer', 'bonus'):
-        ep.episode_type = suggested_data['episode_type']
+    if 'episode_type' in suggested_data:
+        ep.episode_type = str(suggested_data['episode_type'])[:50]
     ep.is_metadata_locked = True
     ep.save()
 

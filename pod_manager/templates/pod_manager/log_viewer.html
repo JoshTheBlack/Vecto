@@ -274,7 +274,7 @@
     let currentUser  = '';
     let lastId       = 0;
     let entryCount   = 0;
-    let es           = null;
+    let pollTimer    = null;
     let userDebounce = null;
 
     function setStatus(text, cls) {
@@ -320,15 +320,26 @@
     }
 
     function connect(resetDisplay = false) {
-        if (es) es.close();
+        if (pollTimer) { clearTimeout(pollTimer); pollTimer = null; }
         if (resetDisplay) { clearFeed(); lastId = 0; }
         setStatus('Connecting…', 'bg-secondary');
+        doPoll();
+    }
+
+    function doPoll() {
         const userParam = currentUser ? `&user=${encodeURIComponent(currentUser)}` : '';
-        const url = `{% url 'log_stream' %}?level=${currentLevel}&last_id=${lastId}${userParam}`;
-        es = new EventSource(url);
-        es.onopen    = () => setStatus('Live', 'bg-success');
-        es.onmessage = (e) => { const entry = JSON.parse(e.data); lastId = entry.id; appendLine(entry); };
-        es.onerror   = () => setStatus('Reconnecting…', 'bg-warning text-dark');
+        const url = `{% url 'log_poll' %}?level=${currentLevel}&last_id=${lastId}${userParam}`;
+        fetch(url)
+            .then(r => { if (!r.ok) throw new Error(r.status); return r.json(); })
+            .then(data => {
+                setStatus('Live', 'bg-success');
+                (data.entries || []).forEach(entry => { lastId = entry.id; appendLine(entry); });
+                pollTimer = setTimeout(doPoll, 2000);
+            })
+            .catch(() => {
+                setStatus('Reconnecting…', 'bg-warning text-dark');
+                pollTimer = setTimeout(doPoll, 5000);
+            });
     }
 
     levelBtns.forEach(btn => btn.addEventListener('click', () => {

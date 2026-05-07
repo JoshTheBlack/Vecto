@@ -270,7 +270,7 @@
                         </div>
                         <div class="text-end">
                             <span class="badge bg-dark border border-secondary p-2 fs-6">
-                                Trust Score: <span class="text-success">{{ request.user.patron_profile.trust_score|default_if_none:100 }}</span>
+                                Trust Score: <span class="text-success">{{ trust_score }}</span>
                             </span>
                         </div>
                     </div>
@@ -356,6 +356,34 @@
                             {% else %}<span class="badge bg-secondary ms-2 fw-normal">Draft</span>
                             {% endif %}
                         </h6>
+                        <form method="POST" action="{% url 'manage_episode' ep.id %}" class="mb-4">
+                            {% csrf_token %}
+                            <input type="hidden" name="action" value="update_audio">
+                            <div class="row g-3">
+                                <div class="col-12 col-md-6">
+                                    <label class="form-label text-light">Public Audio URL</label>
+                                    <input type="url" name="audio_url_public"
+                                           class="form-control bg-dark text-light border-secondary"
+                                           value="{{ ep.audio_url_public|default:'' }}"
+                                           placeholder="https://…">
+                                    <div class="form-text text-muted">Served to all listeners (e.g. Megaphone).</div>
+                                </div>
+                                <div class="col-12 col-md-6">
+                                    <label class="form-label text-light">Premium / Ad-Free URL</label>
+                                    <input type="url" name="audio_url_subscriber"
+                                           class="form-control bg-dark text-light border-secondary"
+                                           value="{{ ep.audio_url_subscriber|default:'' }}"
+                                           placeholder="https://…">
+                                    <div class="form-text text-muted">Served to paying subscribers only. Leave blank if same as public.</div>
+                                </div>
+                            </div>
+                            <div class="text-end mt-2">
+                                <button type="submit" class="btn btn-outline-warning btn-sm">
+                                    <i class="bi bi-save me-1"></i>Save Audio URLs
+                                </button>
+                            </div>
+                        </form>
+
                         <div class="d-flex flex-wrap gap-3">
                             {% if not ep.is_published %}
                             <form method="POST" action="{% url 'manage_episode' ep.id %}">
@@ -376,18 +404,25 @@
                                 </button>
                             </form>
                             {% endif %}
-                            <form method="POST" action="{% url 'manage_episode' ep.id %}" class="d-flex gap-2 align-items-end flex-wrap">
+                            <form method="POST" action="{% url 'manage_episode' ep.id %}" class="w-100 mt-2">
                                 {% csrf_token %}
                                 <input type="hidden" name="action" value="schedule">
-                                <div>
-                                    <label class="form-label text-muted small mb-1">Schedule Publish At</label>
-                                    <input type="datetime-local" name="scheduled_at"
-                                           class="form-control form-control-sm bg-dark text-light border-secondary"
-                                           value="{% if ep.scheduled_at %}{{ ep.scheduled_at|date:'Y-m-d' }}T{{ ep.scheduled_at|time:'H:i' }}{% endif %}">
+                                <div class="d-flex align-items-center gap-2 mb-1">
+                                    <label class="form-label text-muted small mb-0">Schedule Publish At</label>
+                                    <span class="badge bg-warning text-dark" style="font-size:.65rem;">UTC</span>
+                                    <span class="ms-auto text-muted" style="font-size:.75rem;">Now (UTC): <span id="detailUtcClock" class="font-monospace text-warning"></span></span>
                                 </div>
-                                <button type="submit" class="btn btn-outline-warning btn-sm">
-                                    <i class="bi bi-calendar-event me-1"></i>{% if ep.scheduled_at %}Reschedule{% else %}Schedule{% endif %}
-                                </button>
+                                <div class="d-flex gap-2 align-items-start flex-wrap">
+                                    <div class="flex-grow-1">
+                                        <input type="datetime-local" name="scheduled_at" id="detailScheduledAt"
+                                               class="form-control form-control-sm bg-dark text-light border-secondary"
+                                               value="{% if ep.scheduled_at %}{{ ep.scheduled_at|date:'Y-m-d' }}T{{ ep.scheduled_at|time:'H:i' }}{% endif %}">
+                                        <div class="form-text text-info mt-1" id="detailLocalEquiv"></div>
+                                    </div>
+                                    <button type="submit" class="btn btn-outline-warning btn-sm">
+                                        <i class="bi bi-calendar-event me-1"></i>{% if ep.scheduled_at %}Reschedule{% else %}Schedule{% endif %}
+                                    </button>
+                                </div>
                             </form>
                         </div>
                     </div>
@@ -700,7 +735,40 @@
         }
     });
 
-    // Check MP3 reachability asynchronously 
+    // UTC clock + local equivalent for owner schedule input
+    (function () {
+        const clockEl = document.getElementById('detailUtcClock');
+        const inputEl = document.getElementById('detailScheduledAt');
+        const equivEl = document.getElementById('detailLocalEquiv');
+        if (!clockEl) return;
+
+        function padZ(n) { return String(n).padStart(2, '0'); }
+
+        function tick() {
+            const n = new Date();
+            clockEl.textContent =
+                `${n.getUTCFullYear()}-${padZ(n.getUTCMonth()+1)}-${padZ(n.getUTCDate())} ` +
+                `${padZ(n.getUTCHours())}:${padZ(n.getUTCMinutes())}:${padZ(n.getUTCSeconds())}`;
+        }
+        tick();
+        setInterval(tick, 1000);
+
+        function showEquiv() {
+            if (!inputEl || !equivEl) return;
+            const val = inputEl.value;
+            if (!val) { equivEl.textContent = ''; return; }
+            const d = new Date(val + ':00Z');
+            if (isNaN(d)) { equivEl.textContent = ''; return; }
+            equivEl.textContent = '≈ ' + d.toLocaleString(undefined, {
+                month: 'short', day: 'numeric', year: 'numeric',
+                hour: '2-digit', minute: '2-digit', timeZoneName: 'short'
+            });
+        }
+        if (inputEl) inputEl.addEventListener('input', showEquiv);
+        showEquiv();
+    })();
+
+    // Check MP3 reachability asynchronously
     const targetUrl = "{{ ep.raw_audio_url|escapejs }}";
     if (targetUrl) {
         fetch(`/api/check-audio/?url=${encodeURIComponent(targetUrl)}`)

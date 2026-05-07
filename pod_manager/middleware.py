@@ -44,13 +44,14 @@ class NetworkMiddleware:
             logger.debug(f"No matching network found for host '{host}'. Evaluating fallback rules.")
             
             # Whitelist global access routes
-            if (path.startswith('/admin') or 
-                path.startswith('/creator') or 
-                path.startswith('/login') or 
+            if (path.startswith('/admin') or
+                path.startswith('/creator') or
+                path.startswith('/login') or
                 path.startswith('/logout') or
-                path.startswith('/oauth') or 
-                path.startswith('/patreon') or 
-                path.startswith('/static') or 
+                path.startswith('/oauth') or
+                path.startswith('/patreon') or
+                path.startswith('/staff') or
+                path.startswith('/static') or
                 path.startswith('/media')):
                 logger.debug(f"Allowing whitelisted path without network: {path}")
                 pass

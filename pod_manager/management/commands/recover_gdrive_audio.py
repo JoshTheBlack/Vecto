@@ -70,6 +70,12 @@ class Command(BaseCommand):
             self.stdout.write(f"── {podcast.title} (ID: {podcast.id})")
             pod_updated = 0
 
+            # Safely grab the custom domain for this specific network, stripping any trailing slashes
+            if hasattr(podcast, 'network') and podcast.network and podcast.network.custom_domain:
+                domain = podcast.network.custom_domain.rstrip('/')
+            else:
+                domain = "vecto.joshtheblack.com"
+
             for episode in Episode.objects.filter(podcast=podcast):
                 norm_title = self.normalize_string(episode.title)
                 if norm_title not in recovery_map:
@@ -90,6 +96,7 @@ class Command(BaseCommand):
                 episode.audio_url_public = old_subscriber_url
                 episode.audio_url_subscriber = gdrive_link
                 episode.match_reason = f"GDrive Recovery"[:100]
+                episode.audio_locked = True
                 episode.save()
                 cache.delete(f"ep_frag_public_{episode.id}")
                 cache.delete(f"ep_frag_private_{episode.id}")
@@ -97,10 +104,13 @@ class Command(BaseCommand):
                 pod_updated += 1
                 total_updated += 1
 
+                vecto_link = f"https://{domain}/episode/{episode.id}"
+
                 all_report_data.append({
                     'Podcast': podcast.title,
                     'Episode ID': episode.id,
                     'Title': episode.title,
+                    'Vecto Link': vecto_link,
                     'Verification Link': f"https://drive.google.com/file/d/{file_id}/view",
                     'Patreon Direct Link': gdrive_link,
                 })
@@ -119,7 +129,7 @@ class Command(BaseCommand):
             os.makedirs(output_dir, exist_ok=True)
             report_filename = os.path.join(output_dir, report_name)
             with open(report_filename, 'w', newline='', encoding='utf-8') as csvfile:
-                fieldnames = ['Podcast', 'Episode ID', 'Title', 'Verification Link', 'Patreon Direct Link']
+                fieldnames = ['Podcast', 'Episode ID', 'Title', 'Vecto Link', 'Verification Link', 'Patreon Direct Link']
                 writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
                 writer.writeheader()
                 writer.writerows(all_report_data)

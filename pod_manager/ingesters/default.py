@@ -266,10 +266,12 @@ def commit_episode(podcast, pub_entry, sub_entry, match_reason, stdout, enhancer
         episode.match_reason = match_reason
         
     # 4. Always update audio URLs (Hosts frequently rotate CDNs or ad-tracking prefixes)
-    if pub_entry:
-        episode.audio_url_public = get_enclosure(pub_entry) 
-    if sub_entry:
-        episode.audio_url_subscriber = get_enclosure(sub_entry)
+    # Skip if audio_locked (e.g. set by GDrive recovery to protect manually mapped URLs)
+    if not episode.audio_locked:
+        if pub_entry:
+            episode.audio_url_public = get_enclosure(pub_entry)
+        if sub_entry:
+            episode.audio_url_subscriber = get_enclosure(sub_entry)
 
     # 5. THE METADATA LOCK
     if not episode.is_metadata_locked:

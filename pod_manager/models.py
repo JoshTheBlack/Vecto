@@ -202,6 +202,7 @@ class Episode(models.Model):
     guid_public = models.TextField(blank=True, null=True, db_index=True)
     guid_private = models.TextField(blank=True, null=True, db_index=True)
     is_metadata_locked = models.BooleanField(default=False, help_text="If checked, future feed ingests will ONLY update the audio URLs. Title, Description, and Dates will not be overwritten.")
+    audio_locked = models.BooleanField(default=False, help_text="If checked, future feed ingests will NOT overwrite audio URLs. Set automatically by the GDrive recovery script.")
     
     title = models.TextField()
     pub_date = models.DateTimeField()

@@ -118,27 +118,27 @@ def parse_html_chapters(html_description):
     if not html_description: return None
     soup = BeautifulSoup(html_description, 'html.parser')
     
-    # Updated Regex: Optional '(', capturing group for time, optional ')', whitespace, dash variants, whitespace, title
-    chapter_pattern = re.compile(r'^\(?(\d{1,2}:\d{2}(?::\d{2})?)\)?\s*[-—–]+\s*(.+)$')
+    # Updated Regex: Optional leading whitespace, optional '(', time group, optional ')', 
+    # optional whitespace/dashes/pipes/colons, and then the title
+    chapter_pattern = re.compile(r'^\s*\(?(\d{1,2}:\d{2}(?::\d{2})?)\)?\s*[-—–:|]*\s*(.+)$')
     
-    # Strategy 1: Strict <ul>/<li> parsing (Legacy behavior)
+    # Strategy 1: Resilient <ul>/<li> parsing
     for ul in soup.find_all('ul'):
         chapters = []
-        li_tags = ul.find_all('li')
-        if len(li_tags) < 2: continue
-            
-        is_valid = True
-        for li in li_tags:
-            match = chapter_pattern.match(li.get_text().strip())
+        for li in ul.find_all('li'):
+            text = li.get_text().strip()
+            if not text: 
+                continue
+                
+            match = chapter_pattern.match(text)
             if match:
                 parts = match.group(1).split(':')
                 seconds = int(parts[0])*3600 + int(parts[1])*60 + int(parts[2]) if len(parts)==3 else int(parts[0])*60 + int(parts[1])
                 chapters.append({"startTime": seconds, "title": match.group(2).strip()})
-            else:
-                is_valid = False
-                break 
 
-        if is_valid and chapters: return {"version": "1.2.0", "chapters": chapters}
+        # Return if we found at least 2 valid chapters in this list, ignoring rogue non-chapter bullets
+        if len(chapters) >= 2: 
+            return {"version": "1.2.0", "chapters": chapters}
         
     # Strategy 2: Fallback for <p> and <br> separated lines
     # Show notes often have timestamps separated by standard line breaks instead of bulleted lists

@@ -3,7 +3,9 @@ import io
 import platform
 import redis
 import pdfkit
-from datetime import timedelta
+import requests, re
+from datetime import timedelta, datetime
+from bs4 import BeautifulSoup
 from collections import defaultdict
 
 from celery import shared_task
@@ -12,6 +14,7 @@ from django.conf import settings
 from django.core.cache import cache
 from django.core.management import call_command
 from django.utils import timezone
+from django.utils.timezone import make_aware
 from django.utils.html import strip_tags
 from django.core.files.base import ContentFile
 from django.template.loader import render_to_string
@@ -569,3 +572,84 @@ def task_sync_bot_avatar():
         logger.warning("[BotAvatarSync] Rate-limited by Discord, will retry next hour.")
     else:
         logger.error(f"[BotAvatarSync] Avatar update failed: {patch_resp.status_code} {patch_resp.text}")
+
+@shared_task(bind=True, max_retries=3)
+def ingest_wp_post_task(self, post_id, cookie_name, cookie_value, ingest_podcast_id):
+    guid_url = f"https://baldmove.com/?p={post_id}"
+    
+    # Check again inside worker to prevent duplicates during race conditions
+    if Episode.objects.filter(guid_private=guid_url).exists():
+        return f"ID {post_id} already exists."
+
+    try:
+        session = requests.Session()
+        session.headers.update({'User-Agent': 'VectoDiscoveryBot/1.0'})
+        session.cookies.set(cookie_name, cookie_value, domain='baldmove.com')
+
+        # WordPress will redirect ?p=ID to the readable permalink
+        response = session.get(guid_url, timeout=15, allow_redirects=True)
+        
+        # Standard WordPress skips (404s or Login Redirects)
+        if response.status_code != 200 or "wp-login.php" in response.url:
+            return f"ID {post_id} skipped (Status {response.status_code})"
+
+        soup = BeautifulSoup(response.content, 'html.parser')
+        
+        # Tiered Audio Extraction
+        audio_url = None
+        tag = soup.select_one('.powerpress_links_mp3 a.powerpress_link_d')
+        if tag:
+            audio_url = tag.get('href')
+        else:
+            source = soup.select_one('audio source')
+            if source:
+                audio_url = source.get('src')
+        
+        if not audio_url:
+            # Regex fallback for generic .mp3 links
+            link = soup.find('a', href=re.compile(r'\.mp3(\?.*)?$'))
+            audio_url = link['href'] if link else None
+
+        if audio_url:
+            title_tag = soup.select_one('h1.entry-title')
+            title = title_tag.get_text(strip=True) if title_tag else f"Post {post_id}"
+            
+            # Metadata: Clean description of player UI
+            content = soup.select_one('.entry-content')
+            description = ""
+            if content:
+                for p in content.select('.powerpress_player, .episode_player, .powerpress_links'):
+                    p.decompose()
+                description = content.get_text(separator="\n", strip=True)
+
+            # Metadata: Tags and Date
+            tags = [t.get_text(strip=True) for t in soup.select('footer.entry-meta a[rel="tag"]')]
+            
+            pub_date = make_aware(datetime.now())
+            date_tag = soup.select_one('.entry-date')
+            if date_tag:
+                try:
+                    naive_date = datetime.strptime(date_tag.get_text(strip=True), "%B %d, %Y")
+                    pub_date = make_aware(naive_date)
+                except (ValueError, TypeError):
+                    pass
+
+            # Create entry using fields matching your models.py
+            Episode.objects.create(
+                podcast_id=ingest_podcast_id,
+                title=title,
+                raw_description=description,
+                audio_url_subscriber=audio_url, # Store as private/subscriber
+                guid_private=guid_url,
+                pub_date=pub_date,
+                tags=tags,
+                link=response.url, # Resolves to the pretty permalink
+                match_reason='celery_brute_discovery'
+            )
+            return f"Successfully ingested ID {post_id}: {title}"
+        
+        return f"ID {post_id} skipped: No audio found"
+
+    except Exception as exc:
+        # Retry for transient network issues or timeouts
+        raise self.retry(exc=exc, countdown=10)

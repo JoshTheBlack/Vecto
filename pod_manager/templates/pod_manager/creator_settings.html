@@ -53,6 +53,9 @@
             <a class="list-group-item list-group-item-action border-secondary" id="list-sync-list" data-bs-toggle="list" href="#list-sync" role="tab">
                 <i class="bi bi-people me-2"></i> Patreon Sync
             </a>
+            <a class="list-group-item list-group-item-action border-secondary" id="list-gdrive-recovery-list" data-bs-toggle="list" href="#list-gdrive-recovery" role="tab">
+                <i class="bi bi-cloud-arrow-down me-2 text-warning"></i> GDrive Recovery
+            </a>
             <a href="/admin/" class="list-group-item list-group-item-action text-danger border-secondary mt-3">
                 <i class="bi bi-database me-2"></i> Advanced DB Admin
             </a>
@@ -78,10 +81,13 @@
 
             {% include 'pod_manager/creator_tabs/tab_audit_log.html' %}
 
-        </div>   
-    </div>   
-</div>   
+            {% include 'pod_manager/creator_tabs/tab_gdrive_recovery.html' %}
+
+        </div>
+    </div>
+</div>
 <script src="{% static 'pod_manager/js/creator_tabs.js' %}"></script>
+<script src="{% static 'pod_manager/js/gdrive_recovery.js' %}"></script>
 
 <style>
     /* Shared styles for Community Edits (inbox) and Audit Log tabs. */

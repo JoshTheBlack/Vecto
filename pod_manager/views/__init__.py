@@ -85,3 +85,10 @@ from ..security import (
 from ..utils import validate_public_url, sanitize_user_html
 
 from .staff import log_viewer, log_stream, log_poll, log_level_toggle, log_resources
+
+from .creator.gdrive_recovery import (
+    gdrive_recovery_files,
+    gdrive_recovery_run,
+    gdrive_recovery_stream,
+    gdrive_recovery_rewind,
+)

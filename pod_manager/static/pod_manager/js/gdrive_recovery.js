@@ -1,0 +1,376 @@
+// ============================================================
+// GDrive Audio Recovery Tab
+// ============================================================
+
+(function () {
+    'use strict';
+
+    // ── State ──────────────────────────────────────────────────
+    let activeStreams = {};  // run_id → EventSource
+    let runLogs = {};        // run_id → captured log text
+
+    // ── Bootstrap ──────────────────────────────────────────────
+    document.addEventListener('DOMContentLoaded', () => {
+        const tab = document.getElementById('list-gdrive-recovery-list');
+        if (!tab) return;
+
+        // Load on subsequent tab activations
+        tab.addEventListener('shown.bs.tab', () => {
+            if (!document.getElementById('recovery-file-list').dataset.loaded) {
+                recoveryRefresh();
+            }
+        });
+
+        // creator_tabs.js fires shown.bs.tab during its own DOMContentLoaded handler
+        // (before ours runs), so we check whether the pane is already active here.
+        const pane = document.getElementById('list-gdrive-recovery');
+        if (pane && pane.classList.contains('active') &&
+                !document.getElementById('recovery-file-list').dataset.loaded) {
+            recoveryRefresh();
+        }
+    });
+
+    // ── Public: triggered by toolbar Refresh button ─────────────
+    window.recoveryRefresh = function () {
+        const container = document.getElementById('recovery-file-list');
+        container.innerHTML = `
+            <div class="text-center text-muted py-4">
+                <div class="spinner-border spinner-border-sm me-2" role="status"></div>
+                Loading recovery files…
+            </div>`;
+
+        fetch('/creator/gdrive-recovery/files/')
+            .then(r => r.json())
+            .then(data => {
+                renderFileList(data.files || []);
+                const ts = new Date().toLocaleTimeString();
+                const el = document.getElementById('recovery-last-refreshed');
+                if (el) el.textContent = `Last refreshed: ${ts}`;
+                container.dataset.loaded = '1';
+            })
+            .catch(() => {
+                container.innerHTML = '<p class="text-danger">Failed to load recovery files.</p>';
+            });
+    };
+
+    // ── Render the full file list ───────────────────────────────
+    function renderFileList(files) {
+        const container = document.getElementById('recovery-file-list');
+        if (!files.length) {
+            container.innerHTML = `
+                <div class="text-muted small border border-secondary rounded p-3">
+                    No CSV files found in <code>MEDIA_ROOT/Recovery/</code>.
+                    Upload input CSVs there to get started.
+                </div>`;
+            return;
+        }
+
+        container.innerHTML = files.map(f => buildCsvCard(f)).join('');
+
+        // Collect saved logs and apply initial "All Podcasts" toggle state
+        files.forEach(f => {
+            (f.runs || []).forEach(r => { if (r.log) runLogs[r.run_id] = r.log; });
+            const cardId = cssId(f.filename);
+            const allCheck = document.getElementById(`all-pods-${cardId}`);
+            if (allCheck) recoveryToggleAll(cardId, allCheck.checked);
+        });
+    }
+
+    // ── Build one CSV card ──────────────────────────────────────
+    function buildCsvCard(file) {
+        const cardId = cssId(file.filename);
+        const podcasts = (window.RECOVERY_PODCASTS || []);
+        const podCheckboxes = podcasts.map(p => `
+            <div class="form-check">
+                <input class="form-check-input pod-check-${cardId}" type="checkbox"
+                       value="${escHtml(p.title)}" id="pod-${cardId}-${p.id}">
+                <label class="form-check-label small" for="pod-${cardId}-${p.id}">
+                    ${escHtml(p.title)}
+                </label>
+            </div>`).join('');
+
+        const runsHtml = buildRunsTable(file.runs || [], file.filename);
+
+        return `
+<div class="recovery-csv-card" id="card-${cardId}">
+    <div class="card-header d-flex align-items-center gap-2">
+        <i class="bi bi-file-earmark-spreadsheet text-warning"></i>
+        <strong class="me-auto">${escHtml(file.filename)}</strong>
+    </div>
+    <div class="p-3">
+        <div class="row g-3">
+
+            <!-- Left: podcast selector -->
+            <div class="col-md-5">
+                <div class="d-flex align-items-center gap-2 mb-1">
+                    <span class="small fw-semibold">Target Podcasts</span>
+                    <div class="form-check mb-0 ms-auto">
+                        <input class="form-check-input all-pods-check" type="checkbox"
+                               id="all-pods-${cardId}" checked
+                               onchange="recoveryToggleAll('${cardId}', this.checked)">
+                        <label class="form-check-label small" for="all-pods-${cardId}">All Podcasts</label>
+                    </div>
+                </div>
+                <div class="recovery-podcast-list border border-secondary rounded p-2 ${podcasts.length === 0 ? 'd-none' : ''}"
+                     id="pod-list-${cardId}">
+                    ${podCheckboxes}
+                </div>
+                ${podcasts.length === 0 ? '<p class="text-muted small">No podcasts found.</p>' : ''}
+            </div>
+
+            <!-- Right: mode + run controls -->
+            <div class="col-md-7">
+                <div class="mb-2">
+                    <span class="small fw-semibold d-block mb-1">Mode</span>
+                    <div class="btn-group btn-group-sm" role="group">
+                        <input type="radio" class="btn-check" name="mode-${cardId}"
+                               id="mode-dry-${cardId}" value="dry" checked>
+                        <label class="btn btn-outline-info" for="mode-dry-${cardId}">
+                            <i class="bi bi-eye me-1"></i>Dry Run
+                        </label>
+                        <input type="radio" class="btn-check" name="mode-${cardId}"
+                               id="mode-live-${cardId}" value="live">
+                        <label class="btn btn-outline-warning" for="mode-live-${cardId}">
+                            <i class="bi bi-lightning-fill me-1"></i>Live Run
+                        </label>
+                    </div>
+                </div>
+
+                <button class="btn btn-sm btn-primary mt-1"
+                        onclick="recoveryStartRun('${cardId}', '${escHtml(file.filename)}')">
+                    <i class="bi bi-play-fill me-1"></i>Run Recovery
+                </button>
+            </div>
+        </div>
+
+        <!-- Active stream panels injected here -->
+        <div class="recovery-streams mt-3" id="streams-${cardId}"></div>
+
+        <!-- Past runs table -->
+        ${runsHtml}
+    </div>
+</div>`;
+    }
+
+    // ── Podcast "All" toggle ────────────────────────────────────
+    window.recoveryToggleAll = function (cardId, allChecked) {
+        const podList = document.getElementById(`pod-list-${cardId}`);
+        if (!podList) return;
+        podList.style.opacity = allChecked ? '0.4' : '1';
+        podList.style.pointerEvents = allChecked ? 'none' : '';
+        if (allChecked) {
+            podList.querySelectorAll(`input.pod-check-${cardId}`).forEach(cb => {
+                cb.checked = false;
+            });
+        }
+    };
+
+    // ── Start a recovery run ────────────────────────────────────
+    window.recoveryStartRun = function (cardId, csvFilename) {
+        const allCheck = document.getElementById(`all-pods-${cardId}`);
+        const isDryRun = document.querySelector(`input[name="mode-${cardId}"]:checked`).value === 'dry';
+
+        let podcastTitles = [];
+        if (!allCheck.checked) {
+            document.querySelectorAll(`.pod-check-${cardId}:checked`).forEach(cb => {
+                podcastTitles.push(cb.value);
+            });
+            if (!podcastTitles.length) {
+                alert('Select at least one podcast, or check "All Podcasts".');
+                return;
+            }
+        }
+
+        fetch('/creator/gdrive-recovery/run/', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json', 'X-CSRFToken': getCsrf()},
+            body: JSON.stringify({
+                csv_filename: csvFilename,
+                podcast_titles: podcastTitles,
+                dry_run: isDryRun,
+            }),
+        })
+        .then(r => r.json())
+        .then(data => {
+            if (data.error) { alert(data.error); return; }
+            data.runs.forEach(r => openRunStream(cardId, r.run_id, r.podcast_title, isDryRun));
+        })
+        .catch(() => alert('Failed to start recovery run.'));
+    };
+
+    // ── Open an SSE stream and render a terminal panel ──────────
+    function openRunStream(cardId, runId, podcastTitle, isDryRun) {
+        const streamsDiv = document.getElementById(`streams-${cardId}`);
+        if (!streamsDiv) return;
+
+        // Clone panel template
+        const tpl = document.getElementById('recovery-run-panel-tpl');
+        const panel = tpl.content.cloneNode(true).firstElementChild;
+        panel.dataset.runId = runId;
+
+        const modeLabel = isDryRun ? 'Dry Run' : 'Live Run';
+        panel.querySelector('.run-panel-label').textContent =
+            `${modeLabel} → ${podcastTitle === 'all' ? 'All Podcasts' : podcastTitle}`;
+        const badge = panel.querySelector('.run-panel-badge');
+        badge.textContent = 'Running';
+        badge.className = 'badge bg-warning text-dark';
+
+        const terminal = panel.querySelector('.recovery-terminal');
+        const dismissBtn = panel.querySelector('.run-panel-dismiss');
+        streamsDiv.prepend(panel);
+
+        // Dismiss: remove panel and refresh the runs table
+        dismissBtn.addEventListener('click', () => {
+            panel.remove();
+            recoveryRefresh();
+        });
+
+        const es = new EventSource(`/creator/gdrive-recovery/stream/${runId}/`);
+        activeStreams[runId] = es;
+
+        es.onmessage = function (event) {
+            if (event.data === '[DONE]') {
+                es.close();
+                delete activeStreams[runId];
+                badge.textContent = 'Complete — dismiss to refresh table';
+                badge.className = 'badge bg-success';
+            } else {
+                terminal.textContent += event.data + '\n';
+                terminal.scrollTop = terminal.scrollHeight;
+            }
+        };
+
+        es.onerror = function () {
+            es.close();
+            delete activeStreams[runId];
+            terminal.textContent += '\n[CONNECTION ERROR] Lost connection to server.\n';
+            badge.textContent = 'Error';
+            badge.className = 'badge bg-danger';
+        };
+    }
+
+    // ── Build past-runs table for one CSV ───────────────────────
+    function buildRunsTable(runs, csvFilename) {
+        if (!runs.length) return '';
+
+        const rows = runs.map(r => {
+            const modeClass = r.mode === 'dry-run' ? 'run-status-dry-run'
+                            : r.mode === 'rewind'   ? 'text-muted'
+                            : r.status === 'failed' ? 'run-status-failed'
+                            : 'run-status-completed';
+            const modeIcon = r.mode === 'dry-run' ? '👁' : r.mode === 'rewind' ? '↺' : '⚡';
+            const when = r.started_at ? new Date(r.started_at + 'Z').toLocaleString() : '—';
+            const target = r.podcast_title === 'all' ? '<em>All Podcasts</em>' : escHtml(r.podcast_title);
+
+            const csvLink = r.recovery_csv_url
+                ? `<a href="${escHtml(r.recovery_csv_url)}" class="btn btn-xs btn-outline-secondary py-0 px-1" title="Recovery CSV" target="_blank"><i class="bi bi-filetype-csv"></i></a>`
+                : '';
+            const discLink = r.discord_txt_url
+                ? `<a href="${escHtml(r.discord_txt_url)}" class="btn btn-xs btn-outline-secondary py-0 px-1" title="Discord Report" target="_blank"><i class="bi bi-discord"></i></a>`
+                : '';
+            const logBtn = r.log
+                ? `<button class="btn btn-xs btn-outline-info py-0 px-1" title="View log"
+                           onclick="recoveryShowLog('${cssId(csvFilename)}', '${escHtml(r.run_id)}')">
+                       <i class="bi bi-terminal"></i>
+                   </button>`
+                : '';
+
+            const rewindBtn = (r.mode === 'live' && r.status === 'completed' && r.recovery_csv_url)
+                ? `<button class="btn btn-xs btn-outline-danger py-0 px-1"
+                           title="Rewind this run"
+                           onclick="recoveryRewind('${escHtml(r.recovery_csv_url)}', '${cssId(csvFilename)}')">
+                       <i class="bi bi-arrow-counterclockwise"></i>
+                   </button>`
+                : '';
+
+            return `<tr>
+                <td class="text-muted" style="white-space:nowrap">${when}</td>
+                <td>${target}</td>
+                <td class="${modeClass}">${modeIcon} ${r.mode}</td>
+                <td><span class="${modeClass}">${r.status}</span></td>
+                <td class="d-flex gap-1">${csvLink}${discLink}${logBtn}</td>
+                <td>${rewindBtn}</td>
+            </tr>`;
+        }).join('');
+
+        return `
+<div class="mt-3">
+    <p class="small fw-semibold text-muted mb-1">Past Runs</p>
+    <div class="table-responsive">
+        <table class="table table-sm table-dark table-hover recovery-runs-table mb-0">
+            <thead><tr>
+                <th>When</th><th>Podcast</th><th>Mode</th><th>Status</th><th>Reports</th><th>Rewind</th>
+            </tr></thead>
+            <tbody>${rows}</tbody>
+        </table>
+    </div>
+</div>`;
+    }
+
+    // ── Rewind a past live run ──────────────────────────────────
+    window.recoveryRewind = function (recoveryCsvUrl, cardId) {
+        if (!confirm('Rewind this recovery run? This will restore the original S3 URLs for these episodes.')) return;
+
+        fetch('/creator/gdrive-recovery/rewind/', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json', 'X-CSRFToken': getCsrf()},
+            body: JSON.stringify({recovery_csv_url: recoveryCsvUrl}),
+        })
+        .then(r => r.json())
+        .then(data => {
+            if (data.error) { alert(data.error); return; }
+            openRunStream(cardId, data.run_id, 'all', false);
+        })
+        .catch(() => alert('Failed to start rewind.'));
+    };
+
+    // ── Replay a saved run log ──────────────────────────────────
+    window.recoveryShowLog = function (cardId, runId) {
+        const log = runLogs[runId];
+        if (!log) return;
+
+        const streamsDiv = document.getElementById(`streams-${cardId}`);
+        if (!streamsDiv) return;
+
+        // Don't duplicate an open panel for the same run
+        if (streamsDiv.querySelector(`[data-run-id="${runId}"]`)) return;
+
+        const tpl = document.getElementById('recovery-run-panel-tpl');
+        const panel = tpl.content.cloneNode(true).firstElementChild;
+        panel.dataset.runId = runId;
+        panel.querySelector('.run-panel-label').textContent = 'Saved Log';
+        const badge = panel.querySelector('.run-panel-badge');
+        badge.textContent = 'Replay';
+        badge.className = 'badge bg-secondary';
+
+        const terminal = panel.querySelector('.recovery-terminal');
+        terminal.textContent = log;
+
+        panel.querySelector('.run-panel-dismiss').addEventListener('click', () => panel.remove());
+
+        streamsDiv.prepend(panel);
+        terminal.scrollTop = terminal.scrollHeight;
+    };
+
+    // ── Helpers ─────────────────────────────────────────────────
+    function cssId(str) {
+        return str.replace(/[^a-zA-Z0-9]/g, '_');
+    }
+
+    function escHtml(str) {
+        return String(str)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#39;');
+    }
+
+    function getCsrf() {
+        const el = document.querySelector('[name=csrfmiddlewaretoken]');
+        if (el) return el.value;
+        const cookie = document.cookie.split(';').find(c => c.trim().startsWith('csrftoken='));
+        return cookie ? cookie.trim().split('=')[1] : '';
+    }
+
+})();

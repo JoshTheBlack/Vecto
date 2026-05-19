@@ -1,5 +1,7 @@
+import json
 import logging
 import io
+import os
 import platform
 import redis
 import pdfkit
@@ -653,3 +655,113 @@ def ingest_wp_post_task(self, post_id, cookie_name, cookie_value, ingest_podcast
     except Exception as exc:
         # Retry for transient network issues or timeouts
         raise self.retry(exc=exc, countdown=10)
+
+
+# ---------------------------------------------------------------------------
+# GDrive Audio Recovery
+# ---------------------------------------------------------------------------
+
+class _RecoveryStream(io.StringIO):
+    """Writes SSE-formatted lines to cache (for live streaming) and captures
+    raw text (so the task can parse output file paths after completion)."""
+
+    def __init__(self, task_id):
+        super().__init__()
+        self.task_id = task_id
+        self._captured = []
+
+    def write(self, s):
+        if not s:
+            return
+        self._captured.append(s)
+        formatted = "".join(f"data: {line}\n\n" for line in s.splitlines() if line)
+        if formatted:
+            current = cache.get(self.task_id, "")
+            cache.set(self.task_id, current + formatted, timeout=3600)
+
+    def flush(self):
+        pass
+
+    def captured(self):
+        return "".join(self._captured)
+
+
+def _save_recovery_run(run_id, meta):
+    runs_dir = os.path.join(settings.MEDIA_ROOT, 'Recovery', 'runs')
+    os.makedirs(runs_dir, exist_ok=True)
+    with open(os.path.join(runs_dir, f"{run_id}.json"), 'w', encoding='utf-8') as f:
+        json.dump(meta, f, indent=2)
+
+
+def _abs_path_to_media_url(abs_path):
+    try:
+        rel = os.path.relpath(abs_path, settings.MEDIA_ROOT).replace('\\', '/')
+        return f"{settings.MEDIA_URL}{rel}"
+    except ValueError:
+        return None
+
+
+@shared_task
+def task_run_gdrive_recovery(run_id, csv_path, podcast_title, dry_run):
+    task_id = f"gdrive_recovery_{run_id}"
+    stream = _RecoveryStream(task_id)
+    meta = {
+        'run_id': run_id,
+        'csv_filename': os.path.basename(csv_path),
+        'podcast_title': podcast_title or 'all',
+        'mode': 'dry-run' if dry_run else 'live',
+        'started_at': datetime.utcnow().isoformat(),
+        'status': 'running',
+        'recovery_csv_url': None,
+        'discord_txt_url': None,
+    }
+    _save_recovery_run(run_id, meta)
+    try:
+        args = [csv_path]
+        if podcast_title:
+            args.append(podcast_title)
+        call_command('recover_gdrive_audio', *args,
+                     dry_run=dry_run, stdout=stream, stderr=stream, no_color=True)
+        meta['status'] = 'completed'
+    except Exception as e:
+        stream.write(f"\n[ERROR] {str(e)}\n")
+        meta['status'] = 'failed'
+    finally:
+        captured = stream.captured()
+        csv_m = re.search(r'CSV report:\s+(\S+)', captured)
+        disc_m = re.search(r'Discord report:\s+(\S+)', captured)
+        if csv_m:
+            meta['recovery_csv_url'] = _abs_path_to_media_url(csv_m.group(1))
+        if disc_m:
+            meta['discord_txt_url'] = _abs_path_to_media_url(disc_m.group(1))
+        meta['log'] = captured
+        _save_recovery_run(run_id, meta)
+        stream.write('[DONE]')
+
+
+@shared_task
+def task_run_gdrive_rewind(run_id, csv_path):
+    task_id = f"gdrive_recovery_{run_id}"
+    stream = _RecoveryStream(task_id)
+    meta = {
+        'run_id': run_id,
+        'csv_filename': os.path.basename(csv_path),
+        'podcast_title': 'all',
+        'mode': 'rewind',
+        'started_at': datetime.utcnow().isoformat(),
+        'status': 'running',
+        'recovery_csv_url': None,
+        'discord_txt_url': None,
+    }
+    _save_recovery_run(run_id, meta)
+    try:
+        call_command('rewind_gdrive_audio', csv_path,
+                     stdout=stream, stderr=stream, no_color=True)
+        meta['status'] = 'completed'
+    except Exception as e:
+        stream.write(f"\n[ERROR] {str(e)}\n")
+        meta['status'] = 'failed'
+    finally:
+        meta['log'] = stream.captured()
+        _save_recovery_run(run_id, meta)
+        stream.write('[DONE]')

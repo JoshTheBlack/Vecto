@@ -49,6 +49,12 @@ urlpatterns = [
     path('creator/publish/', views.publish_episode, name='publish_episode'),
     path('creator/episode/<int:episode_id>/manage/', views.manage_episode, name='manage_episode'),
 
+    # GDrive Recovery
+    path('creator/gdrive-recovery/files/', views.gdrive_recovery_files, name='gdrive_recovery_files'),
+    path('creator/gdrive-recovery/run/', views.gdrive_recovery_run, name='gdrive_recovery_run'),
+    path('creator/gdrive-recovery/stream/<str:run_id>/', views.gdrive_recovery_stream, name='gdrive_recovery_stream'),
+    path('creator/gdrive-recovery/rewind/', views.gdrive_recovery_rewind, name='gdrive_recovery_rewind'),
+
     # Staff tools
     path('staff/logs/', views.log_viewer, name='log_viewer'),
     path('staff/logs/stream/', views.log_stream, name='log_stream'),

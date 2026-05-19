@@ -710,7 +710,7 @@ def _abs_path_to_media_url(abs_path):
 
 
 @shared_task
-def task_run_gdrive_recovery(run_id, csv_path, podcast_title, dry_run):
+def task_run_gdrive_recovery(run_id, csv_path, podcast_title, dry_run, min_confidence='HIGH'):
     task_id = f"gdrive_recovery_{run_id}"
     stream = _RecoveryStream(task_id)
     meta = {
@@ -718,6 +718,7 @@ def task_run_gdrive_recovery(run_id, csv_path, podcast_title, dry_run):
         'csv_filename': os.path.basename(csv_path),
         'podcast_title': podcast_title or 'all',
         'mode': 'dry-run' if dry_run else 'live',
+        'min_confidence': min_confidence,
         'started_at': datetime.utcnow().isoformat(),
         'status': 'running',
         'recovery_csv_url': None,
@@ -730,7 +731,8 @@ def task_run_gdrive_recovery(run_id, csv_path, podcast_title, dry_run):
         if podcast_title:
             args.append(podcast_title)
         call_command('recover_gdrive_audio', *args,
-                     dry_run=dry_run, stdout=stream, stderr=stream, no_color=True)
+                     dry_run=dry_run, min_confidence=min_confidence,
+                     stdout=stream, stderr=stream, no_color=True)
         meta['status'] = 'completed'
     except Exception as e:
         stream.write(f"\n[ERROR] {str(e)}\n")

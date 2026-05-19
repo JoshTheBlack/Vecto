@@ -174,6 +174,21 @@
                     </div>
                 </div>
 
+                <div class="mb-2">
+                    <span class="small fw-semibold d-block mb-1">Min Confidence</span>
+                    <div class="btn-group btn-group-sm" role="group">
+                        <input type="radio" class="btn-check" name="conf-${cardId}"
+                               id="conf-high-${cardId}" value="HIGH" checked>
+                        <label class="btn btn-outline-secondary" for="conf-high-${cardId}">High</label>
+                        <input type="radio" class="btn-check" name="conf-${cardId}"
+                               id="conf-med-${cardId}" value="MEDIUM">
+                        <label class="btn btn-outline-secondary" for="conf-med-${cardId}">Medium</label>
+                        <input type="radio" class="btn-check" name="conf-${cardId}"
+                               id="conf-low-${cardId}" value="LOW">
+                        <label class="btn btn-outline-secondary" for="conf-low-${cardId}">Low</label>
+                    </div>
+                </div>
+
                 <button class="btn btn-sm btn-primary mt-1"
                         onclick="recoveryStartRun('${cardId}', '${escHtml(file.filename)}')">
                     <i class="bi bi-play-fill me-1"></i>Run Recovery
@@ -208,6 +223,7 @@
     window.recoveryStartRun = function (cardId, csvFilename) {
         const allCheck = document.getElementById(`all-pods-${cardId}`);
         const isDryRun = document.querySelector(`input[name="mode-${cardId}"]:checked`).value === 'dry';
+        const minConfidence = document.querySelector(`input[name="conf-${cardId}"]:checked`).value;
 
         let podcastTitles = [];
         if (!allCheck.checked) {
@@ -227,6 +243,7 @@
                 csv_filename: csvFilename,
                 podcast_titles: podcastTitles,
                 dry_run: isDryRun,
+                min_confidence: minConfidence,
             }),
         })
         .then(r => r.json())
@@ -348,10 +365,13 @@
                    </button>`
                 : '';
 
+            const confLabel = r.min_confidence && r.min_confidence !== 'HIGH'
+                ? ` <span class="text-muted">· ${r.min_confidence.toLowerCase()}</span>` : '';
+
             return `<tr>
                 <td class="text-muted" style="white-space:nowrap">${when}</td>
                 <td>${target}</td>
-                <td class="${modeClass}">${modeIcon} ${r.mode}</td>
+                <td class="${modeClass}">${modeIcon} ${r.mode}${confLabel}</td>
                 <td><span class="${modeClass}">${r.status}</span></td>
                 <td style="white-space:nowrap">${s3Cell}</td>
                 <td class="d-flex gap-1">${csvLink}${discLink}${logBtn}</td>

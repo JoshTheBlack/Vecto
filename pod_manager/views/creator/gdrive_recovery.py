@@ -89,6 +89,9 @@ def gdrive_recovery_run(request):
     # podcast_titles: [] means run against all podcasts as one task
     podcast_titles = data.get('podcast_titles', [])
     dry_run = bool(data.get('dry_run', False))
+    min_confidence = data.get('min_confidence', 'HIGH').strip().upper()
+    if min_confidence not in ('HIGH', 'MEDIUM', 'LOW'):
+        min_confidence = 'HIGH'
 
     if not csv_filename:
         return JsonResponse({'error': 'csv_filename required'}, status=400)
@@ -107,7 +110,7 @@ def gdrive_recovery_run(request):
     runs = []
     for podcast_title in targets:
         run_id = str(uuid.uuid4())
-        task_run_gdrive_recovery.delay(run_id, csv_path, podcast_title, dry_run)
+        task_run_gdrive_recovery.delay(run_id, csv_path, podcast_title, dry_run, min_confidence)
         runs.append({'run_id': run_id, 'podcast_title': podcast_title or 'all'})
 
     return JsonResponse({'runs': runs})

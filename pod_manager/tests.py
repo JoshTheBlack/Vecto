@@ -1399,6 +1399,7 @@ class FinalizeXmlTests(TestCase):
         ep.podcast_id = 1
         ep.chapters_public = None
         ep.chapters_private = None
+        ep.episode_type = 'full'
         builder = self._builder()
         result = builder._finalize_xml(raw, {'ep-1': ep}, None)
         # The declaration should appear exactly once, on the root <rss> tag.
@@ -1411,6 +1412,7 @@ class FinalizeXmlTests(TestCase):
         ep.podcast_id = 1
         ep.chapters_public = None
         ep.chapters_private = None
+        ep.episode_type = 'full'
 
         builder = self._builder()
         result = builder._finalize_xml(self._rss(guid='ep-1'), {'ep-1': ep}, None)
@@ -1425,6 +1427,7 @@ class FinalizeXmlTests(TestCase):
         ep.podcast_id = 1
         ep.chapters_public = None
         ep.chapters_private = None
+        ep.episode_type = 'full'
 
         builder = self._builder()
         result = builder._finalize_xml(self._rss(guid='ep-1'), {'ep-1': ep}, None)
@@ -1438,6 +1441,7 @@ class FinalizeXmlTests(TestCase):
         ep.podcast_id = 1
         ep.chapters_public = {'version': '1.2.0', 'chapters': []}
         ep.chapters_private = None
+        ep.episode_type = 'full'
 
         builder = self._builder()
         result = builder._finalize_xml(self._rss(guid='ep-1'), {'ep-1': ep}, None)
@@ -1452,6 +1456,7 @@ class FinalizeXmlTests(TestCase):
         ep.podcast_id = 1
         ep.chapters_public = None
         ep.chapters_private = None
+        ep.episode_type = 'full'
 
         builder = self._builder()
         result = builder._finalize_xml(self._rss(guid='ep-1'), {'ep-1': ep}, None)
@@ -1465,6 +1470,7 @@ class FinalizeXmlTests(TestCase):
         ep.podcast_id = 7
         ep.chapters_public = [{'startTime': 0, 'title': 'A'}]
         ep.chapters_private = None
+        ep.episode_type = 'full'
 
         builder = self._builder()
         result = builder._finalize_xml(
@@ -1480,6 +1486,7 @@ class FinalizeXmlTests(TestCase):
         ep.podcast_id = 1
         ep.chapters_public = None
         ep.chapters_private = None
+        ep.episode_type = 'full'
 
         builder = self._builder()
         # tag_map has 'other-guid', XML has 'ep-1' — no match, no mutation

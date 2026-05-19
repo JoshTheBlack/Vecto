@@ -39,7 +39,7 @@
                 Loading recovery files…
             </div>`;
 
-        fetch('/creator/gdrive-recovery/files/')
+        return fetch('/creator/gdrive-recovery/files/')
             .then(r => r.json())
             .then(data => {
                 renderFileList(data.files || []);
@@ -80,23 +80,61 @@
     function buildCsvCard(file) {
         const cardId = cssId(file.filename);
         const podcasts = (window.RECOVERY_PODCASTS || []);
-        const podCheckboxes = podcasts.map(p => `
+        const podCheckboxes = podcasts.map(p => {
+            const s3Badge = p.s3_count > 0
+                ? `<span class="badge bg-warning text-dark ms-1" title="${p.s3_count} episodes still on S3">${p.s3_count}</span>`
+                : (p.s3_count === 0 ? `<span class="badge bg-success ms-1" title="No episodes on S3">✓</span>` : '');
+            return `
             <div class="form-check">
                 <input class="form-check-input pod-check-${cardId}" type="checkbox"
                        value="${escHtml(p.title)}" id="pod-${cardId}-${p.id}">
-                <label class="form-check-label small" for="pod-${cardId}-${p.id}">
-                    ${escHtml(p.title)}
+                <label class="form-check-label small d-flex align-items-center justify-content-between pe-1" for="pod-${cardId}-${p.id}">
+                    <span>${escHtml(p.title)}</span>${s3Badge}
                 </label>
-            </div>`).join('');
+            </div>`;
+        }).join('');
 
         const runsHtml = buildRunsTable(file.runs || [], file.filename);
 
+        // Header summary: entry count + run info
+        const runs = file.runs || [];
+        const runCount = runs.length;
+        const lastRun = runCount > 0 ? runs[0] : null;
+        const totalEntries = file.total_entries || 0;
+
+        const entriesChip = totalEntries > 0
+            ? `<span class="badge bg-secondary me-2">${totalEntries} entries</span>`
+            : '';
+
+        let lastRunHtml = '';
+        if (lastRun) {
+            const when = lastRun.started_at
+                ? new Date(lastRun.started_at + 'Z').toLocaleDateString()
+                : '';
+            const statusClass = lastRun.status === 'completed' ? 'run-status-completed'
+                              : lastRun.status === 'failed'    ? 'run-status-failed'
+                              : 'text-muted';
+            lastRunHtml = `<span class="text-muted small me-2">${runCount} run${runCount !== 1 ? 's' : ''}</span>
+                           <span class="small ${statusClass} me-1">${lastRun.mode} · ${lastRun.status} · ${when}</span>`;
+        } else {
+            lastRunHtml = `<span class="text-muted small me-2">no runs yet</span>`;
+        }
+        const summaryHtml = entriesChip + lastRunHtml;
+
         return `
 <div class="recovery-csv-card" id="card-${cardId}">
-    <div class="card-header d-flex align-items-center gap-2">
+    <div class="card-header d-flex align-items-center gap-2 recovery-card-toggle"
+         role="button"
+         data-bs-toggle="collapse"
+         data-bs-target="#body-${cardId}"
+         aria-expanded="false"
+         aria-controls="body-${cardId}">
         <i class="bi bi-file-earmark-spreadsheet text-warning"></i>
         <strong class="me-auto">${escHtml(file.filename)}</strong>
+        ${summaryHtml}
+        <i class="bi bi-chevron-down recovery-chevron"></i>
     </div>
+    <div class="collapse" id="body-${cardId}">
     <div class="p-3">
         <div class="row g-3">
 
@@ -148,6 +186,7 @@
 
         <!-- Past runs table -->
         ${runsHtml}
+    </div>
     </div>
 </div>`;
     }
@@ -219,10 +258,17 @@
         const dismissBtn = panel.querySelector('.run-panel-dismiss');
         streamsDiv.prepend(panel);
 
-        // Dismiss: remove panel and refresh the runs table
+        // Dismiss: remove panel, refresh list, then re-expand this card
         dismissBtn.addEventListener('click', () => {
             panel.remove();
-            recoveryRefresh();
+            recoveryRefresh().then(() => {
+                const newBody = document.getElementById(`body-${cardId}`);
+                if (newBody) {
+                    bootstrap.Collapse.getOrCreateInstance(newBody, {toggle: false}).show();
+                    document.getElementById(`card-${cardId}`)
+                        ?.scrollIntoView({behavior: 'smooth', block: 'nearest'});
+                }
+            });
         });
 
         const es = new EventSource(`/creator/gdrive-recovery/stream/${runId}/`);
@@ -262,6 +308,25 @@
             const when = r.started_at ? new Date(r.started_at + 'Z').toLocaleString() : '—';
             const target = r.podcast_title === 'all' ? '<em>All Podcasts</em>' : escHtml(r.podcast_title);
 
+            // S3 before/after cell
+            let s3Cell = '<span class="text-muted">—</span>';
+            if (r.mode === 'live' && r.s3_before != null) {
+                if (r.s3_after != null) {
+                    const recovered = r.s3_before - r.s3_after;
+                    const diffHtml = recovered > 0
+                        ? ` <span class="run-status-completed">(−${recovered})</span>`
+                        : '';
+                    s3Cell = `${r.s3_before} → ${r.s3_after}${diffHtml}`;
+                } else {
+                    s3Cell = `${r.s3_before}`;
+                }
+            } else if (r.mode === 'dry-run' && r.s3_before != null) {
+                const recoverHtml = r.would_recover != null
+                    ? ` <span class="run-status-completed">· ${r.would_recover} recoverable</span>`
+                    : '';
+                s3Cell = `${r.s3_before}${recoverHtml}`;
+            }
+
             const csvLink = r.recovery_csv_url
                 ? `<a href="${escHtml(r.recovery_csv_url)}" class="btn btn-xs btn-outline-secondary py-0 px-1" title="Recovery CSV" target="_blank"><i class="bi bi-filetype-csv"></i></a>`
                 : '';
@@ -288,6 +353,7 @@
                 <td>${target}</td>
                 <td class="${modeClass}">${modeIcon} ${r.mode}</td>
                 <td><span class="${modeClass}">${r.status}</span></td>
+                <td style="white-space:nowrap">${s3Cell}</td>
                 <td class="d-flex gap-1">${csvLink}${discLink}${logBtn}</td>
                 <td>${rewindBtn}</td>
             </tr>`;
@@ -299,7 +365,7 @@
     <div class="table-responsive">
         <table class="table table-sm table-dark table-hover recovery-runs-table mb-0">
             <thead><tr>
-                <th>When</th><th>Podcast</th><th>Mode</th><th>Status</th><th>Reports</th><th>Rewind</th>
+                <th>When</th><th>Podcast</th><th>Mode</th><th>Status</th><th>S3</th><th>Reports</th><th>Rewind</th>
             </tr></thead>
             <tbody>${rows}</tbody>
         </table>

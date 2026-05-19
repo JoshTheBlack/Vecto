@@ -686,6 +686,14 @@ class _RecoveryStream(io.StringIO):
         return "".join(self._captured)
 
 
+def _s3_count_for_podcast(podcast_title):
+    """Count episodes with S3 subscriber URLs, optionally scoped to one podcast."""
+    qs = Episode.objects.filter(audio_url_subscriber__icontains='s3.amazonaws.com')
+    if podcast_title and podcast_title not in ('all', ''):
+        qs = qs.filter(podcast__title=podcast_title)
+    return qs.count()
+
+
 def _save_recovery_run(run_id, meta):
     runs_dir = os.path.join(settings.MEDIA_ROOT, 'Recovery', 'runs')
     os.makedirs(runs_dir, exist_ok=True)
@@ -714,6 +722,7 @@ def task_run_gdrive_recovery(run_id, csv_path, podcast_title, dry_run):
         'status': 'running',
         'recovery_csv_url': None,
         'discord_txt_url': None,
+        's3_before': _s3_count_for_podcast(podcast_title),
     }
     _save_recovery_run(run_id, meta)
     try:
@@ -734,6 +743,11 @@ def task_run_gdrive_recovery(run_id, csv_path, podcast_title, dry_run):
             meta['recovery_csv_url'] = _abs_path_to_media_url(csv_m.group(1))
         if disc_m:
             meta['discord_txt_url'] = _abs_path_to_media_url(disc_m.group(1))
+        if dry_run:
+            m = re.search(r'Would update:\s+(\d+)', captured)
+            meta['would_recover'] = int(m.group(1)) if m else None
+        else:
+            meta['s3_after'] = _s3_count_for_podcast(podcast_title)
         meta['log'] = captured
         _save_recovery_run(run_id, meta)
         stream.write('[DONE]')

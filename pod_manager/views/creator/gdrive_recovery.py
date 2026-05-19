@@ -6,6 +6,7 @@ POST /creator/gdrive-recovery/run/            — Start one recovery run per pod
 GET  /creator/gdrive-recovery/stream/<id>/   — SSE stream for a running task
 POST /creator/gdrive-recovery/rewind/         — Rewind a completed live run
 """
+import csv as csv_module
 import json
 import os
 import time
@@ -16,6 +17,20 @@ from django.contrib.auth.decorators import login_required
 from django.http import JsonResponse, StreamingHttpResponse
 from django.core.cache import cache
 from django.views.decorators.http import require_POST
+
+
+def _csv_entry_count(csv_path):
+    """Count unique filenames in a CSV."""
+    try:
+        seen = set()
+        with open(csv_path, newline='', encoding='utf-8') as f:
+            for row in csv_module.DictReader(f):
+                fname = row.get('Filename', '').strip()
+                if fname:
+                    seen.add(fname.lower())
+        return len(seen)
+    except Exception:
+        return 0
 
 
 def _recovery_dir():
@@ -56,6 +71,7 @@ def gdrive_recovery_files(request):
             csv_files.append({
                 'filename': fname,
                 'runs': _load_runs_for_csv(fname),
+                'total_entries': _csv_entry_count(full_path),
             })
 
     return JsonResponse({'files': csv_files})

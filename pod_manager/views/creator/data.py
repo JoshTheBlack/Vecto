@@ -24,6 +24,11 @@ def gather_manage_podcasts(current_network):
         clean_title=Case(When(title__istartswith='The ', then=Substr('title', 5)), default='title', output_field=CharField()),
         latest_episode_date=Max('episodes__pub_date'),
         episode_count=Count('episodes', distinct=True),
+        s3_episode_count=Count(
+            'episodes',
+            filter=Q(episodes__audio_url_subscriber__icontains='s3.amazonaws.com'),
+            distinct=True,
+        ),
     ).order_by(Lower('clean_title'))
     return {'manage_podcasts': podcasts, 'network_podcasts': podcasts}
 

@@ -11,10 +11,11 @@ from pod_manager.models import Podcast, Episode
 
 logger = logging.getLogger(__name__)
 
+CONFIDENCE_EXACT = 'EXACT'
 CONFIDENCE_HIGH = 'HIGH'
 CONFIDENCE_MEDIUM = 'MEDIUM'
 CONFIDENCE_LOW = 'LOW'
-CONFIDENCE_RANK = {CONFIDENCE_HIGH: 3, CONFIDENCE_MEDIUM: 2, CONFIDENCE_LOW: 1}
+CONFIDENCE_RANK = {CONFIDENCE_EXACT: 4, CONFIDENCE_HIGH: 3, CONFIDENCE_MEDIUM: 2, CONFIDENCE_LOW: 1}
 
 _STOP_WORDS = {'the', 'a', 'an', 'and', 'or', 'of', 'in', 'on', 'at', 'to', 'for', 'is', 'it'}
 
@@ -280,12 +281,14 @@ class Command(BaseCommand):
         # Build recovery map, token index, and number index once from the CSV
         recovery_map = {}
         recovery_tokens = {}
+        filename_index = {}  # raw Filename → norm_key, for exact S3 filename matching
         try:
             with open(csv_path, newline='', encoding='utf-8') as csvfile:
                 for row in csv.DictReader(csvfile):
                     norm_name = self.normalize_string(row['Filename'])
                     recovery_map[norm_name] = row
                     recovery_tokens[norm_name] = self.tokenize(row['Filename'])
+                    filename_index[row['Filename']] = norm_name
         except FileNotFoundError:
             self.stdout.write(self.style.ERROR(f"CSV file not found: {csv_path}"))
             return
@@ -325,10 +328,17 @@ class Command(BaseCommand):
                 title_tokens = self.tokenize(episode.title)
                 title_numbers = self.extract_numbers(episode.title)
 
-                norm_csv, strategy, confidence = self.find_match(
-                    norm_title, title_tokens, title_numbers,
-                    recovery_map, recovery_tokens, used_csv_keys,
-                )
+                # Layer 0: exact S3 filename match — strongest signal, checked first.
+                # Extract the filename from the S3 URL (last path segment after splitting on /).
+                s3_filename = old_subscriber_url.rstrip('/').rsplit('/', 1)[-1]
+                filename_norm_key = filename_index.get(s3_filename)
+                if filename_norm_key and filename_norm_key not in used_csv_keys:
+                    norm_csv, strategy, confidence = filename_norm_key, 'FILENAME', CONFIDENCE_EXACT
+                else:
+                    norm_csv, strategy, confidence = self.find_match(
+                        norm_title, title_tokens, title_numbers,
+                        recovery_map, recovery_tokens, used_csv_keys,
+                    )
 
                 if norm_csv is None:
                     continue

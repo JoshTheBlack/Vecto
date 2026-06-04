@@ -63,6 +63,10 @@ def gather_inbox(current_network):
         edit.desc_conflict = current_desc != (orig.get('description') or '')
         edit.current_description = current_desc
 
+        edit.current_season_number = ep.season_number
+        edit.current_episode_number = ep.episode_number
+        edit.current_episode_type = ep.episode_type or ''
+
     return {'pending_edits': pending_edits}
 
 

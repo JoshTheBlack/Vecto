@@ -237,6 +237,31 @@
                                 <div class="diff-desc-suggested">{{ edit.suggested_data.description|safe }}</div>
                             </div>
 
+                            {% with sugg_season=edit.suggested_data.season_number sugg_epnum=edit.suggested_data.episode_number sugg_type=edit.suggested_data.episode_type %}
+                            {% if sugg_season is not None or sugg_epnum is not None or sugg_type is not None %}
+                            <div class="diff-grid mt-2" style="grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: .75rem;">
+                                {% if sugg_season is not None %}
+                                <div class="diff-box">
+                                    <strong class="small d-block mb-1" style="color: var(--vecto-surface-muted);">SEASON #</strong>
+                                    <div>{{ edit.original_data.season_number|default:"—" }} → {{ sugg_season|default:"—" }}</div>
+                                </div>
+                                {% endif %}
+                                {% if sugg_epnum is not None %}
+                                <div class="diff-box">
+                                    <strong class="small d-block mb-1" style="color: var(--vecto-surface-muted);">EPISODE #</strong>
+                                    <div>{{ edit.original_data.episode_number|default:"—" }} → {{ sugg_epnum|default:"—" }}</div>
+                                </div>
+                                {% endif %}
+                                {% if sugg_type is not None %}
+                                <div class="diff-box">
+                                    <strong class="small d-block mb-1" style="color: var(--vecto-surface-muted);">EPISODE TYPE</strong>
+                                    <div>{{ edit.original_data.episode_type|default:"—" }} → {{ sugg_type|default:"—" }}</div>
+                                </div>
+                                {% endif %}
+                            </div>
+                            {% endif %}
+                            {% endwith %}
+
                         </div>
 
                         {% if edit.status == 'approved' %}

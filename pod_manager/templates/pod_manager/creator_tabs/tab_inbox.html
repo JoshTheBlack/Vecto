@@ -210,6 +210,9 @@
                             <input type="hidden" name="edited_tags" class="hidden-edited-tags" value="">
                             <input type="hidden" name="edited_chapters" class="hidden-edited-chapters" value="">
                             <input type="hidden" name="edited_description" class="hidden-edited-description" value="">
+                            <input type="hidden" name="edited_season_number" class="hidden-edited-season-number" value="">
+                            <input type="hidden" name="edited_episode_number" class="hidden-edited-episode-number" value="">
+                            <input type="hidden" name="edited_episode_type" class="hidden-edited-episode-type" value="">
 
                             {# Each section renders independently as a stacking block. When .conflicted is present, the section shows three columns (Original / Current / Suggested); otherwise two (Original / Suggested). Server-side flags on the edit (tags_conflict / chapters_conflict / desc_conflict) decide which mode each section is in. #}
                             
@@ -376,6 +379,84 @@
                                     </div>
                                 </div>
                             </div>
+
+                            {# ============== SEASON / EPISODE NUMBER / EPISODE TYPE ============== #}
+                            {% with sugg_season=edit.suggested_data.season_number sugg_epnum=edit.suggested_data.episode_number sugg_type=edit.suggested_data.episode_type %}
+                            {% if sugg_season is not None or sugg_epnum is not None or sugg_type is not None %}
+                            <div class="diff-section mt-3" data-section="metadata-scalars">
+                                <div class="row g-3">
+
+                                {% if sugg_season is not None %}
+                                <div class="col-sm-4">
+                                    <div class="diff-cell diff-cell-suggested p-2 rounded border border-secondary">
+                                        <div class="diff-cell-header mb-2">
+                                            <strong class="small text-success"><i class="bi bi-check-circle"></i> Season #</strong>
+                                            <div class="form-check form-switch ms-auto">
+                                                <input class="form-check-input" type="checkbox" role="switch"
+                                                       id="approveSeason{{ edit.id }}" name="approve_season_number"
+                                                       {% if sugg_season != edit.current_season_number %}checked{% endif %}>
+                                                <label class="form-check-label small" for="approveSeason{{ edit.id }}">Approve</label>
+                                            </div>
+                                        </div>
+                                        <div class="d-flex gap-2 align-items-center">
+                                            <span class="text-muted small">Was: {{ edit.current_season_number|default:"—" }}</span>
+                                            <i class="bi bi-arrow-right text-muted small"></i>
+                                            <input type="number" min="1" class="form-control form-control-sm bg-dark text-light border-secondary diff-season-suggested"
+                                                   value="{{ sugg_season|default:'' }}" style="width:80px;">
+                                        </div>
+                                    </div>
+                                </div>
+                                {% endif %}
+
+                                {% if sugg_epnum is not None %}
+                                <div class="col-sm-4">
+                                    <div class="diff-cell diff-cell-suggested p-2 rounded border border-secondary">
+                                        <div class="diff-cell-header mb-2">
+                                            <strong class="small text-success"><i class="bi bi-check-circle"></i> Episode #</strong>
+                                            <div class="form-check form-switch ms-auto">
+                                                <input class="form-check-input" type="checkbox" role="switch"
+                                                       id="approveEpisodeNum{{ edit.id }}" name="approve_episode_number"
+                                                       {% if sugg_epnum != edit.current_episode_number %}checked{% endif %}>
+                                                <label class="form-check-label small" for="approveEpisodeNum{{ edit.id }}">Approve</label>
+                                            </div>
+                                        </div>
+                                        <div class="d-flex gap-2 align-items-center">
+                                            <span class="text-muted small">Was: {{ edit.current_episode_number|default:"—" }}</span>
+                                            <i class="bi bi-arrow-right text-muted small"></i>
+                                            <input type="number" min="1" class="form-control form-control-sm bg-dark text-light border-secondary diff-episode-num-suggested"
+                                                   value="{{ sugg_epnum|default:'' }}" style="width:80px;">
+                                        </div>
+                                    </div>
+                                </div>
+                                {% endif %}
+
+                                {% if sugg_type is not None %}
+                                <div class="col-sm-4">
+                                    <div class="diff-cell diff-cell-suggested p-2 rounded border border-secondary">
+                                        <div class="diff-cell-header mb-2">
+                                            <strong class="small text-success"><i class="bi bi-check-circle"></i> Episode Type</strong>
+                                            <div class="form-check form-switch ms-auto">
+                                                <input class="form-check-input" type="checkbox" role="switch"
+                                                       id="approveEpisodeType{{ edit.id }}" name="approve_episode_type"
+                                                       {% if sugg_type != edit.current_episode_type %}checked{% endif %}>
+                                                <label class="form-check-label small" for="approveEpisodeType{{ edit.id }}">Approve</label>
+                                            </div>
+                                        </div>
+                                        <div class="d-flex gap-2 align-items-center">
+                                            <span class="text-muted small">Was: {{ edit.current_episode_type|default:"—" }}</span>
+                                            <i class="bi bi-arrow-right text-muted small"></i>
+                                            <input type="text" maxlength="50" class="form-control form-control-sm bg-dark text-light border-secondary diff-episode-type-suggested"
+                                                   value="{{ sugg_type|default:'' }}">
+                                        </div>
+                                    </div>
+                                </div>
+                                {% endif %}
+
+                                </div>
+                            </div>
+                            {% endif %}
+                            {% endwith %}
+
                         </form>
 
                         {# Footer actions: the Approve form's submit lives outside the form via the form attribute, so Reject and Bulk Rollback can stay as their own forms (HTML disallows nested forms). #}
@@ -996,6 +1077,14 @@
             if (titleInput) {
                 wrapper.querySelector('.hidden-edited-title').value = titleInput.value.trim();
             }
+
+            // 5. Season number, episode number, episode type
+            const seasonInput = wrapper.querySelector('.diff-season-suggested');
+            if (seasonInput) wrapper.querySelector('.hidden-edited-season-number').value = seasonInput.value.trim();
+            const epNumInput = wrapper.querySelector('.diff-episode-num-suggested');
+            if (epNumInput) wrapper.querySelector('.hidden-edited-episode-number').value = epNumInput.value.trim();
+            const epTypeInput = wrapper.querySelector('.diff-episode-type-suggested');
+            if (epTypeInput) wrapper.querySelector('.hidden-edited-episode-type').value = epTypeInput.value.trim();
         });
     }
 

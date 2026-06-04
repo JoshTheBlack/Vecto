@@ -118,6 +118,32 @@ def _handle_approve_edit(request, current_network):
             except Exception as e:
                 logger.warning(f"Failed to parse chapters from inbox for edit #{edit_id}: {e}")
 
+    # 4. PROCESS SEASON NUMBER
+    if request.POST.get('approve_season_number') == 'on':
+        raw_val = request.POST.get('edited_season_number', '').strip()
+        new_val = int(raw_val) if raw_val.isdigit() else None
+        if new_val != pre_approval_snapshot.get('season_number'):
+            ep.season_number = new_val
+            edit.suggested_data['season_number'] = new_val
+            points += 1
+
+    # 5. PROCESS EPISODE NUMBER
+    if request.POST.get('approve_episode_number') == 'on':
+        raw_val = request.POST.get('edited_episode_number', '').strip()
+        new_val = int(raw_val) if raw_val.isdigit() else None
+        if new_val != pre_approval_snapshot.get('episode_number'):
+            ep.episode_number = new_val
+            edit.suggested_data['episode_number'] = new_val
+            points += 1
+
+    # 6. PROCESS EPISODE TYPE
+    if request.POST.get('approve_episode_type') == 'on':
+        new_val = request.POST.get('edited_episode_type', '').strip()[:50]
+        if new_val != (pre_approval_snapshot.get('episode_type') or ''):
+            ep.episode_type = new_val
+            edit.suggested_data['episode_type'] = new_val
+            points += 1
+
     # --- THE ZERO-APPROVAL TRAP ---
     if points == 0:
         edit.status = EpisodeEditSuggestion.Status.REJECTED

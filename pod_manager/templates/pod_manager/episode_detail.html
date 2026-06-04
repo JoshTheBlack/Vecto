@@ -110,6 +110,16 @@
         vertical-align: text-bottom;
         color: #ffc107 !important; /* Yellow warning icon for contrast */
     }
+
+    /* Episode type chip selector */
+    .type-chip-group { display:flex; flex-wrap:wrap; gap:6px; align-items:center; padding:.4rem 0; min-height:2.25rem; }
+    .type-chip { padding:.3rem .8rem; border:1px solid #444; border-radius:999px; background:rgba(255,255,255,.05); color:#aaa; font-size:.875rem; cursor:pointer; user-select:none; transition:all .15s; white-space:nowrap; }
+    .type-chip:hover { border-color:#888; color:#f8f9fa; }
+    .type-chip.selected { border-color:#ffc107; background:rgba(255,193,7,.14); color:#ffc107; }
+    .type-chip.custom .chip-remove { margin-left:.35rem; opacity:.5; cursor:pointer; }
+    .type-chip.custom .chip-remove:hover { opacity:1; color:#dc3545; }
+    .type-add-input { background:transparent; border:none; outline:none; color:#f8f9fa; font-size:.875rem; min-width:70px; width:90px; padding:.3rem .2rem; }
+    .type-add-input::placeholder { color:rgba(248,249,250,.3); }
 </style>
 
 <nav aria-label="breadcrumb" class="mb-4">
@@ -331,13 +341,16 @@
                                     <input type="number" id="editEpisodeNum" min="1" class="form-control bg-dark text-light border-secondary"
                                            value="{{ ep.episode_number|default:'' }}" placeholder="e.g. 14">
                                 </div>
-                                <div class="col-sm-4">
-                                    <label class="form-label text-light">Type</label>
-                                    <select id="editEpisodeType" class="form-select bg-dark text-light border-secondary">
-                                        <option value="full" {% if ep.episode_type == 'full' or not ep.episode_type %}selected{% endif %}>Full</option>
-                                        <option value="trailer" {% if ep.episode_type == 'trailer' %}selected{% endif %}>Trailer</option>
-                                        <option value="bonus" {% if ep.episode_type == 'bonus' %}selected{% endif %}>Bonus</option>
-                                    </select>
+                                <div class="col-12 mt-2">
+                                    <label class="form-label text-light">Type <small class="text-muted fw-normal">(blank is valid — Enter to add custom)</small></label>
+                                    <input type="hidden" id="editEpisodeTypeHidden" value="{{ ep.episode_type|default:'' }}">
+                                    <div id="editTypeChipGroup" class="type-chip-group"
+                                         data-init="{{ ep.episode_type|default:'' }}"
+                                         data-network="{{ ep.podcast.network.slug }}">
+                                        <span class="type-chip" data-value="" data-builtin="true">Blank</span>
+                                        <!-- user-defined types injected from localStorage by JS -->
+                                        <input type="text" id="editTypeAddInput" class="type-add-input" placeholder="+ Add type…" maxlength="50">
+                                    </div>
                                 </div>
                             </div>
                         </div>
@@ -718,7 +731,7 @@
                 const titleInput = document.getElementById('editTitle').value.trim();
                 const seasonVal = document.getElementById('editSeason').value.trim();
                 const episodeNumVal = document.getElementById('editEpisodeNum').value.trim();
-                const episodeTypeVal = document.getElementById('editEpisodeType').value;
+                const episodeTypeVal = document.getElementById('editEpisodeTypeHidden').value;
 
                 const finalPayload = {
                     title: titleInput,
@@ -780,5 +793,66 @@
         })
         .catch(err => console.error("Audio check failed", err));
     }
+
+    /* ── Episode type chip selector (localStorage-backed) ──── */
+    (function () {
+        const typeChipGroup  = document.getElementById('editTypeChipGroup');
+        const typeAddInput   = document.getElementById('editTypeAddInput');
+        const typeHidden     = document.getElementById('editEpisodeTypeHidden');
+        if (!typeChipGroup) return;
+
+        const EP_TYPES_KEY = 'vecto_ep_types_' + typeChipGroup.dataset.network;
+
+        function loadEpTypes()      { try { return JSON.parse(localStorage.getItem(EP_TYPES_KEY)) || []; } catch { return []; } }
+        function saveEpTypes(types) { localStorage.setItem(EP_TYPES_KEY, JSON.stringify(types)); }
+        function escChip(s)         { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+
+        function selectTypeChip(value) {
+            typeHidden.value = value;
+            typeChipGroup.querySelectorAll('.type-chip').forEach(c => c.classList.toggle('selected', c.dataset.value === value));
+        }
+
+        function renderStoredChip(value) {
+            const chip = document.createElement('span');
+            chip.className = 'type-chip custom';
+            chip.dataset.value = value;
+            chip.innerHTML = `${escChip(value)}<span class="chip-remove" title="Remove"> &times;</span>`;
+            chip.addEventListener('click', e => {
+                if (e.target.classList.contains('chip-remove')) {
+                    e.stopPropagation();
+                    saveEpTypes(loadEpTypes().filter(t => t !== value));
+                    if (typeHidden.value === value) selectTypeChip('');
+                    chip.remove();
+                    return;
+                }
+                selectTypeChip(value);
+            });
+            typeChipGroup.insertBefore(chip, typeAddInput);
+        }
+
+        function addTypeChip(value) {
+            value = value.trim().slice(0, 50);
+            if (!value) return;
+            const existing = [...typeChipGroup.querySelectorAll('.type-chip')].find(c => c.dataset.value === value);
+            if (existing) { selectTypeChip(value); return; }
+            const types = loadEpTypes();
+            if (!types.includes(value)) { types.push(value); saveEpTypes(types); }
+            renderStoredChip(value);
+            selectTypeChip(value);
+        }
+
+        typeChipGroup.querySelector('.type-chip[data-builtin]').addEventListener('click', () => selectTypeChip(''));
+
+        const initVal = typeChipGroup.dataset.init || '';
+        const storedTypes = loadEpTypes();
+        if (initVal && !storedTypes.includes(initVal)) { storedTypes.push(initVal); saveEpTypes(storedTypes); }
+        storedTypes.forEach(t => renderStoredChip(t));
+
+        typeAddInput.addEventListener('keydown', e => {
+            if (e.key === 'Enter') { e.preventDefault(); addTypeChip(typeAddInput.value); typeAddInput.value = ''; }
+        });
+
+        selectTypeChip(initVal);
+    })();
 </script>
 {% endblock %}

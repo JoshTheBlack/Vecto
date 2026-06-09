@@ -683,6 +683,8 @@ def assign_default_tier(sender, instance, **kwargs):
 
 @receiver(post_save, sender=Episode)
 def queue_transcription_on_episode_save(sender, instance, **kwargs):
+    if not kwargs.get('created'):
+        return
     from django.conf import settings as django_settings
     from django.utils import timezone
     if not getattr(django_settings, 'WHISPER_ENABLED', False):

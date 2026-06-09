@@ -2154,7 +2154,9 @@ class QueueTranscriptionSignalTests(TestCase):
         mock_task.delay.assert_not_called()
 
     @mock.patch('pod_manager.tasks.transcribe_episode')
-    def test_requeues_after_failure(self, mock_task):
+    def test_no_requeue_on_update_after_failure(self, mock_task):
+        # Auto-queue only fires on creation. Failed transcripts must be manually
+        # re-queued by a network owner via the retranscribe API.
         ep = Episode.objects.create(
             podcast=self.pod, title='Ep4', pub_date=timezone.now(),
             raw_description='x', audio_url_subscriber='https://cdn.example.com/ep4.mp3',
@@ -2163,7 +2165,7 @@ class QueueTranscriptionSignalTests(TestCase):
         mock_task.reset_mock()
         ep.title = 'Retried'
         ep.save()
-        mock_task.delay.assert_called_once_with(ep.id)
+        mock_task.delay.assert_not_called()
 
     @mock.patch('pod_manager.tasks.transcribe_episode')
     def test_no_queue_when_whisper_disabled(self, mock_task):
@@ -2172,6 +2174,18 @@ class QueueTranscriptionSignalTests(TestCase):
                 podcast=self.pod, title='Ep5', pub_date=timezone.now(),
                 raw_description='x', audio_url_subscriber='https://cdn.example.com/ep5.mp3',
             )
+        mock_task.delay.assert_not_called()
+
+    @mock.patch('pod_manager.tasks.transcribe_episode')
+    def test_no_queue_on_episode_update(self, mock_task):
+        ep = Episode.objects.create(
+            podcast=self.pod, title='Ep6', pub_date=timezone.now(),
+            raw_description='x', audio_url_subscriber='https://cdn.example.com/ep6.mp3',
+        )
+        mock_task.delay.reset_mock()
+        # Simulates what the feed ingester does: update an existing episode
+        ep.title = 'Ep6 Updated'
+        ep.save()
         mock_task.delay.assert_not_called()
 
 

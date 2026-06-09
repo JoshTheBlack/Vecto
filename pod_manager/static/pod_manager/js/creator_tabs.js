@@ -93,18 +93,35 @@ function startAllLiveImports() {
 // ==========================================
 // TAB PERSISTENCE & AUTO-ACTIONS
 // ==========================================
+const TAB_PARAM_MAP = {
+    'network':      '#list-networks',
+    'shows':        '#list-shows',
+    'mixes':        '#list-mixes',
+    'merge':        '#list-merge',
+    'move':         '#list-move',
+    'inbox':        '#list-inbox',
+    'audit':        '#list-audit',
+    'sync':         '#list-sync',
+    'gdrive':       '#list-gdrive-recovery',
+    'transcripts':  '#list-transcripts',
+};
+const TAB_ID_MAP = Object.fromEntries(Object.entries(TAB_PARAM_MAP).map(([k, v]) => [v, k]));
+
 document.addEventListener('DOMContentLoaded', function() {
     const urlParams = new URLSearchParams(window.location.search);
-    let activeTabId = sessionStorage.getItem('activeCreatorTab');
+    let activeTabId = null;
 
     // 1. Force specific tabs based on URL context clues
     if (urlParams.has('merge_view')) {
         activeTabId = '#list-merge';
     } else if (urlParams.has('auto_import') || urlParams.has('show_q') || urlParams.has('show_sort') || urlParams.has('show_mix')) {
         activeTabId = '#list-shows';
+    } else if (urlParams.get('tab')) {
+        activeTabId = TAB_PARAM_MAP[urlParams.get('tab')] || null;
     } else if (window.location.hash) {
         activeTabId = window.location.hash;
     }
+    // No sessionStorage — Network tab is the default (active in HTML)
 
     // 2. Activate the correct tab instantly
     if (activeTabId) {
@@ -115,13 +132,16 @@ document.addEventListener('DOMContentLoaded', function() {
         }
     }
 
-    // 3. Remember the tab if the user clicks one manually
+    // 3. When the user clicks a tab, update ?tab=X in the URL so any form
+    //    submission on that tab will redirect back to the same tab.
     const tabElements = document.querySelectorAll('a[data-bs-toggle="list"]');
     tabElements.forEach(el => {
         el.addEventListener('shown.bs.tab', function (event) {
             const targetHref = event.target.getAttribute('href');
-            sessionStorage.setItem('activeCreatorTab', targetHref);
-            history.replaceState(null, null, window.location.pathname + window.location.search + targetHref);
+            const tabParam = TAB_ID_MAP[targetHref] || targetHref.replace('#list-', '');
+            const params = new URLSearchParams(window.location.search);
+            params.set('tab', tabParam);
+            history.replaceState(null, null, window.location.pathname + '?' + params.toString() + targetHref);
         });
     });
 

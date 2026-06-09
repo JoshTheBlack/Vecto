@@ -125,3 +125,65 @@ def submit_episode_edit(request, episode_id):
         messages.error(request, "Failed to submit edit.")
 
     return redirect('episode_detail', episode_id=ep.id)
+
+
+@require_POST
+@login_required(login_url='/login/')
+def submit_speaker_labels(request, episode_id):
+    """Dedicated endpoint for speaker label edits.
+
+    Creates an EpisodeEditSuggestion whose suggested_data contains ONLY
+    {'speaker_mappings': {...}} so the inbox diff shows a targeted speaker
+    section rather than a full episode field diff.
+    """
+    import json as _json
+    from django.http import JsonResponse
+    ep = get_object_or_404(Episode, id=episode_id)
+
+    try:
+        body = _json.loads(request.body or '{}')
+    except (ValueError, TypeError):
+        return JsonResponse({'error': 'Invalid JSON'}, status=400)
+
+    mappings = body.get('speaker_mappings', {})
+    if not mappings or not isinstance(mappings, dict):
+        return JsonResponse({'error': 'No speaker mappings provided'}, status=400)
+
+    safe_mappings = {str(k)[:20]: str(v)[:80] for k, v in mappings.items() if str(k).strip()}
+    if not safe_mappings:
+        return JsonResponse({'error': 'No valid mappings'}, status=400)
+
+    network = ep.podcast.network
+    membership, _ = NetworkMembership.objects.get_or_create(user=request.user, network=network)
+    is_trusted = membership.trust_score >= network.auto_approve_trust_threshold
+
+    # Capture existing mappings as original_data so rollback is meaningful
+    existing_mappings = {}
+    try:
+        from pod_manager.services.transcription import transcript_path
+        if hasattr(ep, 'transcript') and ep.transcript.words_json_file:
+            words_path = transcript_path(ep.id, 'words')
+            doc = _json.loads(words_path.read_text(encoding='utf-8'))
+            existing_mappings = doc.get('speaker_mappings', {})
+    except Exception:
+        pass
+
+    edit = EpisodeEditSuggestion.objects.create(
+        episode=ep,
+        user=request.user,
+        suggested_data={'speaker_mappings': safe_mappings},
+        original_data={'speaker_mappings': existing_mappings},
+        status=EpisodeEditSuggestion.Status.APPROVED if is_trusted else EpisodeEditSuggestion.Status.PENDING,
+        resolved_at=timezone.now() if is_trusted else None,
+    )
+
+    if is_trusted:
+        from pod_manager.services.edits import apply_approved_edit
+        apply_approved_edit(ep, {'speaker_mappings': safe_mappings})
+        membership.trust_score += 5
+        membership.save()
+        from pod_manager.tasks import task_rebuild_episode_fragments
+        task_rebuild_episode_fragments.delay(ep.id, request.build_absolute_uri('/')[:-1])
+        return JsonResponse({'status': 'approved', 'edit_id': edit.id})
+
+    return JsonResponse({'status': 'pending', 'edit_id': edit.id})

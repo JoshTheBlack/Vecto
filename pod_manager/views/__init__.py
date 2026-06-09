@@ -41,6 +41,7 @@ from .feeds import (
 from .creator import (
     creator_settings,
     submit_episode_edit,
+    submit_speaker_labels,
     publish_episode,
     manage_episode,
     _handle_approve_edit,
@@ -92,3 +93,6 @@ from .creator.gdrive_recovery import (
     gdrive_recovery_stream,
     gdrive_recovery_rewind,
 )
+
+from .transcripts import serve_transcript
+from .api import backfill_transcripts_api, retranscribe_episode_api

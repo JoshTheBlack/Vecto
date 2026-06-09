@@ -118,7 +118,64 @@
                                                 <label class="form-label text-muted small fw-bold">Show-Specific Private Footer (Optional)</label>
                                                 <textarea name="show_footer_private" class="form-control bg-dark text-light border-secondary" rows="2">{{ show.show_footer_private }}</textarea>
                                             </div>
-                                            
+
+                                            <h6 class="fw-semibold mb-2 mt-3 text-warning border-bottom border-secondary pb-1">
+                                                <i class="bi bi-file-earmark-text me-1"></i>Transcription Overrides
+                                                <span class="text-muted fw-normal small ms-1">(leave blank to inherit network defaults)</span>
+                                            </h6>
+                                            <div class="row g-2 mb-2">
+                                                <div class="col-md-5">
+                                                    <label class="form-label text-muted small fw-bold mb-1">Whisper Model</label>
+                                                    <select name="whisper_model" class="form-select form-select-sm bg-dark text-light border-secondary">
+                                                        <option value="">— inherit network ({{ current_network.whisper_model }}) —</option>
+                                                        <option value="tiny"      {% if show.whisper_model == "tiny" %}selected{% endif %}>tiny</option>
+                                                        <option value="base"      {% if show.whisper_model == "base" %}selected{% endif %}>base</option>
+                                                        <option value="small"     {% if show.whisper_model == "small" %}selected{% endif %}>small</option>
+                                                        <option value="medium"    {% if show.whisper_model == "medium" %}selected{% endif %}>medium</option>
+                                                        <option value="medium.en" {% if show.whisper_model == "medium.en" %}selected{% endif %}>medium.en</option>
+                                                        <option value="large"     {% if show.whisper_model == "large" %}selected{% endif %}>large</option>
+                                                        <option value="large-v2"  {% if show.whisper_model == "large-v2" %}selected{% endif %}>large-v2</option>
+                                                        <option value="large-v3"  {% if show.whisper_model == "large-v3" %}selected{% endif %}>large-v3</option>
+                                                    </select>
+                                                </div>
+                                                <div class="col-md-3">
+                                                    <label class="form-label text-muted small fw-bold mb-1">Language</label>
+                                                    <input type="text" name="whisper_language"
+                                                           value="{{ show.whisper_language|default:'' }}"
+                                                           class="form-control form-control-sm bg-dark text-light border-secondary"
+                                                           placeholder="inherit ({{ current_network.whisper_language }})" maxlength="10">
+                                                </div>
+                                            </div>
+                                            <div class="row g-2 mb-2">
+                                                <div class="col-md-3">
+                                                    <label class="form-label text-muted small fw-bold mb-1">Min Speakers</label>
+                                                    <input type="number" name="whisper_min_speakers"
+                                                           value="{{ show.whisper_min_speakers|default:'' }}"
+                                                           class="form-control form-control-sm bg-dark text-light border-secondary"
+                                                           placeholder="{{ current_network.whisper_min_speakers }}" min="1" max="20">
+                                                </div>
+                                                <div class="col-md-3">
+                                                    <label class="form-label text-muted small fw-bold mb-1">Default</label>
+                                                    <input type="number" name="whisper_num_speakers"
+                                                           value="{{ show.whisper_num_speakers|default:'' }}"
+                                                           class="form-control form-control-sm bg-dark text-light border-secondary"
+                                                           placeholder="{{ current_network.whisper_num_speakers }}" min="1" max="20">
+                                                </div>
+                                                <div class="col-md-3">
+                                                    <label class="form-label text-muted small fw-bold mb-1">Max Speakers</label>
+                                                    <input type="number" name="whisper_max_speakers"
+                                                           value="{{ show.whisper_max_speakers|default:'' }}"
+                                                           class="form-control form-control-sm bg-dark text-light border-secondary"
+                                                           placeholder="{{ current_network.whisper_max_speakers }}" min="1" max="20">
+                                                </div>
+                                            </div>
+                                            <div class="mb-3">
+                                                <label class="form-label text-muted small fw-bold mb-1">Initial Prompt</label>
+                                                <textarea name="whisper_initial_prompt" rows="2"
+                                                          class="form-control form-control-sm bg-dark text-light border-secondary"
+                                                          placeholder="inherit network prompt (or leave blank)">{{ show.whisper_initial_prompt|default:'' }}</textarea>
+                                            </div>
+
                                             <button type="submit" class="btn btn-outline-warning btn-sm fw-bold"><i class="bi bi-floppy"></i> Save Show Settings</button>
                                         </form>
                                         

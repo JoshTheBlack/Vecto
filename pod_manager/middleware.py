@@ -52,7 +52,8 @@ class NetworkMiddleware:
                 path.startswith('/patreon') or
                 path.startswith('/staff') or
                 path.startswith('/static') or
-                path.startswith('/media')):
+                path.startswith('/media') or
+                path.startswith('/transcripts')):
                 logger.debug(f"Allowing whitelisted path without network: {path}")
                 pass
             elif path == '/':

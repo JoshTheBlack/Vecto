@@ -517,8 +517,14 @@ def start_impersonation(request, user_id):
     return redirect('home')
 
 
-@staff_member_required
 def stop_impersonation(request):
+    # @staff_member_required can't be used here: ImpersonationMiddleware has already swapped
+    # request.user to the impersonated (non-staff) user by the time the decorator runs.
+    # Authorize against request.impersonator (the real staff user) instead.
+    real_user = getattr(request, 'impersonator', None) or request.user
+    if not getattr(real_user, 'is_authenticated', False) or not real_user.is_staff:
+        return redirect('/admin/login/?next=/impersonate/stop/')
+
     if 'impersonated_user_id' in request.session:
         del request.session['impersonated_user_id']
         messages.success(request, "Impersonation ended. Welcome back.")

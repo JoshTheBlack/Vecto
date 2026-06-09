@@ -144,6 +144,25 @@ def _handle_approve_edit(request, current_network):
             edit.suggested_data['episode_type'] = new_val
             points += 1
 
+    # --- SPEAKER LABEL APPROVAL ---
+    # Speaker label edits carry suggested_data = {"speaker_mappings": {...}}
+    # and bypass the normal field-approval flow — the whole mapping is applied atomically.
+    speaker_mappings = edit.suggested_data.get('speaker_mappings')
+    if speaker_mappings and isinstance(speaker_mappings, dict) and request.POST.get('approve_speaker_labels') == 'on':
+        try:
+            from pod_manager.services.transcription import apply_speaker_labels
+            apply_speaker_labels(ep.id, speaker_mappings)
+            # Bust the RSS fragment cache so the updated transcript is picked up
+            network = ep.podcast.network
+            if network.custom_domain:
+                _base = f"https://{network.custom_domain}".rstrip('/')
+            else:
+                _base = getattr(settings, 'SITE_URL', 'http://localhost:8000').rstrip('/')
+            task_rebuild_episode_fragments.delay(ep.id, _base)
+            points += 1
+        except Exception as e:
+            logger.error("Speaker label approval failed for episode %d: %s", ep.id, e)
+
     # --- THE ZERO-APPROVAL TRAP ---
     if points == 0:
         edit.status = EpisodeEditSuggestion.Status.REJECTED
@@ -158,13 +177,17 @@ def _handle_approve_edit(request, current_network):
     if points == 3:
         points += 2
 
-    # Lock metadata and finalize approval
-    ep.is_metadata_locked = True
-    ep.save()
+    # Speaker-only edits don't touch Episode model fields — skip lock + save
+    is_speaker_only = set(edit.suggested_data.keys()) == {'speaker_mappings'}
+    if not is_speaker_only:
+        ep.is_metadata_locked = True
+        ep.save()
 
     # Rewrite original_data to the pre-approval snapshot so single-edit
     # rollback restores the state that existed right before this approval.
-    edit.original_data = pre_approval_snapshot
+    # For speaker-only edits the original_data is already the prior mappings.
+    if not is_speaker_only:
+        edit.original_data = pre_approval_snapshot
     edit.status = EpisodeEditSuggestion.Status.APPROVED
     edit.resolved_at = timezone.now()
     edit.save()
@@ -308,6 +331,19 @@ def handle_update_network(request, current_network):
     current_network.description_cut_triggers = request.POST.get('description_cut_triggers', '')
     current_network.global_footer_public = request.POST.get('footer_public', '')
     current_network.global_footer_private = request.POST.get('footer_private', '')
+
+    # Transcription defaults
+    current_network.whisper_initial_prompt = request.POST.get('whisper_initial_prompt', '')
+    current_network.whisper_model    = request.POST.get('whisper_model', 'medium.en').strip() or 'medium.en'
+    current_network.whisper_language = request.POST.get('whisper_language', 'en').strip() or 'en'
+    for field in ('whisper_min_speakers', 'whisper_num_speakers', 'whisper_max_speakers'):
+        raw = request.POST.get(field)
+        if raw is not None:
+            try:
+                setattr(current_network, field, int(raw))
+            except (TypeError, ValueError):
+                pass
+
     current_network.save()
     messages.success(request, f"{current_network.name} settings saved successfully!")
 
@@ -326,6 +362,21 @@ def handle_update_show(request, current_network):
     show.required_tier = get_object_or_404(PatreonTier, id=tier_id, network=current_network) if tier_id else None
     show.show_footer_public = request.POST.get('show_footer_public', '')
     show.show_footer_private = request.POST.get('show_footer_private', '')
+
+    # Transcription overrides — blank/missing = null (inherit from network)
+    prompt_raw = request.POST.get('whisper_initial_prompt', None)
+    show.whisper_initial_prompt = prompt_raw if prompt_raw is not None else None
+    model_raw = request.POST.get('whisper_model', '').strip()
+    show.whisper_model    = model_raw or None
+    lang_raw = request.POST.get('whisper_language', '').strip()
+    show.whisper_language = lang_raw or None
+    for field in ('whisper_min_speakers', 'whisper_num_speakers', 'whisper_max_speakers'):
+        raw = request.POST.get(field, '').strip()
+        try:
+            setattr(show, field, int(raw) if raw else None)
+        except (TypeError, ValueError):
+            setattr(show, field, None)
+
     show.save()
     messages.success(request, f"{show.title} updated successfully!")
 

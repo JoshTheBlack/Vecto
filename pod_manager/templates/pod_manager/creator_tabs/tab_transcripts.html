@@ -1,0 +1,300 @@
+<div class="tab-pane fade {% if request.GET.tab == 'transcripts' %}show active{% endif %}" id="list-transcripts" role="tabpanel" aria-labelledby="list-transcripts-list">
+
+    <div class="card bg-dark border-secondary shadow-sm mt-4 mb-4">
+        <div class="card-body">
+
+            <div class="d-flex justify-content-between align-items-start mb-1">
+                <h5 class="text-warning mb-0"><i class="bi bi-file-earmark-text me-2"></i>Transcript Backfill</h5>
+            </div>
+            <p class="text-muted small mb-4">
+                Queue transcription for episodes that have subscriber audio but no completed transcript.
+                Episodes already pending, processing, or completed are skipped automatically.
+            </p>
+
+            <!-- Podcast picker -->
+            <div class="mb-4">
+                <div class="d-flex justify-content-between align-items-center mb-2">
+                    <label class="form-label text-light fw-semibold mb-0">Podcasts to backfill</label>
+                    <div class="d-flex gap-1">
+                        <button type="button" id="transcriptSelectAll" class="btn btn-sm btn-outline-secondary py-0 px-2">Select All</button>
+                        <button type="button" id="transcriptDeselectAll" class="btn btn-sm btn-outline-secondary py-0 px-2">Deselect All</button>
+                    </div>
+                </div>
+                <div class="row row-cols-1 row-cols-md-2 g-2" id="podcastCheckboxes">
+                    {% for podcast in network_podcasts %}
+                    <div class="col">
+                        <label class="podcast-check-label d-flex align-items-center gap-2 border border-secondary rounded px-3 py-2 h-100 cursor-pointer"
+                               for="pc_{{ podcast.slug }}" style="cursor:pointer;">
+                            <input class="form-check-input flex-shrink-0 podcast-check mt-0"
+                                   type="checkbox"
+                                   value="{{ podcast.slug }}"
+                                   id="pc_{{ podcast.slug }}"
+                                   checked>
+                            <span class="text-light small">
+                                {{ podcast.title }}
+                                <span class="text-muted ms-1">({{ podcast.episode_count }} ep{{ podcast.episode_count|pluralize }})</span>
+                            </span>
+                        </label>
+                    </div>
+                    {% empty %}
+                    <div class="col">
+                        <p class="text-muted small mb-0">No podcasts found for this network.</p>
+                    </div>
+                    {% endfor %}
+                </div>
+            </div>
+
+            <!-- Stagger setting -->
+            <div class="mb-4" style="max-width:300px;">
+                <label for="backfillStagger" class="form-label text-light fw-semibold mb-1">
+                    Dispatch stagger
+                    <span class="text-muted fw-normal small ms-1"
+                          data-bs-toggle="tooltip"
+                          title="Seconds of countdown delay added between each Celery task. Prevents overloading Whisper during a large backfill.">
+                        <i class="bi bi-info-circle"></i>
+                    </span>
+                </label>
+                <div class="input-group input-group-sm">
+                    <input type="number" id="backfillStagger"
+                           class="form-control bg-dark text-light border-secondary"
+                           value="30" min="0" max="600" step="10">
+                    <span class="input-group-text bg-dark text-muted border-secondary">seconds</span>
+                </div>
+            </div>
+
+            <!-- Transcription options panel -->
+            <div class="mb-3">
+                <button type="button" class="btn btn-sm btn-outline-secondary" id="toggleBackfillOptions">
+                    <i class="bi bi-sliders me-1"></i>Transcription Options
+                    <i class="bi bi-chevron-down ms-1" id="backfillOptionsChevron"></i>
+                </button>
+            </div>
+            <div id="backfillOptionsPanel" class="d-none mb-4">
+                <div class="border border-secondary rounded p-3">
+                    <p class="text-muted small mb-3">
+                        Override defaults for this backfill run only. Leave blank to use network/podcast defaults.
+                    </p>
+                    <div class="row g-3 mb-3">
+                        <div class="col-md-5">
+                            <label class="form-label text-muted small fw-bold mb-1">Whisper Model</label>
+                            <select id="backfillModel" class="form-select form-select-sm bg-dark text-light border-secondary">
+                                <option value="">— use network/podcast default —</option>
+                                <option value="tiny">tiny (fastest)</option>
+                                <option value="base">base</option>
+                                <option value="small">small</option>
+                                <option value="medium">medium</option>
+                                <option value="medium.en">medium.en</option>
+                                <option value="large">large</option>
+                                <option value="large-v2">large-v2</option>
+                                <option value="large-v3">large-v3 (most accurate)</option>
+                            </select>
+                        </div>
+                        <div class="col-md-3">
+                            <label class="form-label text-muted small fw-bold mb-1">Language</label>
+                            <input type="text" id="backfillLanguage" placeholder="inherit"
+                                   class="form-control form-control-sm bg-dark text-light border-secondary" maxlength="10">
+                        </div>
+                    </div>
+                    <div class="row g-3 mb-3">
+                        <div class="col-md-3">
+                            <label class="form-label text-muted small fw-bold mb-1">Min Speakers</label>
+                            <input type="number" id="backfillMinSpeakers" placeholder="inherit"
+                                   class="form-control form-control-sm bg-dark text-light border-secondary" min="1" max="20">
+                        </div>
+                        <div class="col-md-3">
+                            <label class="form-label text-muted small fw-bold mb-1">Default Speakers</label>
+                            <input type="number" id="backfillNumSpeakers" placeholder="inherit"
+                                   class="form-control form-control-sm bg-dark text-light border-secondary" min="1" max="20">
+                        </div>
+                        <div class="col-md-3">
+                            <label class="form-label text-muted small fw-bold mb-1">Max Speakers</label>
+                            <input type="number" id="backfillMaxSpeakers" placeholder="inherit"
+                                   class="form-control form-control-sm bg-dark text-light border-secondary" min="1" max="20">
+                        </div>
+                    </div>
+                    <div>
+                        <label class="form-label text-muted small fw-bold mb-1">Initial Prompt</label>
+                        <textarea id="backfillInitialPrompt" rows="2"
+                                  class="form-control form-control-sm bg-dark text-light border-secondary"
+                                  placeholder="inherit network/podcast prompt"></textarea>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Run button + spinner -->
+            <div class="d-flex align-items-center gap-3 flex-wrap mb-3">
+                <button type="button" id="runBackfillBtn"
+                        class="btn fw-bold"
+                        style="background:var(--vecto-primary);color:var(--vecto-primary-text);">
+                    <i class="bi bi-play-circle me-2"></i>Queue Backfill
+                </button>
+                <div id="backfillSpinnerWrap" class="d-none d-flex align-items-center gap-2">
+                    <div class="spinner-border spinner-border-sm" role="status"
+                         style="color:var(--vecto-primary);"></div>
+                    <span class="text-muted small" id="backfillStatusText"></span>
+                </div>
+            </div>
+
+            <!-- Result panel -->
+            <div id="backfillResult" class="d-none">
+                <div class="border border-secondary rounded p-3">
+                    <div class="d-flex align-items-center gap-2 mb-2">
+                        <i class="bi bi-check-circle-fill text-success"></i>
+                        <span class="text-light fw-semibold">Backfill queued</span>
+                    </div>
+                    <ul class="mb-0 small ps-3" id="backfillResultList"
+                        style="color:var(--vecto-surface-muted);"></ul>
+                </div>
+            </div>
+
+            <!-- Error panel -->
+            <div id="backfillErrorPanel" class="d-none mt-2">
+                <div class="alert alert-danger border-0 py-2 small mb-0" id="backfillErrorText"></div>
+            </div>
+
+        </div>
+    </div>
+
+</div>
+
+<script>
+(function () {
+    function getCsrf() {
+        const el = document.querySelector('[name=csrfmiddlewaretoken]');
+        if (el) return el.value;
+        const cookie = document.cookie.split(';').find(c => c.trim().startsWith('csrftoken='));
+        return cookie ? cookie.trim().split('=')[1] : '';
+    }
+
+    function initTranscriptBackfill() {
+        const runBtn       = document.getElementById('runBackfillBtn');
+        const staggerInput = document.getElementById('backfillStagger');
+        const spinnerWrap  = document.getElementById('backfillSpinnerWrap');
+        const statusText   = document.getElementById('backfillStatusText');
+        const resultPanel  = document.getElementById('backfillResult');
+        const resultList   = document.getElementById('backfillResultList');
+        const errorPanel   = document.getElementById('backfillErrorPanel');
+        const errorText    = document.getElementById('backfillErrorText');
+
+        if (!runBtn) return;
+
+        // Options panel toggle
+        const toggleBtn      = document.getElementById('toggleBackfillOptions');
+        const optionsPanel   = document.getElementById('backfillOptionsPanel');
+        const optionsChevron = document.getElementById('backfillOptionsChevron');
+        if (toggleBtn) {
+            toggleBtn.addEventListener('click', () => {
+                const open = !optionsPanel.classList.contains('d-none');
+                optionsPanel.classList.toggle('d-none', open);
+                optionsChevron.className = open ? 'bi bi-chevron-down ms-1' : 'bi bi-chevron-up ms-1';
+            });
+        }
+
+        // Initialise Bootstrap tooltips in this tab
+        document.querySelectorAll('#list-transcripts [data-bs-toggle="tooltip"]').forEach(el => {
+            new bootstrap.Tooltip(el, { trigger: 'hover' });
+        });
+
+        document.getElementById('transcriptSelectAll').addEventListener('click', () => {
+            document.querySelectorAll('.podcast-check').forEach(c => c.checked = true);
+            syncCheckboxStyles();
+        });
+        document.getElementById('transcriptDeselectAll').addEventListener('click', () => {
+            document.querySelectorAll('.podcast-check').forEach(c => c.checked = false);
+            syncCheckboxStyles();
+        });
+
+        // Highlight selected rows
+        function syncCheckboxStyles() {
+            document.querySelectorAll('.podcast-check').forEach(cb => {
+                const label = cb.closest('.podcast-check-label');
+                if (!label) return;
+                label.style.borderColor = cb.checked ? 'var(--vecto-primary)' : '';
+                label.style.backgroundColor = cb.checked ? 'rgba(255,193,7,0.05)' : '';
+            });
+        }
+        document.querySelectorAll('.podcast-check').forEach(cb => {
+            cb.addEventListener('change', syncCheckboxStyles);
+        });
+        syncCheckboxStyles();
+
+        runBtn.addEventListener('click', async () => {
+            const slugs = [...document.querySelectorAll('.podcast-check:checked')].map(c => c.value);
+            if (!slugs.length) {
+                errorPanel.classList.remove('d-none');
+                errorText.textContent = 'Select at least one podcast before queuing.';
+                return;
+            }
+
+            const stagger = Math.max(0, parseInt(staggerInput.value) || 30);
+
+            // Collect optional overrides from the options panel
+            const transcriptionOpts = {};
+            const modelEl    = document.getElementById('backfillModel');
+            const langEl     = document.getElementById('backfillLanguage');
+            const promptEl   = document.getElementById('backfillInitialPrompt');
+            const minSpEl    = document.getElementById('backfillMinSpeakers');
+            const numSpEl    = document.getElementById('backfillNumSpeakers');
+            const maxSpEl    = document.getElementById('backfillMaxSpeakers');
+            if (modelEl  && modelEl.value)               transcriptionOpts.model           = modelEl.value;
+            if (langEl   && langEl.value.trim())         transcriptionOpts.language        = langEl.value.trim();
+            if (promptEl && promptEl.value.trim())       transcriptionOpts.initial_prompt  = promptEl.value.trim();
+            if (minSpEl  && minSpEl.value)               transcriptionOpts.min_speakers    = parseInt(minSpEl.value);
+            if (numSpEl  && numSpEl.value)               transcriptionOpts.num_speakers    = parseInt(numSpEl.value);
+            if (maxSpEl  && maxSpEl.value)               transcriptionOpts.max_speakers    = parseInt(maxSpEl.value);
+
+            runBtn.disabled = true;
+            spinnerWrap.classList.remove('d-none');
+            resultPanel.classList.add('d-none');
+            errorPanel.classList.add('d-none');
+            resultList.innerHTML = '';
+
+            let totalQueued = 0;
+            const errors = [];
+
+            for (const slug of slugs) {
+                statusText.textContent = `Queuing "${slug}"…`;
+                try {
+                    const resp = await fetch("{% url 'backfill_transcripts_api' %}", {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                            'X-CSRFToken': getCsrf(),
+                        },
+                        body: JSON.stringify({ podcast_slug: slug, stagger, ...transcriptionOpts }),
+                    });
+                    const data = await resp.json();
+                    if (!resp.ok) throw new Error(data.error || `HTTP ${resp.status}`);
+                    totalQueued += data.queued;
+                    const li = document.createElement('li');
+                    li.innerHTML = `<strong style="color:var(--vecto-surface-text);">${slug}</strong> — ${data.queued} episode(s) queued`;
+                    resultList.appendChild(li);
+                } catch (err) {
+                    errors.push(`<strong>${slug}:</strong> ${err.message}`);
+                }
+            }
+
+            runBtn.disabled = false;
+            spinnerWrap.classList.add('d-none');
+
+            // Summary row at top of list
+            const summary = document.createElement('li');
+            summary.className = 'mb-1 pb-1 border-bottom border-secondary';
+            summary.innerHTML = `<strong style="color:var(--vecto-primary);">${totalQueued} total episode(s) queued</strong> across ${slugs.length} podcast(s)`;
+            resultList.prepend(summary);
+            resultPanel.classList.remove('d-none');
+
+            if (errors.length) {
+                errorPanel.classList.remove('d-none');
+                errorText.innerHTML = errors.join('<br>');
+            }
+        });
+    }
+
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', initTranscriptBackfill);
+    } else {
+        initTranscriptBackfill();
+    }
+})();
+</script>

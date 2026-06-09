@@ -2,8 +2,11 @@
 Listener-facing views: home/episode browser, feed listing, episode detail,
 and the per-tenant user profile dashboard.
 """
+import json as _json
 import logging
+import os
 
+from django.conf import settings
 from django.contrib.auth.decorators import login_required
 from django.core.paginator import Paginator
 from django.db.models import Q
@@ -15,7 +18,7 @@ from django.utils.dateparse import parse_date
 
 from ...models import (
     PatronProfile, NetworkMembership, Podcast, Episode, NetworkMix, UserMix,
-    EpisodeEditSuggestion,
+    EpisodeEditSuggestion, Transcript,
 )
 from ...services.access import _evaluate_access, _build_episode_description, _evaluate_mix_access
 from ...services.analytics import get_live_user_stats
@@ -54,6 +57,7 @@ def home(request):
     search_query = request.GET.get('q', '').strip()
     older_than = request.GET.get('older_than', '').strip()
     newer_than = request.GET.get('newer_than', '').strip()
+    include_transcripts = request.GET.get('transcripts') == '1'
 
     tenant_profile = getattr(request, 'tenant_profile', None)
 
@@ -75,7 +79,10 @@ def home(request):
     if show_slug:
         query = query.filter(podcast__slug=show_slug)
     if search_query:
-        query = query.filter(Q(title__icontains=search_query) | Q(clean_description__icontains=search_query))
+        base_q = Q(title__icontains=search_query) | Q(clean_description__icontains=search_query)
+        if include_transcripts:
+            base_q |= Q(transcript__transcript_text__icontains=search_query, transcript__status='completed')
+        query = query.filter(base_q)
 
     if newer_than:
         parsed_newer = parse_date(newer_than)
@@ -115,6 +122,7 @@ def home(request):
         'current_filter': show_slug, 'current_network': request.network,
         'search_query': search_query, 'tenant_profile': tenant_profile,
         'older_than': older_than, 'newer_than': newer_than,
+        'include_transcripts': include_transcripts,
         'custom_page_range': custom_page_range,
         'user_networks': user_networks,
         'selected_networks': selected_networks,
@@ -239,10 +247,42 @@ def episode_detail(request, episode_id):
         membership = request.user.network_memberships.filter(network=ep.podcast.network).first()
         trust_score = membership.trust_score if membership else 0
 
+    transcript = getattr(ep, 'transcript', None)
+    transcript_html = None
+    transcript_speakers = []
+    transcript_speaker_names = {}
+    if transcript and transcript.status == Transcript.Status.COMPLETED and transcript.html_file:
+        html_path = os.path.join(settings.MEDIA_ROOT, transcript.html_file)
+        try:
+            with open(html_path, 'r', encoding='utf-8') as f:
+                transcript_html = f.read()
+        except OSError:
+            pass
+
+    if transcript and transcript.status == Transcript.Status.COMPLETED and transcript.words_json_file:
+        words_path = os.path.join(settings.MEDIA_ROOT, transcript.words_json_file)
+        try:
+            with open(words_path, 'r', encoding='utf-8') as f:
+                words_doc = _json.load(f)
+            seen = set()
+            for seg in words_doc.get('segments', []):
+                sp = seg.get('speaker', '')
+                if sp and sp not in seen:
+                    seen.add(sp)
+                    transcript_speakers.append(sp)
+            transcript_speaker_names = words_doc.get('speaker_mappings', {})
+        except (OSError, _json.JSONDecodeError, ValueError):
+            pass
+
     return render(request, 'pod_manager/episode_detail.html', {
         'ep': ep,
         'is_owner': is_owner,
         'trust_score': trust_score,
+        'transcript': transcript,
+        'transcript_html': transcript_html,
+        'transcript_speakers': transcript_speakers,
+        'transcript_speaker_names': transcript_speaker_names,
+        'transcript_speaker_names_json': _json.dumps(transcript_speaker_names),
     })
 
 

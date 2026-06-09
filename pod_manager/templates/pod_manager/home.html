@@ -15,7 +15,7 @@
 
         <div id="next-page-data" data-next="{% if page_obj.has_next %}{{ page_obj.next_page_number }}{% endif %}"></div>
 
-        <form method="GET" action="{% url 'home' %}" class="d-flex flex-wrap gap-2 mb-4 align-items-end">
+        <form method="GET" action="{% url 'home' %}" id="searchForm" class="mb-3">
             {% for slug in selected_networks %}
                 <input type="hidden" name="network" value="{{ slug }}">
             {% endfor %}
@@ -23,29 +23,67 @@
                 <input type="hidden" name="show" value="{{ current_filter }}">
             {% endif %}
 
-            <div class="flex-grow-1" style="min-width: 250px;">
-                <label class="form-label text-light small mb-1"><i class="bi bi-search"></i> Keyword Search</label>
-                <div class="input-group">
-                    <input type="text" name="q" class="form-control bg-dark text-light border-secondary" placeholder="Search episodes..." value="{{ search_query }}">
+            <div class="search-bar{% if newer_than or older_than %} search-bar-expanded{% endif %}" id="searchBarEl">
+                <span class="search-bar-lead-icon"><i class="bi bi-search"></i></span>
+
+                <input type="text" name="q" id="searchInput"
+                       class="search-bar-input"
+                       placeholder="Search episodes..."
+                       autocomplete="off"
+                       value="{{ search_query }}">
+
+                <div class="search-bar-tools">
+                    <span class="search-bar-divider"></span>
+
+                    <button type="button"
+                            class="search-bar-tool-btn{% if newer_than or older_than %} active{% endif %}"
+                            id="dateToggleBtn"
+                            data-bs-toggle="tooltip"
+                            data-bs-placement="bottom"
+                            title="Date Filters">
+                        <i class="bi bi-calendar3"></i>
+                    </button>
+
+                    <button type="button"
+                            class="search-bar-tool-btn{% if include_transcripts %} active{% endif %}"
+                            id="transcriptToggleBtn"
+                            data-bs-toggle="tooltip"
+                            data-bs-placement="bottom"
+                            title="Search Within Transcripts">
+                        <i class="bi bi-chat-quote"></i>
+                    </button>
+
+                    <button type="submit" class="search-bar-submit" aria-label="Search">
+                        <i class="bi bi-arrow-right-short" style="font-size:1.35rem;"></i>
+                    </button>
                 </div>
             </div>
 
-            <div style="width: 155px;">
-                <label class="form-label text-light small mb-1"><i class="bi bi-calendar-plus"></i> Newer Than</label>
-                <input type="date" name="newer_than" class="form-control bg-dark text-light border-secondary text-uppercase px-2" value="{{ newer_than }}">
+            <div id="dateFilterPanel" class="search-bar-expansion{% if not newer_than and not older_than %} d-none{% endif %}">
+                <div class="d-flex flex-wrap gap-4 align-items-end">
+                    <div>
+                        <label class="form-label small mb-1" style="color:var(--vecto-surface-muted);">
+                            <i class="bi bi-calendar-plus me-1"></i>Newer Than
+                        </label>
+                        <input type="date" name="newer_than" class="date-filter-input" value="{{ newer_than }}">
+                    </div>
+                    <div>
+                        <label class="form-label small mb-1" style="color:var(--vecto-surface-muted);">
+                            <i class="bi bi-calendar-minus me-1"></i>Older Than
+                        </label>
+                        <input type="date" name="older_than" class="date-filter-input" value="{{ older_than }}">
+                    </div>
+                </div>
             </div>
 
-            <div style="width: 155px;">
-                <label class="form-label text-light small mb-1"><i class="bi bi-calendar-minus"></i> Older Than</label>
-                <input type="date" name="older_than" class="form-control bg-dark text-light border-secondary text-uppercase px-2" value="{{ older_than }}">
+            {% if search_query or older_than or newer_than or include_transcripts %}
+            <div class="mt-2 ps-1">
+                <a href="{% url 'home' %}?{% for slug in selected_networks %}network={{ slug }}&{% endfor %}{% if current_filter %}show={{ current_filter }}{% endif %}"
+                   class="small text-decoration-none" style="color:var(--vecto-bg-muted);">
+                    <i class="bi bi-x-circle me-1"></i>Clear filters
+                </a>
             </div>
-
-            <div class="d-flex">
-                <button type="submit" class="btn btn-warning fw-bold">Filter</button>
-                {% if search_query or older_than or newer_than %}
-                    <a href="{% url 'home' %}?{% for slug in selected_networks %}network={{ slug }}&{% endfor %}{% if current_filter %}show={{ current_filter }}{% endif %}" class="btn btn-outline-secondary ms-2">Clear</a>
-                {% endif %}
-            </div>
+            {% endif %}
         </form>
 
         <div id="episodes-container">
@@ -116,7 +154,7 @@
         {% if page_obj.number > 1 %}
             <li class="page-item">
                 <a class="page-link bg-dark text-warning border-secondary" 
-                   href="?page=1{% for slug in selected_networks %}&network={{ slug }}{% endfor %}{% if current_filter %}&show={{ current_filter }}{% endif %}{% if search_query %}&q={{ search_query }}{% endif %}">
+                   href="?page=1{% for slug in selected_networks %}&network={{ slug }}{% endfor %}{% if current_filter %}&show={{ current_filter }}{% endif %}{% if search_query %}&q={{ search_query }}{% endif %}{% if include_transcripts %}&transcripts=1{% endif %}{% if older_than %}&older_than={{ older_than }}{% endif %}{% if newer_than %}&newer_than={{ newer_than }}{% endif %}">
                    &laquo; First
                 </a>
             </li>
@@ -125,7 +163,7 @@
         {% if page_obj.has_previous %}
             <li class="page-item">
                 <a class="page-link bg-dark text-warning border-secondary" 
-                   href="?page={{ page_obj.previous_page_number }}{% for slug in selected_networks %}&network={{ slug }}{% endfor %}{% if current_filter %}&show={{ current_filter }}{% endif %}{% if search_query %}&q={{ search_query }}{% endif %}">
+                   href="?page={{ page_obj.previous_page_number }}{% for slug in selected_networks %}&network={{ slug }}{% endfor %}{% if current_filter %}&show={{ current_filter }}{% endif %}{% if search_query %}&q={{ search_query }}{% endif %}{% if include_transcripts %}&transcripts=1{% endif %}{% if older_than %}&older_than={{ older_than }}{% endif %}{% if newer_than %}&newer_than={{ newer_than }}{% endif %}">
                    &lsaquo; Prev
                 </a>
             </li>
@@ -137,7 +175,7 @@
                     <span class="page-link bg-warning border-warning fw-bold">{{ i }}</span>
                 {% else %}
                     <a class="page-link bg-dark text-light border-secondary" 
-                       href="?page={{ i }}{% for slug in selected_networks %}&network={{ slug }}{% endfor %}{% if current_filter %}&show={{ current_filter }}{% endif %}{% if search_query %}&q={{ search_query }}{% endif %}">
+                       href="?page={{ i }}{% for slug in selected_networks %}&network={{ slug }}{% endfor %}{% if current_filter %}&show={{ current_filter }}{% endif %}{% if search_query %}&q={{ search_query }}{% endif %}{% if include_transcripts %}&transcripts=1{% endif %}{% if older_than %}&older_than={{ older_than }}{% endif %}{% if newer_than %}&newer_than={{ newer_than }}{% endif %}">
                        {{ i }}
                     </a>
                 {% endif %}
@@ -147,7 +185,7 @@
         {% if page_obj.has_next %}
             <li class="page-item">
                 <a class="page-link bg-dark text-warning border-secondary" 
-                   href="?page={{ page_obj.next_page_number }}{% for slug in selected_networks %}&network={{ slug }}{% endfor %}{% if current_filter %}&show={{ current_filter }}{% endif %}{% if search_query %}&q={{ search_query }}{% endif %}">
+                   href="?page={{ page_obj.next_page_number }}{% for slug in selected_networks %}&network={{ slug }}{% endfor %}{% if current_filter %}&show={{ current_filter }}{% endif %}{% if search_query %}&q={{ search_query }}{% endif %}{% if include_transcripts %}&transcripts=1{% endif %}{% if older_than %}&older_than={{ older_than }}{% endif %}{% if newer_than %}&newer_than={{ newer_than }}{% endif %}">
                    Next &rsaquo;
                 </a>
             </li>
@@ -156,7 +194,7 @@
         {% if page_obj.number < page_obj.paginator.num_pages %}
             <li class="page-item">
                 <a class="page-link bg-dark text-warning border-secondary" 
-                   href="?page={{ page_obj.paginator.num_pages }}{% for slug in selected_networks %}&network={{ slug }}{% endfor %}{% if current_filter %}&show={{ current_filter }}{% endif %}{% if search_query %}&q={{ search_query }}{% endif %}">
+                   href="?page={{ page_obj.paginator.num_pages }}{% for slug in selected_networks %}&network={{ slug }}{% endfor %}{% if current_filter %}&show={{ current_filter }}{% endif %}{% if search_query %}&q={{ search_query }}{% endif %}{% if include_transcripts %}&transcripts=1{% endif %}{% if older_than %}&older_than={{ older_than }}{% endif %}{% if newer_than %}&newer_than={{ newer_than }}{% endif %}">
                    Last &raquo;
                 </a>
             </li>
@@ -246,10 +284,177 @@
 
 <style>
     .text-hover-warning:hover { color: var(--vecto-primary) !important; }
+
+    /* ── Google-style search bar ── */
+    .search-bar {
+        display: flex;
+        align-items: center;
+        background: var(--vecto-surface-bg);
+        border: 1.5px solid var(--bs-border-color);
+        border-radius: 9999px;
+        padding: 4px 6px 4px 18px;
+        transition: border-color 0.2s, border-radius 0.15s, box-shadow 0.2s;
+        box-shadow: 0 2px 10px rgba(0,0,0,0.35);
+    }
+    .search-bar:focus-within {
+        border-color: var(--vecto-primary);
+        box-shadow: 0 4px 20px rgba(0,0,0,0.5);
+    }
+    .search-bar.search-bar-expanded {
+        border-radius: 20px 20px 0 0;
+        border-bottom-color: transparent;
+    }
+
+    .search-bar-lead-icon {
+        color: var(--vecto-bg-muted);
+        font-size: 1rem;
+        margin-right: 10px;
+        flex-shrink: 0;
+        pointer-events: none;
+    }
+    .search-bar-input {
+        flex: 1;
+        min-width: 0;
+        background: transparent;
+        border: none;
+        outline: none;
+        color: var(--vecto-surface-text);
+        font-size: 1rem;
+        padding: 8px 0;
+        caret-color: var(--vecto-primary);
+    }
+    .search-bar-input::placeholder { color: var(--vecto-surface-muted); }
+
+    .search-bar-tools {
+        display: flex;
+        align-items: center;
+        flex-shrink: 0;
+        gap: 2px;
+    }
+    .search-bar-divider {
+        width: 1px;
+        height: 22px;
+        background: var(--bs-border-color);
+        margin: 0 8px;
+        flex-shrink: 0;
+    }
+    .search-bar-tool-btn {
+        width: 36px;
+        height: 36px;
+        border-radius: 50%;
+        border: none;
+        background: transparent;
+        color: var(--vecto-surface-muted);
+        font-size: 1rem;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        cursor: pointer;
+        transition: background 0.15s, color 0.15s;
+        flex-shrink: 0;
+    }
+    .search-bar-tool-btn:hover {
+        background: rgba(255,255,255,0.07);
+        color: var(--vecto-primary);
+    }
+    .search-bar-tool-btn.active {
+        color: var(--vecto-primary);
+        background: rgba(255,255,255,0.07);
+    }
+    .search-bar-submit {
+        width: 40px;
+        height: 40px;
+        border-radius: 50%;
+        border: none;
+        background: var(--vecto-primary);
+        color: var(--vecto-primary-text);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        cursor: pointer;
+        margin-left: 4px;
+        flex-shrink: 0;
+        transition: opacity 0.15s;
+    }
+    .search-bar-submit:hover { opacity: 0.82; }
+
+    /* expansion panel drops down flush below the bar */
+    .search-bar-expansion {
+        background: var(--vecto-surface-bg);
+        border: 1.5px solid var(--bs-border-color);
+        border-top: none;
+        border-radius: 0 0 20px 20px;
+        padding: 14px 22px 18px;
+        transition: border-color 0.2s;
+    }
+    .search-bar:focus-within + .search-bar-expansion {
+        border-color: var(--vecto-primary);
+    }
+    .date-filter-input {
+        background: var(--vecto-bg);
+        border: 1px solid var(--bs-border-color);
+        border-radius: 8px;
+        color: var(--vecto-surface-text);
+        padding: 5px 10px;
+        font-size: 0.875rem;
+        outline: none;
+        transition: border-color 0.15s;
+        color-scheme: dark;
+    }
+    .date-filter-input:focus { border-color: var(--vecto-primary); }
 </style>
 
 <script>
 document.addEventListener('DOMContentLoaded', function() {
+
+    // --- SEARCH BAR TOGGLES ---
+    const searchForm      = document.getElementById('searchForm');
+    const searchBarEl     = document.getElementById('searchBarEl');
+    const dateToggleBtn   = document.getElementById('dateToggleBtn');
+    const dateFilterPanel = document.getElementById('dateFilterPanel');
+    const newerThanInput  = dateFilterPanel.querySelector('[name="newer_than"]');
+    const olderThanInput  = dateFilterPanel.querySelector('[name="older_than"]');
+    const transcriptBtn   = document.getElementById('transcriptToggleBtn');
+
+    // Bootstrap tooltips
+    [dateToggleBtn, transcriptBtn].forEach(el =>
+        new bootstrap.Tooltip(el, { trigger: 'hover' })
+    );
+
+    function updateDateBtn() {
+        const isOpen    = !dateFilterPanel.classList.contains('d-none');
+        const hasValues = newerThanInput.value || olderThanInput.value;
+        dateToggleBtn.classList.toggle('active', isOpen || !!hasValues);
+    }
+
+    dateToggleBtn.addEventListener('click', () => {
+        const opening = dateFilterPanel.classList.contains('d-none');
+        dateFilterPanel.classList.toggle('d-none', !opening);
+        searchBarEl.classList.toggle('search-bar-expanded', opening);
+        updateDateBtn();
+    });
+    newerThanInput.addEventListener('change', updateDateBtn);
+    olderThanInput.addEventListener('change', updateDateBtn);
+    updateDateBtn();
+
+    let transcriptActive = {% if include_transcripts %}true{% else %}false{% endif %};
+
+    function syncTranscriptField() {
+        document.getElementById('transcriptsHidden')?.remove();
+        if (transcriptActive) {
+            const inp = document.createElement('input');
+            inp.type = 'hidden'; inp.name = 'transcripts'; inp.value = '1'; inp.id = 'transcriptsHidden';
+            searchForm.appendChild(inp);
+        }
+    }
+    transcriptBtn.addEventListener('click', () => {
+        transcriptActive = !transcriptActive;
+        transcriptBtn.classList.toggle('active', transcriptActive);
+        syncTranscriptField();
+    });
+    syncTranscriptField();
+
+    // --- INFINITE SCROLL ---
     const toggle = document.getElementById('infiniteScrollToggle');
     const paginationBar = document.getElementById('pagination-bar');
     const container = document.getElementById('episodes-container');

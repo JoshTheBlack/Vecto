@@ -56,6 +56,9 @@
             <a class="list-group-item list-group-item-action border-secondary" id="list-gdrive-recovery-list" data-bs-toggle="list" href="#list-gdrive-recovery" role="tab">
                 <i class="bi bi-cloud-arrow-down me-2 text-warning"></i> GDrive Recovery
             </a>
+            <a class="list-group-item list-group-item-action border-secondary {% if request.GET.tab == 'transcripts' %}active{% endif %}" id="list-transcripts-list" data-bs-toggle="list" href="#list-transcripts" role="tab">
+                <i class="bi bi-file-earmark-text me-2"></i> Transcripts
+            </a>
             <a href="/admin/" class="list-group-item list-group-item-action text-danger border-secondary mt-3">
                 <i class="bi bi-database me-2"></i> Advanced DB Admin
             </a>
@@ -82,6 +85,8 @@
             {% include 'pod_manager/creator_tabs/tab_audit_log.html' %}
 
             {% include 'pod_manager/creator_tabs/tab_gdrive_recovery.html' %}
+
+            {% include 'pod_manager/creator_tabs/tab_transcripts.html' %}
 
         </div>
     </div>

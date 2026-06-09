@@ -90,10 +90,67 @@
                                 <label class="form-label text-muted small fw-bold">Theme Config (JSON)</label>
                                 <textarea name="theme_config" class="form-control bg-black text-light border-secondary font-monospace" rows="15">{{ theme_config_json|safe }}</textarea>
                             </div>
-                            
+
+                            <h5 class="fw-bold mb-3 border-bottom border-secondary pb-2 text-warning">
+                                <i class="bi bi-file-earmark-text me-2"></i>Transcription Defaults
+                            </h5>
+                            <p class="text-muted small mb-3">
+                                Network-wide defaults. Individual podcasts can override these in the Podcasts tab.
+                            </p>
+                            <div class="row g-3 mb-3">
+                                <div class="col-md-4">
+                                    <label class="form-label text-muted small fw-bold">Whisper Model</label>
+                                    <select name="whisper_model" class="form-select bg-black text-light border-secondary">
+                                        <option value="tiny"      {% if current_network.whisper_model == "tiny" %}selected{% endif %}>tiny (fastest)</option>
+                                        <option value="base"      {% if current_network.whisper_model == "base" %}selected{% endif %}>base</option>
+                                        <option value="small"     {% if current_network.whisper_model == "small" %}selected{% endif %}>small</option>
+                                        <option value="medium"    {% if current_network.whisper_model == "medium" %}selected{% endif %}>medium</option>
+                                        <option value="medium.en" {% if current_network.whisper_model == "medium.en" %}selected{% endif %}>medium.en (recommended)</option>
+                                        <option value="large"     {% if current_network.whisper_model == "large" %}selected{% endif %}>large (most accurate)</option>
+                                        <option value="large-v2"  {% if current_network.whisper_model == "large-v2" %}selected{% endif %}>large-v2</option>
+                                        <option value="large-v3"  {% if current_network.whisper_model == "large-v3" %}selected{% endif %}>large-v3</option>
+                                    </select>
+                                </div>
+                                <div class="col-md-4">
+                                    <label class="form-label text-muted small fw-bold">Language</label>
+                                    <input type="text" name="whisper_language" value="{{ current_network.whisper_language }}"
+                                           class="form-control bg-black text-light border-secondary"
+                                           placeholder="en" maxlength="10">
+                                    <div class="form-text text-muted">BCP-47 code, e.g. en, es, fr</div>
+                                </div>
+                            </div>
+                            <div class="row g-3 mb-3">
+                                <div class="col-md-4">
+                                    <label class="form-label text-muted small fw-bold">Min Speakers</label>
+                                    <input type="number" name="whisper_min_speakers" value="{{ current_network.whisper_min_speakers }}"
+                                           class="form-control bg-black text-light border-secondary" min="1" max="20">
+                                </div>
+                                <div class="col-md-4">
+                                    <label class="form-label text-muted small fw-bold">Default Speakers</label>
+                                    <input type="number" name="whisper_num_speakers" value="{{ current_network.whisper_num_speakers }}"
+                                           class="form-control bg-black text-light border-secondary" min="1" max="20">
+                                </div>
+                                <div class="col-md-4">
+                                    <label class="form-label text-muted small fw-bold">Max Speakers</label>
+                                    <input type="number" name="whisper_max_speakers" value="{{ current_network.whisper_max_speakers }}"
+                                           class="form-control bg-black text-light border-secondary" min="1" max="20">
+                                </div>
+                            </div>
+                            <div class="mb-4">
+                                <label class="form-label text-muted small fw-bold">
+                                    Initial Prompt
+                                    <span class="text-muted fw-normal ms-1" data-bs-toggle="tooltip"
+                                          title="Vocabulary hint for Whisper. Improves accuracy for host names, show titles, and recurring proper nouns. Leave blank to omit.">
+                                        <i class="bi bi-info-circle"></i>
+                                    </span>
+                                </label>
+                                <textarea name="whisper_initial_prompt" rows="3"
+                                          class="form-control bg-black text-light border-secondary"
+                                          placeholder="e.g. Hosts: Jim and A.Ron. Shows: Bald Move Pulp, Bald Move Prestige.">{{ current_network.whisper_initial_prompt }}</textarea>
+                            </div>
+
                             <button type="submit" class="btn btn-warning fw-bold"><i class="bi bi-floppy"></i> Save Network Configurations</button>
                         </form>
                     </div>
                 </div>
             </div>
-        

@@ -135,6 +135,16 @@ class RSSFeedBuilder:
         etree.register_namespace('itunes',  itunes_ns)
         root = etree.fromstring(raw_xml.encode('utf-8'))
 
+        from pod_manager.models import Transcript
+        episode_ids = [ep.id for ep in tag_map.values()]
+        transcript_map = {
+            t.episode_id: t
+            for t in Transcript.objects.filter(
+                episode_id__in=episode_ids,
+                status=Transcript.Status.COMPLETED,
+            )
+        }
+
         for item in root.findall('.//item'):
             guid_elem = item.find('guid')
             if guid_elem is None or guid_elem.text not in tag_map:
@@ -161,6 +171,17 @@ class RSSFeedBuilder:
             if ep.episode_type and ep.episode_type != 'full':
                 etree.SubElement(item, f'{{{itunes_ns}}}episodeType').text = ep.episode_type
 
+            if ep.id in transcript_map:
+                for ext, mime in (
+                    ('vtt',  'text/vtt'),
+                    ('json', 'application/json'),
+                    ('srt',  'application/x-subrip'),
+                    ('html', 'text/html'),
+                ):
+                    t_elem = etree.SubElement(item, f'{{{podcast_ns}}}transcript')
+                    t_elem.set('url', f"{self.base_url}{reverse('serve_transcript', kwargs={'episode_id': ep.id, 'ext': ext})}")
+                    t_elem.set('type', mime)
+
         final_xml = etree.tostring(root, encoding='utf-8', xml_declaration=True).decode('utf-8')
         # Strip inline namespace re-declarations lxml adds to child elements.
         final_xml = final_xml.replace(f' xmlns:podcast="{podcast_ns}"', '')
@@ -180,6 +201,12 @@ def get_or_build_feed_shell(podcast, base_url, has_access):
     title = f"{podcast.title} (Private)" if has_access else podcast.title
     builder = RSSFeedBuilder(base_url, title, podcast.description or "", podcast.image_url, podcast.network, feed_type)
     raw_xml = builder.render()
+
+    # Guarantee the podcast namespace is on the root element regardless of
+    # whether _finalize_xml ran with a non-empty tag_map.
+    podcast_ns = "https://podcastindex.org/namespace/1.0"
+    if f'xmlns:podcast="{podcast_ns}"' not in raw_xml:
+        raw_xml = raw_xml.replace('<rss ', f'<rss xmlns:podcast="{podcast_ns}" ', 1)
 
     # Split the XML to grab everything before the closing </channel> tag
     header = raw_xml.split('</channel>')[0]

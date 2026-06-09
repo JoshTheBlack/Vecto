@@ -1,4 +1,4 @@
-{% extends 'pod_manager/base.html' %}
+﻿{% extends 'pod_manager/base.html' %}
 {% load static %}
 
 {% block content %}
@@ -88,6 +88,35 @@
         font-size: 1rem;
     }
     .tag-pill .tag-remove:hover { opacity: 1; color: #dc3545; }
+    .transcript-body { border: 1px solid #444; border-radius: 0.375rem; padding: 1.25rem; }
+    .transcript-body p { margin-bottom: 0.75rem; }
+
+    /* Enhanced transcript — speaker blocks & word highlighting */
+    .speaker-block {
+        padding-left: 0.8rem;
+        margin-bottom: 1.4rem;
+    }
+    .speaker-label {
+        font-size: 0.7rem;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 0.07em;
+        margin-bottom: 0.2rem;
+        opacity: 0.9;
+    }
+    .speaker-block p { margin-bottom: 0; line-height: 1.9; }
+    .tx-word {
+        cursor: pointer;
+        border-radius: 2px;
+        padding: 0 1px;
+        transition: background 0.08s;
+    }
+    .tx-word:hover { background: rgba(255,193,7,0.18); }
+    .tx-word.tx-active {
+        background: rgba(255,193,7,0.35);
+        color: #ffc107;
+        border-radius: 2px;
+    }
     /* CRITICAL WARNING BANNER STYLES */
     @keyframes criticalPulse {
         0% { box-shadow: 0 0 0 0 rgba(220, 53, 69, 0.8); }
@@ -142,6 +171,22 @@
             <li class="nav-item" role="presentation">
                 <button class="nav-link text-muted border-secondary" id="edit-tab" data-bs-toggle="tab" data-bs-target="#edit" type="button" role="tab" aria-selected="false">
                     <i class="bi bi-tools"></i> Contribute Edits
+                </button>
+            </li>
+            {% endif %}
+            {% if transcript %}
+            <li class="nav-item" role="presentation">
+                <button class="nav-link text-muted border-secondary" id="transcript-tab" data-bs-toggle="tab" data-bs-target="#transcript" type="button" role="tab" aria-selected="false">
+                    <i class="bi bi-file-text"></i> Transcript
+                    {% if transcript.status == 'completed' %}
+                        <span class="badge bg-success ms-1" style="font-size: 0.6rem;">Ready</span>
+                    {% elif transcript.status == 'processing' %}
+                        <span class="badge bg-warning text-dark ms-1" style="font-size: 0.6rem;">Processing</span>
+                    {% elif transcript.status == 'pending' %}
+                        <span class="badge bg-secondary ms-1" style="font-size: 0.6rem;">Queued</span>
+                    {% elif transcript.status == 'failed' %}
+                        <span class="badge bg-danger ms-1" style="font-size: 0.6rem;">Failed</span>
+                    {% endif %}
                 </button>
             </li>
             {% endif %}
@@ -269,6 +314,152 @@
                     </div>
                     {% endif %}
                 </div>
+
+                {% if transcript %}
+                <div class="tab-pane fade" id="transcript" role="tabpanel" aria-labelledby="transcript-tab">
+                    <div class="d-flex justify-content-between align-items-center mb-4 pb-3 border-bottom border-secondary">
+                        <h4 class="text-light mb-0"><i class="bi bi-file-text me-2"></i>Episode Transcript</h4>
+                        <div class="d-flex gap-2 align-items-center flex-wrap">
+                            {% if transcript.status == 'completed' %}
+                            <a href="{% url 'serve_transcript' ep.id 'vtt' %}" class="btn btn-outline-secondary btn-sm" download>
+                                <i class="bi bi-download me-1"></i>VTT
+                            </a>
+                            <a href="{% url 'serve_transcript' ep.id 'srt' %}" class="btn btn-outline-secondary btn-sm" download>
+                                <i class="bi bi-download me-1"></i>SRT
+                            </a>
+                            {% endif %}
+                            {% if is_owner %}
+                            <button type="button" id="retranscribeToggleBtn" class="btn btn-sm btn-outline-warning">
+                                <i class="bi bi-arrow-repeat me-1"></i>Re-transcribe
+                            </button>
+                            {% endif %}
+                        </div>
+                    </div>
+
+                    {% if is_owner %}
+                    <div id="retranscribePanel" class="d-none mb-4">
+                        <div class="border border-warning rounded p-3">
+                            <h6 class="text-warning fw-bold mb-3"><i class="bi bi-arrow-repeat me-1"></i>Queue Re-transcription</h6>
+                            <p class="text-muted small mb-3">
+                                Override settings for this run only. Existing transcript files will be replaced on completion.
+                                Leave fields blank to use this podcast's current defaults.
+                            </p>
+                            <div class="row g-3 mb-3">
+                                <div class="col-md-5">
+                                    <label class="form-label text-muted small fw-bold mb-1">Model</label>
+                                    <select id="rtModel" class="form-select form-select-sm bg-dark text-light border-secondary">
+                                        <option value="">— use podcast/network default —</option>
+                                        <option value="tiny">tiny (fastest)</option>
+                                        <option value="base">base</option>
+                                        <option value="small">small</option>
+                                        <option value="medium">medium</option>
+                                        <option value="medium.en">medium.en</option>
+                                        <option value="large">large</option>
+                                        <option value="large-v2">large-v2</option>
+                                        <option value="large-v3">large-v3 (most accurate)</option>
+                                    </select>
+                                </div>
+                                <div class="col-md-3">
+                                    <label class="form-label text-muted small fw-bold mb-1">Language</label>
+                                    <input type="text" id="rtLanguage" placeholder="inherit"
+                                           class="form-control form-control-sm bg-dark text-light border-secondary" maxlength="10">
+                                </div>
+                            </div>
+                            <div class="row g-3 mb-3">
+                                <div class="col-md-3">
+                                    <label class="form-label text-muted small fw-bold mb-1">Min Speakers</label>
+                                    <input type="number" id="rtMinSpeakers" placeholder="inherit"
+                                           class="form-control form-control-sm bg-dark text-light border-secondary" min="1" max="20">
+                                </div>
+                                <div class="col-md-3">
+                                    <label class="form-label text-muted small fw-bold mb-1">Default Speakers</label>
+                                    <input type="number" id="rtNumSpeakers" placeholder="inherit"
+                                           class="form-control form-control-sm bg-dark text-light border-secondary" min="1" max="20">
+                                </div>
+                                <div class="col-md-3">
+                                    <label class="form-label text-muted small fw-bold mb-1">Max Speakers</label>
+                                    <input type="number" id="rtMaxSpeakers" placeholder="inherit"
+                                           class="form-control form-control-sm bg-dark text-light border-secondary" min="1" max="20">
+                                </div>
+                            </div>
+                            <div class="mb-3">
+                                <label class="form-label text-muted small fw-bold mb-1">Initial Prompt</label>
+                                <textarea id="rtInitialPrompt" rows="2"
+                                          class="form-control form-control-sm bg-dark text-light border-secondary"
+                                          placeholder="inherit network/podcast prompt"></textarea>
+                            </div>
+                            <div class="d-flex align-items-center gap-3">
+                                <button type="button" id="rtSubmitBtn" class="btn btn-warning btn-sm fw-bold">
+                                    <i class="bi bi-arrow-repeat me-1"></i>Queue Now
+                                </button>
+                                <span id="rtStatusMsg" class="text-muted small"></span>
+                            </div>
+                        </div>
+                    </div>
+                    {% endif %}
+
+                    {% if transcript.status == 'completed' and transcript_html %}
+                        <div class="transcript-body text-light"
+                             id="transcriptBody"
+                             {% if transcript.words_json_file %}data-words-url="{% url 'serve_transcript' ep.id 'words' %}"{% endif %}
+                             style="font-size: 1rem; line-height: 1.8; max-height: 600px; overflow-y: auto;">
+                            {{ transcript_html|safe }}
+                        </div>
+                    {% elif transcript.status == 'completed' %}
+                        <p class="text-muted">Transcript file unavailable.</p>
+                    {% elif transcript.status == 'processing' %}
+                        <div class="d-flex align-items-center gap-3 text-warning">
+                            <div class="spinner-border spinner-border-sm" role="status"></div>
+                            <span>Transcription in progress — check back shortly.</span>
+                        </div>
+                    {% elif transcript.status == 'pending' %}
+                        <div class="d-flex align-items-center gap-3 text-muted">
+                            <i class="bi bi-hourglass-split fs-5"></i>
+                            <span>Transcription is queued and will begin soon.</span>
+                        </div>
+                    {% elif transcript.status == 'failed' %}
+                        <div class="d-flex align-items-center gap-3 text-danger">
+                            <i class="bi bi-exclamation-circle fs-5"></i>
+                            <span>Transcription failed. An admin has been notified.</span>
+                        </div>
+                    {% endif %}
+
+                    {% if transcript.status == 'completed' and request.user.is_authenticated %}
+                    <div class="mt-4 pt-3 border-top border-secondary">
+                        <h6 class="text-muted fw-bold mb-2">
+                            <i class="bi bi-person-badge me-1"></i>Speaker Labels
+                        </h6>
+                        <p class="text-muted small mb-3">
+                            Know who the speakers are? Assign names to improve the transcript.
+                            Submissions go through the same review process as episode edits.
+                        </p>
+                        <div id="speakerLabelForm">
+                            {% if transcript_speakers %}
+                            <div class="row g-2 mb-3" id="speakerMappingRows">
+                                {% for speaker_id in transcript_speakers %}
+                                <div class="col-md-4">
+                                    <label class="form-label text-muted small mb-1">{{ speaker_id }}</label>
+                                    <input type="text" class="form-control form-control-sm bg-dark text-light border-secondary speaker-name-input"
+                                           data-speaker="{{ speaker_id }}"
+                                           placeholder="Enter name (optional)">
+                                </div>
+                                {% endfor %}
+                            </div>
+                            <div class="d-flex align-items-center gap-3">
+                                <button type="button" id="submitSpeakerLabelsBtn" class="btn btn-sm btn-outline-primary fw-bold">
+                                    <i class="bi bi-send me-1"></i>Submit Speaker Labels
+                                </button>
+                                <span id="speakerLabelStatus" class="text-muted small"></span>
+                            </div>
+                            {% else %}
+                            <p class="text-muted small">No speaker labels found in this transcript (diarization may not have run).</p>
+                            {% endif %}
+                        </div>
+                    </div>
+                    {% endif %}
+
+                    </div>
+                {% endif %}
 
                 {% if request.user.is_authenticated %}
                 <div class="tab-pane fade" id="edit" role="tabpanel" aria-labelledby="edit-tab">
@@ -854,5 +1045,279 @@
 
         selectTypeChip(initVal);
     })();
+
+// ---------------------------------------------------------------------------
+// Transcript: speaker diarization display + word-level player sync
+// ---------------------------------------------------------------------------
+(function () {
+    const container = document.getElementById('transcriptBody');
+    if (!container) return;
+
+    const wordsUrl = container.dataset.wordsUrl;
+    if (!wordsUrl) return;
+
+    // Speaker colour palette — up to 8 speakers
+    const PALETTE = ['#ffc107','#0dcaf0','#20c997','#f87070','#a370f7','#fd7e14','#6ea8fe','#75b798'];
+
+    function esc(s) {
+        return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+    }
+
+    function buildEnhancedTranscript(doc) {
+        const mappings   = doc.speaker_mappings || {};
+        const segments   = doc.segments || [];
+        const spIdx      = {};
+        let   colorCount = 0;
+        for (const seg of segments) {
+            const sp = seg.speaker || '';
+            if (sp && !(sp in spIdx)) spIdx[sp] = colorCount++;
+        }
+        const blocks = [];
+        let cur = null;
+        for (const seg of segments) {
+            const sp = seg.speaker || '';
+            if (!cur || cur.speaker !== sp) { cur = { speaker: sp, segments: [] }; blocks.push(cur); }
+            cur.segments.push(seg);
+        }
+        let html = '<div class="transcript-enhanced">';
+        for (const block of blocks) {
+            const sp    = block.speaker;
+            const color = sp ? PALETTE[spIdx[sp] % PALETTE.length] : '#adb5bd';
+            const name  = sp ? (mappings[sp] || sp) : '';
+            html += `<div class="speaker-block" style="border-left:3px solid ${esc(color)}">`;
+            if (name) html += `<div class="speaker-label" style="color:${esc(color)}">${esc(name)}</div>`;
+            html += '<p>';
+            for (const seg of block.segments) {
+                const words = seg.words || [];
+                if (words.length) {
+                    for (const w of words) {
+                        if (w.startTime == null) html += esc(w.word || '') + ' ';
+                        else html += `<span class="tx-word" data-start="${w.startTime}" data-end="${w.endTime}">${esc(w.word || '')}</span> `;
+                    }
+                } else {
+                    html += `<span class="tx-word" data-start="${seg.startTime}" data-end="${seg.endTime}">${esc(seg.body || '')}</span> `;
+                }
+            }
+            html += '</p></div>';
+        }
+        return html + '</div>';
+    }
+
+    // Player is found once; listeners attached once
+    const player = Array.from(document.querySelectorAll('audio.js-player'))
+        .find(a => a.querySelector('source')?.src) || document.querySelector('audio.js-player');
+
+    let lastIdx = -1;
+    let wordEls = [];
+    let starts  = [];
+
+    function rebuildWordSync() {
+        wordEls = Array.from(container.querySelectorAll('span.tx-word[data-start]'));
+        starts  = wordEls.map(el => parseFloat(el.dataset.start));
+        lastIdx = -1;
+    }
+
+    if (player) {
+        player.addEventListener('timeupdate', () => {
+            if (!starts.length) return;
+            const t = player.currentTime;
+            let lo = 0, hi = starts.length - 1, idx = -1;
+            while (lo <= hi) {
+                const mid = (lo + hi) >> 1;
+                if (starts[mid] <= t) { idx = mid; lo = mid + 1; }
+                else hi = mid - 1;
+            }
+            if (idx === lastIdx) return;
+            if (lastIdx >= 0) wordEls[lastIdx].classList.remove('tx-active');
+            if (idx >= 0) {
+                wordEls[idx].classList.add('tx-active');
+                const el  = wordEls[idx];
+                const top = el.offsetTop - container.offsetTop;
+                const vis = container.scrollTop;
+                const bot = vis + container.clientHeight;
+                if (top < vis + 60 || top > bot - 80) {
+                    container.scrollTo({ top: top - container.clientHeight / 2, behavior: 'smooth' });
+                }
+            }
+            lastIdx = idx;
+        });
+
+        container.addEventListener('click', e => {
+            const span = e.target.closest('span.tx-word[data-start]');
+            if (span) { player.currentTime = parseFloat(span.dataset.start); player.play().catch(() => {}); }
+        });
+    }
+
+    async function init() {
+        let doc;
+        try {
+            const resp = await fetch(wordsUrl);
+            if (!resp.ok) return;
+            doc = await resp.json();
+        } catch (_) { return; }
+        if (!doc.segments || !doc.segments.length) return;
+
+        // The .words file is served immutable (1-year cache), so the browser may
+        // have a stale copy without speaker_mappings. Override with the value the
+        // server read fresh from disk on this page load — this is always current.
+        const serverMappings = {{ transcript_speaker_names_json|safe }};
+        if (serverMappings && Object.keys(serverMappings).length) {
+            doc.speaker_mappings = serverMappings;
+        }
+
+        container.innerHTML = buildEnhancedTranscript(doc);
+        rebuildWordSync();
+        if (player && !player.paused) player.dispatchEvent(new Event('timeupdate'));
+    }
+
+    // Called by the speaker-label approval handler with a cache-busted fresh doc
+    container.addEventListener('tx:reload', e => {
+        const doc = e.detail && e.detail.doc;
+        if (!doc || !doc.segments) return;
+        container.innerHTML = buildEnhancedTranscript(doc);
+        rebuildWordSync();
+    });
+
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', init);
+    } else {
+        init();
+    }
+})();
+
+
+{% if is_owner %}
+(function () {
+    // Re-transcription panel
+    const toggleBtn = document.getElementById('retranscribeToggleBtn');
+    const panel     = document.getElementById('retranscribePanel');
+    const submitBtn = document.getElementById('rtSubmitBtn');
+    const statusMsg = document.getElementById('rtStatusMsg');
+
+    if (toggleBtn && panel) {
+        toggleBtn.addEventListener('click', () => {
+            panel.classList.toggle('d-none');
+        });
+    }
+
+    function getCsrf() {
+        const el = document.querySelector('[name=csrfmiddlewaretoken]');
+        if (el) return el.value;
+        const c = document.cookie.split(';').find(x => x.trim().startsWith('csrftoken='));
+        return c ? c.trim().split('=')[1] : '';
+    }
+
+    if (submitBtn) {
+        submitBtn.addEventListener('click', async () => {
+            const opts = {};
+            const model = document.getElementById('rtModel');
+            const lang  = document.getElementById('rtLanguage');
+            const prompt= document.getElementById('rtInitialPrompt');
+            const minSp = document.getElementById('rtMinSpeakers');
+            const numSp = document.getElementById('rtNumSpeakers');
+            const maxSp = document.getElementById('rtMaxSpeakers');
+            if (model  && model.value)        opts.model           = model.value;
+            if (lang   && lang.value.trim())  opts.language        = lang.value.trim();
+            if (prompt && prompt.value.trim())opts.initial_prompt  = prompt.value.trim();
+            if (minSp  && minSp.value)        opts.min_speakers    = parseInt(minSp.value);
+            if (numSp  && numSp.value)        opts.num_speakers    = parseInt(numSp.value);
+            if (maxSp  && maxSp.value)        opts.max_speakers    = parseInt(maxSp.value);
+
+            submitBtn.disabled = true;
+            statusMsg.textContent = 'Queuing…';
+            try {
+                const resp = await fetch("{% url 'retranscribe_episode_api' ep.id %}", {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json', 'X-CSRFToken': getCsrf() },
+                    body: JSON.stringify(opts),
+                });
+                const data = await resp.json();
+                if (!resp.ok) throw new Error(data.error || `HTTP ${resp.status}`);
+                statusMsg.textContent = '✓ Queued — transcript will update when complete.';
+                statusMsg.className = 'small text-success';
+                panel.classList.add('d-none');
+            } catch (err) {
+                statusMsg.textContent = `Failed: ${err.message}`;
+                statusMsg.className = 'small text-danger';
+            } finally {
+                submitBtn.disabled = false;
+            }
+        });
+    }
+})();
+{% endif %}
+
+{% if transcript and transcript.status == 'completed' and request.user.is_authenticated %}
+(function () {
+    const submitBtn = document.getElementById('submitSpeakerLabelsBtn');
+    const statusEl  = document.getElementById('speakerLabelStatus');
+    if (!submitBtn) return;
+
+    // Pre-populate any existing mappings
+    const existingMappings = {{ transcript_speaker_names_json|safe }};
+    document.querySelectorAll('.speaker-name-input').forEach(inp => {
+        const existing = existingMappings[inp.dataset.speaker];
+        if (existing) inp.value = existing;
+    });
+
+    function getCsrf() {
+        const el = document.querySelector('[name=csrfmiddlewaretoken]');
+        if (el) return el.value;
+        const c = document.cookie.split(';').find(x => x.trim().startsWith('csrftoken='));
+        return c ? c.trim().split('=')[1] : '';
+    }
+
+    submitBtn.addEventListener('click', async () => {
+        const mappings = {};
+        document.querySelectorAll('.speaker-name-input').forEach(inp => {
+            const name = inp.value.trim();
+            if (name) mappings[inp.dataset.speaker] = name;
+        });
+        if (!Object.keys(mappings).length) {
+            statusEl.textContent = 'Enter at least one name.';
+            statusEl.className = 'small text-warning';
+            return;
+        }
+        submitBtn.disabled = true;
+        statusEl.textContent = 'Submitting…';
+        try {
+            const resp = await fetch("{% url 'submit_speaker_labels' ep.id %}", {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-CSRFToken': getCsrf(),
+                },
+                body: JSON.stringify({ speaker_mappings: mappings }),
+            });
+            const data = await resp.json();
+            if (!resp.ok) throw new Error(data.error || `HTTP ${resp.status}`);
+            if (data.status === 'approved') {
+                statusEl.textContent = '✓ Applied instantly.';
+                statusEl.className = 'small text-success';
+                // The .words file was rewritten — bust the immutable cache and rebuild the diarization display
+                const txBody = document.getElementById('transcriptBody');
+                if (txBody && txBody.dataset.wordsUrl) {
+                    const freshUrl = txBody.dataset.wordsUrl + '?v=' + Date.now();
+                    fetch(freshUrl).then(r => r.json()).then(doc => {
+                        if (doc && doc.segments) {
+                            // Re-use the buildEnhancedTranscript function defined in the transcript init IIFE
+                            // by dispatching a custom event the IIFE listens for
+                            txBody.dispatchEvent(new CustomEvent('tx:reload', { detail: { doc } }));
+                        }
+                    }).catch(() => {});
+                }
+            } else {
+                statusEl.textContent = '✓ Submitted for review.';
+            }
+            statusEl.className = 'small text-success';
+        } catch (err) {
+            statusEl.textContent = `Error: ${err.message}`;
+            statusEl.className = 'small text-danger';
+        } finally {
+            submitBtn.disabled = false;
+        }
+    });
+})();
+{% endif %}
 </script>
 {% endblock %}

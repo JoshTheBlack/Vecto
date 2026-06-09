@@ -67,6 +67,12 @@ def snapshot_episode(ep) -> dict:
 
 def apply_approved_edit(ep, suggested_data):
     """Writes an auto-approved edit directly onto the episode and saves it."""
+    # Speaker label edits only touch transcript files, not Episode fields.
+    if 'speaker_mappings' in suggested_data:
+        from pod_manager.services.transcription import apply_speaker_labels
+        apply_speaker_labels(ep.id, suggested_data['speaker_mappings'])
+        return
+
     ep.title = suggested_data.get('title', ep.title)
     ep.clean_description = suggested_data.get('description', ep.clean_description)
     ep.tags = suggested_data.get('tags', ep.tags)

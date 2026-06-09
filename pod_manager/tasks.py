@@ -781,3 +781,30 @@ def task_run_gdrive_rewind(run_id, csv_path):
         meta['log'] = stream.captured()
         _save_recovery_run(run_id, meta)
         stream.write('[DONE]')
+
+
+# ---------------------------------------------------------------------------
+# Transcription
+# ---------------------------------------------------------------------------
+
+@shared_task(
+    bind=True,
+    max_retries=3,
+    queue='transcription',
+    time_limit=5400,
+    soft_time_limit=5300,
+)
+def transcribe_episode(self, episode_id: int, **kwargs):
+    """Celery wrapper around run_transcription(). Retries up to 3 times.
+
+    Accepts optional transcription override kwargs (model, language,
+    initial_prompt, min_speakers, num_speakers, max_speakers) which are
+    passed through to run_transcription().
+    """
+    from pod_manager.services.transcription import run_transcription
+    try:
+        run_transcription(episode_id, **kwargs)
+    except Exception as exc:
+        # Exponential-ish back-off: 60s, 120s, 180s
+        countdown = 60 * (self.request.retries + 1)
+        raise self.retry(exc=exc, countdown=countdown)

@@ -215,7 +215,10 @@
                             <input type="hidden" name="edited_episode_type" class="hidden-edited-episode-type" value="">
 
                             {# Each section renders independently as a stacking block. When .conflicted is present, the section shows three columns (Original / Current / Suggested); otherwise two (Original / Suggested). Server-side flags on the edit (tags_conflict / chapters_conflict / desc_conflict) decide which mode each section is in. #}
-                            
+
+                            {# Speaker-only edits (from the speaker labels form) have no episode metadata fields — skip the full diff. #}
+                            {% if not edit.suggested_data.speaker_mappings or edit.suggested_data.title or edit.suggested_data.description or edit.suggested_data.tags or edit.suggested_data.chapters %}
+
                             {# ============== TITLE ============== #}
                             <div class="diff-section{% if edit.title_conflict %} conflicted{% endif %}" data-section="title">
                                 <div class="diff-section-grid">
@@ -456,6 +459,30 @@
                             </div>
                             {% endif %}
                             {% endwith %}
+
+                            {% endif %}{# end speaker-only guard #}
+
+                            {% if edit.suggested_data.speaker_mappings %}
+                            <div class="mb-3">
+                                <div class="d-flex align-items-center gap-2 mb-2">
+                                    <input type="checkbox" class="form-check-input mt-0"
+                                           id="approveSpeakerLabels{{ edit.id }}"
+                                           name="approve_speaker_labels" value="on" checked>
+                                    <label class="form-check-label fw-semibold" style="color: var(--vecto-surface-text);" for="approveSpeakerLabels{{ edit.id }}">
+                                        <i class="bi bi-person-badge me-1"></i>Speaker Labels
+                                    </label>
+                                </div>
+                                <div class="ps-4">
+                                    {% for speaker_id, name in edit.suggested_data.speaker_mappings.items %}
+                                    <div class="small mb-1">
+                                        <span class="font-monospace" style="color: var(--vecto-primary);">{{ speaker_id }}</span>
+                                        <i class="bi bi-arrow-right mx-1" style="color: var(--vecto-surface-muted);"></i>
+                                        <span style="color: var(--vecto-surface-text);">{{ name }}</span>
+                                    </div>
+                                    {% endfor %}
+                                </div>
+                            </div>
+                            {% endif %}
 
                         </form>
 

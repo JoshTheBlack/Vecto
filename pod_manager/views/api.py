@@ -22,7 +22,7 @@ from django.views.decorators.http import require_POST
 
 from django.shortcuts import get_object_or_404
 
-from ..models import NetworkMembership, Network, PatronProfile, Podcast
+from ..models import NetworkMembership, Network, PatronProfile, Podcast, Episode, Transcript
 from ..tasks import task_ingest_feed
 from ..utils import get_membership, validate_public_url
 
@@ -173,3 +173,148 @@ def toggle_totp_mode(request):
     profile.save(update_fields=['totp_mode'])
     logger.info(f"TOTP mode set to '{mode}' for user {request.user.username}")
     return JsonResponse({'ok': True, 'totp_mode': mode})
+
+
+@require_POST
+def backfill_transcripts_api(request):
+    """
+    Staff-only endpoint to queue transcript backfill for a podcast or all podcasts.
+
+    POST body (JSON):
+        podcast_slug   str | null   Filter to a single podcast. Null/omit = all.
+        stagger        int          Celery countdown seconds between dispatches (default 30).
+        model          str | null   Whisper model override (e.g. 'large'). Null = use defaults.
+        language       str | null   Language code override (e.g. 'es'). Null = use defaults.
+        initial_prompt str | null   Vocabulary hint override. Null = use defaults.
+        min_speakers   int | null   Min speaker count override. Null = use defaults.
+        num_speakers   int | null   Expected speaker count override. Null = use defaults.
+        max_speakers   int | null   Max speaker count override. Null = use defaults.
+
+    Episodes are only queued if they have subscriber audio and no completed/pending/processing
+    transcript. Failed transcripts are re-queued.
+
+    Returns: {"queued": N, "podcast": slug|"all"}
+    """
+    if not request.user.is_staff:
+        return JsonResponse({'error': 'Forbidden'}, status=403)
+
+    import json as _json
+    try:
+        body = _json.loads(request.body or '{}')
+    except ValueError:
+        return JsonResponse({'error': 'Invalid JSON'}, status=400)
+
+    podcast_slug = body.get('podcast_slug') or None
+    stagger      = max(0, int(body.get('stagger', 30)))
+
+    # Collect optional transcription overrides — only pass non-null values
+    transcription_kwargs = {}
+    for key in ('model', 'language', 'initial_prompt'):
+        val = body.get(key)
+        if val is not None and str(val).strip():
+            transcription_kwargs[key] = str(val).strip()
+    for key in ('min_speakers', 'num_speakers', 'max_speakers'):
+        val = body.get(key)
+        if val is not None:
+            try:
+                transcription_kwargs[key] = int(val)
+            except (TypeError, ValueError):
+                pass
+
+    if podcast_slug:
+        try:
+            podcast = Podcast.objects.get(slug=podcast_slug)
+        except Podcast.DoesNotExist:
+            return JsonResponse({'error': f'Podcast not found: {podcast_slug}'}, status=404)
+
+    from django.db.models import Q
+    episodes = (
+        Episode.objects
+        .filter(audio_url_subscriber__isnull=False)
+        .exclude(audio_url_subscriber='')
+        .filter(
+            Q(transcript__isnull=True) | Q(transcript__status=Transcript.Status.FAILED)
+        )
+        .order_by('pub_date')
+    )
+    if podcast_slug:
+        episodes = episodes.filter(podcast__slug=podcast_slug)
+
+    from pod_manager.tasks import transcribe_episode
+    from pod_manager.services.transcription import run_transcription
+
+    episode_list = list(episodes)
+    queued = 0
+    for i, ep in enumerate(episode_list):
+        if settings.IS_IDE:
+            run_transcription(ep.pk, **transcription_kwargs)
+        else:
+            transcribe_episode.apply_async(
+                args=[ep.pk],
+                kwargs=transcription_kwargs,
+                countdown=i * stagger,
+            )
+        queued += 1
+
+    logger.info(
+        "backfill_transcripts_api: queued=%d podcast=%s stagger=%ds by %s",
+        queued, podcast_slug or 'all', stagger, request.user.username,
+    )
+    return JsonResponse({'queued': queued, 'podcast': podcast_slug or 'all'})
+
+
+@require_POST
+@login_required
+def retranscribe_episode_api(request, episode_id):
+    """Queue a forced re-transcription for a single episode.
+
+    Network-owner only. Accepts optional transcription overrides in POST body.
+    Resets transcript to pending and re-queues regardless of current status.
+
+    POST body (JSON):
+        model, language, initial_prompt, min_speakers, num_speakers, max_speakers
+    """
+    import json as _json
+    ep = get_object_or_404(Episode, id=episode_id)
+    if not ep.podcast.network.owners.filter(id=request.user.id).exists():
+        return JsonResponse({'error': 'Forbidden'}, status=403)
+
+    if not ep.audio_url_subscriber:
+        return JsonResponse({'error': 'Episode has no subscriber audio'}, status=400)
+
+    try:
+        body = _json.loads(request.body or '{}')
+    except ValueError:
+        return JsonResponse({'error': 'Invalid JSON'}, status=400)
+
+    transcription_kwargs = {}
+    for key in ('model', 'language', 'initial_prompt'):
+        val = body.get(key)
+        if val is not None and str(val).strip():
+            transcription_kwargs[key] = str(val).strip()
+    for key in ('min_speakers', 'num_speakers', 'max_speakers'):
+        val = body.get(key)
+        if val is not None:
+            try:
+                transcription_kwargs[key] = int(val)
+            except (TypeError, ValueError):
+                pass
+
+    from pod_manager.models import Transcript
+    transcript, _ = Transcript.objects.get_or_create(episode=ep)
+    transcript.status = Transcript.Status.PENDING
+    transcript.error_message = None
+    transcript.save(update_fields=['status', 'error_message'])
+
+    from pod_manager.tasks import transcribe_episode
+    from pod_manager.services.transcription import run_transcription
+    if settings.IS_IDE:
+        run_transcription(ep.pk, **transcription_kwargs)
+    else:
+        transcribe_episode.apply_async(args=[ep.pk], kwargs=transcription_kwargs)
+
+    logger.info(
+        "retranscribe_episode_api: episode %d re-queued by %s (kwargs=%s)",
+        ep.pk, request.user.username, transcription_kwargs,
+    )
+    return JsonResponse({'status': 'queued', 'episode_id': ep.pk})

@@ -27,6 +27,17 @@ PATREON_WEBHOOK_SECRET = os.getenv("PATREON_WEBHOOK_SECRET")
 # Discord Credentials
 DISCORD_BOT_TOKEN = os.getenv("DISCORD_BOT_TOKEN")
 
+# Whisper ASR / Transcription (onerahmet/openai-whisper-asr-webservice)
+# IDE: set WHISPER_URL in .env to point at the whisper container on Unraid
+# DEV: same Unraid URL (or http://host.docker.internal:9000 from inside Docker)
+# PROD: defaults to http://whisper:9000 once Phase 11 adds whisper to the stack
+WHISPER_URL               = os.getenv("WHISPER_URL", "http://whisper:9000")
+WHISPER_ENABLED           = os.getenv("WHISPER_ENABLED", "True") == "True"
+WHISPER_MODEL             = os.getenv("WHISPER_MODEL", "medium.en")
+WHISPER_LANGUAGE          = os.getenv("WHISPER_LANGUAGE", "en")
+WHISPER_TIMEOUT           = int(os.getenv("WHISPER_TIMEOUT", "5400"))
+WHISPER_KEEP_SOURCE_AUDIO = os.getenv("WHISPER_KEEP_SOURCE_AUDIO", "False") == "True"
+
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
 
@@ -323,6 +334,12 @@ if IS_IDE:
     # Force Celery to bypass Redis and run everything instantly in the same terminal
     CELERY_TASK_ALWAYS_EAGER = True
     CELERY_TASK_EAGER_PROPAGATES = True
+    # Disable transcription signal in tests — individual test classes opt-in via override_settings
+    if IS_TEST:
+        WHISPER_ENABLED = False
+        # DatabaseLogHandler writes to SQLite on every log call — each write adds ~2s latency
+        # under WAL-mode locking. Disable it for tests; console logging is sufficient.
+        LOGGING['loggers']['pod_manager']['handlers'] = ['console']
 else:
     # Use Redis Cache & Full Celery Worker Pipeline
     RAW_REDIS_URL = os.getenv("REDIS_URL")

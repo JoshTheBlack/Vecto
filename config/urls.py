@@ -10,6 +10,9 @@ urlpatterns = [
     path('', views.home, name='home'),
     path('episode/<int:episode_id>/', views.episode_detail, name='episode_detail'),
     path('episode/<int:episode_id>/chapters/<str:feed_type>.json', views.episode_chapters, name='episode_chapters'),
+
+    # Transcript serving
+    re_path(r'^transcripts/(?P<episode_id>\d+)\.(?P<ext>vtt|json|srt|html|words)$', views.serve_transcript, name='serve_transcript'),
     
     # Listener Routes
     path('feeds/', views.user_feeds, name='user_feeds'),
@@ -28,6 +31,7 @@ urlpatterns = [
     path('impersonate/start/<int:user_id>/', views.start_impersonation, name='start_impersonation'),
     path('impersonate/stop/', views.stop_impersonation, name='stop_impersonation'),
     path('episode/<int:episode_id>/edit/', views.submit_episode_edit, name='submit_episode_edit'),
+    path('episode/<int:episode_id>/speaker-labels/', views.submit_speaker_labels, name='submit_speaker_labels'),
     path('ajax/update_avatar_preference/', views.update_avatar_preference, name='update_avatar_preference'),
     path('ajax/upload_custom_avatar/', views.upload_custom_avatar, name='upload_custom_avatar'),
     path('ajax/toggle_totp_mode/', views.toggle_totp_mode, name='toggle_totp_mode'),
@@ -44,6 +48,8 @@ urlpatterns = [
     path('play/<int:episode_id>.mp3', views.play_episode, name='play_episode'),
     path('login/legacy/', views.recurly_login, name='recurly_login'),
     path('api/check-audio/', views.check_audio_status, name='check_audio_status'),
+    path('api/transcripts/backfill/', views.backfill_transcripts_api, name='backfill_transcripts_api'),
+    path('api/transcripts/retranscribe/<int:episode_id>/', views.retranscribe_episode_api, name='retranscribe_episode_api'),
 
     # Creator publishing
     path('creator/publish/', views.publish_episode, name='publish_episode'),

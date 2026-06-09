@@ -5,7 +5,7 @@ from django.contrib.auth.models import User
 from django.core.cache import cache
 from django.core.files.base import ContentFile
 from django.core.files.storage import FileSystemStorage
-from django.db.models.signals import post_delete, pre_save
+from django.db.models.signals import post_delete, post_save, pre_save
 from django.dispatch import receiver
 from cryptography.fernet import Fernet, InvalidToken
 import hashlib
@@ -125,6 +125,23 @@ class Network(models.Model):
     base_cost = models.DecimalField(max_digits=10, decimal_places=2, default=Decimal('0.00'), help_text="Flat monthly platform fee")
     per_user_cost = models.DecimalField(max_digits=10, decimal_places=2, default=Decimal('0.00'), help_text="Cost per active 30-day patron")
 
+    # Transcription defaults — inherited by podcasts unless overridden at podcast level
+    whisper_initial_prompt = models.TextField(
+        blank=True,
+        help_text="Vocabulary hint passed to Whisper. E.g. host names, show titles, proper nouns. Leave blank to omit.",
+    )
+    whisper_model = models.CharField(
+        max_length=50, default='medium.en',
+        help_text="Whisper model size: tiny/base/small/medium/large or language-specific (e.g. medium.en).",
+    )
+    whisper_language = models.CharField(
+        max_length=10, default='en',
+        help_text="BCP-47 language code passed to Whisper. E.g. 'en', 'es', 'fr'.",
+    )
+    whisper_min_speakers = models.IntegerField(default=1, help_text="Minimum expected speakers for diarization.")
+    whisper_num_speakers = models.IntegerField(default=2, help_text="Expected speaker count hint for diarization.")
+    whisper_max_speakers = models.IntegerField(default=4, help_text="Maximum expected speakers for diarization.")
+
     def save(self, *args, **kwargs):
         super().save(*args, **kwargs)
         
@@ -188,6 +205,23 @@ class Podcast(models.Model):
     # Show-Specific Footers (e.g., Apple Podcasts Review Link for this specific show)
     show_footer_public = models.TextField(blank=True, help_text="Appended above the global public footer.")
     show_footer_private = models.TextField(blank=True, help_text="Appended above the global private footer.")
+
+    # Transcription overrides — null means inherit from network defaults
+    whisper_initial_prompt = models.TextField(
+        blank=True, null=True,
+        help_text="Override network initial_prompt for this podcast. Null = inherit.",
+    )
+    whisper_model = models.CharField(
+        max_length=50, blank=True, null=True,
+        help_text="Override network whisper model for this podcast. Null = inherit.",
+    )
+    whisper_language = models.CharField(
+        max_length=10, blank=True, null=True,
+        help_text="Override network language for this podcast. Null = inherit.",
+    )
+    whisper_min_speakers = models.IntegerField(null=True, blank=True, help_text="Override min speakers. Null = inherit.")
+    whisper_num_speakers = models.IntegerField(null=True, blank=True, help_text="Override default speakers. Null = inherit.")
+    whisper_max_speakers = models.IntegerField(null=True, blank=True, help_text="Override max speakers. Null = inherit.")
 
     class Meta:
         unique_together = ('network', 'slug')
@@ -574,6 +608,62 @@ class LogEntry(models.Model):
         return f"[{self.level}] {ts} - {self.message[:80]}"
 
 
+class Transcript(models.Model):
+    class Status(models.TextChoices):
+        PENDING    = 'pending',    'Pending'
+        PROCESSING = 'processing', 'Processing'
+        COMPLETED  = 'completed',  'Completed'
+        FAILED     = 'failed',     'Failed'
+
+    episode = models.OneToOneField(
+        Episode,
+        on_delete=models.CASCADE,
+        related_name='transcript',
+    )
+    status = models.CharField(
+        max_length=20,
+        choices=Status.choices,
+        default=Status.PENDING,
+        db_index=True,
+    )
+    language = models.CharField(max_length=10, default='en')
+
+    # File paths — populated once transcription completes
+    vtt_file       = models.CharField(max_length=500, blank=True, null=True)
+    json_file      = models.CharField(max_length=500, blank=True, null=True)
+    srt_file       = models.CharField(max_length=500, blank=True, null=True)
+    html_file      = models.CharField(max_length=500, blank=True, null=True)
+    words_json_file = models.CharField(max_length=500, blank=True, null=True)
+
+    # Plain text extracted from JSON for full-text search (Phase 8)
+    transcript_text = models.TextField(blank=True, null=True)
+
+    # Timestamps
+    requested_at  = models.DateTimeField(null=True, blank=True)
+    started_at    = models.DateTimeField(null=True, blank=True)
+    completed_at  = models.DateTimeField(null=True, blank=True)
+
+    # Audit / debugging
+    error_message     = models.TextField(blank=True, null=True)
+    source_audio_url  = models.URLField(max_length=2000, blank=True, null=True)
+    whisper_model_used = models.CharField(max_length=50, blank=True)
+    retry_count       = models.IntegerField(default=0)
+
+    class Meta:
+        verbose_name_plural = 'transcripts'
+
+    def __str__(self):
+        return f"Transcript [{self.status}] – {self.episode}"
+
+    def get_url(self, ext: str) -> str | None:
+        """Public URL for a transcript file, or None if not yet written."""
+        from django.urls import reverse
+        field = 'words_json_file' if ext == 'words' else f'{ext}_file'
+        if not getattr(self, field, None):
+            return None
+        return reverse('serve_transcript', kwargs={'episode_id': self.episode_id, 'ext': ext})
+
+
 @receiver(post_delete, sender=NetworkMix)
 def auto_delete_file_on_delete_network_mix(sender, instance, **kwargs):
     if instance.image_upload:
@@ -589,3 +679,59 @@ def assign_default_tier(sender, instance, **kwargs):
         default_tier = PatreonTier.objects.filter(network=instance.network, is_default=True).first()
         if default_tier:
             instance.required_tier = default_tier
+
+
+@receiver(post_save, sender=Episode)
+def queue_transcription_on_episode_save(sender, instance, **kwargs):
+    from django.conf import settings as django_settings
+    from django.utils import timezone
+    if not getattr(django_settings, 'WHISPER_ENABLED', False):
+        return
+    if not instance.audio_url_subscriber:
+        return
+    already_queued = Transcript.objects.filter(
+        episode=instance,
+        status__in=[
+            Transcript.Status.PENDING,
+            Transcript.Status.PROCESSING,
+            Transcript.Status.COMPLETED,
+        ],
+    ).exists()
+    if already_queued:
+        return
+    # Create/update the record immediately so the admin and episode page show
+    # "Queued" status during the window between dispatch and Celery pickup.
+    Transcript.objects.update_or_create(
+        episode=instance,
+        defaults={
+            'status': Transcript.Status.PENDING,
+            'requested_at': timezone.now(),
+            'error_message': None,
+        },
+    )
+    from pod_manager.tasks import transcribe_episode
+    transcribe_episode.delay(instance.id)
+
+
+@receiver(post_delete, sender=Transcript)
+def auto_delete_transcript_files(sender, instance, **kwargs):
+    from pathlib import Path
+    from django.conf import settings as django_settings
+    fields = ['vtt_file', 'json_file', 'srt_file', 'html_file', 'words_json_file']
+    deleted_dir = None
+    for field in fields:
+        rel = getattr(instance, field, None)
+        if not rel:
+            continue
+        path = Path(django_settings.MEDIA_ROOT) / rel
+        try:
+            if path.exists():
+                path.unlink()
+                deleted_dir = path.parent
+        except Exception as e:
+            logger.error("Failed to delete transcript file %s: %s", path, e)
+    if deleted_dir and deleted_dir.exists() and not any(deleted_dir.iterdir()):
+        try:
+            deleted_dir.rmdir()
+        except Exception:
+            pass

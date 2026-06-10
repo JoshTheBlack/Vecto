@@ -428,6 +428,11 @@ def run_transcription(
                 params=asr_params,
                 timeout=settings.WHISPER_TIMEOUT,
             )
+            if not asr.ok:
+                logger.error(
+                    "transcribe: whisper ASR returned %d for episode %d — body: %s",
+                    asr.status_code, episode_id, asr.text[:2000],
+                )
             asr.raise_for_status()
 
         # 5. Parse response (handles standard JSON, prefixed, and NDJSON formats)

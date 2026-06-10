@@ -66,6 +66,45 @@ def source_audio_path(episode) -> Path:
     )
 
 
+def ensure_source_audio(episode_id: int) -> bool:
+    """Download subscriber audio for an episode if not already on disk.
+
+    No-ops when WHISPER_KEEP_SOURCE_AUDIO is False, the episode has no audio,
+    or the file already exists. Returns True if a download was performed.
+    """
+    from pod_manager.models import Episode
+
+    if not settings.WHISPER_KEEP_SOURCE_AUDIO:
+        return False
+
+    try:
+        episode = Episode.objects.select_related('podcast__network').get(id=episode_id)
+    except Episode.DoesNotExist:
+        logger.warning("ensure_source_audio: episode %d not found", episode_id)
+        return False
+
+    if not episode.audio_url_subscriber:
+        return False
+
+    dest = source_audio_path(episode)
+    if dest.exists():
+        return False
+
+    logger.info("ensure_source_audio: downloading audio for episode %d to %s", episode_id, dest)
+    dl = requests.get(episode.audio_url_subscriber, stream=True, timeout=300)
+    dl.raise_for_status()
+
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile(suffix='.mp3', delete=False, dir=dest.parent) as tmp:
+        tmp_path = Path(tmp.name)
+        for chunk in dl.iter_content(chunk_size=65536):
+            tmp.write(chunk)
+    tmp_path.rename(dest)
+
+    logger.info("ensure_source_audio: saved episode %d at %s", episode_id, dest)
+    return True
+
+
 # ---------------------------------------------------------------------------
 # Format converters
 # ---------------------------------------------------------------------------

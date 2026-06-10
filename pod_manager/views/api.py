@@ -263,11 +263,27 @@ def backfill_transcripts_api(request):
             )
         queued += 1
 
+    # When source audio retention is on, also verify completed episodes have their files.
+    audio_checked = 0
+    if settings.WHISPER_KEEP_SOURCE_AUDIO:
+        from pod_manager.tasks import task_ensure_source_audio
+        completed = (
+            Episode.objects
+            .filter(audio_url_subscriber__isnull=False)
+            .exclude(audio_url_subscriber='')
+            .filter(transcript__status=Transcript.Status.COMPLETED)
+        )
+        if podcast_slug:
+            completed = completed.filter(podcast__slug=podcast_slug)
+        for ep in completed:
+            task_ensure_source_audio.apply_async(args=[ep.pk])
+            audio_checked += 1
+
     logger.info(
-        "backfill_transcripts_api: queued=%d podcast=%s by %s",
-        queued, podcast_slug or 'all', request.user.username,
+        "backfill_transcripts_api: queued=%d audio_checked=%d podcast=%s by %s",
+        queued, audio_checked, podcast_slug or 'all', request.user.username,
     )
-    return JsonResponse({'queued': queued, 'podcast': podcast_slug or 'all'})
+    return JsonResponse({'queued': queued, 'audio_checked': audio_checked, 'podcast': podcast_slug or 'all'})
 
 
 @require_POST

@@ -787,6 +787,16 @@ def task_run_gdrive_rewind(run_id, csv_path):
 # Transcription
 # ---------------------------------------------------------------------------
 
+@shared_task(bind=True, max_retries=3, queue='transcription', time_limit=600)
+def task_ensure_source_audio(self, episode_id: int):
+    """Download and persist subscriber audio for a completed episode if missing on disk."""
+    from pod_manager.services.transcription import ensure_source_audio
+    try:
+        ensure_source_audio(episode_id)
+    except Exception as exc:
+        raise self.retry(exc=exc, countdown=60 * (self.request.retries + 1))
+
+
 @shared_task(
     bind=True,
     max_retries=3,

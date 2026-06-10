@@ -205,7 +205,6 @@ def backfill_transcripts_api(request):
         return JsonResponse({'error': 'Invalid JSON'}, status=400)
 
     podcast_slug = body.get('podcast_slug') or None
-    stagger      = max(0, int(body.get('stagger', 30)))
 
     # Collect optional transcription overrides — only pass non-null values
     transcription_kwargs = {}
@@ -242,23 +241,31 @@ def backfill_transcripts_api(request):
 
     from pod_manager.tasks import transcribe_episode
     from pod_manager.services.transcription import run_transcription
+    from django.utils import timezone
 
     episode_list = list(episodes)
     queued = 0
-    for i, ep in enumerate(episode_list):
+    for ep in episode_list:
+        Transcript.objects.update_or_create(
+            episode=ep,
+            defaults={
+                'status': Transcript.Status.PENDING,
+                'requested_at': timezone.now(),
+                'error_message': None,
+            },
+        )
         if settings.IS_IDE:
             run_transcription(ep.pk, **transcription_kwargs)
         else:
             transcribe_episode.apply_async(
                 args=[ep.pk],
                 kwargs=transcription_kwargs,
-                countdown=i * stagger,
             )
         queued += 1
 
     logger.info(
-        "backfill_transcripts_api: queued=%d podcast=%s stagger=%ds by %s",
-        queued, podcast_slug or 'all', stagger, request.user.username,
+        "backfill_transcripts_api: queued=%d podcast=%s by %s",
+        queued, podcast_slug or 'all', request.user.username,
     )
     return JsonResponse({'queued': queued, 'podcast': podcast_slug or 'all'})
 

@@ -53,10 +53,18 @@ def source_audio_path(episode) -> Path:
     """Persistent save path for a subscriber MP3 when WHISPER_KEEP_SOURCE_AUDIO=True.
 
     Layout: MEDIA_ROOT/source_audio/{network_slug}/{podcast_slug}/{original_filename}
-    The filename is taken verbatim from the subscriber URL — never renamed.
+    Filename is derived from the subscriber URL. Falls back to the public URL when
+    the subscriber URL has no file extension (e.g. Google Drive /uc?export=download links).
     """
-    raw_name = Path(unquote(urlparse(episode.audio_url_subscriber).path)).name
-    filename = raw_name if raw_name else f"episode_{episode.pk}.mp3"
+    def _name_from_url(url):
+        name = Path(unquote(urlparse(url).path)).name
+        return name if name and '.' in name else None
+
+    filename = (
+        _name_from_url(episode.audio_url_subscriber)
+        or _name_from_url(episode.audio_url_public or '')
+        or f"episode_{episode.pk}.mp3"
+    )
     return (
         Path(settings.MEDIA_ROOT)
         / 'source_audio'

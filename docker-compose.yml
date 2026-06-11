@@ -124,7 +124,10 @@ services:
 
   celery-transcription:
     build: .
-    command: celery -A config worker -Q transcription --concurrency=4 -l INFO
+    # concurrency=1: a single whisper instance serializes ASR anyway — parallel
+    # tasks just contend for it, stretching every task's runtime toward the
+    # broker visibility timeout. Serial execution keeps runtimes predictable.
+    command: celery -A config worker -Q transcription --concurrency=1 -l INFO
     volumes:
       - .:/app
       - media_data:/app/media

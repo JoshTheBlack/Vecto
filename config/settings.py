@@ -358,6 +358,17 @@ CELERY_ACCEPT_CONTENT = ['json']
 CELERY_TASK_SERIALIZER = 'json'
 CELERY_TIMEZONE = TIME_ZONE
 
+# Redis has no native unacked-message tracking: Celery redelivers any message
+# unacked for longer than visibility_timeout (default 3600s). Transcription
+# tasks run 1-2+ hours, so the default silently duplicates them mid-run.
+# Must stay comfortably above the longest task runtime incl. queue wait.
+CELERY_BROKER_TRANSPORT_OPTIONS = {'visibility_timeout': 43200}  # 12 h
+
+# Don't reserve a backlog of unacked messages per worker process — with
+# multi-hour tasks, prefetched messages exceed the visibility timeout while
+# waiting and get redelivered as duplicates.
+CELERY_WORKER_PREFETCH_MULTIPLIER = 1
+
 CELERY_BEAT_SCHEDULE = {
     'sync-bot-avatar-hourly': {
         'task': 'pod_manager.tasks.task_sync_bot_avatar',

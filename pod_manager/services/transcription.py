@@ -370,6 +370,16 @@ def run_transcription(
     if transcript.status == Transcript.Status.COMPLETED:
         logger.info("transcribe: episode %d already completed — skipping duplicate run", episode_id)
         return
+    if (
+        transcript.status == Transcript.Status.PROCESSING
+        and transcript.started_at
+        and (timezone.now() - transcript.started_at).total_seconds() < 7200  # task time_limit
+    ):
+        logger.info(
+            "transcribe: episode %d already in-flight (started %s) — skipping duplicate run",
+            episode_id, transcript.started_at,
+        )
+        return
     if not transcript.requested_at:
         transcript.requested_at = timezone.now()
     transcript.status = Transcript.Status.PROCESSING

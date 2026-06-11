@@ -801,8 +801,8 @@ def task_ensure_source_audio(self, episode_id: int):
     bind=True,
     max_retries=3,
     queue='transcription',
-    time_limit=5400,
-    soft_time_limit=5300,
+    time_limit=7200,
+    soft_time_limit=6900,
 )
 def transcribe_episode(self, episode_id: int, **kwargs):
     """Celery wrapper around run_transcription(). Retries up to 3 times.
@@ -810,10 +810,24 @@ def transcribe_episode(self, episode_id: int, **kwargs):
     Accepts optional transcription override kwargs (model, language,
     initial_prompt, min_speakers, num_speakers, max_speakers) which are
     passed through to run_transcription().
+
+    Timeout ladder: WHISPER_TIMEOUT (requests) < soft_time_limit (SoftTimeLimitExceeded
+    exception → retry path) < time_limit (SIGKILL, last resort). WHISPER_TIMEOUT must be
+    the first to fire so the transcript is never left stuck in PROCESSING by a hard kill.
     """
+    from celery.exceptions import SoftTimeLimitExceeded
     from pod_manager.services.transcription import run_transcription
     try:
         run_transcription(episode_id, **kwargs)
+    except SoftTimeLimitExceeded as exc:
+        # Celery soft limit fired before requests.post timed out — mark stuck record and retry.
+        from pod_manager.models import Transcript
+        Transcript.objects.filter(
+            episode_id=episode_id,
+            status=Transcript.Status.PROCESSING,
+        ).update(status=Transcript.Status.FAILED, error_message=str(exc))
+        countdown = 60 * (self.request.retries + 1)
+        raise self.retry(exc=exc, countdown=countdown)
     except Exception as exc:
         # Exponential-ish back-off: 60s, 120s, 180s
         countdown = 60 * (self.request.retries + 1)

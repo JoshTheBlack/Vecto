@@ -367,6 +367,9 @@ def run_transcription(
 
     # 2. Upsert Transcript record and mark processing
     transcript, _ = Transcript.objects.get_or_create(episode=episode)
+    if transcript.status == Transcript.Status.COMPLETED:
+        logger.info("transcribe: episode %d already completed — skipping duplicate run", episode_id)
+        return
     if not transcript.requested_at:
         transcript.requested_at = timezone.now()
     transcript.status = Transcript.Status.PROCESSING

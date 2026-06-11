@@ -803,6 +803,8 @@ def task_ensure_source_audio(self, episode_id: int):
     queue='transcription',
     time_limit=7200,
     soft_time_limit=6900,
+    acks_late=True,
+    reject_on_worker_lost=True,
 )
 def transcribe_episode(self, episode_id: int, **kwargs):
     """Celery wrapper around run_transcription(). Retries up to 3 times.

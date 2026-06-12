@@ -12,7 +12,7 @@
         <img class="fp-cover" src="{{ ep.podcast.network.default_image_url }}" alt="">
     {% else %}
         <div class="fp-cover d-flex align-items-center justify-content-center bg-dark border border-secondary">
-            <i class="bi bi-mic text-warning" style="font-size:1.2rem;"></i>
+            <i class="bi bi-mic" style="font-size:1.2rem;color:var(--vecto-primary);"></i>
         </div>
     {% endif %}
     <div class="fp-info">
@@ -20,9 +20,11 @@
         <div class="fp-title">{{ ep.title }}</div>
     </div>
     <div class="fp-controls">
-        <button class="fp-btn" id="fpRewind" title="Back 15s"><i class="bi bi-skip-backward-fill"></i><span style="font-size:.55rem;display:block;margin-top:-4px;">15</span></button>
+        <span class="fp-skip-label">15</span>
+        <button class="fp-btn" id="fpRewind" title="Back 15s"><i class="bi bi-skip-backward-fill"></i></button>
         <button class="fp-btn fp-playpause" id="fpPlayPause" title="Play/Pause"><i class="bi bi-play-fill"></i></button>
-        <button class="fp-btn" id="fpForward" title="Forward 30s"><i class="bi bi-skip-forward-fill"></i><span style="font-size:.55rem;display:block;margin-top:-4px;">30</span></button>
+        <button class="fp-btn" id="fpForward" title="Forward 30s"><i class="bi bi-skip-forward-fill"></i></button>
+        <span class="fp-skip-label fp-skip-fwd">30</span>
     </div>
     <div class="fp-scrubber-wrap">
         <span class="fp-time fp-time-cur" id="fpTimeCur">0:00</span>
@@ -119,7 +121,7 @@
         font-size: 1rem;
     }
     .tag-pill .tag-remove:hover { opacity: 1; color: #dc3545; }
-    .transcript-body { border: 1px solid #444; border-radius: 0.375rem; padding: 1.25rem; }
+    .transcript-body { border: 1px solid var(--bs-border-color); border-radius: var(--bs-border-radius); padding: 1.25rem; }
     .transcript-body p { margin-bottom: 0.75rem; }
 
     /* Enhanced transcript — speaker blocks & word highlighting */
@@ -142,10 +144,10 @@
         padding: 0 1px;
         transition: background 0.08s;
     }
-    .tx-word:hover { background: rgba(255,193,7,0.18); }
+    .tx-word:hover { background: color-mix(in srgb, var(--vecto-primary) 18%, transparent); }
     .tx-word.tx-active {
-        background: rgba(255,193,7,0.35);
-        color: #ffc107;
+        background: color-mix(in srgb, var(--vecto-primary) 35%, transparent);
+        color: #fff;
         border-radius: 2px;
     }
     /* CRITICAL WARNING BANNER STYLES */
@@ -185,16 +187,16 @@
         background: rgba(8, 8, 10, 0.92);
         backdrop-filter: blur(24px);
         -webkit-backdrop-filter: blur(24px);
-        border-bottom: 1px solid rgba(255, 193, 7, 0.2);
+        border-bottom: 1px solid color-mix(in srgb, var(--vecto-primary) 20%, transparent);
         box-shadow: 0 4px 40px rgba(0,0,0,0.7);
     }
     #floatingPlayer.fp-visible {
         transform: translateY(0);
     }
     @keyframes fpGlow {
-        0%   { border-bottom-color: rgba(255,193,7,0.05); box-shadow: 0 4px 40px rgba(0,0,0,0.7); }
-        50%  { border-bottom-color: rgba(255,193,7,0.6);  box-shadow: 0 4px 40px rgba(0,0,0,0.7), 0 0 30px rgba(255,193,7,0.2); }
-        100% { border-bottom-color: rgba(255,193,7,0.2);  box-shadow: 0 4px 40px rgba(0,0,0,0.7); }
+        0%   { border-bottom-color: color-mix(in srgb, var(--vecto-primary) 5%, transparent);  box-shadow: 0 4px 40px rgba(0,0,0,0.7); }
+        50%  { border-bottom-color: color-mix(in srgb, var(--vecto-primary) 60%, transparent); box-shadow: 0 4px 40px rgba(0,0,0,0.7), 0 0 30px color-mix(in srgb, var(--vecto-primary) 20%, transparent); }
+        100% { border-bottom-color: color-mix(in srgb, var(--vecto-primary) 20%, transparent); box-shadow: 0 4px 40px rgba(0,0,0,0.7); }
     }
     #floatingPlayer.fp-intro { animation: fpGlow 0.9s ease forwards; }
     .fp-cover {
@@ -207,7 +209,7 @@
     .fp-info { min-width: 0; flex: 0 0 180px; }
     .fp-show {
         font-size: 0.6rem; text-transform: uppercase; letter-spacing: 0.09em;
-        color: #ffc107; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+        color: var(--vecto-primary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
     }
     .fp-title {
         font-size: 0.82rem; color: #f8f9fa; font-weight: 600;
@@ -223,17 +225,25 @@
         transition: background 0.12s, color 0.12s, transform 0.1s;
         font-size: 0.95rem;
     }
-    .fp-btn:hover { background: rgba(255,255,255,0.1); color: #ffc107; }
+    .fp-btn:hover { background: rgba(255,255,255,0.1); color: var(--vecto-primary); }
     .fp-btn:active { transform: scale(0.88); }
+    /* Negative margins pull the labels into the buttons' internal whitespace:
+       the 34px circular buttons have ~9px of empty space around the icon glyph. */
+    .fp-skip-label {
+        font-size: 0.55rem; color: #6c757d;
+        user-select: none; flex-shrink: 0;
+        margin-right: -6px;
+    }
+    .fp-skip-label.fp-skip-fwd { margin-left: -6px; margin-right: 0; }
     .fp-playpause {
-        background: rgba(255,193,7,0.12);
-        border: 1px solid rgba(255,193,7,0.3) !important;
+        background: color-mix(in srgb, var(--vecto-primary) 12%, transparent);
+        border: 1px solid color-mix(in srgb, var(--vecto-primary) 30%, transparent) !important;
         width: 40px; height: 40px; font-size: 1.05rem;
     }
-    .fp-playpause:hover { background: rgba(255,193,7,0.28); color: #ffc107; }
+    .fp-playpause:hover { background: color-mix(in srgb, var(--vecto-primary) 28%, transparent); color: var(--vecto-primary); }
     .fp-scrubber-wrap { flex: 1; display: flex; align-items: center; gap: 8px; min-width: 0; }
     .fp-time { font-size: 0.7rem; color: #6c757d; font-variant-numeric: tabular-nums; white-space: nowrap; flex-shrink: 0; }
-    .fp-time-cur { color: #ffc107; }
+    .fp-time-cur { color: var(--vecto-primary); }
     .fp-scrubber {
         flex: 1; height: 4px;
         background: rgba(255,255,255,0.12);
@@ -243,7 +253,7 @@
     .fp-scrubber:hover { height: 6px; }
     .fp-scrubber-fill {
         position: absolute; left: 0; top: 0; bottom: 0;
-        background: linear-gradient(90deg, #ffc107, #fd7e14);
+        background: var(--vecto-primary);
         border-radius: 2px; width: 0%;
         pointer-events: none;
     }
@@ -251,10 +261,10 @@
         position: absolute; top: 50%;
         transform: translate(-50%, -50%) scale(0);
         width: 12px; height: 12px;
-        background: #ffc107; border-radius: 50%;
+        background: var(--vecto-primary); border-radius: 50%;
         transition: transform 0.12s;
         pointer-events: none;
-        box-shadow: 0 0 8px rgba(255,193,7,0.7);
+        box-shadow: 0 0 8px color-mix(in srgb, var(--vecto-primary) 70%, transparent);
     }
     .fp-scrubber:hover .fp-scrubber-thumb { transform: translate(-50%, -50%) scale(1); }
     .fp-speed {
@@ -263,7 +273,7 @@
         border-radius: 4px; flex-shrink: 0; user-select: none;
         transition: color 0.12s, border-color 0.12s;
     }
-    .fp-speed:hover { color: #ffc107; border-color: rgba(255,193,7,0.4); }
+    .fp-speed:hover { color: var(--vecto-primary); border-color: color-mix(in srgb, var(--vecto-primary) 40%, transparent); }
     body.fp-active { padding-top: 62px; transition: padding-top 0.45s cubic-bezier(0.34,1.4,0.64,1); }
 
     /* Episode type chip selector */
@@ -572,7 +582,7 @@
                                 {% endfor %}
                             </div>
                             <div class="d-flex align-items-center gap-3">
-                                <button type="button" id="submitSpeakerLabelsBtn" class="btn btn-sm btn-outline-primary fw-bold">
+                                <button type="button" id="submitSpeakerLabelsBtn" class="btn btn-sm btn-primary fw-bold">
                                     <i class="bi bi-send me-1"></i>Submit Speaker Labels
                                 </button>
                                 <span id="speakerLabelStatus" class="text-muted small"></span>
@@ -1183,8 +1193,10 @@
     const wordsUrl = container.dataset.wordsUrl;
     if (!wordsUrl) return;
 
-    // Speaker colour palette — up to 8 speakers
-    const PALETTE = ['#ffc107','#0dcaf0','#20c997','#f87070','#a370f7','#fd7e14','#6ea8fe','#75b798'];
+    // Speaker colour palette — up to 8 speakers. First speaker gets the network
+    // theme's primary colour; the rest are fixed distinct hues.
+    const themePrimary = getComputedStyle(document.documentElement).getPropertyValue('--vecto-primary').trim() || '#ffc107';
+    const PALETTE = [themePrimary,'#0dcaf0','#20c997','#f87070','#a370f7','#fd7e14','#6ea8fe','#75b798'];
 
     function esc(s) {
         return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');

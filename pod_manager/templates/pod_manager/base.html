@@ -158,6 +158,19 @@
             color: var(--vecto-primary-text) !important;
         }
         
+        /* Subtle secondary actions: subdued but readable on dark surfaces,
+           warms to a primary tint on hover. The "less primary" button. */
+        .btn-subtle {
+            background-color: rgba(255,255,255,0.06);
+            border: 1px solid var(--bs-border-color);
+            color: var(--vecto-surface-text);
+        }
+        .btn-subtle:hover, .btn-subtle:focus, .btn-subtle:active {
+            background-color: color-mix(in srgb, var(--vecto-primary) 15%, transparent);
+            border-color: var(--vecto-primary);
+            color: var(--vecto-primary);
+        }
+
         .text-warning, .text-primary { color: var(--vecto-primary) !important; }
         .border-warning, .border-primary { border-color: var(--vecto-primary) !important; }
 

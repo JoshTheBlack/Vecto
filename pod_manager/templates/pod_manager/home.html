@@ -3,60 +3,162 @@
 {% block content %}
 
 <div class="row">
-    <div class="col-md-8">
-        
-        <div class="d-flex justify-content-between align-items-center mb-4 border-bottom border-secondary pb-2">
+    <div class="col-12 col-xxl-10 mx-auto">
+
+        <div class="dash-header d-flex justify-content-between align-items-center flex-wrap gap-2 mb-4 pb-2">
             <h3 class="fw-bold mb-0 text-light"><i class="bi bi-collection-play text-warning"></i> Latest Episodes</h3>
-            <div class="form-check form-switch d-flex align-items-center mb-0">
-                <input class="form-check-input border-secondary me-2 mt-0" type="checkbox" role="switch" id="infiniteScrollToggle" style="cursor: pointer;">
-                <label class="form-check-label text-muted small fw-bold mb-0" for="infiniteScrollToggle" style="white-space: nowrap; cursor: pointer;">Auto-load Next Page</label>
+
+            <div class="d-flex align-items-center flex-wrap gap-3">
+                {% if user_networks|length > 1 %}
+                <div class="dropdown">
+                    <button class="network-pill dropdown-toggle" type="button" data-bs-toggle="dropdown" data-bs-auto-close="outside" aria-label="Active network">
+                        <i class="bi bi-globe2 me-2"></i>
+                        <span class="network-pill-label">
+                            {% if not selected_networks or "all" in selected_networks %}
+                                All Networks
+                            {% elif selected_networks|length == 1 %}
+                                {% for net in user_networks %}{% if net.slug in selected_networks %}{{ net.name }}{% endif %}{% endfor %}
+                            {% else %}
+                                {{ selected_networks|length }} Networks
+                            {% endif %}
+                        </span>
+                    </button>
+
+                    <ul class="dropdown-menu dropdown-menu-end dropdown-menu-dark border-secondary shadow p-3" style="min-width: 260px;">
+                        <form method="GET" action="">
+                            {% for s in selected_shows %}
+                                <input type="hidden" name="show" value="{{ s }}">
+                            {% endfor %}
+
+                            <li class="mb-2 pb-2 border-bottom border-secondary">
+                                <a class="text-warning text-decoration-none small fw-bold" href="?network=all{% for s in selected_shows %}&show={{ s }}{% endfor %}">
+                                    <i class="bi bi-stars me-1"></i>Blended View (All My Networks)
+                                </a>
+                            </li>
+
+                            {% for net in user_networks %}
+                            <li class="mb-2">
+                                <div class="form-check">
+                                    <input class="form-check-input" type="checkbox" name="network" value="{{ net.slug }}" id="check-{{ net.slug }}"
+                                        {% if net.slug in selected_networks %}checked{% endif %}>
+                                    <label class="form-check-label text-light small" for="check-{{ net.slug }}">
+                                        {{ net.name }}
+                                    </label>
+                                </div>
+                            </li>
+                            {% endfor %}
+
+                            <li class="mt-3">
+                                <button type="submit" class="btn btn-warning btn-sm w-100 fw-bold">Update Filter</button>
+                            </li>
+                        </form>
+                    </ul>
+                </div>
+                {% endif %}
+
+                <div class="form-check form-switch d-flex align-items-center mb-0">
+                    <input class="form-check-input border-secondary me-2 mt-0" type="checkbox" role="switch" id="infiniteScrollToggle" style="cursor: pointer;">
+                    <label class="form-check-label text-muted small fw-bold mb-0" for="infiniteScrollToggle" style="white-space: nowrap; cursor: pointer;">Auto-load Next Page</label>
+                </div>
             </div>
         </div>
 
         <div id="next-page-data" data-next="{% if page_obj.has_next %}{{ page_obj.next_page_number }}{% endif %}"></div>
 
-        <form method="GET" action="{% url 'home' %}" id="searchForm" class="mb-3">
+        <form method="GET" action="{% url 'home' %}" id="searchForm" class="mb-4">
             {% for slug in selected_networks %}
                 <input type="hidden" name="network" value="{{ slug }}">
             {% endfor %}
-            {% if current_filter %}
-                <input type="hidden" name="show" value="{{ current_filter }}">
-            {% endif %}
+            <div id="showFilterHidden">
+                {% for s in selected_shows %}
+                    <input type="hidden" name="show" value="{{ s }}">
+                {% endfor %}
+            </div>
 
-            <div class="search-bar{% if newer_than or older_than %} search-bar-expanded{% endif %}" id="searchBarEl">
-                <span class="search-bar-lead-icon"><i class="bi bi-search"></i></span>
+            <div class="combo-wrap position-relative">
+                <div class="combo-bar{% if newer_than or older_than %} search-bar-expanded{% endif %}" id="searchBarEl">
+                    <div class="combo-search">
+                        <span class="search-bar-lead-icon"><i class="bi bi-search"></i></span>
 
-                <input type="text" name="q" id="searchInput"
-                       class="search-bar-input"
-                       placeholder="Search episodes..."
-                       autocomplete="off"
-                       value="{{ search_query }}">
+                        <input type="text" name="q" id="searchInput"
+                               class="search-bar-input"
+                               placeholder="Search episodes..."
+                               autocomplete="off"
+                               value="{{ search_query }}">
 
-                <div class="search-bar-tools">
-                    <span class="search-bar-divider"></span>
+                        <button type="button"
+                                class="search-bar-tool-btn{% if newer_than or older_than %} active{% endif %}"
+                                id="dateToggleBtn"
+                                data-bs-toggle="tooltip"
+                                data-bs-placement="bottom"
+                                title="Date Filters">
+                            <i class="bi bi-calendar3"></i>
+                        </button>
 
-                    <button type="button"
-                            class="search-bar-tool-btn{% if newer_than or older_than %} active{% endif %}"
-                            id="dateToggleBtn"
-                            data-bs-toggle="tooltip"
-                            data-bs-placement="bottom"
-                            title="Date Filters">
-                        <i class="bi bi-calendar3"></i>
-                    </button>
+                        <button type="button"
+                                class="search-bar-tool-btn{% if include_transcripts %} active{% endif %}"
+                                id="transcriptToggleBtn"
+                                data-bs-toggle="tooltip"
+                                data-bs-placement="bottom"
+                                title="Search Within Transcripts">
+                            <i class="bi bi-chat-quote"></i>
+                        </button>
+                    </div>
 
-                    <button type="button"
-                            class="search-bar-tool-btn{% if include_transcripts %} active{% endif %}"
-                            id="transcriptToggleBtn"
-                            data-bs-toggle="tooltip"
-                            data-bs-placement="bottom"
-                            title="Search Within Transcripts">
-                        <i class="bi bi-chat-quote"></i>
-                    </button>
+                    {% if podcasts|length > 1 %}
+                    <div class="combo-filter" id="showFilterBar" tabindex="0" role="combobox"
+                         aria-expanded="false" aria-haspopup="listbox" aria-controls="showFilterPanel"
+                         aria-label="Filter by show">
+                        <span class="show-filter-lead"><i class="bi bi-funnel"></i></span>
+                        <span class="show-filter-chips">
+                            {% for podcast in podcasts %}{% if podcast.slug in selected_shows %}
+                            <span class="show-chip" title="{{ podcast.title }}">
+                                {% if podcast.image_url %}
+                                    <img src="{{ podcast.image_url }}" alt="{{ podcast.title }}" class="show-chip-img">
+                                {% else %}
+                                    <span class="show-chip-img show-chip-fallback"><i class="bi bi-mic-fill"></i></span>
+                                {% endif %}
+                                <span class="show-chip-remove" role="button" tabindex="0" aria-label="Remove {{ podcast.title }}" data-slug="{{ podcast.slug }}"><i class="bi bi-x"></i></span>
+                            </span>
+                            {% endif %}{% endfor %}
+                            <span class="show-filter-placeholder"{% if selected_shows %} style="display:none;"{% endif %}>All shows</span>
+                        </span>
+                        <span class="show-filter-caret"><i class="bi bi-chevron-down"></i></span>
+                    </div>
+                    {% endif %}
 
                     <button type="submit" class="search-bar-submit" aria-label="Search">
                         <i class="bi bi-arrow-right-short" style="font-size:1.35rem;"></i>
                     </button>
                 </div>
+
+                {% if podcasts|length > 1 %}
+                <div class="show-filter-panel d-none" id="showFilterPanel">
+                    <div class="show-filter-search">
+                        <i class="bi bi-search"></i>
+                        <input type="text" id="showFilterSearch" placeholder="Filter {{ podcasts|length }} shows..." autocomplete="off" aria-label="Type to filter shows">
+                    </div>
+                    <div class="show-filter-list" id="showFilterList" role="listbox" aria-multiselectable="true">
+                        {% for podcast in podcasts %}
+                        <label class="show-filter-option" data-title="{{ podcast.title|lower }}">
+                            <input type="checkbox" class="form-check-input show-filter-check" value="{{ podcast.slug }}"
+                                   {% if podcast.slug in selected_shows %}checked{% endif %}>
+                            {% if podcast.image_url %}
+                                <img src="{{ podcast.image_url }}" alt="" class="show-filter-option-img" loading="lazy">
+                            {% else %}
+                                <span class="show-filter-option-img show-filter-option-fallback"><i class="bi bi-mic-fill"></i></span>
+                            {% endif %}
+                            <span class="show-filter-option-title">{{ podcast.title }}</span>
+                        </label>
+                        {% endfor %}
+                        <div class="show-filter-empty d-none" id="showFilterEmpty">No shows match.</div>
+                    </div>
+                    <div class="show-filter-footer">
+                        <button type="button" class="show-filter-clear" id="showFilterClear">Clear all</button>
+                        <span class="show-filter-count" id="showFilterCount"></span>
+                    </div>
+                </div>
+                {% endif %}
             </div>
 
             <div id="dateFilterPanel" class="search-bar-expansion{% if not newer_than and not older_than %} d-none{% endif %}">
@@ -78,7 +180,7 @@
 
             {% if search_query or older_than or newer_than or include_transcripts %}
             <div class="mt-2 ps-1">
-                <a href="{% url 'home' %}?{% for slug in selected_networks %}network={{ slug }}&{% endfor %}{% if current_filter %}show={{ current_filter }}{% endif %}"
+                <a href="{% url 'home' %}?{% for slug in selected_networks %}network={{ slug }}&{% endfor %}{% for s in selected_shows %}show={{ s }}&{% endfor %}"
                    class="small text-decoration-none" style="color:var(--vecto-bg-muted);">
                     <i class="bi bi-x-circle me-1"></i>Clear filters
                 </a>
@@ -88,38 +190,38 @@
 
         <div id="episodes-container">
             {% for ep in episodes %}
-            <div class="card mb-4 shadow-sm border-warning">
-                <div class="card-header border-bottom border-warning d-flex justify-content-between align-items-center bg-dark">
-                    <span class="text-muted small"><i class="bi bi-mic text-warning"></i> {{ ep.podcast.title }}</span>
-                    <span class="text-muted small">{{ ep.pub_date|date:"M d, Y" }}</span>
-                </div>
-                <div class="card-body">
-                    <div class="row g-4">
-                        <div class="col-auto">
+            <div class="card episode-card mb-3 shadow-sm">
+                <div class="card-body p-3 p-md-4">
+                    <div class="d-flex gap-3 gap-md-4">
+                        <div class="flex-shrink-0">
                             {% if ep.podcast.image_url %}
-                                <img src="{{ ep.podcast.image_url }}" class="rounded shadow-sm border border-secondary" style="width: 80px; height: 80px; object-fit: cover;">
+                                <img src="{{ ep.podcast.image_url }}" class="episode-art" alt="{{ ep.podcast.title }} artwork">
                             {% elif ep.podcast.network.default_image_url %}
-                                <img src="{{ ep.podcast.network.default_image_url }}" class="rounded shadow-sm border border-secondary" style="width: 80px; height: 80px; object-fit: cover;">
+                                <img src="{{ ep.podcast.network.default_image_url }}" class="episode-art" alt="">
                             {% else %}
-                                <div class="rounded bg-black d-flex justify-content-center align-items-center border border-secondary shadow-sm" style="width: 80px; height: 80px;">
+                                <div class="episode-art episode-art-fallback">
                                     <i class="bi bi-mic text-warning fs-3"></i>
                                 </div>
                             {% endif %}
                         </div>
 
-                        <div class="col">
-                            <h4 class="card-title fw-bold mb-3">
-                                <a href="{% url 'episode_detail' ep.id %}" class="text-light text-decoration-none text-hover-warning">
-                                    {{ ep.title }}
-                                </a>
-                                
-                                {% if ep.is_premium and not ep.user_has_access %}
-                                    <span class="badge bg-warning fs-6 float-end ms-2"><i class="bi bi-unlock-fill"></i> Ad-Free Available</span>
-                                {% elif ep.is_premium and ep.user_has_access %}
-                                    <span class="badge bg-success fs-6 float-end ms-2"><i class="bi bi-star-fill"></i> Premium Enabled</span>
-                                {% endif %}
+                        <div class="flex-grow-1 minw-0">
+                            <div class="episode-meta">
+                                <span class="episode-meta-show text-truncate"><i class="bi bi-mic-fill me-1"></i>{{ ep.podcast.title }}</span>
+                                <span class="d-flex align-items-center gap-2 flex-shrink-0">
+                                    {% if ep.is_premium and not ep.user_has_access %}
+                                        <span class="badge bg-warning episode-badge"><i class="bi bi-unlock-fill me-1"></i>Ad-Free Available</span>
+                                    {% elif ep.is_premium and ep.user_has_access %}
+                                        <span class="badge bg-success episode-badge"><i class="bi bi-star-fill me-1"></i>Premium Enabled</span>
+                                    {% endif %}
+                                    <span class="episode-meta-date">{{ ep.pub_date|date:"M d, Y" }}</span>
+                                </span>
+                            </div>
+
+                            <h4 class="episode-title fw-bold fs-5 mb-2">
+                                <a href="{% url 'episode_detail' ep.id %}">{{ ep.title }}</a>
                             </h4>
-                            
+
                             <div class="card-text mb-3 text-muted" style="max-height: 80px; overflow: hidden; position: relative;">
                                 {{ ep.clean_description|safe }}
                                 <div style="position: absolute; bottom: 0; left: 0; right: 0; height: 40px; background: linear-gradient(transparent, var(--vecto-surface-bg));"></div>
@@ -128,14 +230,14 @@
                             {% if ep.tags %}
                             <div class="mb-3">
                                 {% for tag in ep.tags %}
-                                    <a href="{% url 'home' %}?q={{ tag|urlencode }}{% for slug in selected_networks %}&network={{ slug }}{% endfor %}" class="badge bg-dark text-light border border-secondary text-decoration-none me-1 mb-1 p-2 shadow-sm" style="transition: all 0.2s;" onmouseover="this.classList.replace('text-light', 'text-warning'); this.classList.replace('border-secondary', 'border-warning');" onmouseout="this.classList.replace('text-warning', 'text-light'); this.classList.replace('border-warning', 'border-secondary');">
-                                        <i class="bi bi-tag-fill text-muted"></i> {{ tag }}
+                                    <a href="{% url 'home' %}?q={{ tag|urlencode }}{% for slug in selected_networks %}&network={{ slug }}{% endfor %}" class="episode-tag">
+                                        <i class="bi bi-tag-fill"></i> {{ tag }}
                                     </a>
                                 {% endfor %}
                             </div>
                             {% endif %}
 
-                            <a href="{% url 'episode_detail' ep.id %}" class="btn btn-outline-warning btn-sm">
+                            <a href="{% url 'episode_detail' ep.id %}" class="btn btn-warning btn-sm px-3 fw-bold">
                                 <i class="bi bi-play-circle"></i> Play Episode
                             </a>
                         </div>
@@ -150,11 +252,11 @@
         {% if page_obj.has_other_pages %}
 <nav aria-label="Episode pagination" class="mt-4 mb-5" id="pagination-bar">
     <ul class="pagination justify-content-center flex-wrap">
-        
+
         {% if page_obj.number > 1 %}
             <li class="page-item">
-                <a class="page-link bg-dark text-warning border-secondary" 
-                   href="?page=1{% for slug in selected_networks %}&network={{ slug }}{% endfor %}{% if current_filter %}&show={{ current_filter }}{% endif %}{% if search_query %}&q={{ search_query }}{% endif %}{% if include_transcripts %}&transcripts=1{% endif %}{% if older_than %}&older_than={{ older_than }}{% endif %}{% if newer_than %}&newer_than={{ newer_than }}{% endif %}">
+                <a class="page-link"
+                   href="?page=1{% for slug in selected_networks %}&network={{ slug }}{% endfor %}{% for s in selected_shows %}&show={{ s }}{% endfor %}{% if search_query %}&q={{ search_query }}{% endif %}{% if include_transcripts %}&transcripts=1{% endif %}{% if older_than %}&older_than={{ older_than }}{% endif %}{% if newer_than %}&newer_than={{ newer_than }}{% endif %}">
                    &laquo; First
                 </a>
             </li>
@@ -162,8 +264,8 @@
 
         {% if page_obj.has_previous %}
             <li class="page-item">
-                <a class="page-link bg-dark text-warning border-secondary" 
-                   href="?page={{ page_obj.previous_page_number }}{% for slug in selected_networks %}&network={{ slug }}{% endfor %}{% if current_filter %}&show={{ current_filter }}{% endif %}{% if search_query %}&q={{ search_query }}{% endif %}{% if include_transcripts %}&transcripts=1{% endif %}{% if older_than %}&older_than={{ older_than }}{% endif %}{% if newer_than %}&newer_than={{ newer_than }}{% endif %}">
+                <a class="page-link"
+                   href="?page={{ page_obj.previous_page_number }}{% for slug in selected_networks %}&network={{ slug }}{% endfor %}{% for s in selected_shows %}&show={{ s }}{% endfor %}{% if search_query %}&q={{ search_query }}{% endif %}{% if include_transcripts %}&transcripts=1{% endif %}{% if older_than %}&older_than={{ older_than }}{% endif %}{% if newer_than %}&newer_than={{ newer_than }}{% endif %}">
                    &lsaquo; Prev
                 </a>
             </li>
@@ -172,10 +274,10 @@
         {% for i in custom_page_range %}
             <li class="page-item {% if page_obj.number == i %}active{% endif %}">
                 {% if page_obj.number == i %}
-                    <span class="page-link bg-warning border-warning fw-bold">{{ i }}</span>
+                    <span class="page-link fw-bold">{{ i }}</span>
                 {% else %}
-                    <a class="page-link bg-dark text-light border-secondary" 
-                       href="?page={{ i }}{% for slug in selected_networks %}&network={{ slug }}{% endfor %}{% if current_filter %}&show={{ current_filter }}{% endif %}{% if search_query %}&q={{ search_query }}{% endif %}{% if include_transcripts %}&transcripts=1{% endif %}{% if older_than %}&older_than={{ older_than }}{% endif %}{% if newer_than %}&newer_than={{ newer_than }}{% endif %}">
+                    <a class="page-link"
+                       href="?page={{ i }}{% for slug in selected_networks %}&network={{ slug }}{% endfor %}{% for s in selected_shows %}&show={{ s }}{% endfor %}{% if search_query %}&q={{ search_query }}{% endif %}{% if include_transcripts %}&transcripts=1{% endif %}{% if older_than %}&older_than={{ older_than }}{% endif %}{% if newer_than %}&newer_than={{ newer_than }}{% endif %}">
                        {{ i }}
                     </a>
                 {% endif %}
@@ -184,125 +286,107 @@
 
         {% if page_obj.has_next %}
             <li class="page-item">
-                <a class="page-link bg-dark text-warning border-secondary" 
-                   href="?page={{ page_obj.next_page_number }}{% for slug in selected_networks %}&network={{ slug }}{% endfor %}{% if current_filter %}&show={{ current_filter }}{% endif %}{% if search_query %}&q={{ search_query }}{% endif %}{% if include_transcripts %}&transcripts=1{% endif %}{% if older_than %}&older_than={{ older_than }}{% endif %}{% if newer_than %}&newer_than={{ newer_than }}{% endif %}">
+                <a class="page-link"
+                   href="?page={{ page_obj.next_page_number }}{% for slug in selected_networks %}&network={{ slug }}{% endfor %}{% for s in selected_shows %}&show={{ s }}{% endfor %}{% if search_query %}&q={{ search_query }}{% endif %}{% if include_transcripts %}&transcripts=1{% endif %}{% if older_than %}&older_than={{ older_than }}{% endif %}{% if newer_than %}&newer_than={{ newer_than }}{% endif %}">
                    Next &rsaquo;
                 </a>
             </li>
         {% endif %}
-        
+
         {% if page_obj.number < page_obj.paginator.num_pages %}
             <li class="page-item">
-                <a class="page-link bg-dark text-warning border-secondary" 
-                   href="?page={{ page_obj.paginator.num_pages }}{% for slug in selected_networks %}&network={{ slug }}{% endfor %}{% if current_filter %}&show={{ current_filter }}{% endif %}{% if search_query %}&q={{ search_query }}{% endif %}{% if include_transcripts %}&transcripts=1{% endif %}{% if older_than %}&older_than={{ older_than }}{% endif %}{% if newer_than %}&newer_than={{ newer_than }}{% endif %}">
+                <a class="page-link"
+                   href="?page={{ page_obj.paginator.num_pages }}{% for slug in selected_networks %}&network={{ slug }}{% endfor %}{% for s in selected_shows %}&show={{ s }}{% endfor %}{% if search_query %}&q={{ search_query }}{% endif %}{% if include_transcripts %}&transcripts=1{% endif %}{% if older_than %}&older_than={{ older_than }}{% endif %}{% if newer_than %}&newer_than={{ newer_than }}{% endif %}">
                    Last &raquo;
                 </a>
             </li>
         {% endif %}
-        
+
     </ul>
 </nav>
 {% endif %}
 
     </div>
-    
-    <div class="col-md-4">
-        
-        {% if user_networks|length > 1 %}
-        <div class="card border-secondary shadow-sm bg-dark mb-4">
-            <div class="card-body p-3">
-                <h6 class="text-muted fw-bold text-uppercase mb-2 small"><i class="bi bi-globe"></i> Active Network</h6>
-                <div class="dropdown d-grid">
-                    <button class="btn btn-outline-warning dropdown-toggle text-start d-flex justify-content-between align-items-center" type="button" data-bs-toggle="dropdown" data-bs-auto-close="outside">
-                        <span class="text-light text-truncate pe-2">
-                            {% if not selected_networks or "all" in selected_networks %}
-                                All My Networks (Blended)
-                            {% elif selected_networks|length == 1 %}
-                                {% for net in user_networks %}
-                                    {% if net.slug in selected_networks %}{{ net.name }}{% endif %}
-                                {% endfor %}
-                            {% else %}
-                                Multiple Networks ({{ selected_networks|length }})
-                            {% endif %}
-                        </span>
-                    </button>
-                    
-                    <ul class="dropdown-menu dropdown-menu-dark w-100 border-warning shadow p-3" style="min-width: 250px;">
-                        <form method="GET" action="">
-                            {% if current_filter %}
-                                <input type="hidden" name="show" value="{{ current_filter }}">
-                            {% endif %}
-                            
-                            <li class="mb-2 pb-2 border-bottom border-secondary">
-                                <a class="text-warning text-decoration-none small fw-bold" href="?network=all{% if current_filter %}&show={{ current_filter }}{% endif %}">
-                                    <i class="bi bi-x-circle"></i> Blended View (All My Networks)
-                                </a>
-                            </li>
-
-                            {% for net in user_networks %}
-                            <li class="mb-2">
-                                <div class="form-check">
-                                    <input class="form-check-input" type="checkbox" name="network" value="{{ net.slug }}" id="check-{{ net.slug }}" 
-                                        {% if net.slug in selected_networks %}checked{% endif %}>
-                                    <label class="form-check-label text-light small" for="check-{{ net.slug }}">
-                                        {{ net.name }}
-                                    </label>
-                                </div>
-                            </li>
-                            {% endfor %}
-
-                            <li class="mt-3">
-                                <button type="submit" class="btn btn-warning btn-sm w-100 fw-bold">Update Filter</button>
-                            </li>
-                        </form>
-                    </ul>
-                </div>
-            </div>
-        </div>
-        {% endif %}
-
-        <div class="card border-secondary shadow-sm bg-dark">
-            <div class="card-header bg-black border-bottom border-secondary">
-                <h5 class="card-title mb-0 fw-bold"><i class="bi bi-funnel"></i> Filter by Show</h5>
-            </div>
-            <div class="list-group list-group-flush" style="max-height: 500px; overflow-y: auto;">
-                
-                <a href="?{% for slug in selected_networks %}network={{ slug }}{% if not forloop.last %}&{% endif %}{% endfor %}" class="list-group-item list-group-item-action bg-black text-light border-secondary {% if not current_filter %}active text-warning fw-bold{% endif %}">
-                    <i class="bi bi-grid-fill me-2"></i> All Shows
-                </a>
-
-                {% for podcast in podcasts %}
-                <a href="?show={{ podcast.slug }}{% for slug in selected_networks %}&network={{ slug }}{% endfor %}" class="list-group-item list-group-item-action bg-black text-light border-secondary {% if current_filter == podcast.slug %}active text-warning fw-bold{% endif %}">
-                    {{ podcast.title }}
-                </a>
-                {% endfor %}
-                                
-            </div>
-        </div>
-    </div>
 </div>
 
 <style>
-    .text-hover-warning:hover { color: var(--vecto-primary) !important; }
+    .minw-0 { min-width: 0; }
 
-    /* ── Google-style search bar ── */
-    .search-bar {
-        display: flex;
+    /* ── Page header ── */
+    .dash-header { border-bottom: 1px solid var(--bs-border-color); }
+    .network-pill {
+        display: inline-flex;
         align-items: center;
         background: var(--vecto-surface-bg);
         border: 1.5px solid var(--bs-border-color);
-        border-radius: 9999px;
-        padding: 4px 6px 4px 18px;
+        border-radius: var(--vecto-radius-md);
+        color: var(--vecto-surface-text);
+        font-size: 0.85rem;
+        font-weight: 600;
+        padding: 6px 14px;
+        max-width: 260px;
+        transition: border-color 0.15s, color 0.15s;
+    }
+    .network-pill:hover, .network-pill:focus {
+        border-color: var(--vecto-primary);
+        color: var(--vecto-primary);
+    }
+    .network-pill-label {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+
+    /* ── Unified search + filter bar ── */
+    .combo-bar {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: stretch;
+        gap: 2px;
+        background: var(--vecto-surface-bg);
+        border: 1.5px solid var(--bs-border-color);
+        border-radius: var(--bs-border-radius);
+        padding: 4px;
         transition: border-color 0.2s, border-radius 0.15s, box-shadow 0.2s;
         box-shadow: 0 2px 10px rgba(0,0,0,0.35);
     }
-    .search-bar:focus-within {
+    .combo-bar:focus-within,
+    .combo-bar.filter-open {
         border-color: var(--vecto-primary);
         box-shadow: 0 4px 20px rgba(0,0,0,0.5);
     }
-    .search-bar.search-bar-expanded {
-        border-radius: 20px 20px 0 0;
+    .combo-bar.search-bar-expanded {
+        border-radius: var(--bs-border-radius) var(--bs-border-radius) 0 0;
         border-bottom-color: transparent;
+    }
+    .combo-search {
+        display: flex;
+        align-items: center;
+        flex: 1 1 260px;
+        min-width: 0;
+        padding-left: 14px;
+    }
+    .combo-filter {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        flex: 1 1 220px;
+        min-width: 0;
+        padding: 5px 12px;
+        border-radius: var(--vecto-radius-md);
+        cursor: pointer;
+        transition: background 0.15s;
+    }
+    .combo-filter:hover { background: rgba(255,255,255,0.04); }
+    .combo-filter:focus-visible {
+        outline: 1px solid var(--vecto-primary);
+        outline-offset: -1px;
+    }
+    @media (min-width: 768px) {
+        .combo-filter {
+            border-left: 1px solid var(--bs-border-color);
+            border-radius: 0 var(--vecto-radius-md) var(--vecto-radius-md) 0;
+        }
     }
 
     .search-bar-lead-icon {
@@ -325,23 +409,10 @@
     }
     .search-bar-input::placeholder { color: var(--vecto-surface-muted); }
 
-    .search-bar-tools {
-        display: flex;
-        align-items: center;
-        flex-shrink: 0;
-        gap: 2px;
-    }
-    .search-bar-divider {
-        width: 1px;
-        height: 22px;
-        background: var(--bs-border-color);
-        margin: 0 8px;
-        flex-shrink: 0;
-    }
     .search-bar-tool-btn {
         width: 36px;
         height: 36px;
-        border-radius: 50%;
+        border-radius: var(--vecto-radius-md);
         border: none;
         background: transparent;
         color: var(--vecto-surface-muted);
@@ -364,7 +435,8 @@
     .search-bar-submit {
         width: 40px;
         height: 40px;
-        border-radius: 50%;
+        align-self: center;
+        border-radius: var(--vecto-radius-md);
         border: none;
         background: var(--vecto-primary);
         color: var(--vecto-primary-text);
@@ -383,17 +455,17 @@
         background: var(--vecto-surface-bg);
         border: 1.5px solid var(--bs-border-color);
         border-top: none;
-        border-radius: 0 0 20px 20px;
+        border-radius: 0 0 var(--bs-border-radius) var(--bs-border-radius);
         padding: 14px 22px 18px;
         transition: border-color 0.2s;
     }
-    .search-bar:focus-within + .search-bar-expansion {
+    .combo-wrap:focus-within + .search-bar-expansion {
         border-color: var(--vecto-primary);
     }
     .date-filter-input {
         background: var(--vecto-bg);
         border: 1px solid var(--bs-border-color);
-        border-radius: 8px;
+        border-radius: var(--vecto-radius-sm);
         color: var(--vecto-surface-text);
         padding: 5px 10px;
         font-size: 0.875rem;
@@ -402,6 +474,291 @@
         color-scheme: dark;
     }
     .date-filter-input:focus { border-color: var(--vecto-primary); }
+
+    /* ── Show filter (right side of combo bar) ── */
+    .show-filter-lead {
+        color: var(--vecto-bg-muted);
+        flex-shrink: 0;
+    }
+    .show-filter-chips {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 6px;
+        flex: 1;
+        min-width: 0;
+    }
+    .show-filter-placeholder {
+        color: var(--vecto-surface-muted);
+        font-size: 0.9rem;
+    }
+    .show-filter-caret {
+        color: var(--vecto-surface-muted);
+        flex-shrink: 0;
+        transition: transform 0.2s;
+    }
+    .combo-filter[aria-expanded="true"] .show-filter-caret { transform: rotate(180deg); }
+
+    /* artwork-only chips for selected shows */
+    .show-chip {
+        position: relative;
+        display: inline-flex;
+        flex-shrink: 0;
+    }
+    .show-chip-img {
+        width: 30px;
+        height: 30px;
+        border-radius: var(--vecto-radius-sm);
+        object-fit: cover;
+        border: 1px solid color-mix(in srgb, var(--vecto-primary) 55%, transparent);
+        display: inline-flex;
+    }
+    .show-chip-fallback {
+        align-items: center;
+        justify-content: center;
+        background: rgba(255,255,255,0.08);
+        color: var(--vecto-surface-muted);
+        font-size: 0.75rem;
+    }
+    .show-chip-remove {
+        position: absolute;
+        top: -6px;
+        right: -6px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 16px;
+        height: 16px;
+        border-radius: 50%;
+        background: var(--vecto-bg);
+        border: 1px solid var(--bs-border-color);
+        color: var(--vecto-surface-text);
+        font-size: 0.7rem;
+        opacity: 0;
+        transition: opacity 0.15s, background 0.15s, color 0.15s;
+    }
+    .show-chip:hover .show-chip-remove,
+    .show-chip-remove:focus-visible { opacity: 1; }
+    .show-chip-remove:hover {
+        background: var(--vecto-primary);
+        border-color: var(--vecto-primary);
+        color: var(--vecto-primary-text);
+    }
+
+    .show-filter-panel {
+        position: absolute;
+        top: calc(100% + 6px);
+        right: 0;
+        width: min(420px, 100%);
+        background: var(--vecto-surface-bg);
+        border: 1.5px solid var(--bs-border-color);
+        border-radius: var(--bs-border-radius);
+        box-shadow: 0 12px 32px rgba(0,0,0,0.55);
+        z-index: 1050;
+        overflow: hidden;
+    }
+    .show-filter-search {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 10px 14px;
+        border-bottom: 1px solid var(--bs-border-color);
+        color: var(--vecto-surface-muted);
+    }
+    .show-filter-search input {
+        flex: 1;
+        min-width: 0;
+        background: transparent;
+        border: none;
+        outline: none;
+        color: var(--vecto-surface-text);
+        font-size: 0.9rem;
+        caret-color: var(--vecto-primary);
+    }
+    .show-filter-search input::placeholder { color: var(--vecto-surface-muted); }
+    .show-filter-list {
+        max-height: 320px;
+        overflow-y: auto;
+        padding: 6px;
+        scrollbar-width: thin;
+        scrollbar-color: var(--vecto-bg-muted) transparent;
+    }
+    .show-filter-list::-webkit-scrollbar { width: 8px; }
+    .show-filter-list::-webkit-scrollbar-thumb {
+        background: var(--vecto-bg-muted);
+        border-radius: 4px;
+    }
+    .show-filter-option {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        margin: 0;
+        padding: 7px 10px;
+        border-radius: var(--vecto-radius-md);
+        cursor: pointer;
+        font-size: 0.9rem;
+        color: var(--vecto-surface-text);
+        transition: background 0.12s;
+    }
+    .show-filter-option:hover { background: rgba(255,255,255,0.06); }
+    .show-filter-option .form-check-input {
+        margin: 0;
+        cursor: pointer;
+        flex-shrink: 0;
+    }
+    .show-filter-option .form-check-input:checked {
+        background-color: var(--vecto-primary);
+        border-color: var(--vecto-primary);
+    }
+    .show-filter-option-img {
+        width: 28px;
+        height: 28px;
+        border-radius: var(--vecto-radius-sm);
+        object-fit: cover;
+        flex-shrink: 0;
+    }
+    .show-filter-option-fallback {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        background: rgba(255,255,255,0.08);
+        color: var(--vecto-surface-muted);
+        font-size: 0.75rem;
+    }
+    .show-filter-option-title {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+    .show-filter-empty {
+        padding: 14px;
+        color: var(--vecto-surface-muted);
+        font-size: 0.85rem;
+        text-align: center;
+    }
+    .show-filter-footer {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding: 10px 14px;
+        border-top: 1px solid var(--bs-border-color);
+    }
+    .show-filter-clear {
+        background: none;
+        border: none;
+        padding: 0;
+        color: var(--vecto-primary);
+        font-size: 0.85rem;
+        font-weight: 600;
+        cursor: pointer;
+    }
+    .show-filter-clear:hover { text-decoration: underline; }
+    .show-filter-count {
+        color: var(--vecto-surface-muted);
+        font-size: 0.8rem;
+    }
+
+    /* ── Episode cards ── */
+    .episode-card {
+        border: 1px solid var(--bs-border-color);
+        overflow: hidden;
+        transition: transform 0.18s ease, box-shadow 0.18s ease, border-color 0.18s ease;
+    }
+    .episode-card:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 10px 28px rgba(0,0,0,0.45);
+        border-color: color-mix(in srgb, var(--vecto-primary) 45%, var(--bs-border-color));
+    }
+    .episode-art {
+        width: 96px;
+        height: 96px;
+        border-radius: var(--vecto-radius-md);
+        object-fit: cover;
+    }
+    .episode-art-fallback {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        background: var(--vecto-bg);
+        border: 1px solid var(--bs-border-color);
+    }
+    @media (max-width: 575.98px) {
+        .episode-art { width: 72px; height: 72px; }
+    }
+    .episode-meta {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 10px;
+        margin-bottom: 6px;
+        font-size: 0.78rem;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.4px;
+        color: var(--vecto-surface-muted);
+    }
+    .episode-meta-show i { color: var(--vecto-primary); }
+    .episode-badge {
+        font-size: 0.68rem;
+        letter-spacing: 0.3px;
+        text-transform: none;
+        border-radius: var(--vecto-radius-sm);
+    }
+    .episode-card .btn,
+    .dash-header .btn {
+        transition: opacity 0.15s;
+    }
+    .episode-card .btn:hover { opacity: 0.85; }
+    .episode-title a {
+        color: var(--vecto-surface-text);
+        text-decoration: none;
+        transition: color 0.15s;
+    }
+    .episode-title a:hover { color: var(--vecto-primary); }
+    .episode-tag {
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+        background: transparent;
+        border: 1px solid var(--bs-border-color);
+        border-radius: var(--vecto-radius-sm);
+        color: var(--vecto-surface-muted);
+        font-size: 0.75rem;
+        font-weight: 600;
+        padding: 3px 10px;
+        margin: 0 6px 6px 0;
+        text-decoration: none;
+        transition: color 0.15s, border-color 0.15s, background 0.15s;
+    }
+    .episode-tag:hover {
+        color: var(--vecto-primary);
+        border-color: var(--vecto-primary);
+        background: color-mix(in srgb, var(--vecto-primary) 8%, transparent);
+    }
+    .episode-tag i { opacity: 0.6; }
+
+    /* ── Pagination pills ── */
+    #pagination-bar .page-item { margin: 0 3px 6px; }
+    #pagination-bar .page-link {
+        background: transparent;
+        border: 1px solid var(--bs-border-color);
+        border-radius: var(--vecto-radius-md);
+        color: var(--vecto-bg-text);
+        font-size: 0.9rem;
+        padding: 6px 14px;
+        transition: border-color 0.15s, color 0.15s, background 0.15s;
+    }
+    #pagination-bar .page-link:hover {
+        border-color: var(--vecto-primary);
+        color: var(--vecto-primary);
+        background: color-mix(in srgb, var(--vecto-primary) 10%, transparent);
+    }
+    #pagination-bar .page-link:focus { box-shadow: none; }
+    #pagination-bar .page-item.active .page-link {
+        background: var(--vecto-primary);
+        border-color: var(--vecto-primary);
+        color: var(--vecto-primary-text);
+    }
 </style>
 
 <script>
@@ -454,12 +811,121 @@ document.addEventListener('DOMContentLoaded', function() {
     });
     syncTranscriptField();
 
+    // --- SHOW FILTER COMBOBOX ---
+    const filterBar  = document.getElementById('showFilterBar');
+    const hiddenWrap = document.getElementById('showFilterHidden');
+
+    function syncShowHidden() {
+        if (!filterBar) return;
+        hiddenWrap.innerHTML = '';
+        document.querySelectorAll('.show-filter-check:checked').forEach(c => {
+            const inp = document.createElement('input');
+            inp.type = 'hidden'; inp.name = 'show'; inp.value = c.value;
+            hiddenWrap.appendChild(inp);
+        });
+    }
+    searchForm.addEventListener('submit', syncShowHidden);
+
+    if (filterBar) {
+        const bar      = filterBar;
+        const panel    = document.getElementById('showFilterPanel');
+        const searchIn = document.getElementById('showFilterSearch');
+        const list     = document.getElementById('showFilterList');
+        const emptyMsg = document.getElementById('showFilterEmpty');
+        const countEl  = document.getElementById('showFilterCount');
+        const clearBtn = document.getElementById('showFilterClear');
+
+        const checks = () => [...list.querySelectorAll('.show-filter-check')];
+        const selectionKey = () => checks().filter(c => c.checked).map(c => c.value).sort().join(',');
+        const initialSelection = selectionKey();
+
+        function updateCount() {
+            const total = checks().length;
+            const n = checks().filter(c => c.checked).length;
+            countEl.textContent = n ? `${n} of ${total} selected` : `${total} shows`;
+        }
+
+        function filterList(term) {
+            term = term.trim().toLowerCase();
+            let any = false;
+            list.querySelectorAll('.show-filter-option').forEach(o => {
+                const hit = !term || o.dataset.title.includes(term);
+                o.classList.toggle('d-none', !hit);
+                if (hit) any = true;
+            });
+            emptyMsg.classList.toggle('d-none', !!term && !any);
+        }
+
+        function openPanel() {
+            // float checked shows to the top (stable sort keeps alphabetical order within groups)
+            [...list.querySelectorAll('.show-filter-option')]
+                .sort((a, b) => b.querySelector('input').checked - a.querySelector('input').checked)
+                .forEach(o => list.insertBefore(o, emptyMsg));
+            panel.classList.remove('d-none');
+            bar.setAttribute('aria-expanded', 'true');
+            searchBarEl.classList.add('filter-open');
+            searchIn.value = '';
+            filterList('');
+            searchIn.focus();
+        }
+
+        function closePanel(apply = true) {
+            if (panel.classList.contains('d-none')) return;
+            panel.classList.add('d-none');
+            bar.setAttribute('aria-expanded', 'false');
+            searchBarEl.classList.remove('filter-open');
+            if (apply && selectionKey() !== initialSelection) {
+                syncShowHidden();
+                searchForm.submit();
+            }
+        }
+
+        function togglePanel() {
+            panel.classList.contains('d-none') ? openPanel() : closePanel();
+        }
+
+        bar.addEventListener('click', (e) => {
+            const remover = e.target.closest('.show-chip-remove');
+            if (remover) {
+                e.stopPropagation();
+                const check = checks().find(c => c.value === remover.dataset.slug);
+                if (check) check.checked = false;
+                syncShowHidden();
+                searchForm.submit();
+                return;
+            }
+            togglePanel();
+        });
+        bar.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                togglePanel();
+            }
+        });
+
+        searchIn.addEventListener('input', () => filterList(searchIn.value));
+        list.addEventListener('change', updateCount);
+        clearBtn.addEventListener('click', () => {
+            checks().forEach(c => c.checked = false);
+            updateCount();
+        });
+
+        document.addEventListener('click', (e) => {
+            if (!bar.contains(e.target) && !panel.contains(e.target)) closePanel();
+        });
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape') closePanel();
+        });
+
+        updateCount();
+    }
+
     // --- INFINITE SCROLL ---
     const toggle = document.getElementById('infiniteScrollToggle');
     const paginationBar = document.getElementById('pagination-bar');
     const container = document.getElementById('episodes-container');
     const nextDataElem = document.getElementById('next-page-data');
-    
+
     let nextPage = nextDataElem ? nextDataElem.dataset.next : null;
     let isFetching = false;
     let infiniteEnabled = false;
@@ -473,10 +939,10 @@ document.addEventListener('DOMContentLoaded', function() {
     toggle.addEventListener('change', function() {
         infiniteEnabled = this.checked;
         localStorage.setItem('vecto_infinite_scroll', infiniteEnabled);
-        
+
         if (infiniteEnabled) {
             if (paginationBar) paginationBar.style.display = 'none';
-            checkScroll(); 
+            checkScroll();
         } else {
             if (paginationBar) paginationBar.style.display = 'flex';
         }
@@ -491,7 +957,7 @@ document.addEventListener('DOMContentLoaded', function() {
         if (entries[0].isIntersecting && infiniteEnabled && !isFetching && nextPage) {
             loadMore();
         }
-    }, { rootMargin: '400px' }); 
+    }, { rootMargin: '400px' });
 
     observer.observe(sentinel);
 
@@ -503,7 +969,7 @@ document.addEventListener('DOMContentLoaded', function() {
     }
 
     async function loadMore() {
-        if (isFetching || !nextPage) return; 
+        if (isFetching || !nextPage) return;
         isFetching = true;
         spinner.style.display = 'block';
 
@@ -518,7 +984,7 @@ document.addEventListener('DOMContentLoaded', function() {
 
             const parser = new DOMParser();
             const doc = parser.parseFromString(htmlText, 'text/html');
-            
+
             const newEpisodes = doc.querySelectorAll('#episodes-container > .card');
             newEpisodes.forEach(ep => container.appendChild(ep));
 
@@ -526,7 +992,7 @@ document.addEventListener('DOMContentLoaded', function() {
             if (nextMeta && nextMeta.dataset.next) {
                 nextPage = nextMeta.dataset.next;
             } else {
-                nextPage = null; 
+                nextPage = null;
             }
 
             if (!nextPage) {

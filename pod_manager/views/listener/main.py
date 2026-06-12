@@ -53,7 +53,7 @@ def _build_feed_base_url(podcast, request):
 
 
 def home(request):
-    show_slug = request.GET.get('show')
+    show_slugs = request.GET.getlist('show')
     search_query = request.GET.get('q', '').strip()
     older_than = request.GET.get('older_than', '').strip()
     newer_than = request.GET.get('newer_than', '').strip()
@@ -76,8 +76,8 @@ def home(request):
     query = Episode.objects.select_related('podcast', 'podcast__network', 'podcast__required_tier').filter(podcast__network__slug__in=target_network_slugs, is_published=True)
     podcasts = Podcast.objects.filter(network__slug__in=target_network_slugs).order_by('title')
 
-    if show_slug:
-        query = query.filter(podcast__slug=show_slug)
+    if show_slugs:
+        query = query.filter(podcast__slug__in=show_slugs)
     if search_query:
         base_q = Q(title__icontains=search_query) | Q(clean_description__icontains=search_query)
         if include_transcripts:
@@ -119,7 +119,7 @@ def home(request):
 
     context = {
         'episodes': page_obj, 'page_obj': page_obj, 'podcasts': podcasts,
-        'current_filter': show_slug, 'current_network': request.network,
+        'selected_shows': show_slugs, 'current_network': request.network,
         'search_query': search_query, 'tenant_profile': tenant_profile,
         'older_than': older_than, 'newer_than': newer_than,
         'include_transcripts': include_transcripts,

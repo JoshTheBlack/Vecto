@@ -43,6 +43,9 @@
             /* Globals */
             --bs-border-color: {{ current_network.theme_config.border_color|default:"#343a40" }};
             --bs-border-radius: {{ current_network.theme_config.border_radius|default:"0.375rem" }};
+            /* radius scale derived from the single theme value: full for surfaces, smaller for controls/chips */
+            --vecto-radius-md: calc(var(--bs-border-radius) * 0.72);
+            --vecto-radius-sm: calc(var(--bs-border-radius) * 0.45);
             
             /* Plyr Audio Player Defaults */
             --plyr-color-main: var(--vecto-primary);
@@ -179,7 +182,13 @@
 
         /* 9. Utilities & Plyr */
         .border-secondary { border-color: var(--bs-border-color) !important; }
-        .rounded, .card, .btn { border-radius: var(--bs-border-radius) !important; }
+        .rounded { border-radius: var(--bs-border-radius) !important; }
+        .card:not([class*="rounded-"]) { border-radius: var(--bs-border-radius) !important; }
+        .btn:not([class*="rounded-"]) { border-radius: var(--vecto-radius-md) !important; }
+        /* border-radius doesn't clip children, so card children with their own
+           backgrounds (e.g. a bg-black card-body) must round to match the card */
+        .card > :first-child { border-top-left-radius: inherit; border-top-right-radius: inherit; }
+        .card > :last-child { border-bottom-left-radius: inherit; border-bottom-right-radius: inherit; }
 
         .plyr--audio .plyr__controls {
             background: var(--vecto-surface-bg) !important;

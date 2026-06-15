@@ -139,7 +139,7 @@ class Network(models.Model):
         help_text="BCP-47 language code passed to Whisper. E.g. 'en', 'es', 'fr'.",
     )
     whisper_min_speakers = models.IntegerField(default=1, help_text="Minimum expected speakers for diarization.")
-    whisper_num_speakers = models.IntegerField(default=2, help_text="Expected speaker count hint for diarization.")
+    whisper_num_speakers = models.IntegerField(null=True, blank=True, help_text="Expected speaker count hint for diarization. Null = auto-detect.")
     whisper_max_speakers = models.IntegerField(default=4, help_text="Maximum expected speakers for diarization.")
 
     def save(self, *args, **kwargs):
@@ -311,6 +311,41 @@ class Episode(models.Model):
             except IndexError:
                 pass
         return None
+
+class EpisodeCrossPublication(models.Model):
+    """Places an episode into another podcast's feeds in addition to its
+    parent. The episode stays a single entity (one parent podcast, one set of
+    fragments/GUIDs); this link only affects feed membership and, optionally,
+    which podcast's tier gates the subscriber audio."""
+
+    class AccessMode(models.TextChoices):
+        INHERIT = 'inherit', "Keep episode's own gating (parent podcast tier)"
+        TARGET = 'target', "Use the target podcast's tier"
+
+    episode = models.ForeignKey(Episode, on_delete=models.CASCADE, related_name='cross_publications')
+    podcast = models.ForeignKey(
+        Podcast, on_delete=models.CASCADE, related_name='cross_publications_in',
+        help_text="Target podcast whose feeds also carry this episode.")
+    access_mode = models.CharField(max_length=10, choices=AccessMode.choices, default=AccessMode.INHERIT)
+    added_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='+')
+    added_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=['episode', 'podcast'], name='uniq_episode_crosspub_target'),
+        ]
+        indexes = [
+            models.Index(fields=['podcast', 'episode']),
+        ]
+
+    def clean(self):
+        from django.core.exceptions import ValidationError
+        if self.episode_id and self.podcast_id and self.episode.podcast_id == self.podcast_id:
+            raise ValidationError("An episode cannot be cross-published into its own parent podcast.")
+
+    def __str__(self):
+        return f"{self.episode_id} also in {self.podcast.title} ({self.access_mode})"
+
 
 def mix_cover_path(instance, filename):
     """Always name the file exactly <UUID>.<ext>"""
@@ -711,8 +746,8 @@ def queue_transcription_on_episode_save(sender, instance, **kwargs):
             'error_message': None,
         },
     )
-    from pod_manager.tasks import transcribe_episode
-    transcribe_episode.delay(instance.id)
+    from pod_manager.services.transcription import dispatch_transcription
+    dispatch_transcription(instance.id)
 
 
 @receiver(post_delete, sender=Transcript)

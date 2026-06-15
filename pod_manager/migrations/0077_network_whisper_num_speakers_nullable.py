@@ -14,7 +14,7 @@ def restore_default_num_speakers(apps, schema_editor):
 class Migration(migrations.Migration):
 
     dependencies = [
-        ('pod_manager', '0076_episodecrosspublication'),
+        ('pod_manager', '0075_podcast_whisper_overrides'),
     ]
 
     operations = [

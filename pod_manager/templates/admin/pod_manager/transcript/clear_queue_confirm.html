@@ -1,0 +1,30 @@
+{% extends "admin/base_site.html" %}
+{% load i18n %}
+
+{% block breadcrumbs %}
+<div class="breadcrumbs">
+    <a href="{% url 'admin:index' %}">{% trans 'Home' %}</a>
+    &rsaquo; <a href="{% url 'admin:app_list' app_label=opts.app_label %}">{{ opts.app_config.verbose_name }}</a>
+    &rsaquo; <a href="{% url 'admin:pod_manager_transcript_changelist' %}">{{ opts.verbose_name_plural|capfirst }}</a>
+    &rsaquo; {% trans 'Clear queue' %}
+</div>
+{% endblock %}
+
+{% block content %}
+<p>
+    This will <strong>purge the entire Celery <code>transcription</code> queue</strong>
+    on the broker and <strong>delete {{ pending_count }} pending transcript record{{ pending_count|pluralize }}</strong>
+    from the database.
+</p>
+<p>
+    Other queues and any transcripts that are processing, completed, failed, or
+    awaiting recovery are left untouched. Episodes whose transcripts are deleted
+    can be queued again later. This cannot be undone.
+</p>
+
+<form method="post">
+    {% csrf_token %}
+    <input type="submit" class="default" value="{% trans 'Yes, clear the queue' %}">
+    <a href="{% url 'admin:pod_manager_transcript_changelist' %}" class="button cancel-link">{% trans 'Cancel' %}</a>
+</form>
+{% endblock %}

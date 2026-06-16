@@ -1,5 +1,6 @@
 import json
 import logging
+import os
 import shutil
 import socket
 import tempfile
@@ -365,6 +366,34 @@ def dispatch_transcription(episode_id: int) -> None:
         transcribe_episode.delay(episode_id)
 
 
+def purge_transcription_queue() -> dict:
+    """Empty the transcription pipeline: purge the Celery 'transcription' queue
+    on the broker and delete every PENDING Transcript row.
+
+    Returns {'purged': int | None, 'deleted': int}. 'purged' is None under eager
+    Celery (IDE mode) where there is no broker to purge. PENDING transcripts have
+    no on-disk files yet (those are written only on completion), so deleting the
+    rows leaves nothing orphaned.
+    """
+    from pod_manager.models import Transcript
+
+    purged = None
+    if not getattr(settings, 'CELERY_TASK_ALWAYS_EAGER', False):
+        from kombu import Queue
+        from config.celery import app
+        # Queue.purge() walks every priority sublist the Redis transport keeps
+        # for this queue, so soft-priority messages are cleared too.
+        with app.connection_for_write() as conn:
+            purged = Queue('transcription', channel=conn.default_channel).purge()
+
+    deleted, _ = Transcript.objects.filter(status=Transcript.Status.PENDING).delete()
+    logger.info(
+        "purge_transcription_queue: purged %s queued task(s), deleted %d pending transcript(s)",
+        'n/a (eager)' if purged is None else purged, deleted,
+    )
+    return {'purged': purged, 'deleted': deleted}
+
+
 def run_transcription(
     episode_id: int,
     *,
@@ -434,7 +463,9 @@ def run_transcription(
     transcript.status = Transcript.Status.PROCESSING
     transcript.started_at = timezone.now()
     transcript.source_audio_url = audio_url
-    transcript.worker = socket.gethostname()
+    # Prefer an explicit WORKER_NAME (set per worker in compose) — Docker
+    # otherwise leaves the hostname as a random container id.
+    transcript.worker = os.environ.get('WORKER_NAME') or socket.gethostname()
     transcript.save(update_fields=['status', 'requested_at', 'started_at', 'source_audio_url', 'worker'])
 
     tmp_path = None

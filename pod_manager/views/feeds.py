@@ -360,6 +360,9 @@ def generate_custom_feed(request):
         ep_access = _ep_access(ep)
         if not ep.has_public_audio and not (ep.is_premium and ep_access):
             continue
+        # Withhold episodes still pointing at the dead S3 bucket (mid-recovery).
+        if ep.serves_s3_audio(ep_access):
+            continue
         feed_type = 'private' if ep_access else 'public'
         keys_and_eps.append((f"ep_frag_{feed_type}_{ep.id}", ep, ep_access))
 
@@ -398,7 +401,12 @@ def generate_public_feed(request, podcast_slug):
     if after_date:
         episode_qs = episode_qs.filter(pub_date__gt=after_date)
 
-    episodes = [ep for ep in (episode_qs if limit is None else episode_qs[:limit]) if ep.has_public_audio]
+    # has_access is always False here, so the served URL is the public one;
+    # skip any still pointing at the dead S3 bucket (mid-recovery).
+    episodes = [
+        ep for ep in (episode_qs if limit is None else episode_qs[:limit])
+        if ep.has_public_audio and not ep.serves_s3_audio(False)
+    ]
 
     header = pin_last_build_date(header, episodes)
 
@@ -473,6 +481,9 @@ def generate_mix_feed(request, unique_id):
                 if _evaluate_access(user_mix.user, target, target.network)[0]:
                     ep_has_access = True
                     break
+        # Withhold episodes still pointing at the dead S3 bucket (mid-recovery).
+        if ep.serves_s3_audio(ep_has_access):
+            continue
         feed_type = 'private' if ep_has_access else 'public'
         keys_and_eps.append((f"ep_frag_{feed_type}_{ep.id}", ep, ep_has_access))
 
@@ -545,6 +556,9 @@ def generate_network_mix_feed(request, network_slug, mix_slug):
                     break
         total_access = user_meets_mix_tier and ep_has_access
         if not total_access and not ep.audio_url_public: continue
+        # Withhold episodes still pointing at the dead S3 bucket (mid-recovery).
+        if ep.serves_s3_audio(total_access):
+            continue
 
         feed_type = 'private' if total_access else 'public'
         keys_and_eps.append((f"ep_frag_{feed_type}_{ep.id}", ep, total_access))
@@ -594,7 +608,7 @@ def play_episode(request, episode_id):
                 billing_key = f"billing:active:{ep.podcast.network_id}:{profile.user_id}:{timezone.now().strftime('%Y-%m-%d')}"
                 cache.set(billing_key, 1, timeout=172800)
 
-    target_url = ep.audio_url_subscriber if (has_access and ep.audio_url_subscriber) else ep.audio_url_public
+    target_url = ep.playback_url(has_access)
     if not target_url: raise Http404("Audio file not found.")
 
     # Defense-in-depth: Django's HttpResponseRedirect already rejects exotic

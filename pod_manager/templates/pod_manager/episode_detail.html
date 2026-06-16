@@ -310,7 +310,7 @@
                 </button>
             </li>
             {% endif %}
-            {% if transcript %}
+            {% if transcript or is_owner %}
             <li class="nav-item" role="presentation">
                 <button class="nav-link text-muted border-secondary" id="transcript-tab" data-bs-toggle="tab" data-bs-target="#transcript" type="button" role="tab" aria-selected="false">
                     <i class="bi bi-file-text"></i> Transcript
@@ -322,6 +322,8 @@
                         <span class="badge bg-secondary ms-1" style="font-size: 0.6rem;">Queued</span>
                     {% elif transcript.status == 'failed' %}
                         <span class="badge bg-danger ms-1" style="font-size: 0.6rem;">Failed</span>
+                    {% elif not transcript %}
+                        <span class="badge bg-secondary ms-1" style="font-size: 0.6rem;">None</span>
                     {% endif %}
                 </button>
             </li>
@@ -464,7 +466,7 @@
                     {% endif %}
                 </div>
 
-                {% if transcript %}
+                {% if transcript or is_owner %}
                 <div class="tab-pane fade" id="transcript" role="tabpanel" aria-labelledby="transcript-tab">
                     <div class="d-flex justify-content-between align-items-center mb-4 pb-3 border-bottom border-secondary">
                         <h4 class="text-light mb-0"><i class="bi bi-file-text me-2"></i>Episode Transcript</h4>
@@ -479,7 +481,7 @@
                             {% endif %}
                             {% if is_owner %}
                             <button type="button" id="retranscribeToggleBtn" class="btn btn-sm btn-primary fw-bold">
-                                <i class="bi bi-arrow-repeat me-1"></i>Re-transcribe
+                                <i class="bi bi-arrow-repeat me-1"></i>{% if transcript %}Re-transcribe{% else %}Queue transcription{% endif %}
                             </button>
                             {% endif %}
                         </div>
@@ -488,9 +490,9 @@
                     {% if is_owner %}
                     <div id="retranscribePanel" class="d-none mb-4">
                         <div class="border border-warning rounded p-3">
-                            <h6 class="text-warning fw-bold mb-3"><i class="bi bi-arrow-repeat me-1"></i>Queue Re-transcription</h6>
+                            <h6 class="text-warning fw-bold mb-3"><i class="bi bi-arrow-repeat me-1"></i>{% if transcript %}Queue Re-transcription{% else %}Queue Transcription{% endif %}</h6>
                             <p class="text-muted small mb-3">
-                                Override settings for this run only. Existing transcript files will be replaced on completion.
+                                Override settings for this run only.{% if transcript %} Existing transcript files will be replaced on completion.{% endif %}
                                 Leave fields blank to use this podcast's current defaults.
                             </p>
                             <div class="row g-3 mb-3">
@@ -583,6 +585,11 @@
                         <div class="d-flex align-items-center gap-3" style="color:#a855f7;">
                             <i class="bi bi-cloud-slash fs-5"></i>
                             <span>Source audio is unavailable, so transcription is paused. It will retry automatically once the episode's audio URL is updated.</span>
+                        </div>
+                    {% elif not transcript %}
+                        <div class="d-flex align-items-center gap-3 text-muted">
+                            <i class="bi bi-file-earmark-x fs-5"></i>
+                            <span>No transcript has been generated yet.{% if is_owner %} Use “Queue transcription” above to create one.{% endif %}</span>
                         </div>
                     {% endif %}
 
@@ -1472,6 +1479,10 @@
                 statusMsg.textContent = '✓ Queued — transcript will update when complete.';
                 statusMsg.className = 'small text-success';
                 panel.classList.add('d-none');
+                {% if not transcript %}
+                // No transcript existed before — reload so the new pending state shows.
+                setTimeout(() => window.location.reload(), 1200);
+                {% endif %}
             } catch (err) {
                 statusMsg.textContent = `Failed: ${err.message}`;
                 statusMsg.className = 'small text-danger';

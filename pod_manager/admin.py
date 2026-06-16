@@ -173,6 +173,14 @@ class EpisodeAdmin(admin.ModelAdmin):
                 if t.status in (Transcript.Status.PENDING, Transcript.Status.PROCESSING):
                     skipped_in_progress += 1
                     continue
+            # Create/reset the Transcript row to PENDING up front so it's visible
+            # in the DB immediately, rather than only once a worker picks it up.
+            if t is None:
+                Transcript.objects.create(episode=episode, status=Transcript.Status.PENDING)
+            else:
+                t.status = Transcript.Status.PENDING
+                t.error_message = None
+                t.save(update_fields=['status', 'error_message'])
             if settings.IS_IDE:
                 run_transcription(episode.pk)
             else:
@@ -336,9 +344,55 @@ class TranscriptAdmin(admin.ModelAdmin):
     )
     ordering = ('-requested_at',)
     actions = ('requeue_high', 'requeue_default', 'requeue_low')
+    # Adds the "Clear transcription queue" button to the changelist toolbar.
+    change_list_template = 'admin/pod_manager/transcript/change_list.html'
 
     def has_add_permission(self, request):
         return False
+
+    def get_urls(self):
+        from django.urls import path
+        urls = super().get_urls()
+        custom = [
+            path(
+                'clear-queue/',
+                self.admin_site.admin_view(self.clear_queue_view),
+                name='pod_manager_transcript_clear_queue',
+            ),
+        ]
+        return custom + urls
+
+    def clear_queue_view(self, request):
+        """Confirmation page (GET) + executor (POST) for purging the Celery
+        'transcription' queue and deleting every PENDING Transcript row."""
+        from django.shortcuts import redirect
+        from django.template.response import TemplateResponse
+
+        if not self.has_delete_permission(request):
+            from django.core.exceptions import PermissionDenied
+            raise PermissionDenied
+
+        if request.method == 'POST':
+            from pod_manager.services.transcription import purge_transcription_queue
+            result = purge_transcription_queue()
+            purged = result['purged']
+            purged_str = 'n/a (eager mode)' if purged is None else str(purged)
+            self.message_user(
+                request,
+                f"Cleared transcription queue — purged {purged_str} queued task(s); "
+                f"deleted {result['deleted']} pending transcript(s).",
+            )
+            return redirect('admin:pod_manager_transcript_changelist')
+
+        context = {
+            **self.admin_site.each_context(request),
+            'title': 'Clear transcription queue',
+            'pending_count': Transcript.objects.filter(status=Transcript.Status.PENDING).count(),
+            'opts': self.model._meta,
+        }
+        return TemplateResponse(
+            request, 'admin/pod_manager/transcript/clear_queue_confirm.html', context,
+        )
 
     def _requeue(self, request, queryset, priority, label):
         """Reset the selected transcripts to pending and re-dispatch. Under a

@@ -295,6 +295,21 @@ class Episode(models.Model):
         """Returns True if a subscriber audio URL exists AND it is different from the public one."""
         return bool(self.audio_url_subscriber) and self.audio_url_subscriber != self.audio_url_public
     
+    # Host substring for the dead S3 bucket whose audio is mid-recovery. An
+    # episode whose served playback URL still points here has no real audio yet.
+    AUDIO_HOST_S3 = 's3.amazonaws.com'
+
+    def playback_url(self, has_access):
+        """The URL play_episode would redirect to for a listener with this
+        access level. Single source of truth for both playback and feeds."""
+        return self.audio_url_subscriber if (has_access and self.audio_url_subscriber) else self.audio_url_public
+
+    def serves_s3_audio(self, has_access):
+        """True when the playback redirect would land on the dead S3 bucket, so
+        the episode must be withheld from feeds until its audio is recovered."""
+        url = self.playback_url(has_access)
+        return bool(url) and self.AUDIO_HOST_S3 in url
+
     @property
     def is_gdrive_recovery(self):
         """Identifies if the premium audio is a temporary Google Drive link."""

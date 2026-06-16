@@ -2224,6 +2224,43 @@ class QueueTranscriptionSignalTests(TestCase):
         ep.save()
         mock_dispatch.assert_not_called()
 
+    @mock.patch('pod_manager.services.transcription.dispatch_transcription')
+    def test_awaiting_recovery_requeues_when_audio_url_changes(self, mock_dispatch):
+        ep = Episode.objects.create(
+            podcast=self.pod, title='EpAR', pub_date=timezone.now(),
+            raw_description='x', audio_url_subscriber='https://dead.example.com/a.mp3',
+        )
+        # Park it awaiting recovery against the dead source it last attempted.
+        Transcript.objects.filter(episode=ep).update(
+            status=Transcript.Status.AWAITING_RECOVERY,
+            source_audio_url='https://dead.example.com/a.mp3',
+        )
+        mock_dispatch.reset_mock()
+        ep.audio_url_subscriber = 'https://live.example.com/a.mp3'
+        ep.save()
+        mock_dispatch.assert_called_once_with(ep.id)
+        self.assertTrue(
+            Transcript.objects.filter(episode=ep, status=Transcript.Status.PENDING).exists()
+        )
+
+    @mock.patch('pod_manager.services.transcription.dispatch_transcription')
+    def test_awaiting_recovery_no_requeue_when_url_unchanged(self, mock_dispatch):
+        ep = Episode.objects.create(
+            podcast=self.pod, title='EpAR2', pub_date=timezone.now(),
+            raw_description='x', audio_url_subscriber='https://dead.example.com/b.mp3',
+        )
+        Transcript.objects.filter(episode=ep).update(
+            status=Transcript.Status.AWAITING_RECOVERY,
+            source_audio_url='https://dead.example.com/b.mp3',
+        )
+        mock_dispatch.reset_mock()
+        ep.title = 'Touched but same URL'
+        ep.save()
+        mock_dispatch.assert_not_called()
+        self.assertEqual(
+            Transcript.objects.get(episode=ep).status, Transcript.Status.AWAITING_RECOVERY
+        )
+
     @mock.patch('pod_manager.services.transcription.run_transcription')
     def test_eager_dispatch_defers_to_thread_after_commit(self, mock_run):
         """Under eager Celery the signal must NOT run whisper inline inside
@@ -2324,6 +2361,34 @@ class RunTranscriptionTests(TestCase):
         self.assertEqual(t.status, Transcript.Status.FAILED)
         self.assertEqual(t.retry_count, 1)
         self.assertIn('ASR down', t.error_message)
+
+    @mock.patch('pod_manager.services.transcription.requests.post')
+    @mock.patch('pod_manager.services.transcription.requests.get')
+    def test_permanent_source_error_parks_awaiting_recovery(self, mock_get, mock_post):
+        import requests as _rq
+        resp = mock.MagicMock(); resp.status_code = 404
+        mock_get.return_value.raise_for_status.side_effect = _rq.exceptions.HTTPError(response=resp)
+        from pod_manager.services.transcription import run_transcription
+        with override_settings(**self._settings(WHISPER_ENABLED=True)):
+            run_transcription(self.ep.id)  # must NOT raise → Celery task won't retry
+        t = Transcript.objects.get(episode=self.ep)
+        self.assertEqual(t.status, Transcript.Status.AWAITING_RECOVERY)
+        self.assertEqual(t.retry_count, 0)
+        mock_post.assert_not_called()
+
+    @mock.patch('pod_manager.services.transcription.requests.post')
+    @mock.patch('pod_manager.services.transcription.requests.get')
+    def test_transient_source_error_marks_failed_and_raises(self, mock_get, mock_post):
+        import requests as _rq
+        resp = mock.MagicMock(); resp.status_code = 503
+        mock_get.return_value.raise_for_status.side_effect = _rq.exceptions.HTTPError(response=resp)
+        from pod_manager.services.transcription import run_transcription
+        with override_settings(**self._settings(WHISPER_ENABLED=True)):
+            with self.assertRaises(Exception):
+                run_transcription(self.ep.id)
+        t = Transcript.objects.get(episode=self.ep)
+        self.assertEqual(t.status, Transcript.Status.FAILED)
+        self.assertEqual(t.retry_count, 1)
 
     @mock.patch('pod_manager.tasks.task_rebuild_episode_fragments')
     @mock.patch('pod_manager.services.transcription.requests.post')

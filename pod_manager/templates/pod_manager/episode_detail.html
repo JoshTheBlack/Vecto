@@ -579,6 +579,11 @@
                             <i class="bi bi-exclamation-circle fs-5"></i>
                             <span>Transcription failed. An admin has been notified.</span>
                         </div>
+                    {% elif transcript.status == 'awaiting_recovery' %}
+                        <div class="d-flex align-items-center gap-3" style="color:#a855f7;">
+                            <i class="bi bi-cloud-slash fs-5"></i>
+                            <span>Source audio is unavailable, so transcription is paused. It will retry automatically once the episode's audio URL is updated.</span>
+                        </div>
                     {% endif %}
 
                     {% if transcript.status == 'completed' and request.user.is_authenticated %}

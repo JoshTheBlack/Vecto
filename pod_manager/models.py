@@ -649,6 +649,9 @@ class Transcript(models.Model):
         PROCESSING = 'processing', 'Processing'
         COMPLETED  = 'completed',  'Completed'
         FAILED     = 'failed',     'Failed'
+        # Source audio is permanently unavailable (dead bucket / 404). Parks
+        # here without retrying until the episode's audio URL changes.
+        AWAITING_RECOVERY = 'awaiting_recovery', 'Awaiting Recovery'
 
     episode = models.OneToOneField(
         Episode,
@@ -718,25 +721,32 @@ def assign_default_tier(sender, instance, **kwargs):
 
 
 @receiver(post_save, sender=Episode)
-def queue_transcription_on_episode_save(sender, instance, **kwargs):
-    if not kwargs.get('created'):
-        return
+def queue_transcription_on_episode_save(sender, instance, created=False, **kwargs):
     from django.conf import settings as django_settings
     from django.utils import timezone
     if not getattr(django_settings, 'WHISPER_ENABLED', False):
         return
     if not instance.audio_url_subscriber:
         return
-    already_queued = Transcript.objects.filter(
-        episode=instance,
-        status__in=[
-            Transcript.Status.PENDING,
-            Transcript.Status.PROCESSING,
-            Transcript.Status.COMPLETED,
-        ],
-    ).exists()
-    if already_queued:
+
+    transcript = Transcript.objects.filter(episode=instance).first()
+
+    # Decide whether to (re)queue. New episodes queue on creation. An existing
+    # transcript only requeues when it's parked AWAITING_RECOVERY and the audio
+    # URL has actually changed since the failed attempt (e.g. GDrive recovery
+    # swapped in a live link) — every other state is left untouched so plain
+    # edits don't thrash the queue.
+    if transcript is None:
+        should_queue = created
+    elif (transcript.status == Transcript.Status.AWAITING_RECOVERY
+          and instance.audio_url_subscriber != transcript.source_audio_url):
+        should_queue = True
+    else:
+        should_queue = False
+
+    if not should_queue:
         return
+
     # Create/update the record immediately so the admin and episode page show
     # "Queued" status during the window between dispatch and Celery pickup.
     Transcript.objects.update_or_create(

@@ -14,6 +14,26 @@ logger = logging.getLogger(__name__)
 
 ALLOWED_EXTENSIONS = {'vtt', 'json', 'srt', 'html', 'words'}
 
+# HTTP statuses that mean the source audio is gone for good, not a blip.
+_PERMANENT_SOURCE_STATUSES = {401, 403, 404, 410}
+
+
+class PermanentSourceError(Exception):
+    """Raised when source audio is unrecoverably unavailable (dead bucket,
+    404/403, host no longer resolves). The transcript parks in
+    AWAITING_RECOVERY and is NOT retried — it requeues only when the
+    episode's audio URL changes."""
+
+
+def _is_permanent_source_error(exc: Exception) -> bool:
+    resp = getattr(exc, 'response', None)
+    if resp is not None and resp.status_code in _PERMANENT_SOURCE_STATUSES:
+        return True
+    # A deleted bucket's host often stops resolving / refuses connections.
+    # Timeouts are a subclass we deliberately exclude — those are transient.
+    return (isinstance(exc, requests.exceptions.ConnectionError)
+            and not isinstance(exc, requests.exceptions.Timeout))
+
 CONTENT_TYPES = {
     'vtt':   'text/vtt',
     'json':  'application/json',
@@ -432,12 +452,20 @@ def run_transcription(
 
         if audio_fp_path is None:
             logger.info("transcribe: downloading audio for episode %d", episode_id)
-            with tempfile.NamedTemporaryFile(suffix='.mp3', delete=False) as tmp:
-                tmp_path = Path(tmp.name)
-                dl = requests.get(audio_url, stream=True, timeout=300)
-                dl.raise_for_status()
-                for chunk in dl.iter_content(chunk_size=65536):
-                    tmp.write(chunk)
+            try:
+                with tempfile.NamedTemporaryFile(suffix='.mp3', delete=False) as tmp:
+                    tmp_path = Path(tmp.name)
+                    dl = requests.get(audio_url, stream=True, timeout=300)
+                    dl.raise_for_status()
+                    for chunk in dl.iter_content(chunk_size=65536):
+                        tmp.write(chunk)
+            except requests.exceptions.RequestException as exc:
+                if _is_permanent_source_error(exc):
+                    status = getattr(getattr(exc, 'response', None), 'status_code', 'no response')
+                    raise PermanentSourceError(
+                        f"source audio unavailable ({status}) at {audio_url}"
+                    ) from exc
+                raise
             audio_fp_path = tmp_path
 
             # Persist the download if configured
@@ -545,6 +573,18 @@ def run_transcription(
             base_url = getattr(settings, 'SITE_URL', 'http://localhost:8000').rstrip('/')
         from pod_manager.tasks import task_rebuild_episode_fragments
         task_rebuild_episode_fragments.delay(episode_id, base_url)
+
+    except PermanentSourceError as exc:
+        # Source is gone for good — park without retrying. Returning (not
+        # raising) means the Celery task succeeds and won't retry; the episode
+        # requeues only when its audio URL changes (see queue signal).
+        transcript.status = Transcript.Status.AWAITING_RECOVERY
+        transcript.error_message = str(exc)
+        transcript.save(update_fields=['status', 'error_message'])
+        logger.warning(
+            "transcribe: episode %d awaiting recovery — %s", episode_id, exc,
+        )
+        return
 
     except Exception as exc:
         transcript.refresh_from_db(fields=['retry_count'])

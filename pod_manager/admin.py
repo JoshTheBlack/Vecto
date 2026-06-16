@@ -141,6 +141,7 @@ class EpisodeAdmin(admin.ModelAdmin):
             Transcript.Status.PROCESSING: '#d97706',
             Transcript.Status.COMPLETED:  '#16a34a',
             Transcript.Status.FAILED:     '#dc2626',
+            Transcript.Status.AWAITING_RECOVERY: '#a855f7',
         }
         colour = colours.get(t.status, '#888')
         return format_html('<span style="color:{}">{}</span>', colour, t.get_status_display())
@@ -319,6 +320,7 @@ _STATUS_COLORS = {
     'processing': '#0d6efd',
     'completed':  '#198754',
     'failed':     '#dc3545',
+    'awaiting_recovery': '#a855f7',
 }
 
 @admin.register(Transcript)

@@ -44,6 +44,9 @@
             <a class="list-group-item list-group-item-action border-secondary {% if request.GET.tab == 'move' %}active{% endif %}" id="list-move-list" data-bs-toggle="list" href="#list-move" role="tab">
                 <i class="bi bi-arrows-move me-2"></i> Bulk Move
             </a>
+            <a class="list-group-item list-group-item-action border-secondary {% if request.GET.tab == 'crosspub' %}active{% endif %}" id="list-crosspub-list" data-bs-toggle="list" href="#list-crosspub" role="tab">
+                <i class="bi bi-broadcast me-2"></i> Cross-Publish
+            </a>
             <a class="list-group-item list-group-item-action border-secondary" id="list-inbox-list" data-bs-toggle="list" href="#list-inbox" role="tab">
                 <i class="bi bi-inbox me-2"></i> Community Edits
             </a>
@@ -77,6 +80,8 @@
             {% include 'pod_manager/creator_tabs/tab_merge.html' %}
 
             {% include 'pod_manager/creator_tabs/tab_move.html' %}
+
+            {% include 'pod_manager/creator_tabs/tab_cross_publish.html' %}
 
             {% include 'pod_manager/creator_tabs/tab_sync.html' %}
 

@@ -1,0 +1,155 @@
+<div class="tab-pane fade {% if request.GET.tab == 'crosspub' %}show active{% endif %}" id="list-crosspub" role="tabpanel" aria-labelledby="list-crosspub-list">
+    <div class="card bg-dark border-secondary shadow-sm mb-4">
+        <div class="card-header border-secondary bg-black">
+            <h5 class="mb-0 text-warning"><i class="bi bi-broadcast me-2"></i> Cross-Publish Episodes</h5>
+        </div>
+        <div class="card-body">
+            <p class="text-muted small mb-4">
+                Place episodes into other podcasts' feeds without moving them — they stay parented to their
+                current show, keep their numbering and artwork, and simply appear in the selected feeds too.
+            </p>
+
+            <div class="mb-4">
+                <label class="form-label text-light fw-bold">1. Select Source Podcast</label>
+                <select class="form-select bg-black text-light border-secondary" onchange="window.location.href='?tab=crosspub&cross_source_id=' + this.value;">
+                    <option value="">-- Choose a podcast to pull episodes from --</option>
+                    {% for pod in network_podcasts %}
+                        <option value="{{ pod.id }}" {% if cross_source_id == pod.id|stringformat:"s" %}selected{% endif %}>{{ pod.title }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+
+            {% if cross_episodes %}
+            <form method="POST" action="{% url 'creator_settings' %}?network={{ current_network.slug }}&tab=crosspub">
+                {% csrf_token %}
+                <input type="hidden" name="action" value="cross_publish_episodes">
+
+                <div class="d-flex justify-content-between align-items-end mb-3 p-3 border border-secondary rounded bg-black">
+                    <div class="flex-grow-1 me-3">
+                        <label class="form-label text-light small mb-1"><i class="bi bi-funnel"></i> Live Filter</label>
+                        <input type="text" id="cpxFilter" class="form-control form-control-sm bg-dark text-light border-secondary" placeholder="Type a keyword to narrow down the list below...">
+                    </div>
+                    <div>
+                        <span class="badge bg-secondary text-light p-2 shadow-sm"><i class="bi bi-info-circle"></i> Tip: Hold SHIFT to select a range</span>
+                    </div>
+                </div>
+
+                <div class="table-responsive mb-4 border border-secondary rounded" style="max-height: 400px; overflow-y: auto;">
+                    <table class="table table-dark table-hover table-sm align-middle mb-0" id="cpxTable">
+                        <thead class="table-dark" style="position: sticky; top: 0; z-index: 1;">
+                            <tr>
+                                <th scope="col" style="width: 40px; padding-left: 1rem;">
+                                    <input class="form-check-input" type="checkbox" id="cpxSelectAll">
+                                </th>
+                                <th scope="col" style="width: 120px;">Published</th>
+                                <th scope="col">Episode Title</th>
+                                <th scope="col" style="width: 200px;">Already In</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for ep in cross_episodes %}
+                            <tr class="cpx-row" data-title="{{ ep.title|lower|escape }}">
+                                <td style="padding-left: 1rem;">
+                                    <input class="form-check-input cpx-checkbox" type="checkbox" name="episode_ids" value="{{ ep.id }}">
+                                </td>
+                                <td class="text-muted small">{{ ep.pub_date|date:"Y-m-d" }}</td>
+                                <td>{{ ep.title }}</td>
+                                <td>
+                                    <div class="also-on">
+                                        {% for cp in ep.cross_publications.all %}
+                                            {% if cp.podcast.image_url %}
+                                                <img src="{{ cp.podcast.image_url }}" class="also-on-art" alt="{{ cp.podcast.title }}" title="{{ cp.podcast.title }}">
+                                            {% else %}
+                                                <span class="also-on-art show-chip-fallback d-inline-flex" title="{{ cp.podcast.title }}"><i class="bi bi-mic-fill"></i></span>
+                                            {% endif %}
+                                        {% empty %}
+                                            <span class="text-muted small">—</span>
+                                        {% endfor %}
+                                    </div>
+                                </td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+
+                <div class="p-3 border border-warning rounded bg-black">
+                    <label class="form-label text-warning fw-bold mb-2">2. Select Destination Feeds</label>
+                    {% include 'pod_manager/snippets/show_multiselect.html' with field_name='target_podcast_ids' podcast_list=cross_target_podcasts selected_ids=None placeholder='Choose one or more podcasts...' %}
+                    <div class="form-text text-muted">
+                        Episodes keep their own tier gating in the destination feeds by default. Per-episode
+                        overrides live on each episode's detail page under Owner Controls.
+                    </div>
+
+                    <div class="d-grid mt-4 pt-3 border-top border-secondary">
+                        <button type="submit" class="btn btn-warning fw-bold" onclick="return validateCrossPublishForm()">
+                            <i class="bi bi-broadcast"></i> Cross-Publish Selected Episodes
+                        </button>
+                    </div>
+                </div>
+            </form>
+            {% elif cross_source_id %}
+                <div class="alert alert-secondary bg-black border-secondary text-muted text-center py-4">
+                    No episodes found in this podcast.
+                </div>
+            {% endif %}
+
+        </div>
+    </div>
+</div>
+
+<script>
+    document.addEventListener("DOMContentLoaded", function() {
+        const filterInput = document.getElementById("cpxFilter");
+        const selectAll = document.getElementById("cpxSelectAll");
+        if (!filterInput || !selectAll) return;
+
+        filterInput.addEventListener("keyup", () => {
+            const term = filterInput.value.toLowerCase();
+            document.querySelectorAll(".cpx-row").forEach(row => {
+                row.style.display = row.getAttribute("data-title").indexOf(term) > -1 ? "" : "none";
+            });
+            selectAll.checked = false;
+        });
+
+        selectAll.addEventListener("click", () => {
+            document.querySelectorAll(".cpx-checkbox").forEach(cb => {
+                if (cb.closest(".cpx-row").style.display !== "none") {
+                    cb.checked = selectAll.checked;
+                }
+            });
+        });
+
+        // Shift-click range selection (mirrors the Bulk Move tab)
+        let lastChecked = null;
+        const boxes = Array.from(document.querySelectorAll(".cpx-checkbox"));
+        boxes.forEach(cb => {
+            cb.addEventListener("click", function(e) {
+                if (lastChecked && e.shiftKey) {
+                    const start = boxes.indexOf(this);
+                    const end = boxes.indexOf(lastChecked);
+                    for (let i = Math.min(start, end); i <= Math.max(start, end); i++) {
+                        if (boxes[i].closest(".cpx-row").style.display !== "none") {
+                            boxes[i].checked = this.checked;
+                        }
+                    }
+                }
+                lastChecked = this;
+            });
+        });
+    });
+
+    function validateCrossPublishForm() {
+        if (document.querySelectorAll(".cpx-checkbox:checked").length === 0) {
+            alert("Please select at least one episode to cross-publish.");
+            return false;
+        }
+        if (document.querySelectorAll("#list-crosspub input[name='target_podcast_ids']:checked").length === 0) {
+            alert("Please select at least one destination podcast.");
+            return false;
+        }
+        return true;
+    }
+</script>
+
+{% include 'pod_manager/snippets/show_multiselect_assets.html' %}

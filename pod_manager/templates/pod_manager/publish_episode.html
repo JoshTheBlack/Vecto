@@ -126,11 +126,16 @@
     <div class="card border-secondary mt-3 mb-3">
         <div class="card-body py-3">
             <label class="form-label fw-bold text-light mb-2"><i class="bi bi-mic me-1 text-warning"></i>Podcast</label>
-            <select name="podcast_id" class="form-select bg-dark text-light border-secondary" required>
+            <select name="podcast_id" id="parentPodcastSelect" class="form-select bg-dark text-light border-secondary" required>
                 {% for pod in podcasts %}
                 <option value="{{ pod.id }}" {% if edit_ep and edit_ep.podcast_id == pod.id %}selected{% endif %}>{{ pod.title }}</option>
                 {% endfor %}
             </select>
+            {% if podcasts|length > 1 %}
+            <label class="form-label fw-bold text-light mt-3 mb-2"><i class="bi bi-broadcast me-1 text-warning"></i>Also publish to <small class="text-muted fw-normal">(optional)</small></label>
+            {% include 'pod_manager/snippets/show_multiselect.html' with field_name='cross_publish_ids' podcast_list=podcasts selected_ids=edit_ep_cross_ids placeholder='Only the parent feed' parent_select_id='parentPodcastSelect' %}
+            <div class="form-text text-muted">The episode stays parented to the podcast above, but will also appear in these feeds.</div>
+            {% endif %}
         </div>
     </div>
 
@@ -750,4 +755,6 @@ document.addEventListener('DOMContentLoaded', function () {
     });
 });
 </script>
+
+{% include 'pod_manager/snippets/show_multiselect_assets.html' %}
 {% endblock %}

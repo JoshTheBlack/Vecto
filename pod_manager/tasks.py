@@ -341,7 +341,12 @@ def task_clean_mix_images():
 
 @shared_task
 def task_rebuild_episode_fragments(episode_id, base_url):
-    """Rebuilds just a single episode (Fast). Used for Inbox Approvals."""
+    """Rebuilds just a single episode (Fast). Used for Inbox Approvals.
+
+    Invariant: ep_frag_* keys are shared by every feed that carries the
+    episode — its parent podcast, podcasts it's cross-published into, and
+    mixes — so this single rebuild propagates everywhere. If per-target
+    fragment keys are ever introduced, they must be invalidated here too."""
     from pod_manager.views.feeds import get_or_build_episode_fragment
     try:
         ep = Episode.objects.get(id=episode_id)
@@ -486,6 +491,11 @@ def task_publish_scheduled_episodes():
         cache.delete(f"ep_frag_private_{ep.id}")
         cache.delete(f"feed_shell_public_{ep.podcast_id}")
         cache.delete(f"feed_shell_private_{ep.podcast_id}")
+        # Cross-published targets carry this episode too — flush their shells
+        # so lastBuildDate/ETag move on the next fetch.
+        for target_id in ep.cross_publications.values_list('podcast_id', flat=True):
+            cache.delete(f"feed_shell_public_{target_id}")
+            cache.delete(f"feed_shell_private_{target_id}")
     logger.info(f"Published {len(episodes)} scheduled episode(s).")
 
 

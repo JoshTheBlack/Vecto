@@ -13,9 +13,39 @@ from django.db.models import Q, Case, When, CharField, Max, Count
 from django.db.models.functions import Substr, Lower
 
 from ...models import EpisodeEditSuggestion, NetworkMembership, Episode
+from ...services.edits import chapter_items
 from ...utils import diagnostic_timer
 
 logger = logging.getLogger(__name__)
+
+
+def _annotate_edit_changes(edit):
+    """Per-field "did the suggester actually change this?" flags plus
+    normalized chapter lists. The inbox and audit log both hide untouched
+    fields, so reviewers only ever see real deltas."""
+    sugg = edit.suggested_data or {}
+    orig = edit.original_data or {}
+    edit.title_changed = 'title' in sugg and (sugg.get('title') or '') != (orig.get('title') or '')
+    edit.desc_changed = 'description' in sugg and (sugg.get('description') or '') != (orig.get('description') or '')
+    edit.tags_changed = 'tags' in sugg and set(sugg.get('tags') or []) != set(orig.get('tags') or [])
+    edit.chapters_changed = 'chapters' in sugg and chapter_items(sugg.get('chapters')) != chapter_items(orig.get('chapters'))
+    edit.season_changed = 'season_number' in sugg and sugg.get('season_number') != orig.get('season_number')
+    edit.epnum_changed = 'episode_number' in sugg and sugg.get('episode_number') != orig.get('episode_number')
+    edit.eptype_changed = 'episode_type' in sugg and (sugg.get('episode_type') or '') != (orig.get('episode_type') or '')
+    edit.cross_publish_changed = (
+        'cross_publish_podcast_ids' in sugg
+        and sorted(sugg.get('cross_publish_podcast_ids') or []) != sorted(orig.get('cross_publish_podcast_ids') or [])
+    )
+    edit.has_changes = any([
+        edit.title_changed, edit.desc_changed, edit.tags_changed, edit.chapters_changed,
+        edit.season_changed, edit.epnum_changed, edit.eptype_changed,
+        edit.cross_publish_changed, bool(sugg.get('speaker_mappings')),
+    ])
+    # Always lists of chapter dicts, never the raw v1.2 wrapper dict —
+    # iterating the wrapper in a template yields its KEYS, and `key.title`
+    # resolves to str.title() ("Version", "Chapters" at 0s).
+    edit.orig_chapter_list = chapter_items(orig.get('chapters'))
+    edit.sugg_chapter_list = chapter_items(sugg.get('chapters'))
 
 
 @diagnostic_timer("1. Gather Manage Podcasts")
@@ -41,6 +71,7 @@ def gather_inbox(current_network):
 
     user_ids = [e.user_id for e in pending_edits]
     memberships = {m.user_id: m for m in NetworkMembership.objects.filter(user_id__in=user_ids, network=current_network)}
+    network_podcast_titles = dict(current_network.podcasts.values_list('id', 'title'))
 
     for edit in pending_edits:
         edit.membership = memberships.get(edit.user_id)
@@ -56,7 +87,7 @@ def gather_inbox(current_network):
         edit.current_tags = current_tags
 
         current_chapters = ep.chapters_public or []
-        edit.chapters_conflict = current_chapters != (orig.get('chapters') or [])
+        edit.chapters_conflict = chapter_items(current_chapters) != chapter_items(orig.get('chapters'))
         edit.current_chapters = current_chapters
 
         current_desc = ep.clean_description or ''
@@ -67,7 +98,18 @@ def gather_inbox(current_network):
         edit.current_episode_number = ep.episode_number
         edit.current_episode_type = ep.episode_type or ''
 
-    return {'pending_edits': pending_edits}
+        _annotate_edit_changes(edit)
+
+        if 'cross_publish_podcast_ids' in (edit.suggested_data or {}):
+            current_cross_ids = sorted(ep.cross_publications.values_list('podcast_id', flat=True))
+            edit.current_cross_publish_ids = current_cross_ids
+            edit.cross_publish_conflict = current_cross_ids != sorted(orig.get('cross_publish_podcast_ids') or [])
+            _titles = lambda ids: [network_podcast_titles.get(i, f'#{i}') for i in ids]
+            edit.cross_publish_current_titles = _titles(current_cross_ids)
+            edit.cross_publish_original_titles = _titles(orig.get('cross_publish_podcast_ids') or [])
+            edit.cross_publish_suggested_titles = _titles(edit.suggested_data.get('cross_publish_podcast_ids') or [])
+
+    return {'pending_edits': pending_edits, 'network_podcast_titles': network_podcast_titles}
 
 
 @diagnostic_timer("3. Gather Merge Desk")
@@ -148,6 +190,13 @@ def gather_audit_log(request, current_network):
         audit_query = audit_query.filter(user__username__icontains=audit_user)
 
     audit_page_obj = Paginator(audit_query.order_by('-resolved_at'), 20).get_page(request.GET.get('audit_page', 1))
+    audit_podcast_titles = dict(current_network.podcasts.values_list('id', 'title'))
+    for edit in audit_page_obj:
+        _annotate_edit_changes(edit)
+        if edit.cross_publish_changed:
+            _titles = lambda ids: [audit_podcast_titles.get(i, f'#{i}') for i in ids]
+            edit.cross_publish_original_titles = _titles((edit.original_data or {}).get('cross_publish_podcast_ids') or [])
+            edit.cross_publish_suggested_titles = _titles(edit.suggested_data.get('cross_publish_podcast_ids') or [])
     return {'audit_page_obj': audit_page_obj}
 
 
@@ -160,6 +209,24 @@ def gather_move_context(request, current_network):
             podcast_id=source_pod_id, podcast__network=current_network
         ).order_by('-pub_date')
     return {'source_pod_id': source_pod_id, 'move_episodes': move_episodes}
+
+
+@diagnostic_timer("5b. Gather Cross-Publish Context")
+def gather_cross_publish_context(request, current_network):
+    cross_source_id = request.GET.get('cross_source_id', '')
+    cross_episodes = []
+    if cross_source_id and cross_source_id.isdigit():
+        cross_episodes = Episode.objects.filter(
+            podcast_id=cross_source_id, podcast__network=current_network
+        ).prefetch_related('cross_publications__podcast').order_by('-pub_date')
+    cross_target_podcasts = current_network.podcasts.order_by('title')
+    if cross_source_id and cross_source_id.isdigit():
+        cross_target_podcasts = cross_target_podcasts.exclude(id=int(cross_source_id))
+    return {
+        'cross_source_id': cross_source_id,
+        'cross_episodes': cross_episodes,
+        'cross_target_podcasts': cross_target_podcasts,
+    }
 
 
 @diagnostic_timer("6. Gather S3 Reports")

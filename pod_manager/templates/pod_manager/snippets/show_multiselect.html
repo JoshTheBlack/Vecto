@@ -1,0 +1,50 @@
+{% comment %}
+Reusable show multi-select — mirrors the dashboard show filter (artwork chips
++ searchable dropdown). Checkboxes post as repeated `field_name` values with
+podcast ids, so it works inside any <form>.
+
+Params:
+  field_name       checkbox name (e.g. 'cross_publish_ids')
+  podcast_list     iterable of Podcast
+  selected_ids     list of pre-checked podcast ids
+  placeholder      text shown when nothing is selected
+  parent_select_id (optional) id of a <select> whose selected podcast id is
+                   excluded live (used on the publish form's parent picker)
+
+Include 'pod_manager/snippets/show_multiselect_assets.html' once per page.
+{% endcomment %}
+<div class="sms" data-sms{% if parent_select_id %} data-sms-parent-select="{{ parent_select_id }}"{% endif %}>
+    <div class="sms-bar" tabindex="0" role="combobox" aria-expanded="false" aria-haspopup="listbox" aria-label="Select shows">
+        <span class="show-filter-lead"><i class="bi bi-broadcast"></i></span>
+        <span class="show-filter-chips" data-sms-chips>
+            <span class="show-filter-placeholder" data-sms-placeholder>{{ placeholder|default:"None selected" }}</span>
+        </span>
+        <span class="show-filter-caret"><i class="bi bi-chevron-down"></i></span>
+    </div>
+    <div class="show-filter-panel d-none" data-sms-panel>
+        <div class="show-filter-search">
+            <i class="bi bi-search"></i>
+            <input type="text" placeholder="Filter shows..." autocomplete="off" aria-label="Type to filter shows" data-sms-search>
+        </div>
+        <div class="show-filter-list" data-sms-list role="listbox" aria-multiselectable="true">
+            {% for podcast in podcast_list %}
+            <label class="show-filter-option" data-title="{{ podcast.title|lower }}" data-pod-id="{{ podcast.id }}">
+                <input type="checkbox" class="form-check-input show-filter-check" name="{{ field_name }}" value="{{ podcast.id }}"
+                       data-pod-title="{{ podcast.title }}" data-pod-img="{{ podcast.image_url }}"
+                       {% if podcast.id in selected_ids %}checked{% endif %}>
+                {% if podcast.image_url %}
+                    <img src="{{ podcast.image_url }}" alt="" class="show-filter-option-img" loading="lazy">
+                {% else %}
+                    <span class="show-filter-option-img show-filter-option-fallback"><i class="bi bi-mic-fill"></i></span>
+                {% endif %}
+                <span class="show-filter-option-title">{{ podcast.title }}</span>
+            </label>
+            {% endfor %}
+            <div class="show-filter-empty d-none" data-sms-empty>No shows match.</div>
+        </div>
+        <div class="show-filter-footer">
+            <button type="button" class="show-filter-clear" data-sms-clear>Clear all</button>
+            <span class="show-filter-count" data-sms-count></span>
+        </div>
+    </div>
+</div>

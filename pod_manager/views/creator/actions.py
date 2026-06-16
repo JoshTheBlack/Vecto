@@ -16,9 +16,11 @@ from django.urls import reverse
 from django.utils import timezone
 
 from ...models import (
-    NetworkMembership, Podcast, Episode, PatreonTier, NetworkMix,
+    NetworkMembership, Podcast, Episode, EpisodeCrossPublication, PatreonTier, NetworkMix,
     EpisodeEditSuggestion,
 )
+from ...services.cross_publish import sync_cross_publications, validate_cross_targets
+from ...services.edits import chapter_items
 from ...services.patreon import sync_network_patrons
 from ...tasks import task_rebuild_episode_fragments, task_rebuild_podcast_fragments
 from ...utils import sanitize_user_html
@@ -55,6 +57,7 @@ def _handle_approve_edit(request, current_network):
         'description': ep.clean_description or '',
         'tags': list(ep.tags or []),
         'chapters': ep.chapters_public if ep.chapters_public is not None else [],
+        'cross_publish_podcast_ids': sorted(ep.cross_publications.values_list('podcast_id', flat=True)),
     }
     # User's submission-time snapshot, used to compute deltas.
     user_snapshot = edit.original_data or {}
@@ -104,7 +107,7 @@ def _handle_approve_edit(request, current_network):
         if raw_chapters:
             try:
                 new_chapters = json.loads(raw_chapters)
-                if new_chapters != pre_approval_snapshot['chapters']:
+                if chapter_items(new_chapters) != chapter_items(pre_approval_snapshot['chapters']):
                     # Mirror to both columns; see submit_episode_edit
                     ep.chapters_public = new_chapters
                     ep.chapters_private = new_chapters
@@ -143,6 +146,20 @@ def _handle_approve_edit(request, current_network):
             ep.episode_type = new_val
             edit.suggested_data['episode_type'] = new_val
             points += 1
+
+    # 7. PROCESS CROSS-PUBLISH TARGETS — full replacement of the link set.
+    if request.POST.get('approve_cross_publish') == 'on':
+        raw_ids = request.POST.get('edited_cross_publish_ids', '')
+        try:
+            new_ids = json.loads(raw_ids) if raw_ids else []
+            targets = list(validate_cross_targets(ep, new_ids, current_network))
+            new_id_list = sorted(t.id for t in targets)
+            if new_id_list != pre_approval_snapshot['cross_publish_podcast_ids']:
+                sync_cross_publications(ep, targets, added_by=edit.user)
+                edit.suggested_data['cross_publish_podcast_ids'] = new_id_list
+                points += 1
+        except Exception as e:
+            logger.warning(f"Failed to parse cross-publish ids from inbox for edit #{edit_id}: {e}")
 
     # --- SPEAKER LABEL APPROVAL ---
     # Speaker label edits carry suggested_data = {"speaker_mappings": {...}}
@@ -247,6 +264,12 @@ def _handle_rollback_single_edit(request, current_network):
     ep.chapters_public = edit.original_data.get('chapters', ep.chapters_public)
     ep.save()
 
+    # Key-presence guard: pre-feature edits have no cross-publish snapshot and
+    # must not wipe the episode's current links.
+    if 'cross_publish_podcast_ids' in (edit.original_data or {}):
+        restore_ids = edit.original_data.get('cross_publish_podcast_ids') or []
+        sync_cross_publications(ep, validate_cross_targets(ep, restore_ids, current_network))
+
     base_url = request.build_absolute_uri('/')[:-1]
     task_rebuild_episode_fragments.delay(ep.id, base_url)
 
@@ -286,6 +309,10 @@ def _handle_bulk_rollback(request, current_network):
         ep.tags = edit.original_data.get('tags', ep.tags)
         ep.chapters_public = edit.original_data.get('chapters', ep.chapters_public)
         ep.save()
+
+        if 'cross_publish_podcast_ids' in (edit.original_data or {}):
+            restore_ids = edit.original_data.get('cross_publish_podcast_ids') or []
+            sync_cross_publications(ep, validate_cross_targets(ep, restore_ids, current_network))
 
         task_rebuild_episode_fragments.delay(ep.id, base_url)
 
@@ -478,12 +505,55 @@ def handle_move_episodes(request, current_network):
 
     eps = Episode.objects.filter(id__in=episode_ids, podcast__network=current_network)
     count = eps.update(podcast=target_pod)
+    # An episode moved into a podcast it was cross-published to would now
+    # self-reference — drop the redundant links.
+    EpisodeCrossPublication.objects.filter(episode_id__in=episode_ids, podcast=target_pod).delete()
     logger.info(f"Moved {count} episodes to '{target_pod.title}' (id={target_pod.id}) by {request.user.username}")
     messages.success(request, f"Successfully moved and locked {count} episodes to '{target_pod.title}'.")
 
     base_url = request.build_absolute_uri('/')[:-1]
     for ep_id in episode_ids:
         task_rebuild_episode_fragments.delay(int(ep_id), base_url)
+
+
+def handle_cross_publish_episodes(request, current_network):
+    """Bulk-add existing episodes into other podcasts' feeds without changing
+    their parent. Accepts multiple targets (the Cross-Publish tab) and falls
+    back to the single target_podcast_id field for older callers."""
+    episode_ids = request.POST.getlist('episode_ids')
+    target_ids = request.POST.getlist('target_podcast_ids') or request.POST.getlist('target_podcast_id')
+    if not episode_ids or not target_ids:
+        messages.error(request, "Select episodes and at least one target podcast to cross-publish.")
+        return redirect(f"{reverse('creator_settings')}?network={current_network.slug}&tab=crosspub")
+
+    targets = list(Podcast.objects.filter(id__in=target_ids, network=current_network))
+    if not targets:
+        messages.error(request, "No valid target podcasts selected.")
+        return redirect(f"{reverse('creator_settings')}?network={current_network.slug}&tab=crosspub")
+
+    eps = list(Episode.objects.filter(id__in=episode_ids, podcast__network=current_network))
+    already_linked = set(
+        EpisodeCrossPublication.objects.filter(
+            podcast__in=targets, episode_id__in=[ep.id for ep in eps]
+        ).values_list('episode_id', 'podcast_id')
+    )
+    new_links = [
+        EpisodeCrossPublication(episode=ep, podcast=target, added_by=request.user)
+        for ep in eps for target in targets
+        if ep.podcast_id != target.id and (ep.id, target.id) not in already_linked
+    ]
+    EpisodeCrossPublication.objects.bulk_create(new_links, ignore_conflicts=True)
+    skipped = len(eps) * len(targets) - len(new_links)
+    target_names = ", ".join(t.title for t in targets)
+    logger.info(
+        f"Cross-published {len(eps)} episodes into [{target_names}] "
+        f"({len(new_links)} new links) by {request.user.username}"
+    )
+    messages.success(
+        request,
+        f"Added {len(new_links)} feed placement(s) across {len(targets)} podcast(s)."
+        + (f" Skipped {skipped} (already placed or parented there)." if skipped else "")
+    )
 
 
 def handle_add_network_mix(request, current_network):
@@ -572,6 +642,7 @@ ACTION_HANDLERS = {
     'merge_episodes':       handle_merge_episodes,
     'split_episode':        handle_split_episode,
     'move_episodes':        handle_move_episodes,
+    'cross_publish_episodes': handle_cross_publish_episodes,
     'add_network_mix':      handle_add_network_mix,
     'edit_network_mix':     handle_edit_network_mix,
     'delete_network_mix':   handle_delete_network_mix,

@@ -16,7 +16,10 @@ from django.utils import timezone
 from django.utils.dateparse import parse_datetime
 from django.views.decorators.http import require_POST
 
-from ...models import Episode, Network, Podcast
+from ...models import Episode, EpisodeCrossPublication, Network, Podcast
+from ...services.cross_publish import (
+    current_target_ids, sync_cross_publications, validate_cross_targets,
+)
 from ...tasks import task_rebuild_episode_fragments
 from ...utils import sanitize_user_html
 
@@ -69,6 +72,7 @@ def publish_episode(request):
         'podcasts': podcasts,
         'scheduled': scheduled,
         'edit_ep': edit_ep,
+        'edit_ep_cross_ids': current_target_ids(edit_ep) if edit_ep else [],
         'now': timezone.now(),
     })
 
@@ -157,6 +161,15 @@ def _handle_publish_post(request, current_network, podcasts, networks):
     ep.episode_number     = episode_number
     ep.episode_type       = episode_type
 
+    def _sync_cross(saved_ep):
+        targets = validate_cross_targets(saved_ep, request.POST.getlist('cross_publish_ids'), current_network)
+        added, removed = sync_cross_publications(saved_ep, targets, added_by=request.user)
+        if added or removed:
+            logger.info(
+                f"[publish] Episode {saved_ep.id} '{saved_ep.title}' cross-publish targets "
+                f"synced by {request.user.username}: +{added} -{removed}"
+            )
+
     if action == 'schedule':
         scheduled_str = request.POST.get('scheduled_at', '').strip()
         scheduled_dt  = parse_datetime(scheduled_str)
@@ -170,6 +183,8 @@ def _handle_publish_post(request, current_network, podcasts, networks):
         ep.scheduled_at = scheduled_dt
         ep.pub_date     = scheduled_dt
         ep.save()
+        _sync_cross(ep)
+        logger.info(f"[publish] Episode {ep.id} '{ep.title}' scheduled for {scheduled_dt.isoformat()} by {request.user.username}")
         messages.success(request, f'"{ep.title}" scheduled for {scheduled_dt.strftime("%b %d, %Y %H:%M")}.')
         return redirect(f"{reverse('publish_episode')}?network={current_network.slug}&tab=scheduled")
 
@@ -179,6 +194,8 @@ def _handle_publish_post(request, current_network, podcasts, networks):
         if not ep.pub_date:
             ep.pub_date = timezone.now()
         ep.save()
+        _sync_cross(ep)
+        logger.info(f"[publish] Episode {ep.id} '{ep.title}' saved as draft by {request.user.username}")
         messages.success(request, f'"{ep.title}" saved as draft.')
         return redirect(f"{reverse('publish_episode')}?network={current_network.slug}&tab=scheduled")
 
@@ -187,6 +204,8 @@ def _handle_publish_post(request, current_network, podcasts, networks):
         ep.scheduled_at = None
         ep.pub_date     = timezone.now()
         ep.save()
+        _sync_cross(ep)
+        logger.info(f"[publish] Episode {ep.id} '{ep.title}' published to '{ep.podcast.title}' by {request.user.username}")
         base_url = request.build_absolute_uri('/')
         task_rebuild_episode_fragments.delay(ep.id, base_url)
         messages.success(request, f'"{ep.title}" published.')
@@ -235,6 +254,29 @@ def manage_episode(request, episode_id):
         cache.delete(f"ep_frag_public_{ep.id}")
         cache.delete(f"ep_frag_private_{ep.id}")
         messages.success(request, "Episode metadata updated.")
+
+    elif action == 'update_cross_publish':
+        targets = validate_cross_targets(
+            ep, request.POST.getlist('cross_publish_ids'), ep.podcast.network
+        )
+        modes = {}
+        for pod in targets:
+            mode = request.POST.get(f'access_mode_{pod.id}', '')
+            if mode in EpisodeCrossPublication.AccessMode:
+                modes[pod.id] = mode
+        added, removed = sync_cross_publications(
+            ep, targets, added_by=request.user, modes=modes
+        )
+        logger.info(
+            f"[manage] Episode {ep.id} '{ep.title}' cross-publish updated by {request.user.username}: "
+            f"+{added} -{removed} modes={modes}"
+        )
+        # Feed membership is resolved at request time from the DB, so no
+        # fragment invalidation is needed here.
+        messages.success(
+            request,
+            f"Cross-publish targets updated ({len(added)} added, {len(removed)} removed)."
+        )
 
     elif action == 'publish_now':
         ep.is_published = True

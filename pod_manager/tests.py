@@ -39,8 +39,8 @@ from django.utils import timezone
 
 from pod_manager import views
 from pod_manager.models import (
-    Network, PatronProfile, PatreonTier, Podcast, Episode, NetworkMembership,
-    NetworkMix, UserMix, EpisodeEditSuggestion, Transcript,
+    Network, PatronProfile, PatreonTier, Podcast, Episode, EpisodeCrossPublication,
+    NetworkMembership, NetworkMix, UserMix, EpisodeEditSuggestion, Transcript,
 )
 from pod_manager.services.edits import (
     apply_approved_edit, parse_chapter_payload, snapshot_episode,
@@ -951,6 +951,23 @@ class CreatorInboxActionTests(TestCase):
         # 3 fields approved → 3 points + 2 perfect-sweep bonus = 5
         self.assertEqual(self.membership.trust_score, 10)
 
+    def test_approve_empty_dict_chapters_is_not_a_change(self):
+        """An empty v1.2 chapters dict against a legacy empty list must not
+        count as a chapter edit (phantom 'Version'/'Chapters' rows bug)."""
+        import json as _json
+        edit = self._make_pending_edit()
+        self._post({
+            'action': 'approve_edit',
+            'edit_id': edit.id,
+            'approve_chapters': 'on',
+            'edited_chapters': _json.dumps({'version': '1.2.0', 'chapters': []}),
+        })
+        edit.refresh_from_db()
+        # No real change anywhere → zero-approval trap converts to rejection.
+        self.assertEqual(edit.status, 'rejected')
+        self.episode.refresh_from_db()
+        self.assertEqual(self.episode.chapters_public, [])
+
     def test_reject_edit_penalizes_trust_and_marks_rejected(self):
         edit = self._make_pending_edit()
         self._post({'action': 'reject_edit', 'edit_id': edit.id})
@@ -1345,6 +1362,25 @@ class SubmitEpisodeEditPendingPathTests(TestCase):
         self.assertEqual(suggestion.status, 'pending')
         self.episode.refresh_from_db()
         self.assertEqual(self.episode.title, 'Original')  # NOT mutated
+
+    def test_noop_submission_creates_no_suggestion(self):
+        """A payload identical to the current episode state (the edit form
+        always posts every field) must not create a suggestion at all."""
+        self._submit({
+            'title': 'Original', 'description': '<p>hi</p>',
+            'tags': [], 'chapters': [],
+        })
+        self.assertFalse(EpisodeEditSuggestion.objects.filter(episode=self.episode).exists())
+
+    def test_unchanged_fields_dropped_from_suggestion(self):
+        """Only actual deltas are stored — untouched fields would otherwise
+        show in the inbox with Approve pre-toggled."""
+        self._submit({
+            'title': 'Renamed', 'description': '<p>hi</p>',
+            'tags': [], 'chapters': [],
+        })
+        suggestion = EpisodeEditSuggestion.objects.get(episode=self.episode)
+        self.assertEqual(set(suggestion.suggested_data.keys()), {'title'})
 
     def test_chapter_sanitization_skips_invalid_start_time(self):
         """Chapters with non-numeric startTime must be silently dropped."""
@@ -2861,3 +2897,398 @@ class HandleUpdateShowWhisperTests(TestCase):
         self.pod.save()
         self._call({'whisper_num_speakers': ''})
         self.assertIsNone(self.pod.whisper_num_speakers)
+
+
+# ---------------------------------------------------------------------------
+# Episode cross-publishing ("also appears in" other podcasts' feeds)
+# ---------------------------------------------------------------------------
+
+@override_settings(CACHES=TEST_CACHES)
+class CrossPublishFeedTests(TestCase):
+    """Cross-published episodes appear in the target podcast's feeds exactly
+    once, premium gating follows the parent unless the link overrides to the
+    target's tier, and mixes never duplicate an episode."""
+
+    def setUp(self):
+        cache.clear()
+        self.factory = RequestFactory()
+        self.network = Network.objects.create(name='Net', slug='n')
+        self.tier = PatreonTier.objects.create(network=self.network, name='Premium', minimum_cents=500)
+        self.parent = Podcast.objects.create(network=self.network, title='Parent', slug='parent', required_tier=self.tier)
+        self.target = Podcast.objects.create(network=self.network, title='Target', slug='target')
+        self.ep = Episode.objects.create(
+            podcast=self.parent, title='Shared Ep', pub_date=timezone.now(),
+            raw_description='x', clean_description='x',
+            audio_url_public='https://cdn.example.com/pub.mp3',
+            guid_public='shared-guid-123',
+        )
+        self.link = EpisodeCrossPublication.objects.create(episode=self.ep, podcast=self.target)
+
+    def _listener(self):
+        user = User.objects.create_user(username='listener')
+        profile = PatronProfile.objects.create(user=user, patreon_id=None)
+        NetworkMembership.objects.create(user=user, network=self.network)
+        return user, profile
+
+    def _public_feed(self, slug):
+        req = _make_tenant_request(self.factory, self.network, path='/feed/')
+        return views.generate_public_feed(req, podcast_slug=slug).content.decode('utf-8')
+
+    def _custom_feed(self, profile, slug):
+        req = self.factory.get('/feed/', {'auth': str(profile.feed_token), 'show': slug})
+        req.network = self.network
+        return views.generate_custom_feed(req).content.decode('utf-8')
+
+    def test_cross_published_episode_appears_once_in_target_public_feed(self):
+        xml = self._public_feed('target')
+        self.assertEqual(xml.count('shared-guid-123'), 1)
+
+    def test_cross_published_episode_still_in_parent_public_feed(self):
+        xml = self._public_feed('parent')
+        self.assertEqual(xml.count('shared-guid-123'), 1)
+
+    def test_premium_only_episode_absent_from_target_public_feed(self):
+        premium_ep = Episode.objects.create(
+            podcast=self.parent, title='Premium Only', pub_date=timezone.now(),
+            raw_description='x', clean_description='x',
+            audio_url_subscriber='https://cdn.example.com/priv.mp3',
+            guid_public='premium-guid-456',
+        )
+        EpisodeCrossPublication.objects.create(episode=premium_ep, podcast=self.target)
+        xml = self._public_feed('target')
+        self.assertNotIn('premium-guid-456', xml)
+
+    def test_custom_feed_inherit_keeps_parent_gating(self):
+        """A target-only listener (no pledge) must not see a premium-only
+        cross-published episode while the link inherits the parent's tier."""
+        _, profile = self._listener()
+        premium_ep = Episode.objects.create(
+            podcast=self.parent, title='Premium Only', pub_date=timezone.now(),
+            raw_description='x', clean_description='x',
+            audio_url_subscriber='https://cdn.example.com/priv.mp3',
+            guid_public='premium-guid-456',
+        )
+        link = EpisodeCrossPublication.objects.create(episode=premium_ep, podcast=self.target)
+
+        xml = self._custom_feed(profile, 'target')
+        self.assertNotIn('premium-guid-456', xml)
+
+        link.access_mode = EpisodeCrossPublication.AccessMode.TARGET
+        link.save()
+        xml = self._custom_feed(profile, 'target')
+        self.assertEqual(xml.count('premium-guid-456'), 1)
+
+    def test_user_mix_with_parent_and_target_yields_single_item(self):
+        user, profile = self._listener()
+        mix = UserMix.objects.create(user=user, network=self.network, name='Mix', is_active=True)
+        mix.selected_podcasts.add(self.parent, self.target)
+        req = self.factory.get(f'/feed/mix/{mix.unique_id}', {'auth': str(profile.feed_token)})
+        xml = views.generate_mix_feed(req, unique_id=mix.unique_id).content.decode('utf-8')
+        self.assertEqual(xml.count('shared-guid-123'), 1)
+        # Parent appearance wins: title prefix uses the parent podcast.
+        self.assertIn('[Parent]', xml)
+
+    def test_user_mix_with_only_target_includes_cross_published_episode(self):
+        user, profile = self._listener()
+        mix = UserMix.objects.create(user=user, network=self.network, name='Mix', is_active=True)
+        mix.selected_podcasts.add(self.target)
+        req = self.factory.get(f'/feed/mix/{mix.unique_id}', {'auth': str(profile.feed_token)})
+        xml = views.generate_mix_feed(req, unique_id=mix.unique_id).content.decode('utf-8')
+        self.assertEqual(xml.count('shared-guid-123'), 1)
+
+    def test_network_mix_dedupes_cross_published_episode(self):
+        mix = NetworkMix.objects.create(network=self.network, name='Net Mix', slug='netmix')
+        mix.selected_podcasts.add(self.parent, self.target)
+        req = _make_tenant_request(self.factory, self.network, path='/feed/n/mix/netmix/')
+        xml = views.generate_network_mix_feed(req, network_slug='n', mix_slug='netmix').content.decode('utf-8')
+        self.assertEqual(xml.count('shared-guid-123'), 1)
+
+
+@override_settings(CACHES=TEST_CACHES)
+class CrossPublishPlayEpisodeTests(TestCase):
+    """play_episode honours the per-link tier override when serving the
+    subscriber audio."""
+
+    def setUp(self):
+        cache.clear()
+        self.factory = RequestFactory()
+        self.network = Network.objects.create(name='Net', slug='n')
+        self.tier = PatreonTier.objects.create(network=self.network, name='Premium', minimum_cents=500)
+        self.parent = Podcast.objects.create(network=self.network, title='Parent', slug='parent', required_tier=self.tier)
+        self.target = Podcast.objects.create(network=self.network, title='Target', slug='target')
+        self.ep = Episode.objects.create(
+            podcast=self.parent, title='Ep', pub_date=timezone.now(),
+            raw_description='x', clean_description='x',
+            audio_url_public='https://cdn.example.com/pub.mp3',
+            audio_url_subscriber='https://cdn.example.com/priv.mp3',
+        )
+        user = User.objects.create_user(username='listener')
+        self.profile = PatronProfile.objects.create(user=user, patreon_id=None)
+        NetworkMembership.objects.create(user=user, network=self.network)
+        self.link = EpisodeCrossPublication.objects.create(episode=self.ep, podcast=self.target)
+
+    def _play(self):
+        req = self.factory.get(f'/play/{self.ep.id}.mp3', {'auth': str(self.profile.feed_token)})
+        req.network = self.network
+        return views.play_episode(req, episode_id=self.ep.id)
+
+    def test_inherit_mode_serves_public_audio_to_unentitled_listener(self):
+        resp = self._play()
+        self.assertEqual(resp['Location'], 'https://cdn.example.com/pub.mp3')
+
+    def test_target_mode_grants_subscriber_audio_via_free_target(self):
+        self.link.access_mode = EpisodeCrossPublication.AccessMode.TARGET
+        self.link.save()
+        resp = self._play()
+        self.assertEqual(resp['Location'], 'https://cdn.example.com/priv.mp3')
+
+
+@override_settings(CACHES=TEST_CACHES)
+class CrossPublishActionTests(TestCase):
+    """cross_publish_episodes bulk handler and its interaction with
+    move_episodes."""
+
+    def setUp(self):
+        cache.clear()
+        self.factory = RequestFactory()
+        self.owner = User.objects.create_user(username='owner')
+        self.network = Network.objects.create(name='Net', slug='n')
+        self.network.owners.add(self.owner)
+        self.parent = Podcast.objects.create(network=self.network, title='Parent', slug='parent')
+        self.target = Podcast.objects.create(network=self.network, title='Target', slug='target')
+
+    def _ep(self, podcast=None, **kwargs):
+        defaults = dict(
+            podcast=podcast or self.parent, title='Ep', pub_date=timezone.now(),
+            raw_description='x', clean_description='x',
+            audio_url_public='https://cdn.example.com/pub.mp3',
+        )
+        defaults.update(kwargs)
+        return Episode.objects.create(**defaults)
+
+    def _post(self, data):
+        req = _make_tenant_request(self.factory, self.network,
+                                   method='post', path='/creator/',
+                                   data=data, user=self.owner)
+        return views.creator_settings(req)
+
+    def test_bulk_cross_publish_creates_links(self):
+        ep1, ep2 = self._ep(title='A'), self._ep(title='B')
+        self._post({
+            'action': 'cross_publish_episodes',
+            'episode_ids': [ep1.id, ep2.id],
+            'target_podcast_id': self.target.id,
+        })
+        linked = set(EpisodeCrossPublication.objects.filter(podcast=self.target)
+                     .values_list('episode_id', flat=True))
+        self.assertEqual(linked, {ep1.id, ep2.id})
+
+    def test_bulk_cross_publish_skips_episodes_parented_to_target(self):
+        native = self._ep(podcast=self.target, title='Native')
+        outsider = self._ep(title='Outsider')
+        self._post({
+            'action': 'cross_publish_episodes',
+            'episode_ids': [native.id, outsider.id],
+            'target_podcast_id': self.target.id,
+        })
+        linked = set(EpisodeCrossPublication.objects.filter(podcast=self.target)
+                     .values_list('episode_id', flat=True))
+        self.assertEqual(linked, {outsider.id})
+
+    def test_bulk_cross_publish_multiple_targets(self):
+        third = Podcast.objects.create(network=self.network, title='Third', slug='third')
+        ep = self._ep()
+        self._post({
+            'action': 'cross_publish_episodes',
+            'episode_ids': [ep.id],
+            'target_podcast_ids': [self.target.id, third.id],
+        })
+        linked = set(ep.cross_publications.values_list('podcast_id', flat=True))
+        self.assertEqual(linked, {self.target.id, third.id})
+
+    def test_bulk_cross_publish_is_idempotent(self):
+        ep = self._ep()
+        for _ in range(2):
+            self._post({
+                'action': 'cross_publish_episodes',
+                'episode_ids': [ep.id],
+                'target_podcast_id': self.target.id,
+            })
+        self.assertEqual(EpisodeCrossPublication.objects.filter(episode=ep, podcast=self.target).count(), 1)
+
+    def test_move_into_target_drops_redundant_link(self):
+        ep = self._ep()
+        EpisodeCrossPublication.objects.create(episode=ep, podcast=self.target)
+        self._post({
+            'action': 'move_episodes',
+            'episode_ids': [ep.id],
+            'target_podcast_id': self.target.id,
+            'new_podcast_title': '', 'new_podcast_slug': '', 'new_podcast_tier_id': '',
+        })
+        ep.refresh_from_db()
+        self.assertEqual(ep.podcast_id, self.target.id)
+        self.assertFalse(EpisodeCrossPublication.objects.filter(episode=ep, podcast=self.target).exists())
+
+
+@override_settings(CACHES=TEST_CACHES)
+class CrossPublishSuggestionTests(TestCase):
+    """cross_publish_podcast_ids through the community edit-suggestion flow:
+    submission sanitization, inbox approval, and rollback."""
+
+    def setUp(self):
+        cache.clear()
+        self.factory = RequestFactory()
+        self.owner = User.objects.create_user(username='owner')
+        self.submitter = User.objects.create_user(username='submitter')
+        self.network = Network.objects.create(name='Net', slug='n', auto_approve_trust_threshold=999)
+        self.network.owners.add(self.owner)
+        self.other_network = Network.objects.create(name='Other', slug='other')
+        self.parent = Podcast.objects.create(network=self.network, title='Parent', slug='parent')
+        self.target = Podcast.objects.create(network=self.network, title='Target', slug='target')
+        self.foreign = Podcast.objects.create(network=self.other_network, title='Foreign', slug='foreign')
+        self.episode = Episode.objects.create(
+            podcast=self.parent, title='Ep', pub_date=timezone.now(),
+            raw_description='x', clean_description='x',
+            audio_url_public='https://cdn.example.com/pub.mp3',
+        )
+        self.membership = NetworkMembership.objects.create(
+            user=self.submitter, network=self.network, trust_score=5,
+        )
+
+    def _submit(self, payload, user=None):
+        from django.contrib.messages.storage.fallback import FallbackStorage
+        from django.contrib.sessions.backends.cache import SessionStore
+        req = self.factory.post(
+            reverse('submit_episode_edit', args=[self.episode.id]),
+            data={'payload': json.dumps(payload)},
+        )
+        req.user = user or self.submitter
+        req.network = self.network
+        req.session = SessionStore()
+        req.session.create()
+        setattr(req, '_messages', FallbackStorage(req))
+        return views.submit_episode_edit(req, self.episode.id)
+
+    def _post(self, data):
+        req = _make_tenant_request(self.factory, self.network,
+                                   method='post', path='/creator/',
+                                   data=data, user=self.owner)
+        return views.creator_settings(req)
+
+    def test_submission_strips_parent_and_foreign_network_ids(self):
+        self._submit({
+            'title': 'Ep', 'description': '<p>x</p>', 'tags': [], 'chapters': [],
+            'cross_publish_podcast_ids': [self.target.id, self.parent.id, self.foreign.id],
+        })
+        suggestion = EpisodeEditSuggestion.objects.get(episode=self.episode)
+        self.assertEqual(suggestion.suggested_data['cross_publish_podcast_ids'], [self.target.id])
+        # Pending edit must not create links yet.
+        self.assertFalse(self.episode.cross_publications.exists())
+
+    def test_trusted_submission_syncs_links_immediately(self):
+        self.network.auto_approve_trust_threshold = 0
+        self.network.save()
+        self._submit({
+            'title': 'Ep', 'description': '<p>x</p>', 'tags': [], 'chapters': [],
+            'cross_publish_podcast_ids': [self.target.id],
+        })
+        link = EpisodeCrossPublication.objects.get(episode=self.episode, podcast=self.target)
+        self.assertEqual(link.added_by, self.submitter)
+
+    def _pending_edit(self, suggested_ids, original_ids=None):
+        return EpisodeEditSuggestion.objects.create(
+            episode=self.episode, user=self.submitter,
+            status=EpisodeEditSuggestion.Status.PENDING,
+            original_data={
+                'title': self.episode.title, 'description': 'x', 'tags': [], 'chapters': [],
+                'cross_publish_podcast_ids': original_ids or [],
+            },
+            suggested_data={
+                'title': self.episode.title, 'description': 'x', 'tags': [], 'chapters': [],
+                'cross_publish_podcast_ids': suggested_ids,
+            },
+        )
+
+    def test_inbox_approval_syncs_links_and_awards_point(self):
+        edit = self._pending_edit([self.target.id])
+        self._post({
+            'action': 'approve_edit',
+            'edit_id': edit.id,
+            'approve_cross_publish': 'on',
+            'edited_cross_publish_ids': json.dumps([self.target.id]),
+        })
+        self.assertTrue(EpisodeCrossPublication.objects.filter(
+            episode=self.episode, podcast=self.target).exists())
+        edit.refresh_from_db()
+        self.assertEqual(edit.status, 'approved')
+        self.membership.refresh_from_db()
+        self.assertEqual(self.membership.trust_score, 6)  # +1
+
+    def test_rollback_restores_previous_link_set(self):
+        edit = self._pending_edit([self.target.id])
+        self._post({
+            'action': 'approve_edit',
+            'edit_id': edit.id,
+            'approve_cross_publish': 'on',
+            'edited_cross_publish_ids': json.dumps([self.target.id]),
+        })
+        self.assertTrue(self.episode.cross_publications.exists())
+
+        self._post({'action': 'rollback_single_edit', 'edit_id': edit.id})
+        self.assertFalse(self.episode.cross_publications.exists())
+
+    def test_rollback_of_pre_feature_edit_leaves_links_alone(self):
+        """Edits approved before this feature have no cross_publish snapshot
+        in original_data — rolling them back must not wipe current links."""
+        EpisodeCrossPublication.objects.create(episode=self.episode, podcast=self.target)
+        edit = EpisodeEditSuggestion.objects.create(
+            episode=self.episode, user=self.submitter,
+            status=EpisodeEditSuggestion.Status.APPROVED,
+            original_data={'title': 'Old', 'description': 'x', 'tags': [], 'chapters': []},
+            suggested_data={'title': 'Ep', 'description': 'x', 'tags': [], 'chapters': []},
+            resolved_at=timezone.now(),
+        )
+        self._post({'action': 'rollback_single_edit', 'edit_id': edit.id})
+        self.assertTrue(EpisodeCrossPublication.objects.filter(
+            episode=self.episode, podcast=self.target).exists())
+
+
+@override_settings(CACHES=TEST_CACHES)
+class CrossPublishServiceTests(TestCase):
+    """validate_cross_targets and sync_cross_publications unit behaviour."""
+
+    def setUp(self):
+        from pod_manager.services.cross_publish import sync_cross_publications, validate_cross_targets
+        self.sync = sync_cross_publications
+        self.validate = validate_cross_targets
+        self.network = Network.objects.create(name='Net', slug='n')
+        self.parent = Podcast.objects.create(network=self.network, title='Parent', slug='parent')
+        self.t1 = Podcast.objects.create(network=self.network, title='T1', slug='t1')
+        self.t2 = Podcast.objects.create(network=self.network, title='T2', slug='t2')
+        self.ep = Episode.objects.create(
+            podcast=self.parent, title='Ep', pub_date=timezone.now(),
+            raw_description='x', clean_description='x',
+        )
+
+    def test_validate_drops_garbage_parent_and_unknown_ids(self):
+        targets = self.validate(self.ep, ['abc', None, self.parent.id, self.t1.id, 999999], self.network)
+        self.assertEqual({t.id for t in targets}, {self.t1.id})
+
+    def test_sync_adds_removes_and_updates_modes(self):
+        added, removed = self.sync(self.ep, [self.t1, self.t2])
+        self.assertEqual(set(added), {self.t1.id, self.t2.id})
+        self.assertEqual(removed, [])
+
+        added, removed = self.sync(
+            self.ep, [self.t1],
+            modes={self.t1.id: EpisodeCrossPublication.AccessMode.TARGET},
+        )
+        self.assertEqual(added, [])
+        self.assertEqual(removed, [self.t2.id])
+        link = EpisodeCrossPublication.objects.get(episode=self.ep, podcast=self.t1)
+        self.assertEqual(link.access_mode, EpisodeCrossPublication.AccessMode.TARGET)
+
+    def test_sync_ignores_invalid_mode_values(self):
+        self.sync(self.ep, [self.t1], modes={self.t1.id: 'bogus'})
+        link = EpisodeCrossPublication.objects.get(episode=self.ep, podcast=self.t1)
+        self.assertEqual(link.access_mode, EpisodeCrossPublication.AccessMode.INHERIT)

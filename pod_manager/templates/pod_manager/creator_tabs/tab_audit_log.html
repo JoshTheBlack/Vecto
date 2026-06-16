@@ -97,6 +97,13 @@
                         {% else %}
                         <div class="diff-grid">
 
+                            {% if not edit.has_changes %}
+                            <div class="diff-box" style="grid-column: 1 / -1;">
+                                <em class="small" style="opacity:0.6;">This suggestion contained no actual changes.</em>
+                            </div>
+                            {% endif %}
+
+                            {% if edit.title_changed %}
                             <div class="diff-box">
                                 <strong class="small d-block mb-2" style="color: var(--vecto-surface-muted);">TITLE</strong>
                                 <div class="diff-title-original fw-bold">{{ edit.original_data.title|default:"" }}</div>
@@ -105,7 +112,9 @@
                                 <strong class="small d-block mb-2" style="color: var(--vecto-surface-muted);">TITLE</strong>
                                 <div class="diff-title-suggested fw-bold">{{ edit.suggested_data.title|default:"" }}</div>
                             </div>
+                            {% endif %}
 
+                            {% if edit.tags_changed %}
                             <div class="diff-box">
                                 <strong class="small d-block mb-2" style="color: var(--vecto-surface-muted);">TAGS</strong>
                                 <div class="diff-tags-original tag-pill-list">
@@ -126,11 +135,11 @@
                                     {% endfor %}
                                 </div>
                             </div>
+                            {% endif %}
 
-                            {% with orig_chap_data=edit.original_data.chapters|default_if_none:"" %}
-                            {% with sugg_chap_data=edit.suggested_data.chapters|default_if_none:"" %}
-                            {% with orig_chap_list=orig_chap_data.chapters|default:orig_chap_data %}
-                            {% with sugg_chap_list=sugg_chap_data.chapters|default:sugg_chap_data %}
+                            {% if edit.chapters_changed %}
+                            {# orig/sugg_chapter_list are normalized to plain lists in gather_audit_log — never iterate the raw v1.2 wrapper dict here. #}
+                            {% with orig_chap_list=edit.orig_chapter_list sugg_chap_list=edit.sugg_chapter_list %}
 
                             <div class="diff-box">
                                 <strong class="small d-block mb-2" style="color: var(--vecto-surface-muted);">CHAPTERS ({{ orig_chap_list|length }})</strong>
@@ -245,8 +254,10 @@
                                 {% endfor %}
                             </div>
 
-                            {% endwith %}{% endwith %}{% endwith %}{% endwith %}
+                            {% endwith %}
+                            {% endif %}
 
+                            {% if edit.desc_changed %}
                             <div class="diff-box">
                                 <strong class="small d-block mb-2" style="color: var(--vecto-surface-muted);">DESCRIPTION</strong>
                                 <div class="diff-desc-original">{{ edit.original_data.description|safe }}</div>
@@ -255,23 +266,35 @@
                                 <strong class="small d-block mb-2" style="color: var(--vecto-surface-muted);">DESCRIPTION</strong>
                                 <div class="diff-desc-suggested">{{ edit.suggested_data.description|safe }}</div>
                             </div>
+                            {% endif %}
+
+                            {% if edit.cross_publish_changed %}
+                            <div class="diff-box">
+                                <strong class="small d-block mb-2" style="color: var(--vecto-surface-muted);">FEED PLACEMENT</strong>
+                                <div class="small">{{ edit.cross_publish_original_titles|join:", "|default:"Parent feed only" }}</div>
+                            </div>
+                            <div class="diff-box">
+                                <strong class="small d-block mb-2" style="color: var(--vecto-surface-muted);">FEED PLACEMENT</strong>
+                                <div class="small">{{ edit.cross_publish_suggested_titles|join:", "|default:"Parent feed only" }}</div>
+                            </div>
+                            {% endif %}
 
                             {% with sugg_season=edit.suggested_data.season_number sugg_epnum=edit.suggested_data.episode_number sugg_type=edit.suggested_data.episode_type %}
-                            {% if sugg_season is not None or sugg_epnum is not None or sugg_type is not None %}
+                            {% if edit.season_changed or edit.epnum_changed or edit.eptype_changed %}
                             <div class="diff-grid mt-2" style="grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: .75rem;">
-                                {% if sugg_season is not None %}
+                                {% if edit.season_changed %}
                                 <div class="diff-box">
                                     <strong class="small d-block mb-1" style="color: var(--vecto-surface-muted);">SEASON #</strong>
                                     <div>{{ edit.original_data.season_number|default:"—" }} → {{ sugg_season|default:"—" }}</div>
                                 </div>
                                 {% endif %}
-                                {% if sugg_epnum is not None %}
+                                {% if edit.epnum_changed %}
                                 <div class="diff-box">
                                     <strong class="small d-block mb-1" style="color: var(--vecto-surface-muted);">EPISODE #</strong>
                                     <div>{{ edit.original_data.episode_number|default:"—" }} → {{ sugg_epnum|default:"—" }}</div>
                                 </div>
                                 {% endif %}
-                                {% if sugg_type is not None %}
+                                {% if edit.eptype_changed %}
                                 <div class="diff-box">
                                     <strong class="small d-block mb-1" style="color: var(--vecto-surface-muted);">EPISODE TYPE</strong>
                                     <div>{{ edit.original_data.episode_type|default:"—" }} → {{ sugg_type|default:"—" }}</div>

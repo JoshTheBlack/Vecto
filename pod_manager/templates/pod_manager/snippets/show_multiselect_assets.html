@@ -1,0 +1,396 @@
+{% comment %}
+Shared CSS + JS for the show filter / multi-select pattern. The .show-filter-*
+and .show-chip-* rules are the single source of truth for the look — home.html's
+search-bar filter and every data-sms widget instance use them. Include once per
+page, after the page's own <style> block.
+{% endcomment %}
+<style>
+    /* ── Show filter look (chips bar + dropdown panel) ── */
+    .show-filter-lead {
+        color: var(--vecto-bg-muted);
+        flex-shrink: 0;
+    }
+    .show-filter-chips {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 6px;
+        flex: 1;
+        min-width: 0;
+    }
+    .show-filter-placeholder {
+        color: var(--vecto-surface-muted);
+        font-size: 0.9rem;
+    }
+    .show-filter-caret {
+        color: var(--vecto-surface-muted);
+        flex-shrink: 0;
+        transition: transform 0.2s;
+    }
+    .combo-filter[aria-expanded="true"] .show-filter-caret,
+    .sms-bar[aria-expanded="true"] .show-filter-caret { transform: rotate(180deg); }
+
+    /* artwork-only chips for selected shows */
+    .show-chip {
+        position: relative;
+        display: inline-flex;
+        flex-shrink: 0;
+    }
+    .show-chip-img {
+        width: 30px;
+        height: 30px;
+        border-radius: var(--vecto-radius-sm);
+        object-fit: cover;
+        border: 1px solid color-mix(in srgb, var(--vecto-primary) 55%, transparent);
+        display: inline-flex;
+    }
+    .show-chip-fallback {
+        align-items: center;
+        justify-content: center;
+        background: rgba(255,255,255,0.08);
+        color: var(--vecto-surface-muted);
+        font-size: 0.75rem;
+    }
+    .show-chip-remove {
+        position: absolute;
+        top: -6px;
+        right: -6px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 16px;
+        height: 16px;
+        border-radius: 50%;
+        background: var(--vecto-bg);
+        border: 1px solid var(--bs-border-color);
+        color: var(--vecto-surface-text);
+        font-size: 0.7rem;
+        opacity: 0;
+        transition: opacity 0.15s, background 0.15s, color 0.15s;
+    }
+    .show-chip:hover .show-chip-remove,
+    .show-chip-remove:focus-visible { opacity: 1; }
+    .show-chip-remove:hover {
+        background: var(--vecto-primary);
+        border-color: var(--vecto-primary);
+        color: var(--vecto-primary-text);
+    }
+
+    .show-filter-panel {
+        position: absolute;
+        top: calc(100% + 6px);
+        right: 0;
+        width: min(420px, 100%);
+        background: var(--vecto-surface-bg);
+        border: 1.5px solid var(--bs-border-color);
+        border-radius: var(--bs-border-radius);
+        box-shadow: 0 12px 32px rgba(0,0,0,0.55);
+        z-index: 1050;
+        overflow: hidden;
+    }
+    .show-filter-search {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 10px 14px;
+        border-bottom: 1px solid var(--bs-border-color);
+        color: var(--vecto-surface-muted);
+    }
+    .show-filter-search input {
+        flex: 1;
+        min-width: 0;
+        background: transparent;
+        border: none;
+        outline: none;
+        color: var(--vecto-surface-text);
+        font-size: 0.9rem;
+        caret-color: var(--vecto-primary);
+    }
+    .show-filter-search input::placeholder { color: var(--vecto-surface-muted); }
+    .show-filter-list {
+        max-height: 320px;
+        overflow-y: auto;
+        padding: 6px;
+        scrollbar-width: thin;
+        scrollbar-color: var(--vecto-bg-muted) transparent;
+    }
+    .show-filter-list::-webkit-scrollbar { width: 8px; }
+    .show-filter-list::-webkit-scrollbar-thumb {
+        background: var(--vecto-bg-muted);
+        border-radius: 4px;
+    }
+    .show-filter-option {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        margin: 0;
+        padding: 7px 10px;
+        border-radius: var(--vecto-radius-md);
+        cursor: pointer;
+        font-size: 0.9rem;
+        color: var(--vecto-surface-text);
+        transition: background 0.12s;
+    }
+    .show-filter-option:hover { background: rgba(255,255,255,0.06); }
+    .show-filter-option .form-check-input {
+        margin: 0;
+        cursor: pointer;
+        flex-shrink: 0;
+    }
+    .show-filter-option .form-check-input:checked {
+        background-color: var(--vecto-primary);
+        border-color: var(--vecto-primary);
+    }
+    .show-filter-option-img {
+        width: 28px;
+        height: 28px;
+        border-radius: var(--vecto-radius-sm);
+        object-fit: cover;
+        flex-shrink: 0;
+    }
+    .show-filter-option-fallback {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        background: rgba(255,255,255,0.08);
+        color: var(--vecto-surface-muted);
+        font-size: 0.75rem;
+    }
+    .show-filter-option-title {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+    .show-filter-empty {
+        padding: 14px;
+        color: var(--vecto-surface-muted);
+        font-size: 0.85rem;
+        text-align: center;
+    }
+    .show-filter-footer {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding: 10px 14px;
+        border-top: 1px solid var(--bs-border-color);
+    }
+    .show-filter-clear {
+        background: none;
+        border: none;
+        padding: 0;
+        color: var(--vecto-primary);
+        font-size: 0.85rem;
+        font-weight: 600;
+        cursor: pointer;
+    }
+    .show-filter-clear:hover { text-decoration: underline; }
+    .show-filter-count {
+        color: var(--vecto-surface-muted);
+        font-size: 0.8rem;
+    }
+
+    /* ── data-sms widget wrapper (form-embedded variant of the filter) ── */
+    .sms { position: relative; }
+    .sms-bar {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 8px 12px;
+        min-height: 46px;
+        background: var(--vecto-bg);
+        border: 1px solid var(--bs-border-color);
+        border-radius: var(--vecto-radius-md);
+        cursor: pointer;
+        transition: border-color 0.15s, background 0.15s;
+    }
+    .sms-bar:hover { background: rgba(255,255,255,0.03); }
+    .sms-bar:focus-visible,
+    .sms-bar[aria-expanded="true"] {
+        outline: none;
+        border-color: var(--vecto-primary);
+    }
+    .sms-excluded { display: none !important; }
+
+    /* ── "Also on" artwork strip (episode cards + episode detail) ── */
+    .also-on {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        flex-wrap: wrap;
+    }
+    .also-on-label {
+        font-size: 0.72rem;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.4px;
+        color: var(--vecto-surface-muted);
+    }
+    .also-on-art {
+        width: 24px;
+        height: 24px;
+        border-radius: var(--vecto-radius-sm);
+        object-fit: cover;
+        border: 1px solid var(--bs-border-color);
+    }
+</style>
+
+<script>
+document.addEventListener('DOMContentLoaded', () => {
+    document.querySelectorAll('[data-sms]').forEach(initShowMultiselect);
+
+    function initShowMultiselect(wrap) {
+        const bar         = wrap.querySelector('.sms-bar');
+        const panel       = wrap.querySelector('[data-sms-panel]');
+        const searchIn    = wrap.querySelector('[data-sms-search]');
+        const list        = wrap.querySelector('[data-sms-list]');
+        const emptyMsg    = wrap.querySelector('[data-sms-empty]');
+        const countEl     = wrap.querySelector('[data-sms-count]');
+        const clearBtn    = wrap.querySelector('[data-sms-clear]');
+        const chipsEl     = wrap.querySelector('[data-sms-chips]');
+        const placeholder = wrap.querySelector('[data-sms-placeholder]');
+
+        const checks    = () => [...list.querySelectorAll('.show-filter-check')];
+        const available = () => checks().filter(c => !c.closest('.show-filter-option').classList.contains('sms-excluded'));
+
+        function buildChip(check) {
+            const chip = document.createElement('span');
+            chip.className = 'show-chip';
+            chip.title = check.dataset.podTitle;
+            if (check.dataset.podImg) {
+                const img = document.createElement('img');
+                img.className = 'show-chip-img';
+                img.src = check.dataset.podImg;
+                img.alt = check.dataset.podTitle;
+                chip.appendChild(img);
+            } else {
+                const fb = document.createElement('span');
+                fb.className = 'show-chip-img show-chip-fallback';
+                fb.innerHTML = '<i class="bi bi-mic-fill"></i>';
+                chip.appendChild(fb);
+            }
+            const rm = document.createElement('span');
+            rm.className = 'show-chip-remove';
+            rm.setAttribute('role', 'button');
+            rm.setAttribute('tabindex', '0');
+            rm.setAttribute('aria-label', 'Remove ' + check.dataset.podTitle);
+            rm.dataset.id = check.value;
+            rm.innerHTML = '<i class="bi bi-x"></i>';
+            chip.appendChild(rm);
+            return chip;
+        }
+
+        function syncChips() {
+            chipsEl.querySelectorAll('.show-chip').forEach(c => c.remove());
+            const selected = checks().filter(c => c.checked);
+            placeholder.style.display = selected.length ? 'none' : '';
+            selected.forEach(c => chipsEl.insertBefore(buildChip(c), placeholder));
+        }
+
+        function updateCount() {
+            const total = available().length;
+            const n = available().filter(c => c.checked).length;
+            countEl.textContent = n ? `${n} of ${total} selected` : `${total} shows`;
+        }
+
+        function notifyChange() {
+            wrap.dispatchEvent(new CustomEvent('sms:change', { bubbles: true }));
+        }
+
+        function filterList(term) {
+            term = term.trim().toLowerCase();
+            let any = false;
+            list.querySelectorAll('.show-filter-option').forEach(o => {
+                if (o.classList.contains('sms-excluded')) return;
+                const hit = !term || o.dataset.title.includes(term);
+                o.classList.toggle('d-none', !hit);
+                if (hit) any = true;
+            });
+            emptyMsg.classList.toggle('d-none', !!term && !any);
+        }
+
+        function openPanel() {
+            [...list.querySelectorAll('.show-filter-option')]
+                .sort((a, b) => b.querySelector('input').checked - a.querySelector('input').checked)
+                .forEach(o => list.insertBefore(o, emptyMsg));
+            panel.classList.remove('d-none');
+            bar.setAttribute('aria-expanded', 'true');
+            searchIn.value = '';
+            filterList('');
+            searchIn.focus();
+        }
+
+        function closePanel() {
+            if (panel.classList.contains('d-none')) return;
+            panel.classList.add('d-none');
+            bar.setAttribute('aria-expanded', 'false');
+        }
+
+        bar.addEventListener('click', (e) => {
+            const remover = e.target.closest('.show-chip-remove');
+            if (remover) {
+                e.stopPropagation();
+                const check = checks().find(c => c.value === remover.dataset.id);
+                if (check) check.checked = false;
+                syncChips();
+                updateCount();
+                notifyChange();
+                return;
+            }
+            panel.classList.contains('d-none') ? openPanel() : closePanel();
+        });
+        bar.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                panel.classList.contains('d-none') ? openPanel() : closePanel();
+            }
+        });
+
+        searchIn.addEventListener('input', () => filterList(searchIn.value));
+        list.addEventListener('change', () => {
+            syncChips();
+            updateCount();
+            notifyChange();
+        });
+        clearBtn.addEventListener('click', () => {
+            checks().forEach(c => c.checked = false);
+            syncChips();
+            updateCount();
+            notifyChange();
+        });
+
+        document.addEventListener('click', (e) => {
+            if (!wrap.contains(e.target)) closePanel();
+        });
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape') closePanel();
+        });
+
+        // Optional: exclude (and uncheck) whichever podcast a parent <select>
+        // currently points at — an episode can't cross-publish into its parent.
+        const parentSelectId = wrap.dataset.smsParentSelect;
+        if (parentSelectId) {
+            const parentSelect = document.getElementById(parentSelectId);
+            const applyExclusion = () => {
+                const pid = parentSelect ? parentSelect.value : '';
+                list.querySelectorAll('.show-filter-option').forEach(o => {
+                    const excluded = o.dataset.podId === pid;
+                    o.classList.toggle('sms-excluded', excluded);
+                    if (excluded) {
+                        const c = o.querySelector('.show-filter-check');
+                        if (c.checked) { c.checked = false; }
+                    }
+                });
+                syncChips();
+                updateCount();
+            };
+            if (parentSelect) {
+                parentSelect.addEventListener('change', applyExclusion);
+                applyExclusion();
+            }
+        }
+
+        syncChips();
+        updateCount();
+    }
+});
+</script>

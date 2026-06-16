@@ -15,8 +15,9 @@ from django.urls import reverse
 from django.utils import timezone
 
 from ...models import Episode, Network, NetworkMembership, EpisodeEditSuggestion
+from ...services.cross_publish import validate_cross_targets
 from ...services.edits import (
-    apply_approved_edit, parse_chapter_payload, snapshot_episode,
+    apply_approved_edit, chapter_items, parse_chapter_payload, snapshot_episode,
     update_contribution_stats,
 )
 from ...tasks import task_rebuild_episode_fragments
@@ -24,6 +25,7 @@ from ...utils import sanitize_user_html
 from .actions import ACTION_HANDLERS
 from .data import (
     gather_audit_log,
+    gather_cross_publish_context,
     gather_inbox,
     gather_manage_podcasts,
     gather_merge_desk,
@@ -69,6 +71,7 @@ def creator_settings(request):
         **gather_merge_desk(request, current_network),
         **gather_audit_log(request, current_network),
         **gather_move_context(request, current_network),
+        **gather_cross_publish_context(request, current_network),
         **gather_reports_data(),
     }
 
@@ -98,10 +101,37 @@ def submit_episode_edit(request, episode_id):
                     suggested_data.pop(int_field)
         if 'episode_type' in suggested_data:
             suggested_data['episode_type'] = str(suggested_data['episode_type'])[:50]
+        if 'cross_publish_podcast_ids' in suggested_data:
+            # Strip foreign-network ids and the parent podcast before storing.
+            targets = validate_cross_targets(
+                ep, suggested_data['cross_publish_podcast_ids'], ep.podcast.network
+            )
+            suggested_data['cross_publish_podcast_ids'] = sorted(t.id for t in targets)
 
         network = ep.podcast.network
         membership, _ = NetworkMembership.objects.get_or_create(user=request.user, network=network)
         original_data = snapshot_episode(ep)
+
+        # Drop fields the user didn't actually change. The edit form always
+        # posts every field, but untouched ones would render in the inbox with
+        # Approve pre-toggled and pollute the audit log with phantom edits.
+        comparators = {
+            'tags': lambda s, o: set(s or []) != set(o or []),
+            'chapters': lambda s, o: chapter_items(s) != chapter_items(o),
+            'cross_publish_podcast_ids': lambda s, o: sorted(s or []) != sorted(o or []),
+        }
+        for key in list(suggested_data.keys()):
+            if key not in original_data:
+                continue
+            differs = comparators.get(key, lambda s, o: s != o)
+            if not differs(suggested_data[key], original_data[key]):
+                suggested_data.pop(key)
+
+        if not suggested_data:
+            logger.info(f"Edit submission for Episode {ep.id} by {request.user.username} contained no changes — skipped.")
+            messages.info(request, "No changes detected — nothing was submitted.")
+            return redirect('episode_detail', episode_id=ep.id)
+
         is_first = not EpisodeEditSuggestion.objects.filter(episode=ep, status=EpisodeEditSuggestion.Status.APPROVED).exists()
         is_trusted = membership.trust_score >= network.auto_approve_trust_threshold
 
@@ -113,7 +143,7 @@ def submit_episode_edit(request, episode_id):
         )
 
         if is_trusted:
-            apply_approved_edit(ep, suggested_data)
+            apply_approved_edit(ep, suggested_data, user=request.user)
             update_contribution_stats(membership, suggested_data, original_data, is_first=is_first)
             task_rebuild_episode_fragments.delay(ep.id, request.build_absolute_uri('/')[:-1])
             messages.success(request, "Edit approved instantly. +5 Trust.")

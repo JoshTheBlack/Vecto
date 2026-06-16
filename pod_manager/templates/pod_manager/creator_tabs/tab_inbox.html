@@ -213,11 +213,21 @@
                             <input type="hidden" name="edited_season_number" class="hidden-edited-season-number" value="">
                             <input type="hidden" name="edited_episode_number" class="hidden-edited-episode-number" value="">
                             <input type="hidden" name="edited_episode_type" class="hidden-edited-episode-type" value="">
+                            {# Cross-publish targets aren't editable in the inbox — pass the suggested ids through as-is (Python int-list repr is valid JSON). #}
+                            <input type="hidden" name="edited_cross_publish_ids" value="{{ edit.suggested_data.cross_publish_podcast_ids|default_if_none:'[]' }}">
 
                             {# Each section renders independently as a stacking block. When .conflicted is present, the section shows three columns (Original / Current / Suggested); otherwise two (Original / Suggested). Server-side flags on the edit (tags_conflict / chapters_conflict / desc_conflict) decide which mode each section is in. #}
 
                             {# Speaker-only edits (from the speaker labels form) have no episode metadata fields — skip the full diff. #}
+                            {% if not edit.has_changes %}
+                            <div class="alert alert-secondary bg-black border-secondary text-muted small">
+                                <i class="bi bi-info-circle me-1"></i>This suggestion contains no actual changes. Approving with nothing selected converts it to a rejection.
+                            </div>
+                            {% endif %}
+
                             {% if not edit.suggested_data.speaker_mappings or edit.suggested_data.title or edit.suggested_data.description or edit.suggested_data.tags or edit.suggested_data.chapters %}
+
+                            {% if edit.title_changed %}
 
                             {# ============== TITLE ============== #}
                             <div class="diff-section{% if edit.title_conflict %} conflicted{% endif %}" data-section="title">
@@ -251,8 +261,10 @@
                                     </div>
                                 </div>
                             </div>
+                            {% endif %}
 
                             {# ============== TAGS ============== #}
+                            {% if edit.tags_changed %}
                             <div class="diff-section{% if edit.tags_conflict %} conflicted{% endif %}"
                                  data-section="tags">
 
@@ -294,8 +306,10 @@
                                     </div>
                                 </div>
                             </div>
+                            {% endif %}
 
                             {# ============== CHAPTERS ============== #}
+                            {% if edit.chapters_changed %}
                             <div class="diff-section{% if edit.chapters_conflict %} conflicted{% endif %}"
                                  data-section="chapters">
 
@@ -347,8 +361,10 @@
                                     </div>
                                 </div>
                             </div>
+                            {% endif %}
 
                             {# ============== DESCRIPTION ============== #}
+                            {% if edit.desc_changed %}
                             <div class="diff-section{% if edit.desc_conflict %} conflicted{% endif %}"
                                  data-section="description">
 
@@ -382,14 +398,15 @@
                                     </div>
                                 </div>
                             </div>
+                            {% endif %}
 
                             {# ============== SEASON / EPISODE NUMBER / EPISODE TYPE ============== #}
                             {% with sugg_season=edit.suggested_data.season_number sugg_epnum=edit.suggested_data.episode_number sugg_type=edit.suggested_data.episode_type %}
-                            {% if sugg_season is not None or sugg_epnum is not None or sugg_type is not None %}
+                            {% if edit.season_changed or edit.epnum_changed or edit.eptype_changed %}
                             <div class="diff-section mt-3" data-section="metadata-scalars">
                                 <div class="row g-3">
 
-                                {% if sugg_season is not None %}
+                                {% if edit.season_changed %}
                                 <div class="col-sm-4">
                                     <div class="diff-cell diff-cell-suggested p-2 rounded border border-secondary">
                                         <div class="diff-cell-header mb-2">
@@ -411,7 +428,7 @@
                                 </div>
                                 {% endif %}
 
-                                {% if sugg_epnum is not None %}
+                                {% if edit.epnum_changed %}
                                 <div class="col-sm-4">
                                     <div class="diff-cell diff-cell-suggested p-2 rounded border border-secondary">
                                         <div class="diff-cell-header mb-2">
@@ -433,7 +450,7 @@
                                 </div>
                                 {% endif %}
 
-                                {% if sugg_type is not None %}
+                                {% if edit.eptype_changed %}
                                 <div class="col-sm-4">
                                     <div class="diff-cell diff-cell-suggested p-2 rounded border border-secondary">
                                         <div class="diff-cell-header mb-2">
@@ -480,6 +497,30 @@
                                         <span style="color: var(--vecto-surface-text);">{{ name }}</span>
                                     </div>
                                     {% endfor %}
+                                </div>
+                            </div>
+                            {% endif %}
+
+                            {% if edit.cross_publish_changed %}
+                            <div class="mb-3 mt-3">
+                                <div class="d-flex align-items-center gap-2 mb-2">
+                                    <input type="checkbox" class="form-check-input mt-0"
+                                           id="approveCrossPublish{{ edit.id }}"
+                                           name="approve_cross_publish" value="on" checked>
+                                    <label class="form-check-label fw-semibold" style="color: var(--vecto-surface-text);" for="approveCrossPublish{{ edit.id }}">
+                                        <i class="bi bi-broadcast me-1"></i>Feed Placement
+                                        {% if edit.cross_publish_conflict %}<span class="badge ms-2 conflict-badge" title="Feed placement changed since this edit was submitted">CHANGED</span>{% endif %}
+                                    </label>
+                                </div>
+                                <div class="ps-4 small">
+                                    <div class="mb-1"><span class="text-danger"><i class="bi bi-clock-history"></i> Original:</span>
+                                        {{ edit.cross_publish_original_titles|join:", "|default:"Parent feed only" }}</div>
+                                    {% if edit.cross_publish_conflict %}
+                                    <div class="mb-1"><span class="text-warning"><i class="bi bi-exclamation-triangle"></i> Current:</span>
+                                        {{ edit.cross_publish_current_titles|join:", "|default:"Parent feed only" }}</div>
+                                    {% endif %}
+                                    <div><span class="text-success"><i class="bi bi-check-circle"></i> Suggested:</span>
+                                        {{ edit.cross_publish_suggested_titles|join:", "|default:"Parent feed only" }}</div>
                                 </div>
                             </div>
                             {% endif %}
@@ -882,11 +923,16 @@
         }
 
         // ---- TAGS ----
+        // Sections for unchanged fields aren't rendered at all — every block
+        // below must tolerate its DOM being absent.
         const tagsLeft = wrapper.querySelector('.tags-original-render');
         const tagsRightWrapper = wrapper.querySelector('.tags-suggested-input');
         const hiddenTagsInput = wrapper.querySelector('.hidden-edited-tags');
-        renderOriginalTags(tagsLeft, origTags, suggTags);
-        const tagWidget = setupSuggestedTagInput(tagsRightWrapper, origTags, suggTags, hiddenTagsInput);
+        let tagWidget = null;
+        if (tagsLeft && tagsRightWrapper) {
+            renderOriginalTags(tagsLeft, origTags, suggTags);
+            tagWidget = setupSuggestedTagInput(tagsRightWrapper, origTags, suggTags, hiddenTagsInput);
+        }
 
         // Current-tags pills (server-rendered), if the tags section is in
         // conflicted mode. We don't apply tag-added/removed coloring on the
@@ -924,13 +970,13 @@
         const currCountEl = wrapper.querySelector('.curr-chap-count');
         const suggCountEl = wrapper.querySelector('.sugg-chap-count');
         const wpToggle = wrapper.querySelector('.chapters-waypoints-toggle');
-        wpToggle.checked = suggChapters.waypoints;
+        if (wpToggle) wpToggle.checked = suggChapters.waypoints;
 
         const currChaptersRaw = readJSON('curr-chapters-' + editId, []) || [];
         const currChapters = chaptersAsList(currChaptersRaw);
 
-        origCountEl.textContent = origChapters.list.length;
-        suggCountEl.textContent = suggChapters.list.length;
+        if (origCountEl) origCountEl.textContent = origChapters.list.length;
+        if (suggCountEl) suggCountEl.textContent = suggChapters.list.length;
         if (currCountEl) currCountEl.textContent = currChapters.list.length;
 
         // Diff sets — used for color-coding by index.
@@ -958,7 +1004,7 @@
             return el;
         }
 
-        for (let i = 0; i < maxLen; i++) {
+        if (pairGrid && pairAnchor) for (let i = 0; i < maxLen; i++) {
             const origC = origChapters.list[i];
             const suggC = suggChapters.list[i];
             const currC = currChapters.list[i];
@@ -1006,14 +1052,14 @@
         }
 
         // If no chapters anywhere, show one placeholder row (one per column).
-        if (maxLen === 0) {
+        if (pairGrid && maxLen === 0) {
             for (let i = 0; i < cellsPerRow; i++) {
                 pairGrid.insertBefore(makePlaceholder('No chapters'), pairAnchor);
             }
         }
 
         const addBtn = wrapper.querySelector('.add-chapter-btn');
-        addBtn.addEventListener('click', () => {
+        if (addBtn) addBtn.addEventListener('click', () => {
             // Clear "No chapters" placeholders if this is the first real row.
             const realRows = pairGrid.querySelectorAll('.inbox-chapter-row:not(.chapter-placeholder)');
             if (realRows.length === 0) {
@@ -1085,19 +1131,27 @@
         const form = wrapper.querySelector('.inbox-approve-form');
 
         form.addEventListener('submit', () => {
+            // Hidden sections leave their hidden inputs empty; the server
+            // skips sections whose approve checkbox never rendered anyway.
             // 1. Tags
-            tagWidget.commitPending();
-            wrapper.querySelector('.hidden-edited-tags').value = JSON.stringify(tagWidget.getTags());
+            if (tagWidget) {
+                tagWidget.commitPending();
+                wrapper.querySelector('.hidden-edited-tags').value = JSON.stringify(tagWidget.getTags());
+            }
 
             // 2. Chapters — read editable rows from the shared pair-grid
-            const chaptersList = collectChaptersFromContainer(pairGrid);
-            const payload = wpToggle.checked
-                ? { waypoints: true, chapters: chaptersList }
-                : chaptersList;
-            wrapper.querySelector('.hidden-edited-chapters').value = JSON.stringify(payload);
+            if (pairGrid) {
+                const chaptersList = collectChaptersFromContainer(pairGrid);
+                const payload = (wpToggle && wpToggle.checked)
+                    ? { waypoints: true, chapters: chaptersList }
+                    : chaptersList;
+                wrapper.querySelector('.hidden-edited-chapters').value = JSON.stringify(payload);
+            }
 
             // 3. Description — read directly from the contenteditable div
-            wrapper.querySelector('.hidden-edited-description').value = descRightHost.innerHTML;
+            if (descRightHost) {
+                wrapper.querySelector('.hidden-edited-description').value = descRightHost.innerHTML;
+            }
 
             // 4. Title
             const titleInput = wrapper.querySelector('.diff-title-suggested');

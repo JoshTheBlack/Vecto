@@ -344,6 +344,19 @@
                                     <i class="bi bi-mic text-warning" style="font-size: 4rem;"></i>
                                 </div>
                             {% endif %}
+                            {% if cross_targets %}
+                            <div class="also-on justify-content-center mt-2">
+                                <span class="also-on-label" title="Also published in these feeds"><i class="bi bi-broadcast me-1"></i>Also on</span>
+                                {% for cp in cross_targets %}
+                                    {% if cp.podcast.image_url %}
+                                        <img src="{{ cp.podcast.image_url }}" class="also-on-art" alt="{{ cp.podcast.title }}"
+                                             title="{{ cp.podcast.title }}" data-bs-toggle="tooltip" data-bs-placement="bottom">
+                                    {% else %}
+                                        <span class="also-on-art show-chip-fallback d-inline-flex" title="{{ cp.podcast.title }}"><i class="bi bi-mic-fill"></i></span>
+                                    {% endif %}
+                                {% endfor %}
+                            </div>
+                            {% endif %}
                         </div>
 
                         <div class="col-md-9">
@@ -682,6 +695,17 @@
                             </div>
                         </div>
 
+                        {% if network_podcasts %}
+                        <div class="mb-4 pt-3 border-top border-secondary" id="editCrossPublish">
+                            <h5 class="text-light fw-bold mb-3">
+                                <i class="bi bi-broadcast text-warning me-1"></i> Feed Placement
+                                <small class="text-muted fw-normal">(other shows this episode should also appear in)</small>
+                            </h5>
+                            {% include 'pod_manager/snippets/show_multiselect.html' with field_name='cross_publish_ids_suggest' podcast_list=network_podcasts selected_ids=cross_target_ids placeholder='Only its parent feed' %}
+                            <div class="form-text text-muted">Untouched, this section is left out of your suggestion.</div>
+                        </div>
+                        {% endif %}
+
                         <div class="d-grid gap-2 d-md-flex justify-content-md-end mt-5 pt-3 border-top border-secondary">
                             <button type="submit" class="btn btn-warning btn-lg"><i class="bi bi-send"></i> Submit Edit Suggestion</button>
                         </div>
@@ -723,6 +747,25 @@
                                 </button>
                             </div>
                         </form>
+
+                        {% if network_podcasts %}
+                        <form method="POST" action="{% url 'manage_episode' ep.id %}" class="mb-4" id="ownerCrossPublishForm">
+                            {% csrf_token %}
+                            <input type="hidden" name="action" value="update_cross_publish">
+                            <label class="form-label text-light">Also Publish To</label>
+                            {% include 'pod_manager/snippets/show_multiselect.html' with field_name='cross_publish_ids' podcast_list=network_podcasts selected_ids=cross_target_ids placeholder='Only the parent feed' %}
+                            <div id="crossModeRows" class="mt-2"></div>
+                            <div class="form-text text-muted">
+                                "Use target tier" lets that show's tier unlock this episode's subscriber audio —
+                                the play link is shared, so one override lowers the gate everywhere this episode appears.
+                            </div>
+                            <div class="text-end mt-2">
+                                <button type="submit" class="btn btn-outline-warning btn-sm">
+                                    <i class="bi bi-save me-1"></i>Save Feed Placement
+                                </button>
+                            </div>
+                        </form>
+                        {% endif %}
 
                         <div class="d-flex flex-wrap gap-3">
                             {% if not ep.is_published %}
@@ -1070,6 +1113,15 @@
                     episode_number: episodeNumVal ? parseInt(episodeNumVal, 10) : null,
                     episode_type: episodeTypeVal,
                 };
+
+                // Feed placement is suggested only when the archivist touched
+                // the section, so untouched edits don't claim the field.
+                const crossWrap = document.getElementById('editCrossPublish');
+                if (crossWrap && crossWrap.dataset.touched === '1') {
+                    finalPayload.cross_publish_podcast_ids = [...crossWrap.querySelectorAll(
+                        'input[name="cross_publish_ids_suggest"]:checked'
+                    )].map(c => parseInt(c.value, 10));
+                }
 
                 payloadInput.value = JSON.stringify(finalPayload);
             });
@@ -1570,5 +1622,67 @@
     }
     tryAttach();
 })();
+</script>
+
+{% include 'pod_manager/snippets/show_multiselect_assets.html' %}
+
+<script>
+document.addEventListener('DOMContentLoaded', () => {
+    // Archivist desk: mark the feed-placement section as touched so the
+    // payload builder knows to include it.
+    const crossWrap = document.getElementById('editCrossPublish');
+    if (crossWrap) {
+        crossWrap.addEventListener('sms:change', () => { crossWrap.dataset.touched = '1'; });
+    }
+
+    // Owner form: one access-mode select per chosen target podcast.
+    const ownerForm = document.getElementById('ownerCrossPublishForm');
+    if (ownerForm) {
+        const modeRows = document.getElementById('crossModeRows');
+        const savedModes = {
+            {% for cp in cross_targets %}'{{ cp.podcast_id }}': '{{ cp.access_mode }}',{% endfor %}
+        };
+
+        function renderModeRows() {
+            const current = {};
+            modeRows.querySelectorAll('select').forEach(s => { current[s.dataset.podId] = s.value; });
+            modeRows.innerHTML = '';
+            ownerForm.querySelectorAll('input[name="cross_publish_ids"]:checked').forEach(c => {
+                const row = document.createElement('div');
+                row.className = 'd-flex align-items-center gap-2 mb-1';
+
+                if (c.dataset.podImg) {
+                    const img = document.createElement('img');
+                    img.className = 'also-on-art';
+                    img.src = c.dataset.podImg;
+                    img.alt = '';
+                    row.appendChild(img);
+                }
+                const name = document.createElement('span');
+                name.className = 'text-light small flex-grow-1 text-truncate';
+                name.textContent = c.dataset.podTitle;
+                row.appendChild(name);
+
+                const sel = document.createElement('select');
+                sel.className = 'form-select form-select-sm bg-dark text-light border-secondary w-auto';
+                sel.name = 'access_mode_' + c.value;
+                sel.dataset.podId = c.value;
+                [['inherit', "Keep this episode's own tier"], ['target', "Use target show's tier"]].forEach(([v, label]) => {
+                    const o = document.createElement('option');
+                    o.value = v;
+                    o.textContent = label;
+                    sel.appendChild(o);
+                });
+                sel.value = current[c.value] || savedModes[c.value] || 'inherit';
+                row.appendChild(sel);
+
+                modeRows.appendChild(row);
+            });
+        }
+
+        ownerForm.addEventListener('sms:change', renderModeRows);
+        renderModeRows();
+    }
+});
 </script>
 {% endblock %}

@@ -51,6 +51,16 @@ def parse_chapter_payload(raw) -> dict:
     return result
 
 
+def chapter_items(value):
+    """Chapters are stored either as a bare list (legacy) or as the v1.2
+    {'version': ..., 'chapters': [...]} dict. Comparisons must always use the
+    inner list, or an empty dict-format submission against a legacy empty
+    list looks like a change (and pollutes stats/audit with phantom edits)."""
+    if isinstance(value, dict):
+        return value.get('chapters') or []
+    return value or []
+
+
 def snapshot_episode(ep) -> dict:
     """Returns a dict of the episode fields that submit_episode_edit can modify,
     used as original_data on the EpisodeEditSuggestion row."""
@@ -62,10 +72,11 @@ def snapshot_episode(ep) -> dict:
         'season_number': ep.season_number,
         'episode_number': ep.episode_number,
         'episode_type': ep.episode_type,
+        'cross_publish_podcast_ids': sorted(ep.cross_publications.values_list('podcast_id', flat=True)),
     }
 
 
-def apply_approved_edit(ep, suggested_data):
+def apply_approved_edit(ep, suggested_data, user=None):
     """Writes an auto-approved edit directly onto the episode and saves it."""
     # Speaker label edits only touch transcript files, not Episode fields.
     if 'speaker_mappings' in suggested_data:
@@ -85,6 +96,12 @@ def apply_approved_edit(ep, suggested_data):
         ep.episode_number = suggested_data['episode_number']
     if 'episode_type' in suggested_data:
         ep.episode_type = str(suggested_data['episode_type'])[:50]
+    if 'cross_publish_podcast_ids' in suggested_data:
+        from pod_manager.services.cross_publish import sync_cross_publications, validate_cross_targets
+        targets = validate_cross_targets(
+            ep, suggested_data['cross_publish_podcast_ids'], ep.podcast.network
+        )
+        sync_cross_publications(ep, targets, added_by=user)
     ep.is_metadata_locked = True
     ep.save()
 
@@ -104,7 +121,7 @@ def update_contribution_stats(membership, suggested_data, original_data, *, is_f
     if tag_delta:
         membership.edits_tags += tag_delta
 
-    if suggested_data.get('chapters') != original_data.get('chapters'):
+    if chapter_items(suggested_data.get('chapters')) != chapter_items(original_data.get('chapters')):
         chap_data = suggested_data.get('chapters', [])
         membership.edits_chapters += (
             len(chap_data.get('chapters', [])) if isinstance(chap_data, dict) else len(chap_data)

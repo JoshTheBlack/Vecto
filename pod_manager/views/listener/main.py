@@ -73,7 +73,7 @@ def home(request):
         target_network_slugs = [request.network.slug]
         selected_networks = [request.network.slug]
 
-    query = Episode.objects.select_related('podcast', 'podcast__network', 'podcast__required_tier').filter(podcast__network__slug__in=target_network_slugs, is_published=True)
+    query = Episode.objects.select_related('podcast', 'podcast__network', 'podcast__required_tier').prefetch_related('cross_publications__podcast').filter(podcast__network__slug__in=target_network_slugs, is_published=True)
     podcasts = Podcast.objects.filter(network__slug__in=target_network_slugs).order_by('title')
 
     if show_slugs:
@@ -274,9 +274,17 @@ def episode_detail(request, episode_id):
         except (OSError, _json.JSONDecodeError, ValueError):
             pass
 
+    cross_targets = ep.cross_publications.select_related('podcast').order_by('podcast__title')
+    network_podcasts = []
+    if request.user.is_authenticated:
+        network_podcasts = ep.podcast.network.podcasts.exclude(id=ep.podcast_id).order_by('title')
+
     return render(request, 'pod_manager/episode_detail.html', {
         'ep': ep,
         'is_owner': is_owner,
+        'cross_targets': cross_targets,
+        'cross_target_ids': [cp.podcast_id for cp in cross_targets],
+        'network_podcasts': network_podcasts,
         'trust_score': trust_score,
         'transcript': transcript,
         'transcript_html': transcript_html,

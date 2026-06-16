@@ -7,7 +7,7 @@ from django.contrib.auth.models import User
 from django.db.models import Q, F, BooleanField, ExpressionWrapper
 from django.utils.html import format_html, mark_safe
 from django.urls import reverse
-from .models import Network, PatreonTier, Podcast, Episode, UserMix, PatronProfile, EpisodeEditSuggestion, NetworkMembership, LogEntry, Transcript
+from .models import Network, PatreonTier, Podcast, Episode, EpisodeCrossPublication, UserMix, PatronProfile, EpisodeEditSuggestion, NetworkMembership, LogEntry, Transcript
 
 class S3SubscriberAudioFilter(SimpleListFilter):
     title = 'S3 Hosted Audio (Affected)'
@@ -45,8 +45,24 @@ class NetworkMembershipAdmin(admin.ModelAdmin):
         return f"${obj.patreon_pledge_cents / 100:.2f}"
     pledge_dollars.short_description = "Pledge Amount"
 
+class EpisodeCrossPublicationInline(admin.TabularInline):
+    model = EpisodeCrossPublication
+    fk_name = 'episode'
+    raw_id_fields = ('podcast', 'added_by')
+    extra = 0
+
+
+@admin.register(EpisodeCrossPublication)
+class EpisodeCrossPublicationAdmin(admin.ModelAdmin):
+    list_display = ('episode', 'podcast', 'access_mode', 'added_by', 'added_at')
+    list_filter = ('podcast__network', 'access_mode')
+    raw_id_fields = ('episode', 'podcast', 'added_by')
+    search_fields = ('episode__title', 'podcast__title')
+
+
 @admin.register(Episode)
 class EpisodeAdmin(admin.ModelAdmin):
+    inlines = [EpisodeCrossPublicationInline]
     list_display = ('title', 'podcast', 'pub_date', 'is_published', 'scheduled_at', 'episode_type', 'match_reason', 'is_metadata_locked', 'audio_locked', 'has_public_audio', 'has_premium_audio', 'transcript_status')
     list_filter = ('podcast__network', 'podcast', 'is_published', 'episode_type', 'audio_locked', S3SubscriberAudioFilter, 'pub_date', 'match_reason')
     search_fields = ('title', 'raw_description', 'guid_public', 'guid_private')

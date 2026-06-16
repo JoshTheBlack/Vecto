@@ -25,8 +25,10 @@ from django.utils import timezone
 from podgen import Podcast as PodgenPodcast, Episode as PodgenEpisode, Media, Person
 from lxml import etree
 
+from django.db.models import Q
+
 from ..models import (
-    PatronProfile, Podcast, Episode, NetworkMix, UserMix,
+    PatronProfile, Podcast, Episode, EpisodeCrossPublication, NetworkMix, UserMix,
 )
 from ..services.access import _evaluate_access, _build_episode_description, _evaluate_mix_access
 from ..services.analytics import _record_active_user
@@ -271,6 +273,32 @@ def get_podcast_for_request(request, slug: str):
     return get_object_or_404(Podcast, slug=slug, network=request.network)
 
 
+def _podcast_feed_episode_qs(podcast):
+    """Episodes carried by this podcast's feeds: its own plus any
+    cross-published into it. The OR-join duplicates rows when an episode is
+    reachable both ways, so .distinct() is mandatory."""
+    return (
+        Episode.objects
+        .filter(Q(podcast=podcast) | Q(cross_publications__podcast=podcast), is_published=True)
+        .select_related('podcast', 'podcast__network', 'podcast__required_tier')
+        .order_by('-pub_date')
+        .distinct()
+    )
+
+
+def _cross_override_targets(selected_podcasts):
+    """{episode_id: [target podcast, ...]} for cross-publications whose
+    access_mode lets the target podcast's tier gate the episode."""
+    override_map = {}
+    rows = EpisodeCrossPublication.objects.filter(
+        podcast__in=selected_podcasts,
+        access_mode=EpisodeCrossPublication.AccessMode.TARGET,
+    ).select_related('podcast', 'podcast__network')
+    for cp in rows:
+        override_map.setdefault(cp.episode_id, []).append(cp.podcast)
+    return override_map
+
+
 def _parse_feed_date(value: str):
     """Parse YYYYMMDD or YYYY-MM-DD into an aware datetime, or return None."""
     from datetime import datetime as _dt
@@ -304,7 +332,7 @@ def generate_custom_feed(request):
     base_url = request.build_absolute_uri('/')[:-1]
     header, footer = get_or_build_feed_shell(podcast, base_url, has_access)
 
-    episode_qs = podcast.episodes.filter(is_published=True).order_by('-pub_date')
+    episode_qs = _podcast_feed_episode_qs(podcast)
     before_date = _parse_feed_date(request.GET.get('before', ''))
     after_date = _parse_feed_date(request.GET.get('after', ''))
     limit = _parse_feed_limit(request.GET.get('limit', ''), default=500)
@@ -313,22 +341,39 @@ def generate_custom_feed(request):
     if after_date:
         episode_qs = episode_qs.filter(pub_date__gt=after_date)
 
-    episodes = [ep for ep in (episode_qs if limit is None else episode_qs[:limit]) if ep.has_public_audio or ep.is_premium]
-    if not has_access: episodes = [ep for ep in episodes if ep.has_public_audio]
+    # Per-episode access: native episodes use this podcast's gate; cross-published
+    # episodes inherit their parent's gate unless the link overrides to 'target'.
+    cross_modes = dict(
+        EpisodeCrossPublication.objects.filter(podcast=podcast).values_list('episode_id', 'access_mode')
+    )
+    parent_access = {podcast.id: has_access}
 
+    def _ep_access(ep):
+        if ep.podcast_id == podcast.id or cross_modes.get(ep.id) == EpisodeCrossPublication.AccessMode.TARGET:
+            return has_access
+        if ep.podcast_id not in parent_access:
+            parent_access[ep.podcast_id] = _evaluate_access(profile.user, ep.podcast, ep.podcast.network)[0]
+        return parent_access[ep.podcast_id]
+
+    keys_and_eps = []
+    for ep in (episode_qs if limit is None else episode_qs[:limit]):
+        ep_access = _ep_access(ep)
+        if not ep.has_public_audio and not (ep.is_premium and ep_access):
+            continue
+        feed_type = 'private' if ep_access else 'public'
+        keys_and_eps.append((f"ep_frag_{feed_type}_{ep.id}", ep, ep_access))
+
+    episodes = [ep for _, ep, _ in keys_and_eps]
     header = pin_last_build_date(header, episodes)
 
-    feed_type = 'private' if has_access else 'public'
-    cache_keys = [f"ep_frag_{feed_type}_{ep.id}" for ep in episodes]
-
     # Bulk fetch fragments from Redis
-    fragments_dict = cache.get_many(cache_keys)
+    fragments_dict = cache.get_many([key for key, _, _ in keys_and_eps])
 
     # Assemble missing fragments inline if cache missed
     items_xml = ""
-    for i, ep in enumerate(episodes):
-        frag = fragments_dict.get(cache_keys[i])
-        if frag is None: frag = get_or_build_episode_fragment(ep, base_url, has_access)
+    for key, ep, ep_access in keys_and_eps:
+        frag = fragments_dict.get(key)
+        if frag is None: frag = get_or_build_episode_fragment(ep, base_url, ep_access)
         items_xml += frag
 
     final_xml = header + items_xml + footer
@@ -344,7 +389,7 @@ def generate_public_feed(request, podcast_slug):
 
     header, footer = get_or_build_feed_shell(podcast, base_url, False)
 
-    episode_qs = podcast.episodes.filter(is_published=True).order_by('-pub_date')
+    episode_qs = _podcast_feed_episode_qs(podcast)
     before_date = _parse_feed_date(request.GET.get('before', ''))
     after_date = _parse_feed_date(request.GET.get('after', ''))
     limit = _parse_feed_limit(request.GET.get('limit', ''), default=500)
@@ -400,7 +445,14 @@ def generate_mix_feed(request, unique_id):
     before_date = _parse_feed_date(request.GET.get('before', ''))
     after_date = _parse_feed_date(request.GET.get('after', ''))
     limit = _parse_feed_limit(request.GET.get('limit', ''), default=500)
-    episode_qs = Episode.objects.filter(podcast__in=user_mix.selected_podcasts.all(), is_published=True).select_related('podcast', 'podcast__network').order_by('-pub_date')
+    selected_podcasts = user_mix.selected_podcasts.all()
+    # Include episodes cross-published into selected shows; .distinct() dedupes
+    # an episode whose parent AND target are both selected (parent row wins —
+    # ep.podcast is always the parent).
+    episode_qs = Episode.objects.filter(
+        Q(podcast__in=selected_podcasts) | Q(cross_publications__podcast__in=selected_podcasts),
+        is_published=True,
+    ).select_related('podcast', 'podcast__network').order_by('-pub_date').distinct()
     if before_date:
         episode_qs = episode_qs.filter(pub_date__lt=before_date)
     if after_date:
@@ -410,10 +462,17 @@ def generate_mix_feed(request, unique_id):
         latest_date_str = format_datetime(episodes[0].pub_date)
         header = re.sub(r'<lastBuildDate>.*?</lastBuildDate>', f'<lastBuildDate>{latest_date_str}</lastBuildDate>', header)
 
+    override_map = _cross_override_targets(selected_podcasts)
+
     keys_and_eps = []
     for ep in episodes:
         if not ep.has_public_audio and not ep.is_premium: continue
         ep_has_access, _ = _evaluate_access(user_mix.user, ep.podcast, ep.podcast.network)
+        if not ep_has_access:
+            for target in override_map.get(ep.id, []):
+                if _evaluate_access(user_mix.user, target, target.network)[0]:
+                    ep_has_access = True
+                    break
         feed_type = 'private' if ep_has_access else 'public'
         keys_and_eps.append((f"ep_frag_{feed_type}_{ep.id}", ep, ep_has_access))
 
@@ -460,7 +519,11 @@ def generate_network_mix_feed(request, network_slug, mix_slug):
     before_date = _parse_feed_date(request.GET.get('before', ''))
     after_date = _parse_feed_date(request.GET.get('after', ''))
     limit = _parse_feed_limit(request.GET.get('limit', ''), default=1000)
-    episode_qs = Episode.objects.filter(podcast__in=network_mix.selected_podcasts.all(), is_published=True).select_related('podcast', 'podcast__network').order_by('-pub_date')
+    selected_podcasts = network_mix.selected_podcasts.all()
+    episode_qs = Episode.objects.filter(
+        Q(podcast__in=selected_podcasts) | Q(cross_publications__podcast__in=selected_podcasts),
+        is_published=True,
+    ).select_related('podcast', 'podcast__network').order_by('-pub_date').distinct()
     if before_date:
         episode_qs = episode_qs.filter(pub_date__lt=before_date)
     if after_date:
@@ -470,9 +533,16 @@ def generate_network_mix_feed(request, network_slug, mix_slug):
         latest_date_str = format_datetime(episodes[0].pub_date)
         header = re.sub(r'<lastBuildDate>.*?</lastBuildDate>', f'<lastBuildDate>{latest_date_str}</lastBuildDate>', header)
 
+    override_map = _cross_override_targets(selected_podcasts)
+
     keys_and_eps = []
     for ep in episodes:
         ep_has_access, _ = _evaluate_access(user, ep.podcast, ep.podcast.network)
+        if not ep_has_access:
+            for target in override_map.get(ep.id, []):
+                if _evaluate_access(user, target, target.network)[0]:
+                    ep_has_access = True
+                    break
         total_access = user_meets_mix_tier and ep_has_access
         if not total_access and not ep.audio_url_public: continue
 
@@ -508,6 +578,16 @@ def play_episode(request, episode_id):
         profile = PatronProfile.objects.filter(feed_token=feed_token).first()
         if profile:
             has_access, _ = _evaluate_access(profile.user, ep.podcast, ep.podcast.network)
+            if not has_access:
+                # A cross-publication in 'target' mode lets the target podcast's
+                # tier gate this episode. The play URL is feed-agnostic, so an
+                # override on any link applies everywhere the episode appears.
+                for cp in ep.cross_publications.filter(
+                    access_mode=EpisodeCrossPublication.AccessMode.TARGET
+                ).select_related('podcast', 'podcast__network'):
+                    if _evaluate_access(profile.user, cp.podcast, cp.podcast.network)[0]:
+                        has_access = True
+                        break
             if has_access:
                 ck = f"analytics:play:{profile.id}:{ep.id}:{ep.podcast_id}"
                 cache.incr(ck) if cache.get(ck) else cache.set(ck, 1, 172800)

@@ -294,6 +294,10 @@ LOGGING = {
     'handlers': {
         'console': {
             'class': 'logging.StreamHandler',
+            # StreamHandler defaults to stderr, which IDE run windows often
+            # hide or buffer separately — log to stdout so app logs appear
+            # alongside runserver output.
+            'stream': 'ext://sys.stdout',
             'formatter': 'verbose',
             'filters': ['console_level'],
         },
@@ -334,12 +338,19 @@ if IS_IDE:
     # Force Celery to bypass Redis and run everything instantly in the same terminal
     CELERY_TASK_ALWAYS_EAGER = True
     CELERY_TASK_EAGER_PROPAGATES = True
+    # DatabaseLogHandler writes a LogEntry to SQLite from a background daemon
+    # thread on every log call. SQLite takes only one writer, so under WAL-mode
+    # locking those background writes compete with the request thread's own
+    # writes and surface as "database is locked" (lock-upgrade conflicts return
+    # BUSY immediately, bypassing the busy_timeout) — e.g. the multi-feed
+    # publish flow, which emits several log lines per request. Route the
+    # pod_manager logger to console in the IDE env; Postgres in prod takes
+    # concurrent writers and keeps the full DB log viewer.
+    LOGGING['loggers']['pod_manager']['handlers'] = ['console']
+
     # Disable transcription signal in tests — individual test classes opt-in via override_settings
     if IS_TEST:
         WHISPER_ENABLED = False
-        # DatabaseLogHandler writes to SQLite on every log call — each write adds ~2s latency
-        # under WAL-mode locking. Disable it for tests; console logging is sufficient.
-        LOGGING['loggers']['pod_manager']['handlers'] = ['console']
 else:
     # Use Redis Cache & Full Celery Worker Pipeline
     RAW_REDIS_URL = os.getenv("REDIS_URL")

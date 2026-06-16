@@ -2161,36 +2161,36 @@ class QueueTranscriptionSignalTests(TestCase):
         self.net = Network.objects.create(name='SigNet', slug='signet')
         self.pod = Podcast.objects.create(network=self.net, title='SigPod', slug='sigpod')
 
-    @mock.patch('pod_manager.tasks.transcribe_episode')
-    def test_queues_new_episode_with_subscriber_audio(self, mock_task):
+    @mock.patch('pod_manager.services.transcription.dispatch_transcription')
+    def test_queues_new_episode_with_subscriber_audio(self, mock_dispatch):
         ep = Episode.objects.create(
             podcast=self.pod, title='Ep', pub_date=timezone.now(),
             raw_description='x', audio_url_subscriber='https://cdn.example.com/ep.mp3',
         )
-        mock_task.delay.assert_called_once_with(ep.id)
+        mock_dispatch.assert_called_once_with(ep.id)
         self.assertTrue(Transcript.objects.filter(episode=ep, status=Transcript.Status.PENDING).exists())
 
-    @mock.patch('pod_manager.tasks.transcribe_episode')
-    def test_no_queue_without_subscriber_audio(self, mock_task):
+    @mock.patch('pod_manager.services.transcription.dispatch_transcription')
+    def test_no_queue_without_subscriber_audio(self, mock_dispatch):
         Episode.objects.create(
             podcast=self.pod, title='Ep2', pub_date=timezone.now(),
             raw_description='x', audio_url_public='https://cdn.example.com/pub.mp3',
         )
-        mock_task.delay.assert_not_called()
+        mock_dispatch.assert_not_called()
 
-    @mock.patch('pod_manager.tasks.transcribe_episode')
-    def test_no_requeue_when_already_pending(self, mock_task):
+    @mock.patch('pod_manager.services.transcription.dispatch_transcription')
+    def test_no_requeue_when_already_pending(self, mock_dispatch):
         ep = Episode.objects.create(
             podcast=self.pod, title='Ep3', pub_date=timezone.now(),
             raw_description='x', audio_url_subscriber='https://cdn.example.com/ep3.mp3',
         )
-        mock_task.reset_mock()
+        mock_dispatch.reset_mock()
         ep.title = 'Updated'
         ep.save()
-        mock_task.delay.assert_not_called()
+        mock_dispatch.assert_not_called()
 
-    @mock.patch('pod_manager.tasks.transcribe_episode')
-    def test_no_requeue_on_update_after_failure(self, mock_task):
+    @mock.patch('pod_manager.services.transcription.dispatch_transcription')
+    def test_no_requeue_on_update_after_failure(self, mock_dispatch):
         # Auto-queue only fires on creation. Failed transcripts must be manually
         # re-queued by a network owner via the retranscribe API.
         ep = Episode.objects.create(
@@ -2198,31 +2198,45 @@ class QueueTranscriptionSignalTests(TestCase):
             raw_description='x', audio_url_subscriber='https://cdn.example.com/ep4.mp3',
         )
         Transcript.objects.filter(episode=ep).update(status=Transcript.Status.FAILED)
-        mock_task.reset_mock()
+        mock_dispatch.reset_mock()
         ep.title = 'Retried'
         ep.save()
-        mock_task.delay.assert_not_called()
+        mock_dispatch.assert_not_called()
 
-    @mock.patch('pod_manager.tasks.transcribe_episode')
-    def test_no_queue_when_whisper_disabled(self, mock_task):
+    @mock.patch('pod_manager.services.transcription.dispatch_transcription')
+    def test_no_queue_when_whisper_disabled(self, mock_dispatch):
         with override_settings(WHISPER_ENABLED=False):
             Episode.objects.create(
                 podcast=self.pod, title='Ep5', pub_date=timezone.now(),
                 raw_description='x', audio_url_subscriber='https://cdn.example.com/ep5.mp3',
             )
-        mock_task.delay.assert_not_called()
+        mock_dispatch.assert_not_called()
 
-    @mock.patch('pod_manager.tasks.transcribe_episode')
-    def test_no_queue_on_episode_update(self, mock_task):
+    @mock.patch('pod_manager.services.transcription.dispatch_transcription')
+    def test_no_queue_on_episode_update(self, mock_dispatch):
         ep = Episode.objects.create(
             podcast=self.pod, title='Ep6', pub_date=timezone.now(),
             raw_description='x', audio_url_subscriber='https://cdn.example.com/ep6.mp3',
         )
-        mock_task.delay.reset_mock()
+        mock_dispatch.reset_mock()
         # Simulates what the feed ingester does: update an existing episode
         ep.title = 'Ep6 Updated'
         ep.save()
-        mock_task.delay.assert_not_called()
+        mock_dispatch.assert_not_called()
+
+    @mock.patch('pod_manager.services.transcription.run_transcription')
+    def test_eager_dispatch_defers_to_thread_after_commit(self, mock_run):
+        """Under eager Celery the signal must NOT run whisper inline inside
+        Episode.save() — it schedules a post-commit thread instead. In a
+        TestCase the transaction never commits, so nothing may have run."""
+        from pod_manager.tasks import transcribe_episode
+        with mock.patch.object(transcribe_episode, 'delay') as mock_delay:
+            Episode.objects.create(
+                podcast=self.pod, title='Ep7', pub_date=timezone.now(),
+                raw_description='x', audio_url_subscriber='https://cdn.example.com/ep7.mp3',
+            )
+            mock_delay.assert_not_called()
+        mock_run.assert_not_called()
 
 
 # ── 7. run_transcription() service ───────────────────────────────────────────

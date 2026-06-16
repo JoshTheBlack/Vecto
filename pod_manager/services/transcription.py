@@ -316,6 +316,34 @@ def _parse_srt(text: str) -> list:
 # Core service
 # ---------------------------------------------------------------------------
 
+def dispatch_transcription(episode_id: int) -> None:
+    """Queue a transcription WITHOUT ever blocking the caller.
+
+    With a real broker this is a normal Celery enqueue. Under eager Celery
+    (IDE mode) `.delay()` would run whisper inline — inside whatever called
+    Episode.save(), e.g. the publish view, hanging the request for the whole
+    ASR run and starving SQLite of its write lock. Instead, run it on a
+    daemon thread once the current transaction commits.
+    """
+    if getattr(settings, 'CELERY_TASK_ALWAYS_EAGER', False):
+        import threading
+        from django.db import transaction
+        logger.info(
+            f"[transcribe] Eager broker detected — dispatching episode {episode_id} "
+            f"on a background thread after commit (request will not block)."
+        )
+        transaction.on_commit(lambda: threading.Thread(
+            target=run_transcription,
+            args=(episode_id,),
+            daemon=True,
+            name=f"transcribe-ep-{episode_id}",
+        ).start())
+    else:
+        from pod_manager.tasks import transcribe_episode
+        logger.info(f"[transcribe] Queued episode {episode_id} via Celery.")
+        transcribe_episode.delay(episode_id)
+
+
 def run_transcription(
     episode_id: int,
     *,

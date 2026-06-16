@@ -362,7 +362,18 @@ CELERY_TIMEZONE = TIME_ZONE
 # unacked for longer than visibility_timeout (default 3600s). Transcription
 # tasks run 1-2+ hours, so the default silently duplicates them mid-run.
 # Must stay comfortably above the longest task runtime incl. queue wait.
-CELERY_BROKER_TRANSPORT_OPTIONS = {'visibility_timeout': 43200}  # 12 h
+#
+# queue_order_strategy='priority' enables Redis soft-priority: Celery keeps a
+# separate per-priority sublist per queue and the worker drains lower numbers
+# first. On the Redis transport LOWER = sooner (0 is highest), opposite of
+# RabbitMQ. Priority only reorders *waiting* messages — it can't preempt the
+# transcription already running on the concurrency=1 worker.
+CELERY_BROKER_TRANSPORT_OPTIONS = {
+    'visibility_timeout': 43200,  # 12 h
+    'queue_order_strategy': 'priority',
+}
+CELERY_TASK_QUEUE_MAX_PRIORITY = 10
+CELERY_TASK_DEFAULT_PRIORITY = 5
 
 # Don't reserve a backlog of unacked messages per worker process — with
 # multi-hour tasks, prefetched messages exceed the visibility timeout while

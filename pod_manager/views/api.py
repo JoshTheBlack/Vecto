@@ -286,6 +286,10 @@ def backfill_transcripts_api(request):
     return JsonResponse({'queued': queued, 'audio_checked': audio_checked, 'podcast': podcast_slug or 'all'})
 
 
+# Maps the UI's semantic labels to Redis queue priorities (lower = sooner).
+_RETRANSCRIBE_PRIORITY = {'high': 0, 'default': 5, 'low': 9}
+
+
 @require_POST
 @login_required
 def retranscribe_episode_api(request, episode_id):
@@ -296,6 +300,7 @@ def retranscribe_episode_api(request, episode_id):
 
     POST body (JSON):
         model, language, initial_prompt, min_speakers, num_speakers, max_speakers
+        priority   "high" | "default" | "low"   queue priority (default if omitted)
     """
     import json as _json
     ep = get_object_or_404(Episode, id=episode_id)
@@ -323,6 +328,12 @@ def retranscribe_episode_api(request, episode_id):
             except (TypeError, ValueError):
                 pass
 
+    # Queue priority (an apply_async option, not a task kwarg). Redis serves
+    # lower numbers first, so high=0 / low=9. Falls back to the default.
+    priority = _RETRANSCRIBE_PRIORITY.get(
+        str(body.get('priority', '')).lower(), settings.CELERY_TASK_DEFAULT_PRIORITY
+    )
+
     from pod_manager.models import Transcript
     transcript, _ = Transcript.objects.get_or_create(episode=ep)
     transcript.status = Transcript.Status.PENDING
@@ -334,10 +345,10 @@ def retranscribe_episode_api(request, episode_id):
     if settings.IS_IDE:
         run_transcription(ep.pk, **transcription_kwargs)
     else:
-        transcribe_episode.apply_async(args=[ep.pk], kwargs=transcription_kwargs)
+        transcribe_episode.apply_async(args=[ep.pk], kwargs=transcription_kwargs, priority=priority)
 
     logger.info(
-        "retranscribe_episode_api: episode %d re-queued by %s (kwargs=%s)",
-        ep.pk, request.user.username, transcription_kwargs,
+        "retranscribe_episode_api: episode %d re-queued by %s (priority=%s, kwargs=%s)",
+        ep.pk, request.user.username, priority, transcription_kwargs,
     )
     return JsonResponse({'status': 'queued', 'episode_id': ep.pk})

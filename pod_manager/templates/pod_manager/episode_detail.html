@@ -530,6 +530,14 @@
                                     <input type="number" id="rtMaxSpeakers" placeholder="inherit"
                                            class="form-control form-control-sm bg-dark text-light border-secondary" min="1" max="20">
                                 </div>
+                                <div class="col-md-3">
+                                    <label class="form-label text-muted small fw-bold mb-1">Priority</label>
+                                    <select id="rtPriority" class="form-select form-select-sm bg-dark text-light border-secondary">
+                                        <option value="high">High</option>
+                                        <option value="default" selected>Default</option>
+                                        <option value="low">Low</option>
+                                    </select>
+                                </div>
                             </div>
                             <div class="mb-3">
                                 <label class="form-label text-muted small fw-bold mb-1">Initial Prompt</label>
@@ -1437,12 +1445,14 @@
             const minSp = document.getElementById('rtMinSpeakers');
             const numSp = document.getElementById('rtNumSpeakers');
             const maxSp = document.getElementById('rtMaxSpeakers');
+            const prio  = document.getElementById('rtPriority');
             if (model  && model.value)        opts.model           = model.value;
             if (lang   && lang.value.trim())  opts.language        = lang.value.trim();
             if (prompt && prompt.value.trim())opts.initial_prompt  = prompt.value.trim();
             if (minSp  && minSp.value)        opts.min_speakers    = parseInt(minSp.value);
             if (numSp  && numSp.value)        opts.num_speakers    = parseInt(numSp.value);
             if (maxSp  && maxSp.value)        opts.max_speakers    = parseInt(maxSp.value);
+            if (prio   && prio.value)         opts.priority        = prio.value;
 
             submitBtn.disabled = true;
             statusMsg.textContent = 'Queuing…';

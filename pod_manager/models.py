@@ -682,6 +682,7 @@ class Transcript(models.Model):
     error_message     = models.TextField(blank=True, null=True)
     source_audio_url  = models.URLField(max_length=2000, blank=True, null=True)
     whisper_model_used = models.CharField(max_length=50, blank=True)
+    worker            = models.CharField(max_length=255, blank=True, help_text="Host/worker that ran the transcription.")
     retry_count       = models.IntegerField(default=0)
 
     class Meta:

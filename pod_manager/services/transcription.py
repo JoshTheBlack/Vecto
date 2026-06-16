@@ -1,6 +1,7 @@
 import json
 import logging
 import shutil
+import socket
 import tempfile
 from pathlib import Path
 from urllib.parse import unquote, urlparse
@@ -413,7 +414,8 @@ def run_transcription(
     transcript.status = Transcript.Status.PROCESSING
     transcript.started_at = timezone.now()
     transcript.source_audio_url = audio_url
-    transcript.save(update_fields=['status', 'requested_at', 'started_at', 'source_audio_url'])
+    transcript.worker = socket.gethostname()
+    transcript.save(update_fields=['status', 'requested_at', 'started_at', 'source_audio_url', 'worker'])
 
     tmp_path = None
     try:

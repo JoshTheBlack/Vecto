@@ -26,7 +26,42 @@ class S3SubscriberAudioFilter(SimpleListFilter):
         if self.value() == 'no':
             return queryset.exclude(audio_url_subscriber__icontains='s3.amazonaws.com')
         return queryset
-    
+
+
+# Substrings that identify where a transcript's source audio was hosted.
+_AUDIO_HOST_S3 = 's3.amazonaws.com'
+_AUDIO_HOST_GDRIVE = ('drive.google.com', 'googleusercontent.com')
+
+
+class TranscriptSourceHostFilter(SimpleListFilter):
+    title = 'Source audio host'
+    parameter_name = 'audio_host'
+
+    def lookups(self, request, model_admin):
+        return (
+            ('s3', 'Amazon S3'),
+            ('gdrive', 'Google Drive'),
+            ('other', 'Other URL'),
+            ('none', 'No source recorded'),
+        )
+
+    def queryset(self, request, queryset):
+        gdrive_q = Q(source_audio_url__icontains=_AUDIO_HOST_GDRIVE[0]) | Q(source_audio_url__icontains=_AUDIO_HOST_GDRIVE[1])
+        if self.value() == 's3':
+            return queryset.filter(source_audio_url__icontains=_AUDIO_HOST_S3)
+        if self.value() == 'gdrive':
+            return queryset.filter(gdrive_q)
+        if self.value() == 'other':
+            return (queryset
+                    .exclude(source_audio_url__isnull=True)
+                    .exclude(source_audio_url='')
+                    .exclude(source_audio_url__icontains=_AUDIO_HOST_S3)
+                    .exclude(gdrive_q))
+        if self.value() == 'none':
+            return queryset.filter(Q(source_audio_url__isnull=True) | Q(source_audio_url=''))
+        return queryset
+
+
 @admin.register(Network)
 class NetworkAdmin(admin.ModelAdmin):
     list_display = ('name', 'slug', 'custom_domain', 'patreon_sync_enabled')
@@ -288,19 +323,67 @@ _STATUS_COLORS = {
 
 @admin.register(Transcript)
 class TranscriptAdmin(admin.ModelAdmin):
-    list_display  = ('episode', 'status_badge', 'language', 'whisper_model_used', 'retry_count', 'requested_at', 'completed_at')
-    list_filter   = ('status', 'language', 'whisper_model_used')
-    search_fields = ('episode__title', 'episode__podcast__title', 'error_message')
+    list_display  = ('episode', 'status_badge', 'language', 'whisper_model_used', 'worker', 'retry_count', 'started_at', 'completed_at')
+    list_filter   = ('status', TranscriptSourceHostFilter, 'language', 'whisper_model_used', 'worker')
+    search_fields = ('episode__title', 'episode__podcast__title', 'source_audio_url', 'error_message')
     readonly_fields = (
         'episode', 'status', 'language',
         'vtt_file', 'json_file', 'srt_file', 'html_file', 'words_json_file',
-        'source_audio_url', 'whisper_model_used', 'retry_count',
+        'source_audio_url', 'whisper_model_used', 'worker', 'retry_count',
         'requested_at', 'started_at', 'completed_at', 'error_message',
     )
     ordering = ('-requested_at',)
+    actions = ('requeue_high', 'requeue_default', 'requeue_low')
 
     def has_add_permission(self, request):
         return False
+
+    def _requeue(self, request, queryset, priority, label):
+        """Reset the selected transcripts to pending and re-dispatch. Under a
+        real broker the chosen Redis priority is passed to apply_async; under
+        eager Celery (IDE) it runs on a background thread after commit."""
+        from django.conf import settings
+        from django.db import transaction
+        from django.utils import timezone
+        from pod_manager.tasks import transcribe_episode
+        from pod_manager.services.transcription import dispatch_transcription
+
+        eager = getattr(settings, 'CELERY_TASK_ALWAYS_EAGER', False)
+        queued = skipped = 0
+        for transcript in queryset.select_related('episode'):
+            episode = transcript.episode
+            if not episode.audio_url_subscriber:
+                skipped += 1
+                continue
+            transcript.status = Transcript.Status.PENDING
+            transcript.error_message = None
+            transcript.requested_at = timezone.now()
+            transcript.save(update_fields=['status', 'error_message', 'requested_at'])
+            if eager:
+                dispatch_transcription(episode.id)
+            else:
+                transaction.on_commit(
+                    lambda eid=episode.id, p=priority:
+                    transcribe_episode.apply_async(args=[eid], priority=p)
+                )
+            queued += 1
+
+        msg = f"Requeued {queued} transcription(s) at {label} priority."
+        if skipped:
+            msg += f" Skipped {skipped} with no subscriber audio."
+        self.message_user(request, msg)
+
+    @admin.action(description="Requeue transcription — HIGH priority")
+    def requeue_high(self, request, queryset):
+        self._requeue(request, queryset, 0, "high")
+
+    @admin.action(description="Requeue transcription — default priority")
+    def requeue_default(self, request, queryset):
+        self._requeue(request, queryset, 5, "default")
+
+    @admin.action(description="Requeue transcription — LOW priority")
+    def requeue_low(self, request, queryset):
+        self._requeue(request, queryset, 9, "low")
 
     def status_badge(self, obj):
         color = _STATUS_COLORS.get(obj.status, '#6c757d')

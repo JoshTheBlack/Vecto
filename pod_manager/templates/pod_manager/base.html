@@ -7,7 +7,8 @@
     <title>{{ current_network.name|default:"Vecto" }} | Podcast Manager</title>
     <link href="{% static 'pod_manager/css/bootstrap.min.css' %}" rel="stylesheet">
     <link href="{% static 'pod_manager/css/bootstrap-icons.css' %}" rel="stylesheet">
-    
+    <link rel="stylesheet" href="{% static 'pod_manager/css/plyr.css' %}" />
+
     {% if current_network and current_network.theme_config.google_fonts_url %}
         <link href="{{ current_network.theme_config.google_fonts_url }}" rel="stylesheet">
     {% endif %}
@@ -411,6 +412,303 @@
 </div>
 
 <script src="{% static 'pod_manager/js/bootstrap.bundle.min.js' %}"></script>
+
+{# ===== Global Now-Playing Bar (pinned to top, hidden until first play) ===== #}
+<style>
+    #floatingPlayer {
+        position: fixed;
+        top: 0; left: 0; right: 0;
+        z-index: 1055;
+        transform: translateY(-100%);
+        transition: transform 0.45s cubic-bezier(0.34, 1.4, 0.64, 1);
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        padding: 10px 20px;
+        background: rgba(8, 8, 10, 0.92);
+        backdrop-filter: blur(24px);
+        -webkit-backdrop-filter: blur(24px);
+        border-bottom: 1px solid color-mix(in srgb, var(--vecto-primary) 20%, transparent);
+        box-shadow: 0 4px 40px rgba(0,0,0,0.7);
+    }
+    #floatingPlayer.fp-visible { transform: translateY(0); }
+    @keyframes fpGlow {
+        0%   { border-bottom-color: color-mix(in srgb, var(--vecto-primary) 5%, transparent);  box-shadow: 0 4px 40px rgba(0,0,0,0.7); }
+        50%  { border-bottom-color: color-mix(in srgb, var(--vecto-primary) 60%, transparent); box-shadow: 0 4px 40px rgba(0,0,0,0.7), 0 0 30px color-mix(in srgb, var(--vecto-primary) 20%, transparent); }
+        100% { border-bottom-color: color-mix(in srgb, var(--vecto-primary) 20%, transparent); box-shadow: 0 4px 40px rgba(0,0,0,0.7); }
+    }
+    #floatingPlayer.fp-intro { animation: fpGlow 0.9s ease forwards; }
+    .fp-cover {
+        width: 40px; height: 40px;
+        border-radius: 6px;
+        object-fit: cover;
+        flex-shrink: 0;
+        border: 1px solid rgba(255,255,255,0.1);
+    }
+    .fp-info { min-width: 0; flex: 0 0 180px; }
+    .fp-show {
+        font-size: 0.6rem; text-transform: uppercase; letter-spacing: 0.09em;
+        color: var(--vecto-primary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .fp-title {
+        font-size: 0.82rem; color: #f8f9fa; font-weight: 600;
+        white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .fp-controls { display: flex; align-items: center; gap: 4px; flex-shrink: 0; }
+    .fp-btn {
+        background: none; border: none; color: #c8cdd2;
+        padding: 0; border-radius: 50%;
+        width: 34px; height: 34px;
+        display: flex; align-items: center; justify-content: center;
+        cursor: pointer;
+        transition: background 0.12s, color 0.12s, transform 0.1s;
+        font-size: 0.95rem;
+    }
+    .fp-btn:hover { background: rgba(255,255,255,0.1); color: var(--vecto-primary); }
+    .fp-btn:active { transform: scale(0.88); }
+    .fp-skip-label { font-size: 0.55rem; color: #6c757d; user-select: none; flex-shrink: 0; margin-right: -6px; }
+    .fp-skip-label.fp-skip-fwd { margin-left: -6px; margin-right: 0; }
+    .fp-playpause {
+        background: color-mix(in srgb, var(--vecto-primary) 12%, transparent);
+        border: 1px solid color-mix(in srgb, var(--vecto-primary) 30%, transparent) !important;
+        width: 40px; height: 40px; font-size: 1.05rem;
+    }
+    .fp-playpause:hover { background: color-mix(in srgb, var(--vecto-primary) 28%, transparent); color: var(--vecto-primary); }
+    .fp-scrubber-wrap { flex: 1; display: flex; align-items: center; gap: 8px; min-width: 0; }
+    .fp-time { font-size: 0.7rem; color: #6c757d; font-variant-numeric: tabular-nums; white-space: nowrap; flex-shrink: 0; }
+    .fp-time-cur { color: var(--vecto-primary); }
+    .fp-scrubber { flex: 1; height: 4px; background: rgba(255,255,255,0.12); border-radius: 2px; position: relative; cursor: pointer; transition: height 0.12s; }
+    .fp-scrubber:hover { height: 6px; }
+    .fp-scrubber-fill { position: absolute; left: 0; top: 0; bottom: 0; background: var(--vecto-primary); border-radius: 2px; width: 0%; pointer-events: none; }
+    .fp-scrubber-thumb {
+        position: absolute; top: 50%;
+        transform: translate(-50%, -50%) scale(0);
+        width: 12px; height: 12px;
+        background: var(--vecto-primary); border-radius: 50%;
+        transition: transform 0.12s; pointer-events: none;
+        box-shadow: 0 0 8px color-mix(in srgb, var(--vecto-primary) 70%, transparent);
+    }
+    .fp-scrubber:hover .fp-scrubber-thumb { transform: translate(-50%, -50%) scale(1); }
+    .fp-speed-wrap { flex-shrink: 0; }
+    .fp-speed {
+        font-size: 0.72rem; color: #6c757d; cursor: pointer;
+        padding: 3px 7px; border: 1px solid rgba(255,255,255,0.1);
+        border-radius: 4px; user-select: none; background: none;
+        line-height: 1; min-width: 44px; text-align: center;
+        transition: color 0.12s, border-color 0.12s;
+    }
+    .fp-speed:hover, .fp-speed.show { color: var(--vecto-primary); border-color: color-mix(in srgb, var(--vecto-primary) 40%, transparent); }
+    .fp-speed-menu {
+        min-width: 64px; padding: 4px;
+        font-size: 0.78rem;
+        --bs-dropdown-bg: rgba(12,12,15,0.98);
+        --bs-dropdown-border-color: color-mix(in srgb, var(--vecto-primary) 22%, transparent);
+    }
+    .fp-speed-menu .dropdown-item {
+        padding: 4px 10px; border-radius: 4px; cursor: pointer;
+        font-variant-numeric: tabular-nums;
+    }
+    .fp-speed-menu .dropdown-item.active,
+    .fp-speed-menu .dropdown-item:active {
+        background: color-mix(in srgb, var(--vecto-primary) 22%, transparent);
+        color: var(--vecto-primary);
+    }
+    .fp-close { color: #6c757d; }
+    .fp-close:hover { background: rgba(220,53,69,0.18); color: #ff6b6b; }
+    /* Plyr instance backing the bar is hidden — the bar is the UI. */
+    #floatingPlayer .plyr { display: none !important; }
+    body.fp-active { padding-top: 62px; transition: padding-top 0.45s cubic-bezier(0.34,1.4,0.64,1); }
+</style>
+
+<div id="floatingPlayer">
+    <img class="fp-cover" id="fpCover" src="" alt="">
+    <div class="fp-info">
+        <div class="fp-show" id="fpShow"></div>
+        <div class="fp-title" id="fpTitle"></div>
+    </div>
+    <div class="fp-controls">
+        <span class="fp-skip-label">15</span>
+        <button class="fp-btn" id="fpRewind" title="Back 15s"><i class="bi bi-skip-backward-fill"></i></button>
+        <button class="fp-btn fp-playpause" id="fpPlayPause" title="Play/Pause"><i class="bi bi-play-fill"></i></button>
+        <button class="fp-btn" id="fpForward" title="Forward 30s"><i class="bi bi-skip-forward-fill"></i></button>
+        <span class="fp-skip-label fp-skip-fwd">30</span>
+    </div>
+    <div class="fp-scrubber-wrap">
+        <span class="fp-time fp-time-cur" id="fpTimeCur">0:00</span>
+        <div class="fp-scrubber" id="fpScrubber">
+            <div class="fp-scrubber-fill" id="fpFill"></div>
+            <div class="fp-scrubber-thumb" id="fpThumb"></div>
+        </div>
+        <span class="fp-time" id="fpTimeTotal">0:00</span>
+    </div>
+    <div class="dropdown fp-speed-wrap">
+        <button type="button" class="fp-speed" id="fpSpeed" data-bs-toggle="dropdown" data-bs-display="static" aria-expanded="false" title="Playback speed">1×</button>
+        <ul class="dropdown-menu dropdown-menu-end fp-speed-menu" id="fpSpeedMenu" aria-labelledby="fpSpeed"></ul>
+    </div>
+    <button class="fp-btn fp-close" id="fpClose" title="Close player"><i class="bi bi-x-lg"></i></button>
+    <audio id="vGlobalAudio"></audio>
+</div>
+
+<script src="{% static 'pod_manager/js/plyr.js' %}"></script>
+<script>
+/* window.VectoPlayer — the global pinned now-playing bar.
+   - .attach(plyr, meta): bind the bar to a page's existing Plyr (e.g. the
+     episode-detail inline player) and optionally set its cover/title/show.
+   - .play({url, title, show, cover, seek}): load a source into the bar's own
+     hidden player and start playing — used from the dashboard and anywhere
+     without an inline player.
+   Both routes set window._mainPlyr to the active instance so features that key
+   off it (e.g. transcript word-sync) target whatever is playing. */
+(function () {
+    const fp        = document.getElementById('floatingPlayer');
+    const cover     = document.getElementById('fpCover');
+    const showEl    = document.getElementById('fpShow');
+    const titleEl   = document.getElementById('fpTitle');
+    const btnPlay   = document.getElementById('fpPlayPause');
+    const btnRew    = document.getElementById('fpRewind');
+    const btnFwd    = document.getElementById('fpForward');
+    const scrubber  = document.getElementById('fpScrubber');
+    const fill      = document.getElementById('fpFill');
+    const thumb     = document.getElementById('fpThumb');
+    const timeCur   = document.getElementById('fpTimeCur');
+    const timeTotal = document.getElementById('fpTimeTotal');
+    const speedBtn  = document.getElementById('fpSpeed');
+    const speedMenu = document.getElementById('fpSpeedMenu');
+    const btnClose  = document.getElementById('fpClose');
+    const audioEl   = document.getElementById('vGlobalAudio');
+    if (!fp || typeof Plyr === 'undefined') return;
+
+    const SPEEDS = [0.5, 0.75, 0.9, 1, 1.1, 1.25, 1.5, 1.75, 2];
+    const SPEED_KEY = 'vectoPlayerSpeed';
+    let active  = null;        // the Plyr instance the bar currently controls
+    let ownPlyr = null;        // lazily-created Plyr on the global hidden audio
+    let bound   = false;       // control listeners wired once
+
+    function loadSpeed() {
+        const v = parseFloat(localStorage.getItem(SPEED_KEY));
+        return SPEEDS.includes(v) ? v : 1;
+    }
+    let currentSpeed = loadSpeed();   // sticky across episodes/sessions
+
+    function fmt(s) {
+        if (!s || isNaN(s) || !isFinite(s)) return '0:00';
+        const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), sec = Math.floor(s % 60);
+        return h > 0
+            ? `${h}:${String(m).padStart(2,'0')}:${String(sec).padStart(2,'0')}`
+            : `${m}:${String(sec).padStart(2,'0')}`;
+    }
+    function showBar() {
+        if (fp.classList.contains('fp-visible')) return;
+        fp.classList.add('fp-visible', 'fp-intro');
+        document.body.classList.add('fp-active');
+        setTimeout(() => fp.classList.remove('fp-intro'), 900);
+    }
+    function hideBar() {
+        fp.classList.remove('fp-visible');
+        document.body.classList.remove('fp-active');
+    }
+    function setPlayIcon(playing) {
+        btnPlay.innerHTML = playing ? '<i class="bi bi-pause-fill"></i>' : '<i class="bi bi-play-fill"></i>';
+    }
+    function syncProgress(current, duration) {
+        const pct = duration ? Math.min(100, (current / duration) * 100) : 0;
+        fill.style.width = pct + '%';
+        thumb.style.left = pct + '%';
+        timeCur.textContent   = fmt(current);
+        timeTotal.textContent = fmt(duration);
+    }
+
+    // ----- Speed: dropdown + label kept in sync with the *actual* rate -----
+    function renderSpeedLabel(s) {
+        speedBtn.textContent = `${s}×`;
+        speedMenu.querySelectorAll('.dropdown-item').forEach(it =>
+            it.classList.toggle('active', parseFloat(it.dataset.speed) === s));
+    }
+    function rememberSpeed(s) {
+        currentSpeed = s;
+        try { localStorage.setItem(SPEED_KEY, String(s)); } catch (e) {}
+    }
+    SPEEDS.forEach(s => {
+        const li = document.createElement('li');
+        const b  = document.createElement('button');
+        b.type = 'button';
+        b.className = 'dropdown-item';
+        b.dataset.speed = s;
+        b.textContent = `${s}×`;
+        b.addEventListener('click', () => { rememberSpeed(s); if (active) active.speed = s; renderSpeedLabel(s); });
+        li.appendChild(b);
+        speedMenu.appendChild(li);
+    });
+    renderSpeedLabel(currentSpeed);
+
+    function wireControlsOnce() {
+        if (bound) return;
+        bound = true;
+        btnPlay.addEventListener('click', () => active && active.togglePlay());
+        btnRew.addEventListener('click',  () => { if (active) active.currentTime = Math.max(0, active.currentTime - 15); });
+        btnFwd.addEventListener('click',  () => { if (active) active.currentTime = Math.min(active.duration || Infinity, active.currentTime + 30); });
+        scrubber.addEventListener('click', e => {
+            if (!active || !active.duration) return;
+            const r = scrubber.getBoundingClientRect();
+            active.currentTime = ((e.clientX - r.left) / r.width) * active.duration;
+        });
+        btnClose.addEventListener('click', () => { if (active) active.pause(); hideBar(); });
+    }
+    function bindPlyr(plyr) {
+        wireControlsOnce();
+        if (active === plyr) return;
+        active = plyr;
+        window._mainPlyr = plyr;
+        plyr.on('playing',    () => { showBar(); setPlayIcon(true); });
+        plyr.on('pause',      () => setPlayIcon(false));
+        plyr.on('ended',      () => setPlayIcon(false));
+        plyr.on('timeupdate', () => syncProgress(plyr.currentTime, plyr.duration));
+        // Keep the label honest no matter who changed the rate (our dropdown,
+        // Plyr's own settings menu, etc.) and remember known speeds.
+        plyr.on('ratechange', () => {
+            const s = plyr.speed;
+            if (!s) return;
+            renderSpeedLabel(s);
+            if (SPEEDS.includes(s)) rememberSpeed(s);
+        });
+        // Apply the sticky speed to this player (now and once it's ready).
+        plyr.on('ready', () => { plyr.speed = currentSpeed; });
+        plyr.speed = currentSpeed;
+        renderSpeedLabel(currentSpeed);
+    }
+    function setMeta(meta) {
+        if (!meta) return;
+        if (meta.title !== undefined) titleEl.textContent = meta.title || '';
+        if (meta.show  !== undefined) showEl.textContent  = meta.show  || '';
+        if (meta.cover !== undefined) {
+            if (meta.cover) { cover.src = meta.cover; cover.style.display = ''; }
+            else { cover.removeAttribute('src'); cover.style.display = 'none'; }
+        }
+    }
+
+    window.VectoPlayer = {
+        attach(plyr, meta) { if (plyr) { bindPlyr(plyr); setMeta(meta); } },
+        play(opts) {
+            opts = opts || {};
+            if (!opts.url) return;
+            if (!ownPlyr) {
+                // storage disabled so Plyr can't resurrect a stale playback rate;
+                // we own speed via SPEED_KEY instead.
+                ownPlyr = new Plyr(audioEl, { controls: [], storage: { enabled: false } });
+            }
+            bindPlyr(ownPlyr);
+            setMeta({ title: opts.title || '', show: opts.show || '', cover: opts.cover || '' });
+            ownPlyr.source = { type: 'audio', sources: [{ src: opts.url, type: 'audio/mpeg' }] };
+            showBar();
+            const startAt = opts.seek || 0;
+            const go = () => { ownPlyr.speed = currentSpeed; if (startAt) ownPlyr.currentTime = startAt; ownPlyr.play(); };
+            if (ownPlyr.media.readyState > 0) go();
+            else ownPlyr.once ? ownPlyr.once('canplay', go) : ownPlyr.media.addEventListener('canplay', go, { once: true });
+        },
+    };
+})();
+</script>
+
 {% if request.is_impersonating %}
     <div class="fixed-bottom bg-danger text-white text-center py-2 shadow-lg fw-bold" style="z-index: 10000; border-top: 3px solid #ffc107;">
         <i class="bi bi-incognito me-2 fs-5"></i> 

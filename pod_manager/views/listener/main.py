@@ -73,7 +73,7 @@ def home(request):
         target_network_slugs = [request.network.slug]
         selected_networks = [request.network.slug]
 
-    query = Episode.objects.select_related('podcast', 'podcast__network', 'podcast__required_tier').prefetch_related('cross_publications__podcast').filter(podcast__network__slug__in=target_network_slugs, is_published=True)
+    query = Episode.objects.select_related('podcast', 'podcast__network', 'podcast__required_tier', 'transcript').prefetch_related('cross_publications__podcast').filter(podcast__network__slug__in=target_network_slugs, is_published=True)
     podcasts = Podcast.objects.filter(network__slug__in=target_network_slugs).order_by('title')
 
     if show_slugs:

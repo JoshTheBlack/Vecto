@@ -2,40 +2,6 @@
 {% load static %}
 
 {% block content %}
-<link rel="stylesheet" href="{% static 'pod_manager/css/plyr.css' %}" />
-
-<!-- Floating Now-Playing Bar (hidden until first play) -->
-<div id="floatingPlayer">
-    {% if ep.podcast.image_url %}
-        <img class="fp-cover" src="{{ ep.podcast.image_url }}" alt="">
-    {% elif ep.podcast.network.default_image_url %}
-        <img class="fp-cover" src="{{ ep.podcast.network.default_image_url }}" alt="">
-    {% else %}
-        <div class="fp-cover d-flex align-items-center justify-content-center bg-dark border border-secondary">
-            <i class="bi bi-mic" style="font-size:1.2rem;color:var(--vecto-primary);"></i>
-        </div>
-    {% endif %}
-    <div class="fp-info">
-        <div class="fp-show">{{ ep.podcast.title }}</div>
-        <div class="fp-title">{{ ep.title }}</div>
-    </div>
-    <div class="fp-controls">
-        <span class="fp-skip-label">15</span>
-        <button class="fp-btn" id="fpRewind" title="Back 15s"><i class="bi bi-skip-backward-fill"></i></button>
-        <button class="fp-btn fp-playpause" id="fpPlayPause" title="Play/Pause"><i class="bi bi-play-fill"></i></button>
-        <button class="fp-btn" id="fpForward" title="Forward 30s"><i class="bi bi-skip-forward-fill"></i></button>
-        <span class="fp-skip-label fp-skip-fwd">30</span>
-    </div>
-    <div class="fp-scrubber-wrap">
-        <span class="fp-time fp-time-cur" id="fpTimeCur">0:00</span>
-        <div class="fp-scrubber" id="fpScrubber">
-            <div class="fp-scrubber-fill" id="fpFill"></div>
-            <div class="fp-scrubber-thumb" id="fpThumb"></div>
-        </div>
-        <span class="fp-time" id="fpTimeTotal">0:00</span>
-    </div>
-    <div class="fp-speed" id="fpSpeed">1×</div>
-</div>
 <link href="https://cdn.quilljs.com/1.3.7/quill.snow.css" rel="stylesheet">
 <style>
     /* Quill Dark Mode Overrides to match Vecto Theme */
@@ -172,109 +138,6 @@
         vertical-align: text-bottom;
         color: #ffc107 !important; /* Yellow warning icon for contrast */
     }
-
-    /* ===== FLOATING NOW-PLAYING BAR ===== */
-    #floatingPlayer {
-        position: fixed;
-        top: 0; left: 0; right: 0;
-        z-index: 1055;
-        transform: translateY(-100%);
-        transition: transform 0.45s cubic-bezier(0.34, 1.4, 0.64, 1);
-        display: flex;
-        align-items: center;
-        gap: 12px;
-        padding: 10px 20px;
-        background: rgba(8, 8, 10, 0.92);
-        backdrop-filter: blur(24px);
-        -webkit-backdrop-filter: blur(24px);
-        border-bottom: 1px solid color-mix(in srgb, var(--vecto-primary) 20%, transparent);
-        box-shadow: 0 4px 40px rgba(0,0,0,0.7);
-    }
-    #floatingPlayer.fp-visible {
-        transform: translateY(0);
-    }
-    @keyframes fpGlow {
-        0%   { border-bottom-color: color-mix(in srgb, var(--vecto-primary) 5%, transparent);  box-shadow: 0 4px 40px rgba(0,0,0,0.7); }
-        50%  { border-bottom-color: color-mix(in srgb, var(--vecto-primary) 60%, transparent); box-shadow: 0 4px 40px rgba(0,0,0,0.7), 0 0 30px color-mix(in srgb, var(--vecto-primary) 20%, transparent); }
-        100% { border-bottom-color: color-mix(in srgb, var(--vecto-primary) 20%, transparent); box-shadow: 0 4px 40px rgba(0,0,0,0.7); }
-    }
-    #floatingPlayer.fp-intro { animation: fpGlow 0.9s ease forwards; }
-    .fp-cover {
-        width: 40px; height: 40px;
-        border-radius: 6px;
-        object-fit: cover;
-        flex-shrink: 0;
-        border: 1px solid rgba(255,255,255,0.1);
-    }
-    .fp-info { min-width: 0; flex: 0 0 180px; }
-    .fp-show {
-        font-size: 0.6rem; text-transform: uppercase; letter-spacing: 0.09em;
-        color: var(--vecto-primary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-    }
-    .fp-title {
-        font-size: 0.82rem; color: #f8f9fa; font-weight: 600;
-        white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-    }
-    .fp-controls { display: flex; align-items: center; gap: 4px; flex-shrink: 0; }
-    .fp-btn {
-        background: none; border: none; color: #c8cdd2;
-        padding: 0; border-radius: 50%;
-        width: 34px; height: 34px;
-        display: flex; align-items: center; justify-content: center;
-        cursor: pointer;
-        transition: background 0.12s, color 0.12s, transform 0.1s;
-        font-size: 0.95rem;
-    }
-    .fp-btn:hover { background: rgba(255,255,255,0.1); color: var(--vecto-primary); }
-    .fp-btn:active { transform: scale(0.88); }
-    /* Negative margins pull the labels into the buttons' internal whitespace:
-       the 34px circular buttons have ~9px of empty space around the icon glyph. */
-    .fp-skip-label {
-        font-size: 0.55rem; color: #6c757d;
-        user-select: none; flex-shrink: 0;
-        margin-right: -6px;
-    }
-    .fp-skip-label.fp-skip-fwd { margin-left: -6px; margin-right: 0; }
-    .fp-playpause {
-        background: color-mix(in srgb, var(--vecto-primary) 12%, transparent);
-        border: 1px solid color-mix(in srgb, var(--vecto-primary) 30%, transparent) !important;
-        width: 40px; height: 40px; font-size: 1.05rem;
-    }
-    .fp-playpause:hover { background: color-mix(in srgb, var(--vecto-primary) 28%, transparent); color: var(--vecto-primary); }
-    .fp-scrubber-wrap { flex: 1; display: flex; align-items: center; gap: 8px; min-width: 0; }
-    .fp-time { font-size: 0.7rem; color: #6c757d; font-variant-numeric: tabular-nums; white-space: nowrap; flex-shrink: 0; }
-    .fp-time-cur { color: var(--vecto-primary); }
-    .fp-scrubber {
-        flex: 1; height: 4px;
-        background: rgba(255,255,255,0.12);
-        border-radius: 2px; position: relative; cursor: pointer;
-        transition: height 0.12s;
-    }
-    .fp-scrubber:hover { height: 6px; }
-    .fp-scrubber-fill {
-        position: absolute; left: 0; top: 0; bottom: 0;
-        background: var(--vecto-primary);
-        border-radius: 2px; width: 0%;
-        pointer-events: none;
-    }
-    .fp-scrubber-thumb {
-        position: absolute; top: 50%;
-        transform: translate(-50%, -50%) scale(0);
-        width: 12px; height: 12px;
-        background: var(--vecto-primary); border-radius: 50%;
-        transition: transform 0.12s;
-        pointer-events: none;
-        box-shadow: 0 0 8px color-mix(in srgb, var(--vecto-primary) 70%, transparent);
-    }
-    .fp-scrubber:hover .fp-scrubber-thumb { transform: translate(-50%, -50%) scale(1); }
-    .fp-speed {
-        font-size: 0.72rem; color: #6c757d; cursor: pointer;
-        padding: 3px 7px; border: 1px solid rgba(255,255,255,0.1);
-        border-radius: 4px; flex-shrink: 0; user-select: none;
-        transition: color 0.12s, border-color 0.12s;
-    }
-    .fp-speed:hover { color: var(--vecto-primary); border-color: color-mix(in srgb, var(--vecto-primary) 40%, transparent); }
-    body.fp-active { padding-top: 62px; transition: padding-top 0.45s cubic-bezier(0.34,1.4,0.64,1); }
 
     /* Episode type chip selector */
     .type-chip-group { display:flex; flex-wrap:wrap; gap:6px; align-items:center; padding:.4rem 0; min-height:2.25rem; }
@@ -842,7 +705,6 @@
 
 {{ ep.chapters_public|default:"[]"|json_script:"existing-chapters" }}
 
-<script src="{% static 'pod_manager/js/plyr.js' %}"></script>
 <script src="https://cdn.quilljs.com/1.3.7/quill.min.js"></script>
 <script>
     document.addEventListener('DOMContentLoaded', () => {
@@ -869,6 +731,22 @@
             iconUrl: "{% static 'pod_manager/img/plyr.svg' %}"
         });
         window._mainPlyr = players[0];
+
+        // Surface the inline Listen player in the global now-playing bar.
+        if (players[0] && window.VectoPlayer) {
+            window.VectoPlayer.attach(players[0], {
+                title: "{{ ep.title|escapejs }}",
+                show:  "{{ ep.podcast.title|escapejs }}",
+                cover: "{{ ep.podcast.image_url|default:ep.podcast.network.default_image_url|default:''|escapejs }}",
+            });
+        }
+
+        // If arriving with #transcript (e.g. the dashboard Transcript button),
+        // open the Transcript tab directly.
+        if (window.location.hash === '#transcript') {
+            const tBtn = document.getElementById('transcript-tab');
+            if (tBtn) new bootstrap.Tab(tBtn).show();
+        }
 
         // Tab Switching Logic
         const tabBtns = document.querySelectorAll('button[data-bs-toggle="tab"]');
@@ -1566,88 +1444,6 @@
     });
 })();
 {% endif %}
-
-// ---------------------------------------------------------------------------
-// Floating Now-Playing Bar
-// ---------------------------------------------------------------------------
-(function () {
-    const fp          = document.getElementById('floatingPlayer');
-    const btnPlay     = document.getElementById('fpPlayPause');
-    const btnRew      = document.getElementById('fpRewind');
-    const btnFwd      = document.getElementById('fpForward');
-    const scrubber    = document.getElementById('fpScrubber');
-    const fill        = document.getElementById('fpFill');
-    const thumb       = document.getElementById('fpThumb');
-    const timeCur     = document.getElementById('fpTimeCur');
-    const timeTotal   = document.getElementById('fpTimeTotal');
-    const speedBtn    = document.getElementById('fpSpeed');
-    if (!fp || !btnPlay) return;
-
-    const SPEEDS = [0.75, 0.9, 1, 1.1, 1.25, 1.5, 1.75, 2];
-    let speedIdx = 2; // 1×
-    let shown = false;
-
-    function fmt(s) {
-        if (!s || isNaN(s) || !isFinite(s)) return '0:00';
-        const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), sec = Math.floor(s % 60);
-        return h > 0
-            ? `${h}:${String(m).padStart(2,'0')}:${String(sec).padStart(2,'0')}`
-            : `${m}:${String(sec).padStart(2,'0')}`;
-    }
-
-    function showBar() {
-        if (shown) return;
-        shown = true;
-        fp.classList.add('fp-visible', 'fp-intro');
-        document.body.classList.add('fp-active');
-        setTimeout(() => fp.classList.remove('fp-intro'), 900);
-    }
-
-    function setPlayIcon(playing) {
-        btnPlay.innerHTML = playing
-            ? '<i class="bi bi-pause-fill"></i>'
-            : '<i class="bi bi-play-fill"></i>';
-    }
-
-    function syncProgress(current, duration) {
-        const pct = duration ? Math.min(100, (current / duration) * 100) : 0;
-        fill.style.width  = pct + '%';
-        thumb.style.left  = pct + '%';
-        timeCur.textContent   = fmt(current);
-        timeTotal.textContent = fmt(duration);
-    }
-
-    function attach(plyr) {
-        plyr.on('playing', () => { showBar(); setPlayIcon(true); });
-        plyr.on('pause',   () => setPlayIcon(false));
-        plyr.on('ended',   () => setPlayIcon(false));
-        plyr.on('timeupdate', () => syncProgress(plyr.currentTime, plyr.duration));
-
-        btnPlay.addEventListener('click', () => plyr.togglePlay());
-        btnRew.addEventListener('click',  () => { plyr.currentTime = Math.max(0, plyr.currentTime - 15); });
-        btnFwd.addEventListener('click',  () => { plyr.currentTime = Math.min(plyr.duration || Infinity, plyr.currentTime + 30); });
-
-        scrubber.addEventListener('click', e => {
-            if (!plyr.duration) return;
-            const r = scrubber.getBoundingClientRect();
-            plyr.currentTime = ((e.clientX - r.left) / r.width) * plyr.duration;
-        });
-
-        speedBtn.addEventListener('click', () => {
-            speedIdx = (speedIdx + 1) % SPEEDS.length;
-            const s = SPEEDS[speedIdx];
-            plyr.speed = s;
-            speedBtn.textContent = Number.isInteger(s) ? `${s}×` : `${s}×`;
-        });
-    }
-
-    // Plyr is set in DOMContentLoaded — poll briefly until it's ready
-    function tryAttach() {
-        if (window._mainPlyr) { attach(window._mainPlyr); }
-        else { setTimeout(tryAttach, 80); }
-    }
-    tryAttach();
-})();
 </script>
 
 {% include 'pod_manager/snippets/show_multiselect_assets.html' %}

@@ -250,9 +250,21 @@
                             </div>
                             {% endif %}
 
-                            <a href="{% url 'episode_detail' ep.id %}" class="btn btn-warning btn-sm px-3 fw-bold">
-                                <i class="bi bi-play-circle"></i> Play Episode
-                            </a>
+                            <div class="d-flex flex-wrap gap-2">
+                                <button type="button"
+                                        class="btn btn-warning btn-sm px-3 fw-bold js-play-episode"
+                                        data-audio="{% if ep.user_has_access %}{{ ep.audio_url_subscriber }}{% else %}{{ ep.audio_url_public }}{% endif %}"
+                                        data-title="{{ ep.title }}"
+                                        data-show="{{ ep.podcast.title }}"
+                                        data-cover="{{ ep.podcast.image_url|default:ep.podcast.network.default_image_url|default:'' }}">
+                                    <i class="bi bi-play-circle"></i> Play Episode
+                                </button>
+                                {% if ep.transcript and ep.transcript.status == 'completed' %}
+                                <a href="{% url 'episode_detail' ep.id %}#transcript" class="btn btn-outline-light btn-sm px-3 fw-bold">
+                                    <i class="bi bi-file-text"></i> Transcript
+                                </a>
+                                {% endif %}
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -842,6 +854,24 @@ document.addEventListener('DOMContentLoaded', function() {
         }
         isFetching = false;
     }
+});
+</script>
+
+<script>
+// Dashboard "Play Episode" → load into the global pinned player and start
+// playing, without navigating. Delegated so infinite-scroll cards work too.
+document.addEventListener('click', (e) => {
+    const btn = e.target.closest('.js-play-episode');
+    if (!btn) return;
+    e.preventDefault();
+    const url = btn.dataset.audio;
+    if (!url || !window.VectoPlayer) return;
+    window.VectoPlayer.play({
+        url,
+        title: btn.dataset.title || '',
+        show:  btn.dataset.show  || '',
+        cover: btn.dataset.cover || '',
+    });
 });
 </script>
 {% endblock %}

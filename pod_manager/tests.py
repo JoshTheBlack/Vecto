@@ -24,6 +24,7 @@ Transcription tests are appended at the bottom of this file, covering:
 Run with: python manage.py test pod_manager
 """
 import json
+import re
 import shutil
 import tempfile
 import time
@@ -33,7 +34,7 @@ from unittest import mock
 
 from django.contrib.auth.models import User
 from django.core.cache import cache
-from django.test import Client, TestCase, RequestFactory, override_settings
+from django.test import Client, SimpleTestCase, TestCase, RequestFactory, override_settings
 from django.urls import reverse
 from django.utils import timezone
 
@@ -3371,3 +3372,92 @@ class CrossPublishServiceTests(TestCase):
         self.sync(self.ep, [self.t1], modes={self.t1.id: 'bogus'})
         link = EpisodeCrossPublication.objects.get(episode=self.ep, podcast=self.t1)
         self.assertEqual(link.access_mode, EpisodeCrossPublication.AccessMode.INHERIT)
+
+
+class VendoredAssetTests(SimpleTestCase):
+    """Guards that every front-end library is self-hosted (not pulled from a
+    CDN at runtime) and that the vendored files are present and resolvable.
+
+    These run without a database (SimpleTestCase) and are the regression net
+    for the dependency-vendoring work: if someone re-adds a CDN <script>/<link>
+    or a vendored file goes missing/downgrades, the suite fails here.
+    """
+
+    TEMPLATE_DIR = Path(__file__).resolve().parent / "templates"
+
+    # CSS/JS library hosts we must never load from at runtime.
+    CDN_HOSTS = (
+        "cdn.jsdelivr.net", "cdn.quilljs.com", "unpkg.com",
+        "cdnjs.cloudflare.com", "stackpath.bootstrapcdn.com",
+        "maxcdn.bootstrapcdn.com", "code.jquery.com",
+    )
+
+    # Static path -> substring that must appear in the file (version / API
+    # marker). None means "presence only".
+    EXPECTED_ASSETS = {
+        "pod_manager/css/bootstrap.min.css": "Bootstrap  v5.3.8",
+        "pod_manager/js/bootstrap.bundle.min.js": "Bootstrap v5.3.8",
+        "pod_manager/css/bootstrap-icons.css": "Bootstrap Icons v1.13.1",
+        "pod_manager/fonts/bootstrap-icons.woff2": None,
+        "pod_manager/fonts/bootstrap-icons.woff": None,
+        "pod_manager/css/plyr.css": None,
+        "pod_manager/js/plyr.js": None,
+        "pod_manager/img/plyr.svg": None,
+        "pod_manager/js/diff.min.js": "diffWordsWithSpace",
+        "pod_manager/css/quill.snow.css": "ql-snow",
+        "pod_manager/js/quill.js": None,
+    }
+
+    def _iter_templates(self):
+        for path in self.TEMPLATE_DIR.rglob("*.html"):
+            yield path, path.read_text(encoding="utf-8")
+
+    def test_no_cdn_script_or_stylesheet_refs(self):
+        """No template may load a JS/CSS library from a known CDN host.
+
+        Image services (gravatar, ui-avatars) and the per-network Google Fonts
+        theme URL are intentionally remote and not matched here — we only flag
+        <script src> and <link ... .css> pointing at library CDNs.
+        """
+        script_re = re.compile(r"""<script[^>]+src=["']https?://([^"'/]+)""", re.I)
+        link_re = re.compile(r"""<link[^>]+href=["']https?://[^"']+\.css""", re.I)
+        offenders = []
+        for path, text in self._iter_templates():
+            rel = path.relative_to(self.TEMPLATE_DIR)
+            for host in script_re.findall(text):
+                if any(cdn in host for cdn in self.CDN_HOSTS):
+                    offenders.append(f"{rel}: <script> from {host}")
+            for match in link_re.finditer(text):
+                if any(cdn in match.group(0) for cdn in self.CDN_HOSTS):
+                    offenders.append(f"{rel}: {match.group(0)[:80]}")
+        self.assertEqual(
+            offenders, [],
+            "Templates load library assets from a CDN; vendor them instead:\n"
+            + "\n".join(offenders),
+        )
+
+    def test_vendored_assets_present_and_resolvable(self):
+        """Every expected vendored file resolves via the staticfiles finder."""
+        from django.contrib.staticfiles import finders
+        for static_path, marker in self.EXPECTED_ASSETS.items():
+            found = finders.find(static_path)
+            self.assertIsNotNone(
+                found, f"Vendored asset not found on disk: {static_path}"
+            )
+            if marker is not None:
+                content = Path(found).read_text(encoding="utf-8", errors="ignore")
+                self.assertIn(
+                    marker, content,
+                    f"{static_path} is missing expected marker {marker!r} "
+                    "(wrong version or corrupted download?)",
+                )
+
+    def test_bootstrap_icons_font_paths_are_relative_to_css(self):
+        """The vendored bootstrap-icons.css must point at ../fonts/ (siblings of
+        css/), not the upstream ./fonts/ — otherwise the glyph font 404s."""
+        from django.contrib.staticfiles import finders
+        css = Path(finders.find("pod_manager/css/bootstrap-icons.css")).read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("../fonts/bootstrap-icons.woff", css)
+        self.assertNotIn('url("./fonts/', css)

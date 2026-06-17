@@ -1,3 +1,4 @@
+{% load static %}
 <style>
     /* ============================================================
        INBOX DIFF LAYOUT — section-based, conflict-aware
@@ -571,7 +572,7 @@
 
 
 {# ---------------- LIBRARIES ---------------- #}
-<script src="https://cdn.jsdelivr.net/npm/diff@5.2.0/dist/diff.min.js"></script>
+<script src="{% static 'pod_manager/js/diff.min.js' %}"></script>
 
 <script>
 (function () {

@@ -338,14 +338,52 @@ def _parse_srt(text: str) -> list:
 # Core service
 # ---------------------------------------------------------------------------
 
-def dispatch_transcription(episode_id: int) -> None:
-    """Queue a transcription WITHOUT ever blocking the caller.
+# Whisper models heavy enough to need the high-VRAM GPU. Their jobs route to the
+# transcription_heavy queue so the box draining it (e.g. the 3060) takes them and
+# the normal-only worker (e.g. the 1080) never tries to load them.
+HEAVY_MODELS = frozenset({'large', 'large-v2', 'large-v3'})
+
+# Priority within each queue (Redis: lower = served sooner). Heavy jobs sit in
+# band 0-2, normal in 7-9, so a worker draining both queues finishes any heavy
+# job before any normal one. Must line up with priority_steps in
+# settings.CELERY_BROKER_TRANSPORT_OPTIONS. 3-6 are reserved for future bands.
+_PRIORITY_BAND = {
+    True:  {'high': 0, 'default': 1, 'low': 2},   # heavy queue
+    False: {'high': 7, 'default': 8, 'low': 9},   # normal queue
+}
+
+
+def resolve_effective_model(episode, override: str | None = None) -> str:
+    """The model run_transcription will actually use, via the same override
+    chain it applies: per-call → podcast → network → settings.WHISPER_MODEL."""
+    podcast = episode.podcast
+    network = podcast.network
+    return (override or podcast.whisper_model or network.whisper_model
+            or settings.WHISPER_MODEL)
+
+
+def route_transcription(episode, *, level: str = 'default', model: str | None = None) -> tuple[str, int]:
+    """Return (queue, priority) for an episode's transcription. Large models go
+    to the heavy queue/band; everything else to the normal queue/band. `level`
+    is one of 'high' | 'default' | 'low'."""
+    heavy = resolve_effective_model(episode, model) in HEAVY_MODELS
+    band = _PRIORITY_BAND[heavy]
+    queue = 'transcription_heavy' if heavy else 'transcription'
+    return queue, band.get(level, band['default'])
+
+
+def dispatch_transcription(episode_id: int, *, level: str = 'default', **task_kwargs) -> None:
+    """Queue a transcription WITHOUT ever blocking the caller, routed to the
+    correct queue + priority band for its effective model.
 
     With a real broker this is a normal Celery enqueue. Under eager Celery
     (IDE mode) `.delay()` would run whisper inline — inside whatever called
     Episode.save(), e.g. the publish view, hanging the request for the whole
     ASR run and starving SQLite of its write lock. Instead, run it on a
     daemon thread once the current transaction commits.
+
+    task_kwargs are forwarded to run_transcription / transcribe_episode (model,
+    language, initial_prompt, *_speakers); 'model' also steers routing.
     """
     if getattr(settings, 'CELERY_TASK_ALWAYS_EAGER', False):
         import threading
@@ -357,13 +395,22 @@ def dispatch_transcription(episode_id: int) -> None:
         transaction.on_commit(lambda: threading.Thread(
             target=run_transcription,
             args=(episode_id,),
+            kwargs=task_kwargs,
             daemon=True,
             name=f"transcribe-ep-{episode_id}",
         ).start())
     else:
+        from pod_manager.models import Episode
         from pod_manager.tasks import transcribe_episode
-        logger.info(f"[transcribe] Queued episode {episode_id} via Celery.")
-        transcribe_episode.delay(episode_id)
+        episode = Episode.objects.select_related('podcast__network').get(id=episode_id)
+        queue, priority = route_transcription(episode, level=level, model=task_kwargs.get('model'))
+        logger.info(
+            f"[transcribe] Queued episode {episode_id} via Celery "
+            f"(queue={queue}, priority={priority})."
+        )
+        transcribe_episode.apply_async(
+            args=[episode_id], kwargs=task_kwargs, queue=queue, priority=priority,
+        )
 
 
 def purge_transcription_queue() -> dict:
@@ -514,6 +561,7 @@ def run_transcription(
         with audio_fp_path.open('rb') as audio_fp:
             asr_params = {
                 'task':            'transcribe',
+                'model':           eff_model,
                 'language':        eff_language,
                 'output_format':   'json',
                 'word_timestamps': True,

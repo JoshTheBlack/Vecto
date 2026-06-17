@@ -127,7 +127,17 @@ services:
     # concurrency=1: a single whisper instance serializes ASR anyway — parallel
     # tasks just contend for it, stretching every task's runtime toward the
     # broker visibility timeout. Serial execution keeps runtimes predictable.
-    command: celery -A config worker -Q transcription --concurrency=1 -l INFO
+    #
+    # Queue list order + priority bands (see priority_steps in settings):
+    #   - A worker that should run large models drains BOTH queues, heavy first:
+    #       -Q transcription_heavy,transcription   (e.g. the 3060 / high-VRAM box)
+    #     Heavy jobs sit in priority band 0-2 and normal jobs in 7-9, so any heavy
+    #     job is taken before any normal job; it falls back to normal when heavy
+    #     is empty.
+    #   - A normal-only worker omits the heavy queue so it never loads a large
+    #     model: -Q transcription   (e.g. the 1080), honoring its 7-9 priority band.
+    # This dev worker drains both; split the queues across machines in prod.
+    command: celery -A config worker -Q transcription_heavy,transcription --concurrency=1 -l INFO
     volumes:
       - .:/app
       - media_data:/app/media

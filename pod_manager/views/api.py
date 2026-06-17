@@ -229,6 +229,7 @@ def backfill_transcripts_api(request):
     from django.db.models import Q
     episodes = (
         Episode.objects
+        .select_related('podcast__network')
         .filter(audio_url_subscriber__isnull=False)
         .exclude(audio_url_subscriber='')
         .filter(
@@ -240,7 +241,7 @@ def backfill_transcripts_api(request):
         episodes = episodes.filter(podcast__slug=podcast_slug)
 
     from pod_manager.tasks import transcribe_episode
-    from pod_manager.services.transcription import run_transcription
+    from pod_manager.services.transcription import run_transcription, route_transcription
     from django.utils import timezone
 
     episode_list = list(episodes)
@@ -257,9 +258,12 @@ def backfill_transcripts_api(request):
         if settings.IS_IDE:
             run_transcription(ep.pk, **transcription_kwargs)
         else:
+            queue, priority = route_transcription(ep, model=transcription_kwargs.get('model'))
             transcribe_episode.apply_async(
                 args=[ep.pk],
                 kwargs=transcription_kwargs,
+                queue=queue,
+                priority=priority,
             )
         queued += 1
 
@@ -284,10 +288,6 @@ def backfill_transcripts_api(request):
         queued, audio_checked, podcast_slug or 'all', request.user.username,
     )
     return JsonResponse({'queued': queued, 'audio_checked': audio_checked, 'podcast': podcast_slug or 'all'})
-
-
-# Maps the UI's semantic labels to Redis queue priorities (lower = sooner).
-_RETRANSCRIBE_PRIORITY = {'high': 0, 'default': 5, 'low': 9}
 
 
 @require_POST
@@ -328,11 +328,11 @@ def retranscribe_episode_api(request, episode_id):
             except (TypeError, ValueError):
                 pass
 
-    # Queue priority (an apply_async option, not a task kwarg). Redis serves
-    # lower numbers first, so high=0 / low=9. Falls back to the default.
-    priority = _RETRANSCRIBE_PRIORITY.get(
-        str(body.get('priority', '')).lower(), settings.CELERY_TASK_DEFAULT_PRIORITY
-    )
+    # Priority level (high|default|low). route_transcription maps it to the
+    # right queue + Redis priority band for the episode's effective model.
+    level = str(body.get('priority', '')).lower()
+    if level not in ('high', 'default', 'low'):
+        level = 'default'
 
     from pod_manager.models import Transcript
     transcript, _ = Transcript.objects.get_or_create(episode=ep)
@@ -341,14 +341,16 @@ def retranscribe_episode_api(request, episode_id):
     transcript.save(update_fields=['status', 'error_message'])
 
     from pod_manager.tasks import transcribe_episode
-    from pod_manager.services.transcription import run_transcription
+    from pod_manager.services.transcription import run_transcription, route_transcription
     if settings.IS_IDE:
         run_transcription(ep.pk, **transcription_kwargs)
+        queue = priority = None
     else:
-        transcribe_episode.apply_async(args=[ep.pk], kwargs=transcription_kwargs, priority=priority)
+        queue, priority = route_transcription(ep, level=level, model=transcription_kwargs.get('model'))
+        transcribe_episode.apply_async(args=[ep.pk], kwargs=transcription_kwargs, queue=queue, priority=priority)
 
     logger.info(
-        "retranscribe_episode_api: episode %d re-queued by %s (priority=%s, kwargs=%s)",
-        ep.pk, request.user.username, priority, transcription_kwargs,
+        "retranscribe_episode_api: episode %d re-queued by %s (level=%s, queue=%s, priority=%s, kwargs=%s)",
+        ep.pk, request.user.username, level, queue, priority, transcription_kwargs,
     )
     return JsonResponse({'status': 'queued', 'episode_id': ep.pk})

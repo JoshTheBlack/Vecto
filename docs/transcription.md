@@ -12,7 +12,7 @@ Vecto automatically transcribes podcast episodes using [WhisperX](https://github
 4. The RSS feed for that podcast is updated to include `<podcast:transcript>` tags pointing to each format.
 5. The episode detail page gains a **Transcript** tab showing the transcript inline with download links.
 
-Transcription runs in a dedicated Celery queue (`transcription`) and never blocks the request cycle. For the IDE environment (no Celery), transcription can be triggered synchronously via the Django admin or a management command.
+Transcription runs in dedicated Celery queues (`transcription` and `transcription_heavy`) and never blocks the request cycle. Large models are routed to the heavy queue so they only run on a GPU that can fit them — see [Queue Routing & Priority](#queue-routing--priority). For the IDE environment (no Celery), transcription can be triggered synchronously via the Django admin or a management command.
 
 ---
 
@@ -49,16 +49,17 @@ Add `HF_TOKEN` to the environment. A free [Hugging Face](https://huggingface.co)
 
 ### Celery Worker (production/DEV)
 
-A dedicated Celery worker must consume the `transcription` queue. We recommend splitting it from the default queue to prevent long-running transcription tasks (5–15 minutes each) from starving fast IO-bound tasks like feed syncs.
+A dedicated Celery worker must consume the transcription queue(s), kept separate from the default queue so long-running transcription tasks (5–15 minutes each) don't starve fast IO-bound tasks like feed syncs.
+
+Run the worker at `--concurrency=1`: a single whisper instance serializes ASR anyway, so parallel slots just contend for the GPU and stretch every task toward the broker visibility timeout. Use one worker per GPU instead of one worker with many slots.
 
 ```yaml
 celery-transcription:
-  command: celery -A config worker -Q transcription --concurrency=4 -l INFO
-  # concurrency=4 is appropriate for medium.en on ~14GB total VRAM
-  # reduce to --concurrency=2 when using the large model
+  # High-VRAM GPU: drain both queues, heavy first (see Queue Routing & Priority)
+  command: celery -A config worker -Q transcription_heavy,transcription --concurrency=1 -l INFO
 ```
 
-The concurrency value should be tuned to your GPU memory. `medium.en` uses roughly 3–4GB VRAM per worker slot.
+See [Queue Routing & Priority](#queue-routing--priority) for how to split the two queues across multiple GPUs.
 
 ---
 
@@ -70,7 +71,7 @@ All settings live in `.env` and are read via `config/settings.py`.
 |---|---|---|
 | `WHISPER_URL` | `http://whisper:9000` | Full URL of the Whisper ASR service. In IDE/DEV, point at your Unraid host (e.g. `http://192.168.1.x:9000`). |
 | `WHISPER_ENABLED` | `True` | Set to `False` to pause all transcription queuing without removing any code. Useful during backfills or maintenance. |
-| `WHISPER_MODEL` | `medium.en` | Default Whisper model size. Must match the `ASR_MODEL` set on the Whisper container. Overridable per-network and per-podcast in the creator settings UI. |
+| `WHISPER_MODEL` | `medium.en` | Default Whisper model size, sent as the `model` parameter on each `/asr` call. The service switches models per request, so this is the fallback used when no per-network/per-podcast/per-run override is set — it need not match the container's `ASR_MODEL` (that is only the service's own default). Overridable per-network and per-podcast in the creator settings UI. |
 | `WHISPER_LANGUAGE` | `en` | Default BCP-47 language code passed to the ASR service. Overridable per-network and per-podcast. |
 | `WHISPER_TIMEOUT` | `5400` | HTTP timeout in seconds for calls to `/asr`. 5400 = 90 minutes, which covers long episodes on slower hardware. |
 | `WHISPER_KEEP_SOURCE_AUDIO` | `False` | When `True`, retains the downloaded subscriber MP3 at `MEDIA_ROOT/source_audio/{network}/{podcast}/{filename}`. Useful for DEV debugging. Always `False` in production. |
@@ -98,6 +99,38 @@ per-run override (admin action / re-transcription panel / backfill UI)
         → network-level default
             → settings.WHISPER_* (.env fallback)
 ```
+
+---
+
+## Queue Routing & Priority
+
+Transcription work is split across two Celery queues so heavy GPU models are only ever run by a box that can fit them:
+
+| Queue | Models | Priority band (Redis: lower = sooner) |
+|---|---|---|
+| `transcription` | everything except large\* | high=7, default=8, low=9 |
+| `transcription_heavy` | `large`, `large-v2`, `large-v3` | high=0, default=1, low=2 |
+
+`route_transcription()` in `services/transcription.py` picks the queue and priority from the episode's **effective** model (resolved via the [fallback chain](#settings-fallback-chain): per-run → podcast → network → `WHISPER_MODEL`). Every dispatch path uses it — auto-queue on save, the re-transcription panel, the admin **Queue transcription** / **Requeue** actions, the backfill UI, and the `backfill_transcripts` command — so a large model can never leak onto the normal queue.
+
+The two priority bands are carved out of `priority_steps: [0, 1, 2, 7, 8, 9]` in `CELERY_BROKER_TRANSPORT_OPTIONS` (`config/settings.py`). A worker's `BRPOP` scans buckets low→high, so **any** heavy job (0–2) is taken before **any** normal job (7–9), while each band still has three working levels. Slots `3–6` are reserved for future bands.
+
+### Worker placement
+
+Run one Celery worker per GPU and assign queues with `-Q`:
+
+- **High-VRAM GPU** (e.g. RTX 3060, 12 GB) — drains both, heavy first, falling back to normal work when the heavy queue is empty:
+  `-Q transcription_heavy,transcription`
+- **Lower-VRAM GPU** (e.g. GTX 1080, 8 GB) — normal only, so it never loads a large model:
+  `-Q transcription`
+
+Because heavy jobs live in the better priority band, the heavy-capable worker always clears them first regardless of in-band level; the normal-only worker only ever sees the 7–9 band and honors high/default/low within it. `queue_order_strategy: 'priority'` (already set) keeps the listed queue order for same-bucket ties.
+
+> **Which worker, which GPU:** queue assignment decides *which worker* runs a job, and each worker's `WHISPER_URL` points at its own local whisper container — so routing `large-v3` to the high-VRAM worker only helps if that worker's whisper instance has the VRAM. `large-v3` in `int8` is tight on an 8 GB card.
+
+### Per-request model switching
+
+The `learnedmachine/whisperx-asr-service` `/asr` endpoint accepts a `model` query parameter, and Vecto sends the effective model with every request. The container's `ASR_MODEL` is therefore only the service's *default* (used when no model is supplied) — overriding the model per network/podcast/run actually changes which model runs.
 
 ---
 
@@ -285,7 +318,7 @@ The `retry_count` field tracks how many times the Celery task has automatically 
 The Whisper ASR service is part of the Vecto Docker stack. `docker-compose.yml` includes:
 
 - **`whisper`** — the ASR container (`learnedmachine/whisperx-asr-service:latest`). Reads `ASR_MODEL` from `${WHISPER_MODEL}` in `.env` so it stays in sync with Vecto's model setting. Healthcheck on `/health` with a 120-second start period (the model takes time to load on first start).
-- **`celery-transcription`** — dedicated Celery worker consuming only the `transcription` queue (`--concurrency=4`). Starts only after `whisper` passes its healthcheck. Shares the same `media_data` volume as the main `celery` worker.
+- **`celery-transcription`** — dedicated Celery worker for transcription (`--concurrency=1`). In the single-box dev stack it drains both queues, heavy first (`-Q transcription_heavy,transcription`); in a multi-GPU prod setup, split the queues across workers per [Queue Routing & Priority](#queue-routing--priority). Starts only after `whisper` passes its healthcheck. Shares the same `media_data` volume as the main `celery` worker.
 - **`celery`** — now scoped to `-Q default,celery` so transcription tasks never compete with fast IO-bound tasks like feed syncs.
 
 The `whisper_cache` named volume persists the downloaded Whisper model and pyannote alignment model across container restarts. The alignment model (~360MB) downloads on the first transcription per language, not at startup.

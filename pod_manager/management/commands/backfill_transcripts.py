@@ -51,7 +51,7 @@ class Command(BaseCommand):
 
     def handle(self, *args, **options):
         from django.conf import settings
-        from pod_manager.services.transcription import run_transcription
+        from pod_manager.services.transcription import run_transcription, route_transcription
         from pod_manager.tasks import transcribe_episode
 
         podcast_slugs = options['podcasts'] or []
@@ -82,7 +82,7 @@ class Command(BaseCommand):
             .filter(
                 Q(transcript__isnull=True) | Q(transcript__status=Transcript.Status.FAILED)
             )
-            .select_related('podcast')
+            .select_related('podcast__network')
             .order_by('pub_date')
         )
 
@@ -115,8 +115,9 @@ class Command(BaseCommand):
                     self.stdout.write(self.style.ERROR(f"  ✗ Failed: {exc}"))
             else:
                 countdown = (i - 1) * stagger
-                transcribe_episode.apply_async(args=[ep.pk], kwargs=transcription_kwargs, countdown=countdown)
-                self.stdout.write(f"  Queued {label} (countdown={countdown}s)")
+                queue, priority = route_transcription(ep, model=transcription_kwargs.get('model'))
+                transcribe_episode.apply_async(args=[ep.pk], kwargs=transcription_kwargs, countdown=countdown, queue=queue, priority=priority)
+                self.stdout.write(f"  Queued {label} (countdown={countdown}s, queue={queue})")
 
         if not dry_run:
             if settings.IS_IDE:

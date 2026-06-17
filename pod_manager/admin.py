@@ -152,7 +152,7 @@ class EpisodeAdmin(admin.ModelAdmin):
 
     def trigger_transcription(self, request, queryset):
         from django.conf import settings
-        from pod_manager.services.transcription import run_transcription
+        from pod_manager.services.transcription import run_transcription, route_transcription
         from pod_manager.tasks import transcribe_episode
 
         _SKIP_STATUSES = {
@@ -184,7 +184,8 @@ class EpisodeAdmin(admin.ModelAdmin):
             if settings.IS_IDE:
                 run_transcription(episode.pk)
             else:
-                transcribe_episode.apply_async(args=[episode.pk], countdown=i * 30)
+                queue, priority = route_transcription(episode)
+                transcribe_episode.apply_async(args=[episode.pk], countdown=i * 30, queue=queue, priority=priority)
             queued += 1
 
         if queued:
@@ -394,19 +395,19 @@ class TranscriptAdmin(admin.ModelAdmin):
             request, 'admin/pod_manager/transcript/clear_queue_confirm.html', context,
         )
 
-    def _requeue(self, request, queryset, priority, label):
-        """Reset the selected transcripts to pending and re-dispatch. Under a
-        real broker the chosen Redis priority is passed to apply_async; under
-        eager Celery (IDE) it runs on a background thread after commit."""
+    def _requeue(self, request, queryset, level, label):
+        """Reset the selected transcripts to pending and re-dispatch. route_transcription
+        maps the level to the right queue + Redis priority band per episode's
+        effective model; under eager Celery (IDE) it runs on a thread after commit."""
         from django.conf import settings
         from django.db import transaction
         from django.utils import timezone
         from pod_manager.tasks import transcribe_episode
-        from pod_manager.services.transcription import dispatch_transcription
+        from pod_manager.services.transcription import dispatch_transcription, route_transcription
 
         eager = getattr(settings, 'CELERY_TASK_ALWAYS_EAGER', False)
         queued = skipped = 0
-        for transcript in queryset.select_related('episode'):
+        for transcript in queryset.select_related('episode__podcast__network'):
             episode = transcript.episode
             if not episode.audio_url_subscriber:
                 skipped += 1
@@ -416,11 +417,12 @@ class TranscriptAdmin(admin.ModelAdmin):
             transcript.requested_at = timezone.now()
             transcript.save(update_fields=['status', 'error_message', 'requested_at'])
             if eager:
-                dispatch_transcription(episode.id)
+                dispatch_transcription(episode.id, level=level)
             else:
+                queue, priority = route_transcription(episode, level=level)
                 transaction.on_commit(
-                    lambda eid=episode.id, p=priority:
-                    transcribe_episode.apply_async(args=[eid], priority=p)
+                    lambda eid=episode.id, q=queue, p=priority:
+                    transcribe_episode.apply_async(args=[eid], queue=q, priority=p)
                 )
             queued += 1
 
@@ -431,15 +433,15 @@ class TranscriptAdmin(admin.ModelAdmin):
 
     @admin.action(description="Requeue transcription — HIGH priority")
     def requeue_high(self, request, queryset):
-        self._requeue(request, queryset, 0, "high")
+        self._requeue(request, queryset, 'high', "high")
 
     @admin.action(description="Requeue transcription — default priority")
     def requeue_default(self, request, queryset):
-        self._requeue(request, queryset, 5, "default")
+        self._requeue(request, queryset, 'default', "default")
 
     @admin.action(description="Requeue transcription — LOW priority")
     def requeue_low(self, request, queryset):
-        self._requeue(request, queryset, 9, "low")
+        self._requeue(request, queryset, 'low', "low")
 
     def status_badge(self, obj):
         color = _STATUS_COLORS.get(obj.status, '#6c757d')

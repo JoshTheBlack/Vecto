@@ -379,9 +379,18 @@ CELERY_TIMEZONE = TIME_ZONE
 # first. On the Redis transport LOWER = sooner (0 is highest), opposite of
 # RabbitMQ. Priority only reorders *waiting* messages — it can't preempt the
 # transcription already running on the concurrency=1 worker.
+#
+# priority_steps defines the discrete priority buckets. We carve two bands so a
+# worker draining BOTH transcription queues always finishes heavy work first:
+#   heavy  (transcription_heavy): 0=high 1=default 2=low
+#   normal (transcription):       7=high 8=default 9=low
+# A worker's BRPOP scans buckets low→high, so any heavy job (0-2) outranks any
+# normal job (7-9) regardless of in-band level. 3-6 are reserved for future
+# bands. route_transcription() in services/transcription.py assigns these.
 CELERY_BROKER_TRANSPORT_OPTIONS = {
     'visibility_timeout': 43200,  # 12 h
     'queue_order_strategy': 'priority',
+    'priority_steps': [0, 1, 2, 7, 8, 9],
 }
 CELERY_TASK_QUEUE_MAX_PRIORITY = 10
 CELERY_TASK_DEFAULT_PRIORITY = 5

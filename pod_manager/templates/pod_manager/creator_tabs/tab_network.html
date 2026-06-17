@@ -101,6 +101,7 @@
                                 <div class="col-md-4">
                                     <label class="form-label text-muted small fw-bold">Whisper Model</label>
                                     <select name="whisper_model" class="form-select bg-black text-light border-secondary">
+                                        <option value=""          {% if not current_network.whisper_model %}selected{% endif %}>— Use system default —</option>
                                         <option value="tiny"      {% if current_network.whisper_model == "tiny" %}selected{% endif %}>tiny (fastest)</option>
                                         <option value="base"      {% if current_network.whisper_model == "base" %}selected{% endif %}>base</option>
                                         <option value="small"     {% if current_network.whisper_model == "small" %}selected{% endif %}>small</option>

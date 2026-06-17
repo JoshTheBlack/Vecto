@@ -363,11 +363,14 @@ _PRIORITY_BAND = {
 
 
 def resolve_effective_model(episode, override: str | None = None) -> str:
-    """The model run_transcription will actually use, via the same override
-    chain it applies: per-call → podcast → network → settings.WHISPER_MODEL."""
+    """The model used to pick the queue at dispatch time: per-call → podcast →
+    network → WHISPER_DEFAULT_MODEL → WHISPER_MODEL. WHISPER_FORCE_MODEL is
+    deliberately excluded — it's a per-worker run-time pin, not known here in the
+    dispatching process, so it can't influence routing."""
     podcast = episode.podcast
     network = podcast.network
     return (override or podcast.whisper_model or network.whisper_model
+            or (getattr(settings, 'WHISPER_DEFAULT_MODEL', '') or None)
             or settings.WHISPER_MODEL)
 
 
@@ -489,7 +492,12 @@ def run_transcription(
     # Resolve transcription options: per-call override → podcast override → network default → global settings
     podcast = episode.podcast
     network = podcast.network
-    eff_model    = model    or podcast.whisper_model    or network.whisper_model    or settings.WHISPER_MODEL
+    # Model resolution (see settings.WHISPER_FORCE_MODEL / WHISPER_DEFAULT_MODEL):
+    #   FORCE (worker pin) → per-call → podcast → network → DEFAULT (worker) → global
+    eff_model    = (getattr(settings, 'WHISPER_FORCE_MODEL', '') or None) \
+                   or model or podcast.whisper_model or network.whisper_model \
+                   or (getattr(settings, 'WHISPER_DEFAULT_MODEL', '') or None) \
+                   or settings.WHISPER_MODEL
     eff_language = language or podcast.whisper_language or network.whisper_language or settings.WHISPER_LANGUAGE
     eff_prompt   = initial_prompt if initial_prompt is not None else (
         podcast.whisper_initial_prompt if podcast.whisper_initial_prompt is not None

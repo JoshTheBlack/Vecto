@@ -361,7 +361,9 @@ def handle_update_network(request, current_network):
 
     # Transcription defaults
     current_network.whisper_initial_prompt = request.POST.get('whisper_initial_prompt', '')
-    current_network.whisper_model    = request.POST.get('whisper_model', 'medium.en').strip() or 'medium.en'
+    # Blank = use the system default (WHISPER_DEFAULT_MODEL / WHISPER_MODEL) rather
+    # than forcing a network-level model.
+    current_network.whisper_model    = request.POST.get('whisper_model', '').strip()
     current_network.whisper_language = request.POST.get('whisper_language', 'en').strip() or 'en'
     for field in ('whisper_min_speakers', 'whisper_num_speakers', 'whisper_max_speakers'):
         raw = request.POST.get(field)

@@ -131,8 +131,9 @@ class Network(models.Model):
         help_text="Vocabulary hint passed to Whisper. E.g. host names, show titles, proper nouns. Leave blank to omit.",
     )
     whisper_model = models.CharField(
-        max_length=50, default='medium.en',
-        help_text="Whisper model size: tiny/base/small/medium/large or language-specific (e.g. medium.en).",
+        max_length=50, default='medium.en', blank=True,
+        help_text="Whisper model size: tiny/base/small/medium/large or language-specific (e.g. medium.en). "
+                  "Leave blank to use the system default (WHISPER_DEFAULT_MODEL / WHISPER_MODEL).",
     )
     whisper_language = models.CharField(
         max_length=10, default='en',

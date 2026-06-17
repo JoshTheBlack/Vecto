@@ -2916,9 +2916,13 @@ class HandleUpdateNetworkWhisperTests(TestCase):
         self._call({'whisper_model': 'medium.en', 'whisper_language': 'es'})
         self.assertEqual(self.net.whisper_language, 'es')
 
-    def test_blank_model_falls_back_to_default(self):
+    def test_blank_model_clears_to_use_system_default(self):
+        # Blank = network opts out of pinning a model, so resolution falls through
+        # to WHISPER_DEFAULT_MODEL / WHISPER_MODEL at run time.
+        self.net.whisper_model = 'large'
+        self.net.save()
         self._call({'whisper_model': '', 'whisper_language': 'en'})
-        self.assertEqual(self.net.whisper_model, 'medium.en')
+        self.assertEqual(self.net.whisper_model, '')
 
     def test_blank_language_falls_back_to_en(self):
         self._call({'whisper_model': 'medium.en', 'whisper_language': ''})

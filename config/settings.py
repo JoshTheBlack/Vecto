@@ -34,6 +34,15 @@ DISCORD_BOT_TOKEN = os.getenv("DISCORD_BOT_TOKEN")
 WHISPER_URL               = os.getenv("WHISPER_URL", "http://whisper:9000")
 WHISPER_ENABLED           = os.getenv("WHISPER_ENABLED", "True") == "True"
 WHISPER_MODEL             = os.getenv("WHISPER_MODEL", "medium.en")
+# Per-worker model controls (set in each worker container's environment):
+#   WHISPER_FORCE_MODEL   — hard pin: this worker transcribes EVERYTHING with this
+#       model, overriding even an explicit per-call model. Use to keep a GPU box on
+#       one model (e.g. 3060=large-v3) and avoid the multi-model VRAM blowup.
+#   WHISPER_DEFAULT_MODEL — soft default: used only when no model is passed and no
+#       podcast/network override exists. An explicit per-call model still wins.
+# Empty = fall through to the global WHISPER_MODEL.
+WHISPER_FORCE_MODEL       = os.getenv("WHISPER_FORCE_MODEL", "")
+WHISPER_DEFAULT_MODEL     = os.getenv("WHISPER_DEFAULT_MODEL", "")
 WHISPER_LANGUAGE          = os.getenv("WHISPER_LANGUAGE", "en")
 WHISPER_TIMEOUT           = int(os.getenv("WHISPER_TIMEOUT", "5400"))
 WHISPER_KEEP_SOURCE_AUDIO = os.getenv("WHISPER_KEEP_SOURCE_AUDIO", "False") == "True"

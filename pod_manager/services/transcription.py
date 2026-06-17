@@ -71,22 +71,31 @@ def transcript_path(episode_id: int, ext: str) -> Path:
     return path
 
 
-def source_audio_path(episode) -> Path:
-    """Persistent save path for a subscriber MP3 when WHISPER_KEEP_SOURCE_AUDIO=True.
+def source_audio_filename(episode) -> str:
+    """Human-readable download filename for an episode's audio.
 
-    Layout: MEDIA_ROOT/source_audio/{network_slug}/{podcast_slug}/{original_filename}
-    Filename is derived from the subscriber URL. Falls back to the public URL when
-    the subscriber URL has no file extension (e.g. Google Drive /uc?export=download links).
+    Derived from the subscriber URL, falling back to the public URL when the
+    subscriber URL has no file extension (e.g. Google Drive /uc?export=download
+    links). This is the same name a browser keeps when downloading the MP3, so
+    transcript downloads can be named to match instead of ending up as "uc".
     """
     def _name_from_url(url):
         name = Path(unquote(urlparse(url).path)).name
         return name if name and '.' in name else None
 
-    filename = (
+    return (
         _name_from_url(episode.audio_url_subscriber)
         or _name_from_url(episode.audio_url_public or '')
         or f"episode_{episode.pk}.mp3"
     )
+
+
+def source_audio_path(episode) -> Path:
+    """Persistent save path for a subscriber MP3 when WHISPER_KEEP_SOURCE_AUDIO=True.
+
+    Layout: MEDIA_ROOT/source_audio/{network_slug}/{podcast_slug}/{original_filename}
+    """
+    filename = source_audio_filename(episode)
     return (
         Path(settings.MEDIA_ROOT)
         / 'source_audio'

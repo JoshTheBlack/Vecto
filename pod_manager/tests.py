@@ -2576,10 +2576,22 @@ class ServeTranscriptTests(TestCase):
             resp = self.client.get(url)
         self.assertEqual(resp.status_code, 404)
 
-    def test_content_disposition_uses_source_audio_stem(self):
+    def test_content_disposition_uses_subscriber_audio_stem(self):
+        # Names the transcript after the episode's audio, matching the MP3 download.
         resp = self._get()
         disposition = resp.get('Content-Disposition', '')
-        self.assertIn('my-episode-title', disposition)
+        self.assertIn('sub.vtt', disposition)
+
+    def test_content_disposition_falls_back_to_public_for_gdrive(self):
+        # Google Drive /uc links have no extension; fall back to the public URL
+        # so the download isn't named "uc.vtt".
+        self.ep.audio_url_subscriber = 'https://docs.google.com/uc?export=download&id=ABC'
+        self.ep.audio_url_public = 'https://cdn.example.com/real-episode-title.mp3'
+        self.ep.save(update_fields=['audio_url_subscriber', 'audio_url_public'])
+        resp = self._get()
+        disposition = resp.get('Content-Disposition', '')
+        self.assertIn('real-episode-title.vtt', disposition)
+        self.assertNotIn('uc.vtt', disposition)
 
 
 # ── 10. backfill_transcripts_api ─────────────────────────────────────────────

@@ -1,7 +1,6 @@
 import hashlib
 import logging
 from pathlib import Path
-from urllib.parse import unquote, urlparse
 
 from django.http import Http404, HttpResponse, HttpResponseNotModified
 
@@ -36,15 +35,16 @@ def serve_transcript(request, episode_id, ext: str):
     resp['Access-Control-Allow-Origin'] = '*'
 
     try:
-        from pod_manager.models import Transcript
-        audio_url = (
-            Transcript.objects
-            .filter(episode_id=episode_id)
-            .values_list('source_audio_url', flat=True)
+        from pod_manager.models import Episode
+        from pod_manager.services.transcription import source_audio_filename
+        episode = (
+            Episode.objects
+            .filter(pk=episode_id)
+            .only('pk', 'audio_url_subscriber', 'audio_url_public')
             .first()
         )
-        if audio_url:
-            stem = Path(unquote(urlparse(audio_url).path)).stem
+        if episode:
+            stem = Path(source_audio_filename(episode)).stem
             if stem:
                 resp['Content-Disposition'] = f'inline; filename="{stem}.{ext}"'
     except Exception:

@@ -250,7 +250,7 @@
                                 </div>
                             </div>
                         </div>
-                        {% if ep.user_has_access and ep.is_gdrive_recovery %}
+                        {% if ep.user_has_access and ep.is_gdrive_recovery and not ep.r2_url %}
                             <div class="alert alert-warning border-warning shadow-sm d-flex align-items-center justify-content-between mb-3">
                                 <div>
                                     <i class="bi bi-exclamation-triangle-fill me-2 fs-5"></i>
@@ -267,7 +267,7 @@
                             {% endif %}
                         {% else %}
                         <audio class="js-player" controls>
-                            <source src="{% if ep.user_has_access %}{{ ep.audio_url_subscriber }}{% else %}{{ ep.audio_url_public }}{% endif %}" type="audio/mpeg">
+                            <source src="{{ ep.raw_audio_url }}" type="audio/mpeg">
                         </audio>
                         {% endif %}
                         <div class="mt-2 mb-4 text-muted small" style="word-break: break-all; user-select: all; font-family: monospace;">
@@ -277,7 +277,7 @@
 
                     {% if ep.user_has_access %}
                     <div class="mb-4">
-                        <a href="{{ ep.audio_url_subscriber }}" class="btn btn-outline-light btn-sm" download>
+                        <a href="{{ ep.raw_audio_url }}" class="btn btn-outline-light btn-sm" download>
                             <i class="bi bi-cloud-download"></i> Download
                         </a>
                     </div>
@@ -1059,8 +1059,9 @@
         showEquiv();
     })();
 
-    // Check MP3 reachability asynchronously
-    const targetUrl = "{{ ep.raw_audio_url|escapejs }}";
+    // Check MP3 reachability asynchronously — skipped for R2-served audio
+    // (reliable, and avoids a HEAD/Class-B op per page view).
+    const targetUrl = "{% if ep.is_r2_served %}{% else %}{{ ep.raw_audio_url|escapejs }}{% endif %}";
     if (targetUrl) {
         fetch(`/api/check-audio/?url=${encodeURIComponent(targetUrl)}`)
         .then(response => response.json())

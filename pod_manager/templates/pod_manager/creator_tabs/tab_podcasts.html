@@ -176,6 +176,23 @@
                                                           placeholder="inherit network prompt (or leave blank)">{{ show.whisper_initial_prompt|default:'' }}</textarea>
                                             </div>
 
+                                            <h6 class="fw-semibold mb-2 mt-3 text-warning border-bottom border-secondary pb-1">
+                                                <i class="bi bi-cloud-arrow-up me-1"></i>Audio Delivery
+                                            </h6>
+                                            <div class="form-check form-switch mb-4">
+                                                <input class="form-check-input" type="checkbox" role="switch"
+                                                       id="force_r2_serve_{{ show.id }}" name="force_r2_serve"
+                                                       {% if show.force_r2_serve %}checked{% endif %}>
+                                                <label class="form-check-label text-light small fw-bold" for="force_r2_serve_{{ show.id }}">
+                                                    Serve audio from the R2 mirror
+                                                    <span class="d-block text-muted fw-normal">
+                                                        On = always serve this show's audio from R2 when a mirror exists.
+                                                        Off = serve from the original host (Libsyn etc.) and keep R2 as backup only.
+                                                        Turn on for feeds whose source URLs are ephemeral (e.g. Patreon).
+                                                    </span>
+                                                </label>
+                                            </div>
+
                                             <button type="submit" class="btn btn-outline-warning btn-sm fw-bold"><i class="bi bi-floppy"></i> Save Show Settings</button>
                                         </form>
                                         

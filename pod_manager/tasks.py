@@ -844,3 +844,62 @@ def transcribe_episode(self, episode_id: int, **kwargs):
         # Exponential-ish back-off: 60s, 120s, 180s
         countdown = 60 * (self.request.retries + 1)
         raise self.retry(exc=exc, countdown=countdown)
+
+
+@shared_task(
+    bind=True,
+    max_retries=3,
+    time_limit=1800,
+    acks_late=True,
+    reject_on_worker_lost=True,
+)
+def task_mirror_episode_audio(self, episode_id: int, force: bool = False):
+    """Mirror an episode's subscriber audio to R2 independently of transcription.
+
+    Two callers:
+      - the standalone save signal, when transcription is disabled/not configured
+        (so run_transcription's inline mirror never runs), and
+      - the Phase 5 backfill.
+
+    Idempotent + best-effort: MirrorSkipped is a normal no-op (public/dead-S3/
+    not-premium), not a failure. Real errors retry with back-off. Runs on the
+    default queue, not 'transcription', so it works even when no transcription
+    workers are running."""
+    from pod_manager.services.r2_mirror import MirrorSkipped, mirror_episode_audio
+    try:
+        result = mirror_episode_audio(episode_id, force=force)
+        logger.info(
+            "task_mirror_episode_audio: ep %d -> %s (%s)",
+            episode_id, result.get('status'), result.get('key'),
+        )
+    except MirrorSkipped as exc:
+        logger.info("task_mirror_episode_audio: skipped ep %d — %s", episode_id, exc)
+    except Exception as exc:
+        countdown = 60 * (self.request.retries + 1)
+        raise self.retry(exc=exc, countdown=countdown)
+
+
+@shared_task(bind=True, max_retries=3, time_limit=1800, acks_late=True, reject_on_worker_lost=True)
+def task_rekey_episode_audio(self, episode_id: int):
+    """Relocate an episode's R2 object to its current-parent key after a move.
+    Idempotent (no-op when the key already matches); retries on transient errors."""
+    from pod_manager.services.r2_maintenance import rekey_episode_audio
+    try:
+        result = rekey_episode_audio(episode_id)
+        logger.info("task_rekey_episode_audio: ep %d -> %s", episode_id, result.get("status"))
+    except Exception as exc:
+        raise self.retry(exc=exc, countdown=60 * (self.request.retries + 1))
+
+
+@shared_task
+def task_r2_reconcile():
+    """Weekly: record partial-failure orphans (section I, Layer 2)."""
+    from pod_manager.services.r2_maintenance import reconcile_orphans
+    reconcile_orphans(apply=True)
+
+
+@shared_task
+def task_r2_orphan_cleanup():
+    """Daily: hard-delete expired, still-unreferenced orphan objects (section I)."""
+    from pod_manager.services.r2_maintenance import cleanup_orphans
+    cleanup_orphans(apply=True)

@@ -62,6 +62,29 @@ RAW_DEBUG = os.getenv('DEBUG', 'False')
 # Check if we are running in the local IDE environment
 IS_IDE = (RAW_DEBUG == 'IDE')
 
+# Cloudflare R2 — subscriber audio mirror (see planned_features.txt / docs).
+# Object storage with zero egress, served via a cached custom domain so our
+# player gets CORS-clean, seekable bytes (speed + transcript sync) and we keep
+# an off-platform backup. Subscriber audio ONLY — public/Megaphone is never
+# mirrored. Single prod bucket; IDE/dev is isolated by R2_KEY_PREFIX="dev/".
+R2_ENDPOINT              = os.getenv("R2_ENDPOINT", "")
+R2_ACCESS_KEY_ID         = os.getenv("R2_ACCESS_KEY_ID", "")
+R2_SECRET_ACCESS_KEY     = os.getenv("R2_SECRET_ACCESS_KEY", "")
+R2_BUCKET                = os.getenv("R2_BUCKET", "vecto-audio")
+R2_PUBLIC_HOST           = os.getenv("R2_PUBLIC_HOST", "").rstrip("/")
+# Prepended to every key. "" in prod; "dev/" in IDE so dev objects are
+# namespaced and bulk-purgeable (manage.py purge_r2_dev). Defaults to "dev/"
+# under IS_IDE so a forgotten .env entry can't write into the prod keyspace.
+R2_KEY_PREFIX            = os.getenv("R2_KEY_PREFIX", "dev/" if IS_IDE else "")
+R2_MIRROR_ENABLED        = os.getenv("R2_MIRROR_ENABLED", "True") == "True"
+# The future global "always serve private audio from R2" switch (Phase 6).
+R2_FORCE_SERVE           = os.getenv("R2_FORCE_SERVE", "False") == "True"
+# Orphan GC retention windows (section I). Reversion/reconciliation orphans may
+# need audio recovery -> long hold; move_rekey orphans are byte-identical to the
+# new key -> short hold covering only in-flight streaming sessions.
+R2_ORPHAN_RETENTION_DAYS = int(os.getenv("R2_ORPHAN_RETENTION_DAYS", "90"))
+R2_REKEY_GRACE_DAYS      = int(os.getenv("R2_REKEY_GRACE_DAYS", "7"))
+
 # Django's internal DEBUG needs to be a boolean, so it's True if 'True' OR 'IDE'
 DEBUG = (RAW_DEBUG in ['True', 'IDE'])
 
@@ -357,9 +380,11 @@ if IS_IDE:
     # concurrent writers and keeps the full DB log viewer.
     LOGGING['loggers']['pod_manager']['handlers'] = ['console']
 
-    # Disable transcription signal in tests — individual test classes opt-in via override_settings
+    # Disable transcription + R2-mirror signals in tests — individual test
+    # classes opt-in via override_settings.
     if IS_TEST:
         WHISPER_ENABLED = False
+        R2_MIRROR_ENABLED = False
 else:
     # Use Redis Cache & Full Celery Worker Pipeline
     RAW_REDIS_URL = os.getenv("REDIS_URL")

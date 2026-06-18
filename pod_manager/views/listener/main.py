@@ -116,6 +116,8 @@ def home(request):
             membership=home_memberships.get(ep.podcast.network_id),
             is_owner=ep.podcast.network_id in home_owned_ids,
         )
+        # Effective playback URL (R2-aware) for the dashboard now-playing player.
+        ep.raw_audio_url = ep.playback_url(ep.user_has_access)
 
     context = {
         'episodes': page_obj, 'page_obj': page_obj, 'podcasts': podcasts,
@@ -240,7 +242,14 @@ def episode_detail(request, episode_id):
         raise Http404("No Episode matches the given query.")
 
     ep.display_description = _build_episode_description(ep, ep.user_has_access)
-    ep.raw_audio_url = ep.audio_url_subscriber if (ep.user_has_access and ep.audio_url_subscriber) else ep.audio_url_public
+    # The URL the on-site player actually loads — routed through the same R2
+    # serving precedence as feeds (/play), so a mirrored GDrive episode streams
+    # inline from R2 instead of the un-loadable Drive link.
+    ep.raw_audio_url = ep.playback_url(ep.user_has_access)
+    # The reachability probe exists for flaky origins (GDrive/dead-S3). When we're
+    # serving from R2 it's pointless — and a HEAD per page view is a needless R2
+    # Class B op — so skip it.
+    ep.is_r2_served = bool(ep.r2_url) and ep.raw_audio_url == ep.r2_url
 
     trust_score = None
     if request.user.is_authenticated:

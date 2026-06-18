@@ -570,6 +570,31 @@ def run_transcription(
                 shutil.copy2(tmp_path, dest)
                 logger.info("transcribe: saved source audio to %s", dest)
 
+        # 3b. Mirror to R2 — reuse THIS download (one download, two consumers).
+        # Best-effort: a mirror failure must never fail the transcription. The
+        # mirror only READS audio_fp_path; it never moves/deletes it, so the
+        # existing retention behavior is unchanged. Subscriber-only / dead-S3
+        # guards live in the service (raises MirrorSkipped for non-applicable
+        # episodes). Runs before whisper so a backup exists even if ASR fails.
+        if getattr(settings, 'R2_MIRROR_ENABLED', True):
+            try:
+                from pod_manager.services.r2_mirror import (
+                    MirrorSkipped, mirror_episode_audio,
+                )
+                try:
+                    res = mirror_episode_audio(episode_id, local_path=audio_fp_path)
+                    logger.info(
+                        "transcribe: r2 mirror for episode %d -> %s (%s)",
+                        episode_id, res.get('status'), res.get('key'),
+                    )
+                except MirrorSkipped as exc:
+                    logger.info("transcribe: r2 mirror skipped for episode %d — %s", episode_id, exc)
+            except Exception as exc:
+                logger.warning(
+                    "transcribe: r2 mirror FAILED for episode %d (continuing) — %s",
+                    episode_id, exc,
+                )
+
         # 4. POST to whisper /asr
         logger.info(
             "transcribe: sending episode %d to whisper ASR (%s, model=%s)",

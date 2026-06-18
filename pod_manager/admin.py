@@ -148,7 +148,40 @@ class EpisodeAdmin(admin.ModelAdmin):
     transcript_status.short_description = 'Transcript'
 
     ordering = ('-pub_date',)
-    actions = ['trigger_transcription']
+    actions = ['trigger_transcription', 'mirror_to_r2']
+
+    def mirror_to_r2(self, request, queryset):
+        """Mirror selected episodes' subscriber audio to R2 (bulk).
+
+        Idempotent and subscriber-only: non-premium / dead-S3 / public episodes
+        are skipped inside the service. Runs inline in the IDE, else dispatches
+        the standalone Celery task staggered to respect source rate limits."""
+        from django.conf import settings
+        from pod_manager.services.r2_mirror import MirrorSkipped, mirror_episode_audio
+        from pod_manager.tasks import task_mirror_episode_audio
+
+        dispatched = done = skipped = 0
+        for i, episode in enumerate(queryset):
+            if not (episode.audio_url_subscriber and episode.is_premium):
+                skipped += 1
+                continue
+            if settings.IS_IDE:
+                try:
+                    mirror_episode_audio(episode.pk)
+                    done += 1
+                except MirrorSkipped:
+                    skipped += 1
+            else:
+                task_mirror_episode_audio.apply_async(args=[episode.pk], countdown=i * 5)
+                dispatched += 1
+
+        if settings.IS_IDE and done:
+            self.message_user(request, f"{done} episode(s) mirrored to R2.")
+        if dispatched:
+            self.message_user(request, f"{dispatched} episode(s) queued for R2 mirroring.")
+        if skipped:
+            self.message_user(request, f"{skipped} skipped (no premium subscriber audio).", level='warning')
+    mirror_to_r2.short_description = "Mirror audio to R2"
 
     def trigger_transcription(self, request, queryset):
         from django.conf import settings

@@ -30,4 +30,15 @@ app.conf.beat_schedule = {
         'task': 'pod_manager.tasks.sweep_analytics_buffer',
         'schedule': crontab(minute=0),
     },
+    # R2 orphan lifecycle (planned_features.txt section I). Reconcile weekly to
+    # record partial-failure orphans; cleanup daily to delete expired ones (the
+    # 90-day / 7-day retention windows make the exact cadence non-critical).
+    'r2-reconcile-weekly': {
+        'task': 'pod_manager.tasks.task_r2_reconcile',
+        'schedule': crontab(day_of_week=1, hour=3, minute=30),
+    },
+    'r2-orphan-cleanup-daily': {
+        'task': 'pod_manager.tasks.task_r2_orphan_cleanup',
+        'schedule': crontab(hour=4, minute=0),
+    },
 }

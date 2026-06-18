@@ -42,6 +42,7 @@ from pod_manager import views
 from pod_manager.models import (
     Network, PatronProfile, PatreonTier, Podcast, Episode, EpisodeCrossPublication,
     NetworkMembership, NetworkMix, UserMix, EpisodeEditSuggestion, Transcript,
+    R2OrphanedObject,
 )
 from pod_manager.services.edits import (
     apply_approved_edit, parse_chapter_payload, snapshot_episode,
@@ -695,6 +696,33 @@ class EpisodeDetailTemplateTests(TestCase):
     def test_button_shown_when_public_audio_present(self):
         body = self._render(public_url='https://cdn.example.com/public.mp3')
         self.assertIn('Show Ad-Supported Version', body)
+
+    def _render_episode(self, **fields):
+        ep = Episode.objects.create(
+            podcast=self.podcast, title='Ep', pub_date=timezone.now(),
+            raw_description='hi', clean_description='hi', **fields,
+        )
+        req = _make_tenant_request(RequestFactory(), self.network,
+                                   path=f'/episode/{ep.id}/', user=self.user)
+        return views.episode_detail(req, ep.id).content.decode('utf-8')
+
+    def test_gdrive_episode_with_r2_streams_inline_from_r2(self):
+        """A mirrored GDrive episode plays inline from R2 — no 'cannot be streamed
+        inline' warning, and the <audio> source is the R2 URL, not the Drive link."""
+        r2 = 'https://audio.test/1/2/ep-abc.mp3'
+        body = self._render_episode(
+            audio_url_subscriber='https://docs.google.com/uc?export=download&id=xyz',
+            r2_url=r2,
+        )
+        self.assertIn(r2, body)
+        self.assertNotIn('cannot be streamed inline', body)
+        self.assertNotIn('docs.google.com/uc', body)  # Drive link not used as a source
+
+    def test_gdrive_episode_without_r2_shows_recovery_warning(self):
+        body = self._render_episode(
+            audio_url_subscriber='https://docs.google.com/uc?export=download&id=xyz',
+        )
+        self.assertIn('cannot be streamed inline', body)
 
 
 class AnalyticsSweepTests(TestCase):
@@ -2994,6 +3022,16 @@ class HandleUpdateShowWhisperTests(TestCase):
         self._call({'whisper_num_speakers': ''})
         self.assertIsNone(self.pod.whisper_num_speakers)
 
+    def test_force_r2_serve_checkbox_enables(self):
+        self._call({'force_r2_serve': 'on'})
+        self.assertTrue(self.pod.force_r2_serve)
+
+    def test_force_r2_serve_absent_checkbox_disables(self):
+        self.pod.force_r2_serve = True
+        self.pod.save()
+        self._call({})  # checkbox not submitted == unchecked
+        self.assertFalse(self.pod.force_r2_serve)
+
 
 # ---------------------------------------------------------------------------
 # Episode cross-publishing ("also appears in" other podcasts' feeds)
@@ -3477,3 +3515,486 @@ class VendoredAssetTests(SimpleTestCase):
         )
         self.assertIn("../fonts/bootstrap-icons.woff", css)
         self.assertNotIn('url("./fonts/', css)
+
+
+# ===========================================================================
+# R2 audio mirror — service + backfill command (Phase 3/4/5)
+# ===========================================================================
+import hashlib as _hashlib
+from io import StringIO
+
+from botocore.exceptions import ClientError as _ClientError
+from django.core.management import call_command
+from django.core.management.base import CommandError
+
+from pod_manager.services import r2_mirror
+from pod_manager.services.r2_mirror import MirrorSkipped, mirror_episode_audio
+
+
+def _not_found_error():
+    return _ClientError({'Error': {'Code': '404'}}, 'HeadObject')
+
+
+def _fake_r2_client(head_object_side_effect):
+    """A MagicMock standing in for a boto3 S3 client. head_object_side_effect is
+    a list of return values / exceptions consumed in call order (first call =
+    the dedupe existence probe; a second {} = the post-upload verify)."""
+    client = mock.MagicMock()
+    client.head_object.side_effect = head_object_side_effect
+    client.upload_file.return_value = None
+    client.delete_object.return_value = None
+    return client
+
+
+@override_settings(
+    R2_MIRROR_ENABLED=True,
+    R2_PUBLIC_HOST='https://audio.test',
+    R2_KEY_PREFIX='',
+    R2_BUCKET='vecto-audio-test',
+)
+class R2MirrorServiceTests(TestCase):
+    """mirror_episode_audio(): guards, key construction, idempotency, dedupe,
+    re-version orphan recording, and re-adoption — all with a mocked R2 client
+    and a real local temp file (so the content hash is exercised for real)."""
+
+    def setUp(self):
+        # R2_MIRROR_ENABLED is True for this class, so the standalone save signal
+        # would dispatch a real mirror task on episode creation. Neutralize the
+        # task dispatch — these tests call mirror_episode_audio() directly.
+        p = mock.patch('pod_manager.tasks.task_mirror_episode_audio.delay')
+        p.start()
+        self.addCleanup(p.stop)
+        self.network = Network.objects.create(name='Net', slug='net')
+        self.podcast = Podcast.objects.create(network=self.network, title='Show', slug='show')
+        self.episode = Episode.objects.create(
+            podcast=self.podcast,
+            title='Ep 1',
+            pub_date=timezone.now(),
+            raw_description='x',
+            clean_description='x',
+            audio_url_subscriber='https://traffic.libsyn.com/x/myep.mp3',
+        )
+
+    def _temp_audio(self, content=b'fake-audio-bytes'):
+        f = tempfile.NamedTemporaryFile(suffix='.mp3', delete=False)
+        f.write(content)
+        f.close()
+        p = Path(f.name)
+        self.addCleanup(lambda: p.unlink(missing_ok=True))
+        return p
+
+    def _expected_key_and_url(self, content):
+        h = _hashlib.sha256(content).hexdigest()
+        key = f"{self.network.id}/{self.podcast.id}/myep-{h[:16]}.mp3"
+        return key, f"https://audio.test/{key}"
+
+    # -- guards --------------------------------------------------------------
+    def test_skips_when_not_premium(self):
+        self.episode.audio_url_public = self.episode.audio_url_subscriber
+        self.episode.save(update_fields=['audio_url_public'])
+        with self.assertRaises(MirrorSkipped):
+            mirror_episode_audio(self.episode.id, local_path=self._temp_audio())
+
+    def test_skips_when_no_subscriber_audio(self):
+        self.episode.audio_url_subscriber = None
+        self.episode.save(update_fields=['audio_url_subscriber'])
+        with self.assertRaises(MirrorSkipped):
+            mirror_episode_audio(self.episode.id)
+
+    def test_skips_dead_s3_source(self):
+        self.episode.audio_url_subscriber = 'https://bucket.s3.amazonaws.com/ep.mp3'
+        self.episode.save(update_fields=['audio_url_subscriber'])
+        with self.assertRaises(MirrorSkipped):
+            mirror_episode_audio(self.episode.id, local_path=self._temp_audio())
+
+    def test_disabled_master_switch(self):
+        with override_settings(R2_MIRROR_ENABLED=False):
+            with self.assertRaises(MirrorSkipped):
+                mirror_episode_audio(self.episode.id, local_path=self._temp_audio())
+
+    # -- upload + persist ----------------------------------------------------
+    def test_mirror_uploads_and_persists(self):
+        content = b'hello-audio'
+        path = self._temp_audio(content)
+        key, url = self._expected_key_and_url(content)
+        client = _fake_r2_client([_not_found_error(), {}])  # miss, then verify
+        with mock.patch.object(r2_mirror, 'get_r2_client', return_value=client), \
+             mock.patch.object(r2_mirror, '_head_signature', return_value='etag123:99'):
+            result = mirror_episode_audio(self.episode.id, local_path=path)
+
+        self.assertEqual(result['status'], 'mirrored')
+        self.assertEqual(result['key'], key)
+        client.upload_file.assert_called_once()
+        cargs, ckwargs = client.upload_file.call_args
+        self.assertEqual(cargs[2], key)  # (local, bucket, key)
+        self.assertEqual(ckwargs['ExtraArgs']['ContentType'], 'audio/mpeg')
+        self.assertIn('immutable', ckwargs['ExtraArgs']['CacheControl'])
+
+        self.episode.refresh_from_db()
+        self.assertEqual(self.episode.r2_url, url)
+        self.assertIsNotNone(self.episode.r2_uploaded_at)
+        self.assertEqual(self.episode.r2_source_signature, 'etag123:99')
+
+    def test_content_type_for_m4a(self):
+        self.episode.audio_url_subscriber = 'https://traffic.libsyn.com/x/myep.m4a'
+        self.episode.save(update_fields=['audio_url_subscriber'])
+        client = _fake_r2_client([_not_found_error(), {}])
+        with mock.patch.object(r2_mirror, 'get_r2_client', return_value=client), \
+             mock.patch.object(r2_mirror, '_head_signature', return_value=''):
+            mirror_episode_audio(self.episode.id, local_path=self._temp_audio())
+        _, ckwargs = client.upload_file.call_args
+        self.assertEqual(ckwargs['ExtraArgs']['ContentType'], 'audio/mp4')
+
+    # -- dedupe --------------------------------------------------------------
+    def test_dedupe_skips_upload(self):
+        client = _fake_r2_client([{}])  # object already present
+        with mock.patch.object(r2_mirror, 'get_r2_client', return_value=client), \
+             mock.patch.object(r2_mirror, '_head_signature', return_value=''):
+            result = mirror_episode_audio(self.episode.id, local_path=self._temp_audio())
+        self.assertEqual(result['status'], 'deduped')
+        client.upload_file.assert_not_called()
+        self.episode.refresh_from_db()
+        self.assertTrue(self.episode.r2_url)
+
+    # -- idempotency ---------------------------------------------------------
+    def test_idempotent_skip_when_source_unchanged(self):
+        self.episode.r2_url = 'https://audio.test/0/0/old-aaaaaaaaaaaaaaaa.mp3'
+        self.episode.r2_source_signature = 'sig-1'
+        self.episode.save(update_fields=['r2_url', 'r2_source_signature'])
+        with mock.patch.object(r2_mirror, 'get_r2_client') as gc, \
+             mock.patch.object(r2_mirror, '_head_signature', return_value='sig-1'):
+            result = mirror_episode_audio(self.episode.id)
+        self.assertEqual(result['status'], 'skipped')
+        gc.assert_not_called()  # never even built a client
+
+    # -- re-version / orphans ------------------------------------------------
+    def test_force_reversion_records_orphan(self):
+        old_key = f"{self.network.id}/{self.podcast.id}/old-bbbbbbbbbbbbbbbb.mp3"
+        self.episode.r2_url = f"https://audio.test/{old_key}"
+        self.episode.r2_source_signature = 'old'
+        self.episode.save(update_fields=['r2_url', 'r2_source_signature'])
+
+        content = b'new-version-bytes'
+        new_key, new_url = self._expected_key_and_url(content)
+        client = _fake_r2_client([_not_found_error(), {}])
+        with mock.patch.object(r2_mirror, 'get_r2_client', return_value=client), \
+             mock.patch.object(r2_mirror, '_head_signature', return_value='new'):
+            result = mirror_episode_audio(self.episode.id, local_path=self._temp_audio(content), force=True)
+
+        self.assertEqual(result['key'], new_key)
+        self.episode.refresh_from_db()
+        self.assertEqual(self.episode.r2_url, new_url)
+        orphan = R2OrphanedObject.objects.get(key=old_key)
+        self.assertEqual(orphan.reason, R2OrphanedObject.Reason.REVERSION)
+        self.assertEqual(orphan.episode_id, self.episode.id)
+
+    def test_reversion_not_orphaned_when_key_shared(self):
+        old_key = f"{self.network.id}/{self.podcast.id}/old-cccccccccccccccc.mp3"
+        old_url = f"https://audio.test/{old_key}"
+        self.episode.r2_url = old_url
+        self.episode.save(update_fields=['r2_url'])
+        # A second episode still points at the same key -> not an orphan.
+        Episode.objects.create(
+            podcast=self.podcast, title='Ep 2', pub_date=timezone.now(),
+            raw_description='x', clean_description='x',
+            audio_url_subscriber='https://traffic.libsyn.com/x/other.mp3',
+            r2_url=old_url,
+        )
+        client = _fake_r2_client([_not_found_error(), {}])
+        with mock.patch.object(r2_mirror, 'get_r2_client', return_value=client), \
+             mock.patch.object(r2_mirror, '_head_signature', return_value='new'):
+            mirror_episode_audio(self.episode.id, local_path=self._temp_audio(b'changed'), force=True)
+        self.assertFalse(R2OrphanedObject.objects.filter(key=old_key).exists())
+
+    def test_readoption_clears_orphan_for_live_key(self):
+        content = b'readopt-bytes'
+        key, _ = self._expected_key_and_url(content)
+        R2OrphanedObject.objects.create(key=key, reason=R2OrphanedObject.Reason.RECONCILIATION)
+        client = _fake_r2_client([{}])  # dedupe hit -> key becomes live again
+        with mock.patch.object(r2_mirror, 'get_r2_client', return_value=client), \
+             mock.patch.object(r2_mirror, '_head_signature', return_value=''):
+            mirror_episode_audio(self.episode.id, local_path=self._temp_audio(content))
+        self.assertFalse(R2OrphanedObject.objects.filter(key=key).exists())
+
+
+class R2BackfillCommandTests(TestCase):
+    """manage.py mirror_audio_to_r2 bulk selection + dispatch. apply_async is
+    patched so no task actually runs (and tests never touch R2). R2_MIRROR_ENABLED
+    stays False (the test default) so the standalone save signal doesn't fire
+    during episode creation — the command dispatches via apply_async regardless."""
+
+    def setUp(self):
+        self.network = Network.objects.create(name='Net', slug='net')
+        self.other_net = Network.objects.create(name='Other', slug='other')
+        self.p1 = Podcast.objects.create(network=self.network, title='P1', slug='p1')
+        self.p2 = Podcast.objects.create(network=self.network, title='P2', slug='p2')
+
+        def mk(podcast, sub, **extra):
+            return Episode.objects.create(
+                podcast=podcast, title='t', pub_date=timezone.now(),
+                raw_description='x', clean_description='x',
+                audio_url_subscriber=sub, **extra,
+            )
+
+        self.e_gd = mk(self.p1, 'https://docs.google.com/uc?export=download&id=abc')
+        self.e_lib = mk(self.p1, 'https://traffic.libsyn.com/x/a.mp3')
+        self.e_s3 = mk(self.p2, 'https://bucket.s3.amazonaws.com/a.mp3')       # unfetchable
+        self.e_done = mk(self.p2, 'https://traffic.libsyn.com/x/b.mp3',
+                         r2_url='https://audio.test/x/done.mp3')               # already mirrored
+        # Not premium: subscriber == public -> excluded by is_premium.
+        self.e_pub = mk(self.p2, 'https://x.megaphone.fm/p.mp3',
+                        audio_url_public='https://x.megaphone.fm/p.mp3')
+
+    def _run(self, *args):
+        out = StringIO()
+        with mock.patch('pod_manager.tasks.task_mirror_episode_audio.apply_async') as m:
+            call_command('mirror_audio_to_r2', *args, stdout=out, stderr=StringIO())
+        ids = {c.kwargs['args'][0] for c in m.call_args_list}
+        return ids, m, out.getvalue()
+
+    def test_requires_a_scope(self):
+        with self.assertRaises(CommandError):
+            call_command('mirror_audio_to_r2', stdout=StringIO(), stderr=StringIO())
+
+    def test_all_selects_premium_fetchable_missing(self):
+        ids, _, _ = self._run('--all')
+        # gdrive + libsyn; s3 (unfetchable), done (already mirrored), pub (not premium) excluded
+        self.assertEqual(ids, {self.e_gd.id, self.e_lib.id})
+
+    def test_origins_filter(self):
+        ids, _, _ = self._run('--all', '--origins=gdrive')
+        self.assertEqual(ids, {self.e_gd.id})
+
+    def test_origins_alone_is_a_valid_scope(self):
+        # --origins without --all/--network/--podcast should work, not error.
+        ids, _, _ = self._run('--origins=gdrive')
+        self.assertEqual(ids, {self.e_gd.id})
+
+    def test_podcast_filter(self):
+        ids, _, _ = self._run('--podcast=p1')
+        self.assertEqual(ids, {self.e_gd.id, self.e_lib.id})
+
+    def test_network_filter_excludes_other_network(self):
+        Podcast.objects.create(network=self.other_net, title='OP', slug='op')
+        ids, _, _ = self._run('--network=other')
+        self.assertEqual(ids, set())
+
+    def test_force_includes_already_mirrored_and_passes_force(self):
+        ids, m, _ = self._run('--all', '--force')
+        self.assertIn(self.e_done.id, ids)
+        self.assertTrue(all(c.kwargs['kwargs']['force'] for c in m.call_args_list))
+
+    def test_dry_run_dispatches_nothing(self):
+        ids, m, out = self._run('--all', '--dry-run')
+        m.assert_not_called()
+        self.assertIn('would mirror', out)
+
+    def test_limit_caps_dispatch_count(self):
+        # Two premium fetchable episodes available; --limit=1 dispatches only one.
+        ids, m, _ = self._run('--all', '--limit', '1')
+        self.assertEqual(len(ids), 1)
+        self.assertTrue(ids <= {self.e_gd.id, self.e_lib.id})
+
+
+def _fake_list_client(objects):
+    """MagicMock S3 client whose list_objects_v2 paginator yields one page of
+    `objects` = [(key, last_modified), ...]."""
+    client = mock.MagicMock()
+    page = {'Contents': [{'Key': k, 'LastModified': lm} for k, lm in objects]}
+    paginator = mock.MagicMock()
+    paginator.paginate.return_value = [page]
+    client.get_paginator.return_value = paginator
+    return client
+
+
+@override_settings(R2_PUBLIC_HOST='https://audio.test', R2_BUCKET='vecto-audio-test', R2_KEY_PREFIX='')
+class R2MaintenanceTests(TestCase):
+    """reconcile_orphans / cleanup_orphans / rekey_episode_audio / purge_dev_prefix.
+    R2_MIRROR_ENABLED stays False (test default) so creating episodes here never
+    fires the standalone mirror signal; the R2 client is always mocked."""
+
+    def setUp(self):
+        self.network = Network.objects.create(name='Net', slug='net')
+        self.podcast = Podcast.objects.create(network=self.network, title='Show', slug='show')
+
+    def _episode(self, **extra):
+        return Episode.objects.create(
+            podcast=self.podcast, title='t', pub_date=timezone.now(),
+            raw_description='x', clean_description='x', **extra,
+        )
+
+    # -- reconcile -----------------------------------------------------------
+    def test_reconcile_records_only_unreferenced_old_prod_keys(self):
+        from pod_manager.services import r2_maintenance
+        net, pod = self.network.id, self.podcast.id
+        ref_key = f'{net}/{pod}/ref-aaaaaaaaaaaaaaaa.mp3'
+        self._episode(r2_url=f'https://audio.test/{ref_key}')
+        old = timezone.now() - timedelta(days=30)
+        new = timezone.now()
+        objects = [
+            (ref_key, old),                                  # referenced -> skip
+            (f'{net}/{pod}/orphan-bbbbbbbbbbbbbbbb.mp3', old),  # unreferenced+old -> record
+            ('dev/9/9/devthing-cccccccccccccccc.mp3', old),  # dev namespace -> skip
+            (f'{net}/{pod}/tooNew-dddddddddddddddd.mp3', new),  # too new -> skip
+        ]
+        client = _fake_list_client(objects)
+        with mock.patch.object(r2_maintenance, 'get_r2_client', return_value=client):
+            result = r2_maintenance.reconcile_orphans(apply=True, age_days=7)
+        keys = set(R2OrphanedObject.objects.values_list('key', flat=True))
+        self.assertEqual(keys, {f'{net}/{pod}/orphan-bbbbbbbbbbbbbbbb.mp3'})
+        self.assertEqual(result['scanned'], 4)
+
+    def test_reconcile_dry_run_records_nothing(self):
+        from pod_manager.services import r2_maintenance
+        objects = [('1/1/x-eeeeeeeeeeeeeeee.mp3', timezone.now() - timedelta(days=30))]
+        client = _fake_list_client(objects)
+        with mock.patch.object(r2_maintenance, 'get_r2_client', return_value=client):
+            r2_maintenance.reconcile_orphans(apply=False, age_days=7)
+        self.assertEqual(R2OrphanedObject.objects.count(), 0)
+
+    # -- cleanup -------------------------------------------------------------
+    @override_settings(R2_ORPHAN_RETENTION_DAYS=90, R2_REKEY_GRACE_DAYS=7)
+    def test_cleanup_deletes_expired_unreferenced_only(self):
+        from pod_manager.services import r2_maintenance
+        now = timezone.now()
+        R = R2OrphanedObject.Reason
+        expired_rev = R2OrphanedObject.objects.create(
+            key='1/1/expired-rev.mp3', reason=R.REVERSION, orphaned_at=now - timedelta(days=100))
+        R2OrphanedObject.objects.create(
+            key='1/1/fresh-rev.mp3', reason=R.REVERSION, orphaned_at=now - timedelta(days=10))
+        expired_rekey = R2OrphanedObject.objects.create(
+            key='1/1/expired-rekey.mp3', reason=R.MOVE_REKEY, orphaned_at=now - timedelta(days=10))
+        R2OrphanedObject.objects.create(
+            key='1/1/fresh-rekey.mp3', reason=R.MOVE_REKEY, orphaned_at=now - timedelta(days=3))
+        # Expired but RE-ADOPTED (a live episode points at it) -> drop row, keep object.
+        readopt_key = '1/1/readopt.mp3'
+        self._episode(r2_url=f'https://audio.test/{readopt_key}')
+        R2OrphanedObject.objects.create(
+            key=readopt_key, reason=R.REVERSION, orphaned_at=now - timedelta(days=100))
+
+        client = mock.MagicMock()
+        with mock.patch.object(r2_maintenance, 'get_r2_client', return_value=client):
+            result = r2_maintenance.cleanup_orphans(apply=True)
+
+        self.assertEqual(set(result['deleted']), {'1/1/expired-rev.mp3', '1/1/expired-rekey.mp3'})
+        self.assertEqual(result['readopted'], 1)
+        # delete_objects called with exactly the two expired-unreferenced keys
+        _, ckwargs = client.delete_objects.call_args
+        deleted = {o['Key'] for o in ckwargs['Delete']['Objects']}
+        self.assertEqual(deleted, {'1/1/expired-rev.mp3', '1/1/expired-rekey.mp3'})
+        # rows: the two expired-unreferenced + the readopted row are gone; fresh remain
+        remaining = set(R2OrphanedObject.objects.values_list('key', flat=True))
+        self.assertEqual(remaining, {'1/1/fresh-rev.mp3', '1/1/fresh-rekey.mp3'})
+
+    @override_settings(R2_ORPHAN_RETENTION_DAYS=90, R2_REKEY_GRACE_DAYS=7)
+    def test_cleanup_dry_run_deletes_nothing(self):
+        from pod_manager.services import r2_maintenance
+        R2OrphanedObject.objects.create(
+            key='1/1/expired.mp3', reason=R2OrphanedObject.Reason.REVERSION,
+            orphaned_at=timezone.now() - timedelta(days=100))
+        client = mock.MagicMock()
+        with mock.patch.object(r2_maintenance, 'get_r2_client', return_value=client):
+            r2_maintenance.cleanup_orphans(apply=False)
+        client.delete_objects.assert_not_called()
+        self.assertEqual(R2OrphanedObject.objects.count(), 1)
+
+    # -- rekey ---------------------------------------------------------------
+    def test_rekey_copies_and_records_move_orphan(self):
+        from pod_manager.services import r2_maintenance
+        # r2_url points at an OLD parent (999/888); current parent is net/pod.
+        ep = self._episode(r2_url='https://audio.test/999/888/file-1234567890abcdef.mp3')
+        client = mock.MagicMock()
+        client.head_object.return_value = {}  # verify after copy
+        with mock.patch.object(r2_maintenance, 'get_r2_client', return_value=client):
+            result = r2_maintenance.rekey_episode_audio(ep.id)
+
+        new_key = f'{self.network.id}/{self.podcast.id}/file-1234567890abcdef.mp3'
+        self.assertEqual(result['status'], 'rekeyed')
+        self.assertEqual(result['new_key'], new_key)
+        _, ckwargs = client.copy_object.call_args
+        self.assertEqual(ckwargs['CopySource']['Key'], '999/888/file-1234567890abcdef.mp3')
+        self.assertEqual(ckwargs['Key'], new_key)
+        ep.refresh_from_db()
+        self.assertEqual(ep.r2_url, f'https://audio.test/{new_key}')
+        orphan = R2OrphanedObject.objects.get(key='999/888/file-1234567890abcdef.mp3')
+        self.assertEqual(orphan.reason, R2OrphanedObject.Reason.MOVE_REKEY)
+
+    def test_rekey_noop_when_key_matches_current_parent(self):
+        from pod_manager.services import r2_maintenance
+        key = f'{self.network.id}/{self.podcast.id}/file-1234567890abcdef.mp3'
+        ep = self._episode(r2_url=f'https://audio.test/{key}')
+        client = mock.MagicMock()
+        with mock.patch.object(r2_maintenance, 'get_r2_client', return_value=client):
+            result = r2_maintenance.rekey_episode_audio(ep.id)
+        self.assertEqual(result['status'], 'noop')
+        client.copy_object.assert_not_called()
+
+    # -- purge dev -----------------------------------------------------------
+    def test_purge_dev_lists_with_prefix_and_deletes(self):
+        from pod_manager.services import r2_maintenance
+        objects = [('dev/1/1/a.mp3', timezone.now()), ('dev/2/2/b.mp3', timezone.now())]
+        client = _fake_list_client(objects)
+        with mock.patch.object(r2_maintenance, 'get_r2_client', return_value=client):
+            result = r2_maintenance.purge_dev_prefix()
+        # listing was scoped to the dev/ prefix
+        _, pkwargs = client.get_paginator.return_value.paginate.call_args
+        self.assertEqual(pkwargs.get('Prefix'), 'dev/')
+        self.assertEqual(result['deleted'], 2)
+        client.delete_objects.assert_called_once()
+
+
+class R2MoveRekeyHookTests(TestCase):
+    """handle_move_episodes dispatches the rekey task only for moved episodes that
+    actually have an r2_url, and only when R2_MIRROR_ENABLED."""
+
+    def setUp(self):
+        self.network = Network.objects.create(name='Net', slug='net')
+        self.p1 = Podcast.objects.create(network=self.network, title='P1', slug='p1')
+        self.p2 = Podcast.objects.create(network=self.network, title='P2', slug='p2')
+        self.user = User.objects.create_user('mover', password='x')
+        # Created under R2_MIRROR_ENABLED=False (default) -> no mirror signal.
+        self.ep_mirrored = Episode.objects.create(
+            podcast=self.p1, title='m', pub_date=timezone.now(), raw_description='x',
+            clean_description='x', r2_url='https://audio.test/9/9/m-aaaaaaaaaaaaaaaa.mp3')
+        self.ep_plain = Episode.objects.create(
+            podcast=self.p1, title='p', pub_date=timezone.now(), raw_description='x',
+            clean_description='x')
+
+    @override_settings(R2_MIRROR_ENABLED=True)
+    def test_move_dispatches_rekey_for_mirrored_only(self):
+        from pod_manager.views.creator import actions
+        factory = RequestFactory()
+        req = factory.post('/', {
+            'episode_ids': [self.ep_mirrored.id, self.ep_plain.id],
+            'target_podcast_id': self.p2.id,
+        })
+        req.user = self.user
+        with mock.patch('pod_manager.tasks.task_rekey_episode_audio.delay') as rekey, \
+             mock.patch.object(actions, 'messages'), \
+             mock.patch.object(actions, 'task_rebuild_episode_fragments'):
+            actions.handle_move_episodes(req, self.network)
+
+        # both episodes moved
+        self.ep_mirrored.refresh_from_db()
+        self.ep_plain.refresh_from_db()
+        self.assertEqual(self.ep_mirrored.podcast_id, self.p2.id)
+        self.assertEqual(self.ep_plain.podcast_id, self.p2.id)
+        # only the mirrored one is re-keyed
+        rekey_ids = {c.args[0] for c in rekey.call_args_list}
+        self.assertEqual(rekey_ids, {self.ep_mirrored.id})
+
+    @override_settings(R2_MIRROR_ENABLED=False)
+    def test_move_skips_rekey_when_mirror_disabled(self):
+        from pod_manager.views.creator import actions
+        factory = RequestFactory()
+        req = factory.post('/', {
+            'episode_ids': [self.ep_mirrored.id],
+            'target_podcast_id': self.p2.id,
+        })
+        req.user = self.user
+        with mock.patch('pod_manager.tasks.task_rekey_episode_audio.delay') as rekey, \
+             mock.patch.object(actions, 'messages'), \
+             mock.patch.object(actions, 'task_rebuild_episode_fragments'):
+            actions.handle_move_episodes(req, self.network)
+        rekey.assert_not_called()
+

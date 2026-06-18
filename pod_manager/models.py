@@ -1,5 +1,6 @@
 import uuid, os, base64, logging
 from decimal import Decimal
+from urllib.parse import urlparse
 from django.db import models
 from django.contrib.auth.models import User
 from django.core.cache import cache
@@ -13,6 +14,7 @@ from PIL import Image
 from io import BytesIO
 
 from django.conf import settings
+from django.utils import timezone
 
 from .services.images import process_image_field
 
@@ -224,6 +226,15 @@ class Podcast(models.Model):
     whisper_num_speakers = models.IntegerField(null=True, blank=True, help_text="Override default speakers. Null = inherit.")
     whisper_max_speakers = models.IntegerField(null=True, blank=True, help_text="Override max speakers. Null = inherit.")
 
+    # Per-feed override for the R2 serving precedence: when True, every episode
+    # in this podcast that has an r2_url is served from R2 instead of its origin
+    # (e.g. force a whole Patreon/Libsyn feed onto the mirror). See Episode.playback_url.
+    force_r2_serve = models.BooleanField(
+        default=False,
+        help_text="Serve this podcast's audio from the R2 mirror whenever a mirror exists, "
+                  "instead of the original host.",
+    )
+
     class Meta:
         unique_together = ('network', 'slug')
 
@@ -246,6 +257,19 @@ class Episode(models.Model):
     audio_url_public = models.URLField(max_length=2000, blank=True, null=True)
     audio_url_subscriber = models.URLField(max_length=2000, blank=True, null=True)
     match_reason = models.CharField(max_length=100, blank=True, help_text="Audit trail for how the private audio was matched during ingestion.")
+
+    # R2 audio mirror (subscriber audio only — see planned_features.txt).
+    # r2_url presence == "we have a backup"; it is the field the serving layer
+    # reads and the source of truth for orphan reference checks (hence indexed).
+    r2_url = models.URLField(
+        max_length=2000, blank=True, null=True, db_index=True,
+        help_text="Public URL of the mirrored subscriber audio on R2. Presence means a backup exists.",
+    )
+    r2_uploaded_at = models.DateTimeField(null=True, blank=True, help_text="When the R2 mirror was last written.")
+    # Cheap change-detection fingerprint of the source the mirror was made from
+    # (e.g. "{etag}:{content_length}"). Lets re-ingest detect a genuinely changed
+    # source and re-mirror without re-downloading every file every cycle.
+    r2_source_signature = models.CharField(max_length=255, blank=True, default='')
     
     # Store descriptions separately for cleaning/normalization
     raw_description = models.TextField()
@@ -300,14 +324,70 @@ class Episode(models.Model):
     # episode whose served playback URL still points here has no real audio yet.
     AUDIO_HOST_S3 = 's3.amazonaws.com'
 
+    def audio_origin(self):
+        """Classify the subscriber audio host: one of
+        {'megaphone','libsyn','gdrive','s3_dead','other','none'}.
+
+        Drives the R2 serving precedence and the "Libsyn/other serve from origin,
+        R2 is backup only" policy. Pure host detection — no DB or network access."""
+        url = self.audio_url_subscriber or ''
+        if not url:
+            return 'none'
+        host = urlparse(url).netloc.lower()
+        if 'docs.google.com' in url or 'drive.google.com' in host:
+            return 'gdrive'
+        if self.AUDIO_HOST_S3 in url:
+            return 's3_dead'
+        if 'megaphone.fm' in host:
+            return 'megaphone'
+        if 'libsyn' in host:
+            return 'libsyn'
+        return 'other'
+
     def playback_url(self, has_access):
         """The URL play_episode would redirect to for a listener with this
-        access level. Single source of truth for both playback and feeds."""
-        return self.audio_url_subscriber if (has_access and self.audio_url_subscriber) else self.audio_url_public
+        access level. Single source of truth for both playback and feeds.
+
+        Serving precedence (subscriber audio only; public/Megaphone is never
+        mirrored — see planned_features.txt section C):
+          - No access            -> audio_url_public (R2 never applies).
+          - Access + r2_url and global R2_FORCE_SERVE        -> r2_url
+          - Access + r2_url and podcast.force_r2_serve       -> r2_url
+          - Access + r2_url and origin is GDrive             -> r2_url
+                                   (GDrive can't serve a browser)
+          - Access + origin is Libsyn (durable origin)       -> audio_url_subscriber
+                                   (R2 is backup-only unless forced above)
+          - Access + r2_url (recovered dead-S3, Patreon, etc) -> r2_url
+                                   (Patreon enclosure URLs are ephemeral/signed;
+                                    once mirrored we must serve from R2, not origin)
+          - Access otherwise                                 -> audio_url_subscriber
+        """
+        if not (has_access and self.audio_url_subscriber):
+            return self.audio_url_public
+
+        has_r2 = bool(self.r2_url)
+        if has_r2:
+            if getattr(settings, 'R2_FORCE_SERVE', False):
+                return self.r2_url
+            if self.podcast.force_r2_serve:
+                return self.r2_url
+
+        origin = self.audio_origin()
+        if has_r2 and origin == 'gdrive':
+            return self.r2_url
+        if origin == 'libsyn':
+            # Libsyn is a durable origin with its own CDN; R2 is backup-only
+            # unless forced above. Other hosts (Patreon's ephemeral signed URLs,
+            # recovered dead-S3) prefer the mirror whenever one exists.
+            return self.audio_url_subscriber
+        if has_r2:
+            return self.r2_url
+        return self.audio_url_subscriber
 
     def serves_s3_audio(self, has_access):
         """True when the playback redirect would land on the dead S3 bucket, so
-        the episode must be withheld from feeds until its audio is recovered."""
+        the episode must be withheld from feeds until its audio is recovered.
+        An episode with an r2_url no longer lands on S3, so it is auto-un-withheld."""
         url = self.playback_url(has_access)
         return bool(url) and self.AUDIO_HOST_S3 in url
 
@@ -361,6 +441,39 @@ class EpisodeCrossPublication(models.Model):
 
     def __str__(self):
         return f"{self.episode_id} also in {self.podcast.title} ({self.access_mode})"
+
+
+class R2OrphanedObject(models.Model):
+    """A deletion-CANDIDATE list for R2 objects no Episode.r2_url points at.
+
+    Orphans arise from (1) re-versioning (new content hash -> new key, old key
+    abandoned) and (2) partial failures (upload succeeded, DB commit interrupted).
+    The object is LEFT AT ITS ORIGINAL KEY for a retention window so in-flight
+    streaming sessions don't break, then a cleanup task hard-deletes it AFTER
+    re-validating against live Episode.r2_url. See planned_features.txt section I.
+
+    This table is never an authority — Episode.r2_url is the source of truth.
+    Content-hash keying intentionally dedupes, so a key may be referenced by more
+    than one episode; recording and cleanup both re-check live references first.
+    """
+
+    class Reason(models.TextChoices):
+        REVERSION = 'reversion', 'Re-versioned (new content hash)'
+        MOVE_REKEY = 'move_rekey', 'Re-keyed on move (byte-identical copy at new key)'
+        RECONCILIATION = 'reconciliation', 'Found unreferenced by reconciliation sweep'
+        MANUAL = 'manual', 'Manually recorded'
+
+    # Host-stripped R2 object key. Unique so concurrent re-versions / sweeps
+    # can't double-insert the same orphan.
+    key = models.CharField(max_length=1024, unique=True)
+    orphaned_at = models.DateTimeField(default=timezone.now, db_index=True,
+        help_text="Retention clock start; cleanup expiry is computed per reason.")
+    reason = models.CharField(max_length=20, choices=Reason.choices, default=Reason.MANUAL)
+    # Audit/restore convenience; null for reconciliation-discovered orphans.
+    episode = models.ForeignKey(Episode, on_delete=models.SET_NULL, null=True, blank=True, related_name='+')
+
+    def __str__(self):
+        return f"orphan {self.key} ({self.reason} @ {self.orphaned_at:%Y-%m-%d})"
 
 
 def mix_cover_path(instance, filename):
@@ -775,6 +888,31 @@ def queue_transcription_on_episode_save(sender, instance, created=False, **kwarg
     )
     from pod_manager.services.transcription import dispatch_transcription
     dispatch_transcription(instance.id)
+
+
+@receiver(post_save, sender=Episode)
+def queue_r2_mirror_on_episode_save(sender, instance, created=False, **kwargs):
+    """Standalone R2 mirror for episodes that transcription WON'T carry.
+
+    When WHISPER is enabled, run_transcription mirrors inline off its single
+    download (Phase 4) — even if whisper itself is unreachable, the mirror runs
+    BEFORE the ASR call — so dispatching here too would cause a second download.
+    We therefore only fire when transcription is disabled/not configured: a
+    newly-created premium episode still needs its off-platform backup (and
+    becomes browser-playable from R2 where the serving policy applies).
+
+    Scope: new episodes only (parallel to the transcription signal). Legacy and
+    audio-changed episodes are covered by the Phase 5 backfill / --force."""
+    from django.conf import settings as django_settings
+    if not getattr(django_settings, 'R2_MIRROR_ENABLED', True):
+        return
+    if not created or not instance.is_premium:
+        return
+    # Transcription will run on this new episode and mirror inline — defer to it.
+    if getattr(django_settings, 'WHISPER_ENABLED', False):
+        return
+    from pod_manager.tasks import task_mirror_episode_audio
+    task_mirror_episode_audio.delay(instance.id)
 
 
 @receiver(post_delete, sender=Transcript)

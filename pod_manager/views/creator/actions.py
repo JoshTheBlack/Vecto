@@ -406,6 +406,9 @@ def handle_update_show(request, current_network):
         except (TypeError, ValueError):
             setattr(show, field, None)
 
+    # Per-feed R2 serving override (checkbox — absent in POST means unchecked).
+    show.force_r2_serve = bool(request.POST.get('force_r2_serve'))
+
     show.save()
     messages.success(request, f"{show.title} updated successfully!")
 
@@ -510,6 +513,17 @@ def handle_move_episodes(request, current_network):
     # An episode moved into a podcast it was cross-published to would now
     # self-reference — drop the redundant links.
     EpisodeCrossPublication.objects.filter(episode_id__in=episode_ids, podcast=target_pod).delete()
+
+    # Re-key any mirrored episodes so their R2 object lands under the new parent's
+    # network_id/podcast_id (backup accuracy — section J). Async; idempotent.
+    from django.conf import settings as _settings
+    if getattr(_settings, 'R2_MIRROR_ENABLED', True):
+        from ...tasks import task_rekey_episode_audio
+        moved_mirrored = (Episode.objects.filter(id__in=episode_ids)
+                          .exclude(r2_url__isnull=True).exclude(r2_url='')
+                          .values_list('id', flat=True))
+        for ep_id in moved_mirrored:
+            task_rekey_episode_audio.delay(ep_id)
     logger.info(f"Moved {count} episodes to '{target_pod.title}' (id={target_pod.id}) by {request.user.username}")
     messages.success(request, f"Successfully moved and locked {count} episodes to '{target_pod.title}'.")
 

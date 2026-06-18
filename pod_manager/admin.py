@@ -7,7 +7,7 @@ from django.contrib.auth.models import User
 from django.db.models import Q, F, BooleanField, ExpressionWrapper
 from django.utils.html import format_html, mark_safe
 from django.urls import reverse
-from .models import Network, PatreonTier, Podcast, Episode, EpisodeCrossPublication, UserMix, PatronProfile, EpisodeEditSuggestion, NetworkMembership, LogEntry, Transcript
+from .models import Network, PatreonTier, Podcast, Episode, EpisodeCrossPublication, UserMix, PatronProfile, EpisodeEditSuggestion, NetworkMembership, LogEntry, Transcript, R2OrphanedObject
 
 class S3SubscriberAudioFilter(SimpleListFilter):
     title = 'S3 Hosted Audio (Affected)'
@@ -25,6 +25,21 @@ class S3SubscriberAudioFilter(SimpleListFilter):
             return queryset.filter(audio_url_subscriber__icontains='s3.amazonaws.com')
         if self.value() == 'no':
             return queryset.exclude(audio_url_subscriber__icontains='s3.amazonaws.com')
+        return queryset
+
+
+class R2MirrorFilter(SimpleListFilter):
+    title = 'R2 Mirror'
+    parameter_name = 'r2_mirror'
+
+    def lookups(self, request, model_admin):
+        return (('yes', 'Mirrored to R2'), ('no', 'Not mirrored'))
+
+    def queryset(self, request, queryset):
+        if self.value() == 'yes':
+            return queryset.exclude(r2_url__isnull=True).exclude(r2_url='')
+        if self.value() == 'no':
+            return queryset.filter(Q(r2_url__isnull=True) | Q(r2_url=''))
         return queryset
 
 
@@ -98,8 +113,8 @@ class EpisodeCrossPublicationAdmin(admin.ModelAdmin):
 @admin.register(Episode)
 class EpisodeAdmin(admin.ModelAdmin):
     inlines = [EpisodeCrossPublicationInline]
-    list_display = ('title', 'podcast', 'pub_date', 'is_published', 'scheduled_at', 'episode_type', 'match_reason', 'is_metadata_locked', 'audio_locked', 'has_public_audio', 'has_premium_audio', 'transcript_status')
-    list_filter = ('podcast__network', 'podcast', 'is_published', 'episode_type', 'audio_locked', S3SubscriberAudioFilter, 'pub_date', 'match_reason')
+    list_display = ('title', 'podcast', 'pub_date', 'is_published', 'scheduled_at', 'episode_type', 'match_reason', 'is_metadata_locked', 'audio_locked', 'has_public_audio', 'has_premium_audio', 'r2_mirrored', 'transcript_status')
+    list_filter = ('podcast__network', 'podcast', 'is_published', 'episode_type', 'audio_locked', S3SubscriberAudioFilter, R2MirrorFilter, 'pub_date', 'match_reason')
     search_fields = ('title', 'raw_description', 'guid_public', 'guid_private')
     list_editable = ('is_metadata_locked', 'audio_locked', 'is_published')
     
@@ -129,6 +144,12 @@ class EpisodeAdmin(admin.ModelAdmin):
     has_premium_audio.boolean = True
     has_premium_audio.short_description = "Premium"
     has_premium_audio.admin_order_field = '_has_premium'  # Links the column to the SQL annotation
+
+    def r2_mirrored(self, obj):
+        return bool(obj.r2_url)
+    r2_mirrored.boolean = True
+    r2_mirrored.short_description = "R2"
+    r2_mirrored.admin_order_field = 'r2_url'
 
     def transcript_status(self, obj):
         from pod_manager.models import Transcript
@@ -484,3 +505,27 @@ class TranscriptAdmin(admin.ModelAdmin):
         )
     status_badge.short_description = 'Status'
     status_badge.admin_order_field = 'status'
+
+
+@admin.register(R2OrphanedObject)
+class R2OrphanedObjectAdmin(admin.ModelAdmin):
+    """Read-only view of the R2 orphan deletion-candidate list (GC layer 2 +
+    record-on-reversion). The daily cleanup task deletes rows past their
+    per-reason retention; this surfaces what's pending."""
+    list_display = ('key', 'reason', 'orphaned_at', 'expires_on', 'episode')
+    list_filter = ('reason',)
+    search_fields = ('key', 'episode__title')
+    readonly_fields = ('key', 'reason', 'orphaned_at', 'episode')
+    ordering = ('orphaned_at',)
+
+    def has_add_permission(self, request):
+        return False
+
+    def expires_on(self, obj):
+        from datetime import timedelta
+        from django.conf import settings
+        days = (settings.R2_REKEY_GRACE_DAYS
+                if obj.reason == R2OrphanedObject.Reason.MOVE_REKEY
+                else settings.R2_ORPHAN_RETENTION_DAYS)
+        return obj.orphaned_at + timedelta(days=days)
+    expires_on.short_description = 'Eligible for deletion'

@@ -48,7 +48,7 @@ def _annotate_edit_changes(edit):
     edit.sugg_chapter_list = chapter_items(sugg.get('chapters'))
 
 
-@diagnostic_timer("1. Gather Manage Podcasts")
+#@diagnostic_timer("1. Gather Manage Podcasts")
 def gather_manage_podcasts(current_network):
     podcasts = current_network.podcasts.annotate(
         clean_title=Case(When(title__istartswith='The ', then=Substr('title', 5)), default='title', output_field=CharField()),
@@ -63,7 +63,7 @@ def gather_manage_podcasts(current_network):
     return {'manage_podcasts': podcasts, 'network_podcasts': podcasts}
 
 
-@diagnostic_timer("2. Gather Inbox")
+#@diagnostic_timer("2. Gather Inbox")
 def gather_inbox(current_network):
     pending_edits = EpisodeEditSuggestion.objects.filter(
         episode__podcast__network=current_network, status=EpisodeEditSuggestion.Status.PENDING
@@ -112,7 +112,7 @@ def gather_inbox(current_network):
     return {'pending_edits': pending_edits, 'network_podcast_titles': network_podcast_titles}
 
 
-@diagnostic_timer("3. Gather Merge Desk")
+#@diagnostic_timer("3. Gather Merge Desk")
 def gather_merge_desk(request, current_network):
     merge_view = request.GET.get('merge_view', 'orphans')
     merge_podcast_id = request.GET.get('merge_podcast_id', '')
@@ -172,7 +172,7 @@ def gather_merge_desk(request, current_network):
     }
 
 
-@diagnostic_timer("4. Gather Audit Log")
+#@diagnostic_timer("4. Gather Audit Log")
 def gather_audit_log(request, current_network):
     audit_query = EpisodeEditSuggestion.objects.filter(
         episode__podcast__network=current_network
@@ -200,7 +200,7 @@ def gather_audit_log(request, current_network):
     return {'audit_page_obj': audit_page_obj}
 
 
-@diagnostic_timer("5. Gather Bulk Move Context")
+#@diagnostic_timer("5. Gather Bulk Move Context")
 def gather_move_context(request, current_network):
     source_pod_id = request.GET.get('source_pod_id', '')
     move_episodes = []
@@ -211,7 +211,7 @@ def gather_move_context(request, current_network):
     return {'source_pod_id': source_pod_id, 'move_episodes': move_episodes}
 
 
-@diagnostic_timer("5b. Gather Cross-Publish Context")
+#@diagnostic_timer("5b. Gather Cross-Publish Context")
 def gather_cross_publish_context(request, current_network):
     cross_source_id = request.GET.get('cross_source_id', '')
     cross_episodes = []
@@ -229,7 +229,7 @@ def gather_cross_publish_context(request, current_network):
     }
 
 
-@diagnostic_timer("6. Gather S3 Reports")
+#@diagnostic_timer("6. Gather S3 Reports")
 def gather_reports_data():
     txt_path = os.path.join(settings.MEDIA_ROOT, 's3_hosting_report.txt')
     csv_path = os.path.join(settings.MEDIA_ROOT, 's3_hosted_episodes.csv')

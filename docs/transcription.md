@@ -149,8 +149,8 @@ Each completed transcription produces five files stored at `MEDIA_ROOT/transcrip
 > **The `.words` file is the source of truth.** If transcript files are lost but the `.words` file survives, all other formats can be regenerated from it.
 
 All transcript files are served at `/transcripts/<episode_id>.<ext>` with:
-- `Cache-Control: public, max-age=31536000, immutable`
-- ETag based on MD5 of file content (changes automatically when files are regenerated, e.g. after speaker label edits)
+- `Cache-Control: public, no-cache` — the browser may cache but **must revalidate** before reuse. A requeued transcription overwrites the same URL, so the files are *not* immutable; `no-cache` lets the ETag actually do its job instead of pinning a year-long copy that only `Ctrl+F5` could clear.
+- ETag based on MD5 of file content (changes automatically when files are regenerated, e.g. after a re-transcription or speaker label edits). Unchanged files return a cheap `304 Not Modified`; changed files are picked up on the next normal load.
 - `Access-Control-Allow-Origin: *` (podcast clients fetch transcripts cross-origin)
 - `Content-Disposition` using the original audio filename stem for readable downloads
 

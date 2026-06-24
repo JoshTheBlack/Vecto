@@ -4,7 +4,6 @@ context from gather_* functions) and submit_episode_edit.
 """
 import json
 import logging
-import time
 
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required
@@ -21,7 +20,7 @@ from ...services.edits import (
     update_contribution_stats,
 )
 from ...tasks import task_rebuild_episode_fragments
-from ...utils import sanitize_user_html
+from ...utils import diagnostic_page, sanitize_user_html
 from .actions import ACTION_HANDLERS
 from .data import (
     gather_audit_log,
@@ -59,9 +58,6 @@ def creator_settings(request):
         return redirect(redirect_url)
 
     # GET
-    t_total = time.time()
-    logger.info(f"--- [DIAGNOSTIC] Loading Creator Settings for {request.user} ---")
-
     context = {
         'networks': allowed_networks,
         'current_network': current_network,
@@ -75,7 +71,6 @@ def creator_settings(request):
         **gather_reports_data(),
     }
 
-    logger.info(f"[DIAGNOSTIC] PAGE READY. Total: {time.time() - t_total:.2f}s")
     return render(request, 'pod_manager/creator_settings.html', context)
 
 

@@ -1277,9 +1277,9 @@
         } catch (_) { return; }
         if (!doc.segments || !doc.segments.length) return;
 
-        // The .words file is served immutable (1-year cache), so the browser may
-        // have a stale copy without speaker_mappings. Override with the value the
-        // server read fresh from disk on this page load — this is always current.
+        // The .words fetch revalidates via ETag, but defensively override
+        // speaker_mappings with the value the server read fresh from disk on this
+        // page load — this is always current even if a cached copy slips through.
         const serverMappings = {{ transcript_speaker_names_json|safe }};
         if (serverMappings && Object.keys(serverMappings).length) {
             doc.speaker_mappings = serverMappings;

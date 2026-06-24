@@ -13,7 +13,10 @@ def serve_transcript(request, episode_id, ext: str):
     """Serve a transcript file with ETag caching.
 
     Route: /transcripts/<episode_id>.<ext>
-    Transcript files are immutable once written, so we set a 1-year max-age.
+    A requeued transcription overwrites the same URL, so these files are NOT
+    immutable. We use a content-hash ETag with ``no-cache`` so the browser
+    always revalidates: unchanged files return a cheap 304, but a fresh
+    transcription is picked up immediately without a hard refresh.
     """
     try:
         path = transcript_path(int(episode_id), ext)
@@ -31,7 +34,7 @@ def serve_transcript(request, episode_id, ext: str):
 
     resp = HttpResponse(data, content_type=CONTENT_TYPES[ext])
     resp['ETag'] = etag
-    resp['Cache-Control'] = 'public, max-age=31536000, immutable'
+    resp['Cache-Control'] = 'public, no-cache'
     resp['Access-Control-Allow-Origin'] = '*'
 
     try:

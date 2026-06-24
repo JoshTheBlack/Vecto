@@ -6,6 +6,7 @@ that need to be called from more than one entry point (views + ingesters).
 Don't dump unrelated helpers in here; if a function only has one caller, it
 should live next to that caller.
 """
+import contextvars
 import functools
 import ipaddress
 import logging
@@ -17,17 +18,63 @@ import nh3
 
 _diag_logger = logging.getLogger('pod_manager.diagnostic')
 
+# Per-request nesting depth so context-pulls timed with @diagnostic_timer
+# indent underneath the @diagnostic_page they run inside, producing a tree.
+# A ContextVar (not a module global) keeps depth isolated per request/thread.
+_diag_depth = contextvars.ContextVar('_diag_depth', default=0)
+
 
 def diagnostic_timer(label: str):
-    """Decorator: logs *label*, runs the function, logs elapsed time."""
+    """Decorator: time one step (e.g. a tab's context pull).
+
+    Logs ``label...`` before and ``label done in N.NNs`` after, indented by
+    the current diagnostic depth. Generic — usable on any callable, on any
+    page. Pairs with @diagnostic_page, which opens the depth, but works
+    standalone too (depth just starts at 0).
+
+    Logs at DEBUG: silent under the default INFO level, surfaces when you set
+    LOG_LEVEL=DEBUG to profile a page."""
     def decorator(fn):
         @functools.wraps(fn)
         def wrapper(*args, **kwargs):
+            indent = '  ' * _diag_depth.get()
             t = time.time()
-            _diag_logger.info(f"[DIAGNOSTIC] {label}...")
-            result = fn(*args, **kwargs)
-            _diag_logger.info(f"[DIAGNOSTIC] {label} done in {time.time() - t:.2f}s")
-            return result
+            _diag_logger.debug(f"[DIAGNOSTIC] {indent}{label}...")
+            token = _diag_depth.set(_diag_depth.get() + 1)
+            try:
+                return fn(*args, **kwargs)
+            finally:
+                _diag_depth.reset(token)
+                _diag_logger.debug(f"[DIAGNOSTIC] {indent}{label} done in {time.time() - t:.2f}s")
+        return wrapper
+    return decorator
+
+
+def diagnostic_page(label: str):
+    """Decorator for a page view: bracket the whole request with a total timer.
+
+    Logs a START line and a ``PAGE READY ... Total: N.NNs`` line, and opens the
+    diagnostic depth so any @diagnostic_timer-decorated context pulls called
+    during the request nest one level in. Drop it above a view function and
+    decorate that view's data-gather helpers to get a full per-page load trace.
+
+    Assumes a Django view signature (``request`` first). Times every method;
+    on POST/redirect the total is just small.
+
+    Logs at DEBUG: silent under the default INFO level, surfaces when you set
+    LOG_LEVEL=DEBUG to profile a page."""
+    def decorator(view):
+        @functools.wraps(view)
+        def wrapper(request, *args, **kwargs):
+            user = getattr(request, 'user', '?')
+            t = time.time()
+            _diag_logger.debug(f"--- [DIAGNOSTIC] {label} ({request.method}) for {user} ---")
+            token = _diag_depth.set(_diag_depth.get() + 1)
+            try:
+                return view(request, *args, **kwargs)
+            finally:
+                _diag_depth.reset(token)
+                _diag_logger.debug(f"[DIAGNOSTIC] {label} PAGE READY. Total: {time.time() - t:.2f}s")
         return wrapper
     return decorator
 

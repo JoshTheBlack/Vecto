@@ -2582,10 +2582,13 @@ class ServeTranscriptTests(TestCase):
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(resp['Content-Type'], 'text/vtt')
 
-    def test_long_cache_and_cors_headers(self):
+    def test_revalidating_cache_and_cors_headers(self):
+        # Requeued transcriptions overwrite the same URL, so the file must be
+        # revalidated (no-cache) rather than cached as immutable — otherwise a
+        # re-transcribed episode shows the stale text until a hard refresh.
         resp = self._get()
-        self.assertIn('max-age=31536000', resp['Cache-Control'])
-        self.assertIn('immutable', resp['Cache-Control'])
+        self.assertIn('no-cache', resp['Cache-Control'])
+        self.assertNotIn('immutable', resp['Cache-Control'])
         self.assertEqual(resp['Access-Control-Allow-Origin'], '*')
 
     def test_etag_present(self):

@@ -121,7 +121,7 @@ mirror_episode_audio(episode_id, local_path=None, force=False)
 
 ### Two triggers, coordinated to download once
 
-1. **Inline (transcription enabled).** `run_transcription()` calls the mirror right after the audio download and **before** the Whisper POST — so a backup exists even if ASR fails, times out, or Whisper is unreachable. Best-effort: a mirror failure never fails the transcription.
+1. **Inline (transcription enabled).** `run_transcription()` calls the mirror right after the audio download and **before** the Whisper POST — so a backup exists even if ASR fails, times out, or Whisper is unreachable. Best-effort: a mirror failure never fails the transcription. When a re-transcription explicitly selects the **subscriber** source (the episode-detail [Audio source](transcription.md#audio-source-override) picker), this inline call runs with `force=True`, so the content hash is recompared even on mirror-once hosts (GDrive) — identical bytes still dedupe, changed bytes re-version. Re-transcriptions from the **R2** or **Public** source skip the mirror entirely; public audio is never mirrored.
 2. **Standalone (transcription disabled).** The `queue_r2_mirror_on_episode_save` signal dispatches `task_mirror_episode_audio` — but **only** when `R2_MIRROR_ENABLED and created and is_premium and NOT WHISPER_ENABLED`. The `WHISPER_ENABLED` gate prevents a second download when transcription would already carry the mirror.
 
 > Scheduled episodes are mirrored **on creation** (the signal ignores `is_published`), so the backup and transcript can be ready before the episode is published. Feeds only expose `is_published=True` episodes, so nothing leaks early.

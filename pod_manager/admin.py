@@ -398,7 +398,10 @@ class TranscriptAdmin(admin.ModelAdmin):
         'requested_at', 'started_at', 'completed_at', 'error_message',
     )
     ordering = ('-requested_at',)
-    actions = ('requeue_high', 'requeue_default', 'requeue_low')
+    actions = (
+        'requeue_high', 'requeue_default', 'requeue_low',
+        'requeue_v3_high', 'requeue_v3_default', 'requeue_v3_low',
+    )
     # Adds the "Clear transcription queue" button to the changelist toolbar.
     change_list_template = 'admin/pod_manager/transcript/change_list.html'
 
@@ -449,10 +452,14 @@ class TranscriptAdmin(admin.ModelAdmin):
             request, 'admin/pod_manager/transcript/clear_queue_confirm.html', context,
         )
 
-    def _requeue(self, request, queryset, level, label):
+    def _requeue(self, request, queryset, level, label, model=None):
         """Reset the selected transcripts to pending and re-dispatch. route_transcription
         maps the level to the right queue + Redis priority band per episode's
-        effective model; under eager Celery (IDE) it runs on a thread after commit."""
+        effective model; under eager Celery (IDE) it runs on a thread after commit.
+
+        model, when given, forces that Whisper model for the run (e.g. 'large-v3')
+        — passed through to both routing and the task so a heavy model lands on
+        the heavy queue and actually runs."""
         from django.conf import settings
         from django.db import transaction
         from django.utils import timezone
@@ -460,6 +467,7 @@ class TranscriptAdmin(admin.ModelAdmin):
         from pod_manager.services.transcription import dispatch_transcription, route_transcription
 
         eager = getattr(settings, 'CELERY_TASK_ALWAYS_EAGER', False)
+        task_kwargs = {'model': model} if model else {}
         queued = skipped = 0
         for transcript in queryset.select_related('episode__podcast__network'):
             episode = transcript.episode
@@ -471,12 +479,12 @@ class TranscriptAdmin(admin.ModelAdmin):
             transcript.requested_at = timezone.now()
             transcript.save(update_fields=['status', 'error_message', 'requested_at'])
             if eager:
-                dispatch_transcription(episode.id, level=level)
+                dispatch_transcription(episode.id, level=level, **task_kwargs)
             else:
-                queue, priority = route_transcription(episode, level=level)
+                queue, priority = route_transcription(episode, level=level, model=model)
                 transaction.on_commit(
-                    lambda eid=episode.id, q=queue, p=priority:
-                    transcribe_episode.apply_async(args=[eid], queue=q, priority=p)
+                    lambda eid=episode.id, q=queue, p=priority, kw=task_kwargs:
+                    transcribe_episode.apply_async(args=[eid], kwargs=kw, queue=q, priority=p)
                 )
             queued += 1
 
@@ -496,6 +504,18 @@ class TranscriptAdmin(admin.ModelAdmin):
     @admin.action(description="Requeue transcription — LOW priority")
     def requeue_low(self, request, queryset):
         self._requeue(request, queryset, 'low', "low")
+
+    @admin.action(description="Requeue large-v3 — HIGH priority")
+    def requeue_v3_high(self, request, queryset):
+        self._requeue(request, queryset, 'high', "large-v3 high", model='large-v3')
+
+    @admin.action(description="Requeue large-v3 — MEDIUM priority")
+    def requeue_v3_default(self, request, queryset):
+        self._requeue(request, queryset, 'default', "large-v3 medium", model='large-v3')
+
+    @admin.action(description="Requeue large-v3 — LOW priority")
+    def requeue_v3_low(self, request, queryset):
+        self._requeue(request, queryset, 'low', "large-v3 low", model='large-v3')
 
     def status_badge(self, obj):
         color = _STATUS_COLORS.get(obj.status, '#6c757d')

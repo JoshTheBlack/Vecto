@@ -328,6 +328,18 @@ def retranscribe_episode_api(request, episode_id):
             except (TypeError, ValueError):
                 pass
 
+    # Optional explicit audio source (R2 / private / public). Default null =
+    # current behavior (cache-or-subscriber). A chosen source forces a fresh
+    # download from it and clears the cached file. Must be one of THIS episode's
+    # own audio URLs — validate here for a clean 400 (run_transcription re-checks).
+    audio_source_url = body.get('audio_source_url')
+    if audio_source_url is not None and str(audio_source_url).strip():
+        audio_source_url = str(audio_source_url).strip()
+        allowed = {u for u in (ep.r2_url, ep.audio_url_subscriber, ep.audio_url_public) if u}
+        if audio_source_url not in allowed:
+            return JsonResponse({'error': 'Invalid audio source for this episode'}, status=400)
+        transcription_kwargs['audio_source_url'] = audio_source_url
+
     # Priority level (high|default|low). route_transcription maps it to the
     # right queue + Redis priority band for the episode's effective model.
     level = str(body.get('priority', '')).lower()

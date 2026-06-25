@@ -4,6 +4,7 @@ import os
 import shutil
 import socket
 import tempfile
+import time
 from pathlib import Path
 from urllib.parse import unquote, urlparse
 
@@ -18,12 +19,87 @@ ALLOWED_EXTENSIONS = {'vtt', 'json', 'srt', 'html', 'words'}
 # HTTP statuses that mean the source audio is gone for good, not a blip.
 _PERMANENT_SOURCE_STATUSES = {401, 403, 404, 410}
 
+# HTML-source guard (Google Drive et al. hand back an HTML interstitial instead
+# of the MP3). We only sniff files below this size — a real episode MP3 is far
+# larger, so we never read a whole episode into memory just to classify it.
+_HTML_SNIFF_MAX_BYTES = 1_000_000
+_MAX_AUDIO_DOWNLOAD_ATTEMPTS = 5
+# Short pause between redownload attempts — a Drive quota interstitial won't
+# clear instantly, and we don't want to hammer the source.
+_HTML_RETRY_BACKOFF_SECONDS = 3
+
 
 class PermanentSourceError(Exception):
     """Raised when source audio is unrecoverably unavailable (dead bucket,
     404/403, host no longer resolves). The transcript parks in
     AWAITING_RECOVERY and is NOT retried — it requeues only when the
     episode's audio URL changes."""
+
+
+class HtmlSourceError(Exception):
+    """Raised when the source keeps returning an HTML page (e.g. a Google Drive
+    download interstitial or quota wall) instead of audio, after exhausting all
+    download attempts. The transcript fails WITHOUT ever being sent to the ASR
+    endpoint, so we never waste a GPU run on a web page."""
+
+
+def _looks_like_html(path: Path) -> bool:
+    """True if a small file looks like an HTML page rather than audio.
+
+    Only files under _HTML_SNIFF_MAX_BYTES are inspected; anything larger is
+    assumed to be real audio (sniffing it would mean reading a whole episode).
+    """
+    try:
+        if path.stat().st_size >= _HTML_SNIFF_MAX_BYTES:
+            return False
+    except OSError:
+        return False
+    try:
+        with path.open('rb') as fp:
+            head = fp.read(2048)
+    except OSError:
+        return False
+    sniff = head.lstrip().lower()
+    return (
+        sniff.startswith(b'<!doctype html')
+        or sniff.startswith(b'<html')
+        or sniff.startswith(b'<head')
+        or b'<title>' in sniff[:1024]
+    )
+
+
+def _error_detail(exc: Exception) -> str:
+    """Build a human-useful error string for Transcript.error_message.
+
+    The whisperx ASR service raises FastAPI HTTPExceptions, so a failed /asr
+    call comes back as an HTTP error whose response body is JSON
+    ``{"detail": "<the real engine error>"}`` (OOM, diarization failure, bad
+    audio, unsupported format, 413 too-large, …). requests attaches that
+    response to the raised HTTPError, so we surface the engine's own message
+    instead of the opaque "500 Server Error for url: …".
+    """
+    resp = getattr(exc, 'response', None)
+    if resp is not None:
+        detail = None
+        try:
+            detail = resp.json().get('detail')
+        except (ValueError, AttributeError, TypeError):
+            detail = (getattr(resp, 'text', '') or '').strip()[:1000]
+        status = getattr(resp, 'status_code', '?')
+        if detail:
+            return f"HTTP {status}: {detail}"
+        return f"HTTP {status}: {exc}"
+    return str(exc)
+
+
+def _chmod_777(path: Path) -> None:
+    """Make a persisted source MP3 world-rwx (777). These files hold no secrets,
+    and loosening them now keeps them accessible once the worker stops running
+    as root. Best-effort: a no-op / partial on Windows, never fatal."""
+    try:
+        os.chmod(path, 0o777)
+    except OSError as exc:
+        logger.debug("chmod 777 failed for %s — %s", path, exc)
 
 
 def _is_permanent_source_error(exc: Exception) -> bool:
@@ -139,9 +215,35 @@ def ensure_source_audio(episode_id: int) -> bool:
         for chunk in dl.iter_content(chunk_size=65536):
             tmp.write(chunk)
     tmp_path.rename(dest)
+    _chmod_777(dest)
 
     logger.info("ensure_source_audio: saved episode %d at %s", episode_id, dest)
     return True
+
+
+def _download_audio_to_temp(url: str) -> Path:
+    """Stream a URL to a temp .mp3 file and return its path. Caller owns the
+    file and must unlink it. Translates dead-source HTTP errors into
+    PermanentSourceError so the caller can park the transcript without retrying.
+    """
+    tmp_path = None
+    try:
+        with tempfile.NamedTemporaryFile(suffix='.mp3', delete=False) as tmp:
+            tmp_path = Path(tmp.name)
+            dl = requests.get(url, stream=True, timeout=300)
+            dl.raise_for_status()
+            for chunk in dl.iter_content(chunk_size=65536):
+                tmp.write(chunk)
+        return tmp_path
+    except requests.exceptions.RequestException as exc:
+        if tmp_path is not None:
+            tmp_path.unlink(missing_ok=True)
+        if _is_permanent_source_error(exc):
+            status = getattr(getattr(exc, 'response', None), 'status_code', 'no response')
+            raise PermanentSourceError(
+                f"source audio unavailable ({status}) at {url}"
+            ) from exc
+        raise
 
 
 # ---------------------------------------------------------------------------
@@ -462,6 +564,7 @@ def run_transcription(
     min_speakers: int | None = None,
     num_speakers: int | None = None,
     max_speakers: int | None = None,
+    audio_source_url: str | None = None,
 ) -> None:
     """Transcribe one episode. Safe to call directly (no Celery required).
 
@@ -470,8 +573,14 @@ def run_transcription(
     the Transcript record. Raises on failure so the Celery task can retry.
 
     Per-call kwargs override podcast → network → settings.WHISPER_* fallback chain.
+
+    audio_source_url : optional explicit source (episode-detail picker). Must be
+    one of THIS episode's own audio URLs (r2_url / subscriber / public). Forces a
+    fresh download, clears any cached source file, and — per the subscriber-only
+    mirror rule — only writes R2 when it points at the subscriber URL.
     """
     from pod_manager.models import Episode, Transcript  # avoid circular import
+    from pod_manager.utils import validate_public_url
 
     # 1. Fetch episode
     try:
@@ -532,43 +641,99 @@ def run_transcription(
     transcript.worker = os.environ.get('WORKER_NAME') or socket.gethostname()
     transcript.save(update_fields=['status', 'requested_at', 'started_at', 'source_audio_url', 'worker'])
 
+    # Resolve & validate an explicit source override (episode-detail "audio
+    # source" picker). It must be one of THIS episode's own audio URLs — never
+    # an arbitrary client-supplied URL. A chosen source forces a fresh download
+    # and bypasses (and clears) the WHISPER_KEEP_SOURCE_AUDIO cache.
+    source_override = None
+    if audio_source_url:
+        allowed = {u for u in (episode.r2_url, episode.audio_url_subscriber,
+                               episode.audio_url_public) if u}
+        if audio_source_url not in allowed:
+            raise ValueError(
+                f"audio_source_url {audio_source_url!r} is not one of episode "
+                f"{episode_id}'s audio URLs"
+            )
+        ok, reason = validate_public_url(audio_source_url)
+        if not ok:
+            raise ValueError(f"audio_source_url failed SSRF validation: {reason}")
+        source_override = audio_source_url
+
+    download_url = source_override or audio_url
+
+    # R2 mirror gating (PRIVATE-only decision): the inline mirror reuses these
+    # bytes as the subscriber backup, so it may run ONLY when the bytes ARE the
+    # subscriber audio — the default flow, or an override pointing at the
+    # subscriber URL. R2/public overrides transcribe but never write the mirror.
+    # When forced (subscriber override) the mirror is content-addressed: an
+    # identical file dedupes (no R2 write), a changed file uploads + GCs the old.
+    mirror_subscriber_bytes = (source_override is None
+                               or source_override == episode.audio_url_subscriber)
+
     tmp_path = None
     try:
-        # 3. Get audio — use cached file if available, otherwise download
-        if settings.WHISPER_KEEP_SOURCE_AUDIO:
-            cached = source_audio_path(episode)
-            if cached.exists():
-                audio_fp_path = cached
-                logger.info("transcribe: using cached audio for episode %d at %s", episode_id, cached)
+        # 3. Acquire audio, guarding against HTML interstitials (Google Drive et
+        # al. hand back a download/quota web page instead of the MP3). Sniff each
+        # candidate; on HTML, discard and redownload up to _MAX_AUDIO_DOWNLOAD_
+        # ATTEMPTS times, then fail WITHOUT ever calling ASR.
+        cached_path = source_audio_path(episode) if settings.WHISPER_KEEP_SOURCE_AUDIO else None
+
+        if source_override and cached_path and cached_path.exists():
+            cached_path.unlink(missing_ok=True)
+            logger.info(
+                "transcribe: cleared cached audio for episode %d (source override -> %s)",
+                episode_id, source_override,
+            )
+
+        audio_fp_path = None
+        downloads = 0
+        # The cache is attempt 0 (not counted against the download budget) and
+        # only on the default flow — a chosen source always forces fresh bytes.
+        use_cache = bool(cached_path and cached_path.exists() and not source_override)
+
+        while True:
+            if use_cache:
+                candidate = cached_path
+                candidate_is_cache = True
+                use_cache = False
+                logger.info("transcribe: using cached audio for episode %d at %s", episode_id, candidate)
             else:
-                audio_fp_path = None
-        else:
-            audio_fp_path = None
+                downloads += 1
+                logger.info(
+                    "transcribe: downloading audio for episode %d from %s (attempt %d/%d)",
+                    episode_id, download_url, downloads, _MAX_AUDIO_DOWNLOAD_ATTEMPTS,
+                )
+                tmp_path = _download_audio_to_temp(download_url)
+                candidate = tmp_path
+                candidate_is_cache = False
 
-        if audio_fp_path is None:
-            logger.info("transcribe: downloading audio for episode %d", episode_id)
-            try:
-                with tempfile.NamedTemporaryFile(suffix='.mp3', delete=False) as tmp:
-                    tmp_path = Path(tmp.name)
-                    dl = requests.get(audio_url, stream=True, timeout=300)
-                    dl.raise_for_status()
-                    for chunk in dl.iter_content(chunk_size=65536):
-                        tmp.write(chunk)
-            except requests.exceptions.RequestException as exc:
-                if _is_permanent_source_error(exc):
-                    status = getattr(getattr(exc, 'response', None), 'status_code', 'no response')
-                    raise PermanentSourceError(
-                        f"source audio unavailable ({status}) at {audio_url}"
-                    ) from exc
-                raise
-            audio_fp_path = tmp_path
+            if not _looks_like_html(candidate):
+                audio_fp_path = candidate
+                break
 
-            # Persist the download if configured
-            if settings.WHISPER_KEEP_SOURCE_AUDIO:
-                dest = source_audio_path(episode)
-                dest.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(tmp_path, dest)
-                logger.info("transcribe: saved source audio to %s", dest)
+            # HTML where audio should be — discard this copy and try again.
+            logger.warning(
+                "transcribe: episode %d source returned HTML, not audio (%s) — discarding",
+                episode_id, 'cached file' if candidate_is_cache else f'download attempt {downloads}',
+            )
+            candidate.unlink(missing_ok=True)
+            if not candidate_is_cache:
+                tmp_path = None
+            if downloads >= _MAX_AUDIO_DOWNLOAD_ATTEMPTS:
+                raise HtmlSourceError(
+                    f"source returned HTML (not audio) after {downloads} download "
+                    f"attempt(s) at {download_url}"
+                )
+            time.sleep(_HTML_RETRY_BACKOFF_SECONDS)
+
+        # Persist a freshly downloaded file for reuse — default flow only. We
+        # never cache an override's bytes under the subscriber-derived cache
+        # name (a public/R2 file would then masquerade as the subscriber audio).
+        if cached_path is not None and audio_fp_path is tmp_path and not source_override:
+            cached_path.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(tmp_path, cached_path)
+            _chmod_777(cached_path)
+            logger.info("transcribe: saved source audio to %s", cached_path)
 
         # 3b. Mirror to R2 — reuse THIS download (one download, two consumers).
         # Best-effort: a mirror failure must never fail the transcription. The
@@ -576,13 +741,18 @@ def run_transcription(
         # existing retention behavior is unchanged. Subscriber-only / dead-S3
         # guards live in the service (raises MirrorSkipped for non-applicable
         # episodes). Runs before whisper so a backup exists even if ASR fails.
-        if getattr(settings, 'R2_MIRROR_ENABLED', True):
+        if getattr(settings, 'R2_MIRROR_ENABLED', True) and mirror_subscriber_bytes:
             try:
                 from pod_manager.services.r2_mirror import (
                     MirrorSkipped, mirror_episode_audio,
                 )
                 try:
-                    res = mirror_episode_audio(episode_id, local_path=audio_fp_path)
+                    # force on an explicit subscriber source so the content-hash
+                    # comparison runs (the default HEAD gate would mirror-once
+                    # and skip); identical bytes still dedupe with no R2 write.
+                    res = mirror_episode_audio(
+                        episode_id, local_path=audio_fp_path, force=bool(source_override),
+                    )
                     logger.info(
                         "transcribe: r2 mirror for episode %d -> %s (%s)",
                         episode_id, res.get('status'), res.get('key'),
@@ -594,6 +764,11 @@ def run_transcription(
                     "transcribe: r2 mirror FAILED for episode %d (continuing) — %s",
                     episode_id, exc,
                 )
+        elif not mirror_subscriber_bytes:
+            logger.info(
+                "transcribe: r2 mirror skipped for episode %d — transcribing from a "
+                "non-subscriber source (%s)", episode_id, source_override,
+            )
 
         # 4. POST to whisper /asr
         logger.info(
@@ -711,11 +886,13 @@ def run_transcription(
         transcript.refresh_from_db(fields=['retry_count'])
         transcript.status = Transcript.Status.FAILED
         transcript.retry_count += 1
-        transcript.error_message = str(exc)
+        # Surface the engine's own error when present — a failed /asr call comes
+        # back as an HTTP error whose JSON body is {"detail": "<real error>"}.
+        transcript.error_message = _error_detail(exc)
         transcript.save(update_fields=['status', 'retry_count', 'error_message'])
         logger.error(
             "transcribe: episode %d failed (attempt %d): %s",
-            episode_id, transcript.retry_count, exc,
+            episode_id, transcript.retry_count, transcript.error_message,
         )
         raise
 

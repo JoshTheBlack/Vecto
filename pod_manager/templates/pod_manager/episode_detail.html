@@ -404,6 +404,20 @@
                                     </select>
                                 </div>
                             </div>
+                            <div class="row g-3 mb-3">
+                                <div class="col-md-6">
+                                    <label class="form-label text-muted small fw-bold mb-1">Audio Source</label>
+                                    <select id="rtAudioSource" class="form-select form-select-sm bg-dark text-light border-secondary">
+                                        <option value="">— default (cached / subscriber) —</option>
+                                        {% if ep.audio_url_subscriber %}<option value="{{ ep.audio_url_subscriber }}">Private (subscriber)</option>{% endif %}
+                                        {% if ep.r2_url %}<option value="{{ ep.r2_url }}">R2 mirror</option>{% endif %}
+                                        {% if ep.audio_url_public %}<option value="{{ ep.audio_url_public }}">Public</option>{% endif %}
+                                    </select>
+                                    <div class="form-text text-muted small">
+                                        Default uses the cached/subscriber audio. Choosing a source forces a fresh download and replaces the cached file. R2 and Public are transcribed but never written back to the mirror.
+                                    </div>
+                                </div>
+                            </div>
                             <div class="mb-3">
                                 <label class="form-label text-muted small fw-bold mb-1">Initial Prompt</label>
                                 <textarea id="rtInitialPrompt" rows="2"
@@ -1337,13 +1351,15 @@
             const numSp = document.getElementById('rtNumSpeakers');
             const maxSp = document.getElementById('rtMaxSpeakers');
             const prio  = document.getElementById('rtPriority');
-            if (model  && model.value)        opts.model           = model.value;
-            if (lang   && lang.value.trim())  opts.language        = lang.value.trim();
-            if (prompt && prompt.value.trim())opts.initial_prompt  = prompt.value.trim();
-            if (minSp  && minSp.value)        opts.min_speakers    = parseInt(minSp.value);
-            if (numSp  && numSp.value)        opts.num_speakers    = parseInt(numSp.value);
-            if (maxSp  && maxSp.value)        opts.max_speakers    = parseInt(maxSp.value);
-            if (prio   && prio.value)         opts.priority        = prio.value;
+            const src   = document.getElementById('rtAudioSource');
+            if (model  && model.value)        opts.model            = model.value;
+            if (lang   && lang.value.trim())  opts.language         = lang.value.trim();
+            if (prompt && prompt.value.trim())opts.initial_prompt   = prompt.value.trim();
+            if (minSp  && minSp.value)        opts.min_speakers     = parseInt(minSp.value);
+            if (numSp  && numSp.value)        opts.num_speakers     = parseInt(numSp.value);
+            if (maxSp  && maxSp.value)        opts.max_speakers     = parseInt(maxSp.value);
+            if (prio   && prio.value)         opts.priority         = prio.value;
+            if (src    && src.value)          opts.audio_source_url = src.value;
 
             submitBtn.disabled = true;
             statusMsg.textContent = 'Queuing…';

@@ -74,7 +74,7 @@ All settings live in `.env` and are read via `config/settings.py`.
 | `WHISPER_MODEL` | `medium.en` | Default Whisper model size, sent as the `model` parameter on each `/asr` call. The service switches models per request, so this is the fallback used when no per-network/per-podcast/per-run override is set — it need not match the container's `ASR_MODEL` (that is only the service's own default). Overridable per-network and per-podcast in the creator settings UI. |
 | `WHISPER_LANGUAGE` | `en` | Default BCP-47 language code passed to the ASR service. Overridable per-network and per-podcast. |
 | `WHISPER_TIMEOUT` | `5400` | HTTP timeout in seconds for calls to `/asr`. 5400 = 90 minutes, which covers long episodes on slower hardware. |
-| `WHISPER_KEEP_SOURCE_AUDIO` | `False` | When `True`, retains the downloaded subscriber MP3 at `MEDIA_ROOT/source_audio/{network}/{podcast}/{filename}`. Useful for DEV debugging. Always `False` in production. |
+| `WHISPER_KEEP_SOURCE_AUDIO` | `False` | When `True`, retains the downloaded subscriber MP3 at `MEDIA_ROOT/source_audio/{network}/{podcast}/{filename}`. Useful for DEV debugging. Always `False` in production. Retained files are written world-readable/writable (`chmod 777`) — they hold no secrets, and this keeps them accessible once the worker stops running as root. |
 
 ### Per-Network Defaults
 
@@ -211,6 +211,13 @@ In the Django admin → **Episodes**, select one or more episodes and choose **Q
 - In the IDE environment (`IS_IDE=True`): runs synchronously in-process
 - In DEV/PROD: dispatches via Celery with a 30-second stagger between episodes
 
+### Transcript admin — Requeue actions
+
+In the Django admin → **Transcripts**, selecting records exposes requeue actions that reset the chosen transcripts to `pending` and re-dispatch them:
+
+- **Requeue transcription — HIGH / default / LOW priority** — re-runs with each episode's *effective* model, at the chosen [priority band](#queue-routing--priority).
+- **Requeue large-v3 — HIGH / MEDIUM / LOW priority** — forces the `large-v3` model for the run. Because `large-v3` is a heavy model, `route_transcription()` sends it to the `transcription_heavy` queue, and the model is passed through as a task kwarg so the worker actually runs it.
+
 ### Management Command
 
 For scripted use or IDE testing without the admin:
@@ -266,6 +273,12 @@ Clicking the button reveals an options panel pre-populated with the podcast/netw
 3. Existing transcript files are overwritten when the task completes
 4. RSS fragment caches are busted automatically
 
+### Audio source override
+
+The panel also exposes an **Audio source** selector. It defaults to *— default (cached / subscriber) —*, which behaves exactly as automatic transcription does (reuse the cached file if present, otherwise download the subscriber URL). Selecting a specific source — **Private (subscriber)**, **R2 mirror**, or **Public** (shown only when one exists) — forces a *fresh* download from that URL and deletes any cached source file first. Only the episode's own audio URLs are accepted (validated server-side and SSRF-checked); the freshly downloaded override bytes are never written into the shared `source_audio/` cache.
+
+> **R2 is written only from the subscriber source.** A re-transcription from the **Private (subscriber)** source re-runs the [R2 mirror](audio-mirroring.md) with a content-hash comparison: identical bytes dedupe with no upload, changed bytes upload and the superseded object is recorded for garbage collection. The **R2** and **Public** sources are transcribed but **never** written back to the mirror — public audio carries dynamic per-listener ads and must never become the served backup.
+
 ---
 
 ## Speaker Identification
@@ -300,6 +313,20 @@ Transcript search uses a SQL `LIKE` query on the `transcript_text` field. This i
 
 ---
 
+## Error Handling & Source Validation
+
+### Captured ASR errors
+
+When the Whisper ASR call fails, the service raises a FastAPI `HTTPException` whose JSON body is `{"detail": "<the engine's own error>"}` — out-of-memory, diarization failure, unreadable audio, `413` (file too large), `400` (bad parameters), and so on. Vecto extracts that `detail` and stores it on `Transcript.error_message` (prefixed with the HTTP status), so the admin shows the **real** reason a run failed instead of a bare `500 Server Error for url: …`. Non-HTTP failures (download errors, parse errors) fall back to the exception text.
+
+### HTML-instead-of-audio guard
+
+Some hosts — Google Drive most of all — hand back an HTML page (a download interstitial or a quota wall) instead of the MP3. Sending that to the ASR engine wastes a GPU run. So **before every ASR call** the audio file is validated: any file under ~1 MB whose first bytes look like HTML (`<!doctype html>`, `<html>`, `<head>`, …) is discarded and re-downloaded, up to **5 download attempts** with a short back-off between them. If all five still return HTML, the transcription **fails without ever calling ASR** (`error_message` records the HTML source) and the normal Celery retry/back-off applies.
+
+The cached file (when `WHISPER_KEEP_SOURCE_AUDIO=True`) is checked first and deleted if it is HTML, without consuming a download attempt. The guard runs on every source/host, not just Google Drive.
+
+---
+
 ## Transcript Status Reference
 
 | Status | Meaning |
@@ -307,7 +334,7 @@ Transcript search uses a SQL `LIKE` query on the `transcript_text` field. This i
 | `pending` | Task has been queued; waiting for a Celery worker to pick it up |
 | `processing` | Worker is actively downloading audio and/or calling the ASR service |
 | `completed` | All format files written; transcript is live in the RSS feed and episode page |
-| `failed` | An error occurred; see `error_message` on the Transcript record in the admin. Will be re-queued by the next backfill or episode re-save |
+| `failed` | An error occurred; see `error_message` on the Transcript record in the admin — it carries the ASR engine's own `detail` when the failure came from `/asr`. Will be re-queued by the next backfill or episode re-save |
 
 The `retry_count` field tracks how many times the Celery task has automatically retried (max 3, with 60/120/180-second back-off).
 

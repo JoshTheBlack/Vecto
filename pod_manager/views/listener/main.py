@@ -224,6 +224,47 @@ def user_feeds(request):
     return render(request, 'pod_manager/user_feeds.html', context)
 
 
+def _fmt_timecode(seconds: float) -> str:
+    """Seconds -> M:SS, or H:MM:SS past an hour (chapter link display)."""
+    s = int(seconds)
+    h, rem = divmod(s, 3600)
+    m, sec = divmod(rem, 60)
+    return f"{h}:{m:02d}:{sec:02d}" if h else f"{m}:{sec:02d}"
+
+
+def _episode_chapter_list(ep, has_access):
+    """Normalize an episode's saved chapters into a sorted list of
+    {start, time, title} for the clickable episode-detail links.
+
+    Mirrors the feed's access choice (private chapters with access, else public)
+    and handles both storage shapes — a legacy bare list or the Podcast Index
+    {"chapters": [...]} dict.
+    """
+    raw = (ep.chapters_private or ep.chapters_public) if has_access else (ep.chapters_public or ep.chapters_private)
+    if isinstance(raw, dict):
+        items = raw.get('chapters', [])
+    elif isinstance(raw, list):
+        items = raw
+    else:
+        items = []
+
+    chapters = []
+    for c in items:
+        if not isinstance(c, dict) or c.get('startTime') is None:
+            continue
+        try:
+            start = float(c['startTime'])
+        except (TypeError, ValueError):
+            continue
+        chapters.append({
+            'start': start,
+            'time': _fmt_timecode(start),
+            'title': (c.get('title') or '').strip() or 'Untitled chapter',
+        })
+    chapters.sort(key=lambda c: c['start'])
+    return chapters
+
+
 def episode_detail(request, episode_id):
     ep = get_object_or_404(Episode.objects.select_related('podcast', 'podcast__network'), id=episode_id)
     ep.user_has_access, _ = _evaluate_access(request.user, ep.podcast, ep.podcast.network)
@@ -282,6 +323,8 @@ def episode_detail(request, episode_id):
         except Exception:
             pass
 
+    chapters = _episode_chapter_list(ep, ep.user_has_access)
+
     cross_targets = ep.cross_publications.select_related('podcast').order_by('podcast__title')
     network_podcasts = []
     if request.user.is_authenticated:
@@ -290,6 +333,8 @@ def episode_detail(request, episode_id):
     return render(request, 'pod_manager/episode_detail.html', {
         'ep': ep,
         'is_owner': is_owner,
+        'chapters': chapters,
+        'chapters_json': _json.dumps(chapters),
         'cross_targets': cross_targets,
         'cross_target_ids': [cp.podcast_id for cp in cross_targets],
         'network_podcasts': network_podcasts,

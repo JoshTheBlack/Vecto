@@ -923,6 +923,28 @@ def assign_default_tier(sender, instance, **kwargs):
             instance.required_tier = default_tier
 
 
+def normalize_chapters(value):
+    """Coerce a legacy bare chapter list into the canonical Podcast Index dict
+    ``{"version": "1.2.0", "chapters": [...]}``; an empty list becomes None.
+    Existing dicts and None pass through untouched.
+
+    Lossless and never raises — it only re-shapes, so it's safe on every save.
+    Full sanitization of edit submissions still happens via
+    services.edits.parse_chapter_payload at the edit-submission paths.
+    """
+    if isinstance(value, list):
+        return {"version": "1.2.0", "chapters": value} if value else None
+    return value
+
+
+@receiver(pre_save, sender=Episode)
+def normalize_episode_chapters(sender, instance, **kwargs):
+    """Guarantee an episode never persists chapters as a legacy bare list —
+    every write lands in the canonical dict shape (or None)."""
+    instance.chapters_public = normalize_chapters(instance.chapters_public)
+    instance.chapters_private = normalize_chapters(instance.chapters_private)
+
+
 @receiver(post_save, sender=Episode)
 def queue_transcription_on_episode_save(sender, instance, created=False, **kwargs):
     from django.conf import settings as django_settings

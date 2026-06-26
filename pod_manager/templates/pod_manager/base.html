@@ -515,6 +515,20 @@
     }
     .fp-close { color: #6c757d; }
     .fp-close:hover { background: rgba(220,53,69,0.18); color: #ff6b6b; }
+    /* Chapters dropdown on the bar */
+    .fp-chapters-menu { max-height: 50vh; overflow-y: auto; min-width: 240px; }
+    .fp-chapters-menu .dropdown-item {
+        display: flex; align-items: center; justify-content: space-between; gap: .75rem;
+        padding: 4px 10px; border-radius: 4px; cursor: pointer; font-size: .82rem;
+    }
+    .fp-chapters-menu .dropdown-item .fp-ch-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .fp-chapters-menu .dropdown-item .fp-ch-time { color: #6c757d; font-variant-numeric: tabular-nums; flex-shrink: 0; }
+    .fp-chapters-menu .dropdown-item:hover,
+    .fp-chapters-menu .dropdown-item.active {
+        background: color-mix(in srgb, var(--vecto-primary) 22%, transparent);
+        color: var(--vecto-primary);
+    }
+    .fp-chapters-menu .dropdown-item:hover .fp-ch-time { color: var(--vecto-primary); }
     /* Plyr instance backing the bar is hidden — the bar is the UI. */
     #floatingPlayer .plyr { display: none !important; }
     body.fp-active { padding-top: 62px; transition: padding-top 0.45s cubic-bezier(0.34,1.4,0.64,1); }
@@ -540,6 +554,10 @@
             <div class="fp-scrubber-thumb" id="fpThumb"></div>
         </div>
         <span class="fp-time" id="fpTimeTotal">0:00</span>
+    </div>
+    <div class="dropdown fp-chapters-wrap" id="fpChaptersWrap" style="display:none;">
+        <button type="button" class="fp-btn fp-chapters-btn" id="fpChapters" data-bs-toggle="dropdown" data-bs-display="static" aria-expanded="false" title="Chapters"><i class="bi bi-list-ol"></i></button>
+        <ul class="dropdown-menu dropdown-menu-end fp-speed-menu fp-chapters-menu" id="fpChaptersMenu" aria-labelledby="fpChapters"></ul>
     </div>
     <div class="dropdown fp-speed-wrap">
         <button type="button" class="fp-speed" id="fpSpeed" data-bs-toggle="dropdown" data-bs-display="static" aria-expanded="false" title="Playback speed">1×</button>
@@ -576,6 +594,8 @@
     const speedMenu = document.getElementById('fpSpeedMenu');
     const btnClose  = document.getElementById('fpClose');
     const audioEl   = document.getElementById('vGlobalAudio');
+    const chaptersWrap = document.getElementById('fpChaptersWrap');
+    const chaptersMenu = document.getElementById('fpChaptersMenu');
     if (!fp || typeof Plyr === 'undefined') return;
 
     const SPEEDS = [0.5, 0.75, 0.9, 1, 1.1, 1.25, 1.5, 1.75, 2];
@@ -684,6 +704,41 @@
             if (meta.cover) { cover.src = meta.cover; cover.style.display = ''; }
             else { cover.removeAttribute('src'); cover.style.display = 'none'; }
         }
+        if (meta.chapters !== undefined) setChapters(meta.chapters);
+    }
+
+    // Populate (and show/hide) the bar's chapters dropdown. Clicking an entry
+    // seeks whichever player the bar currently controls.
+    function setChapters(chapters) {
+        if (!chaptersWrap || !chaptersMenu) return;
+        chaptersMenu.replaceChildren();
+        if (!Array.isArray(chapters) || !chapters.length) {
+            chaptersWrap.style.display = 'none';
+            return;
+        }
+        chapters.forEach(c => {
+            const li = document.createElement('li');
+            const b  = document.createElement('button');
+            b.type = 'button';
+            b.className = 'dropdown-item';
+            const title = document.createElement('span');
+            title.className = 'fp-ch-title';
+            title.textContent = c.title || '';
+            const time = document.createElement('span');
+            time.className = 'fp-ch-time';
+            time.textContent = c.time || '';
+            b.append(title, time);
+            b.addEventListener('click', () => {
+                if (!active) return;
+                const t = parseFloat(c.start);
+                if (isNaN(t)) return;
+                if (active.media && active.media.readyState > 0) { active.currentTime = t; active.play(); }
+                else { active.media?.addEventListener('canplay', () => { active.currentTime = t; }, { once: true }); active.play(); }
+            });
+            li.appendChild(b);
+            chaptersMenu.appendChild(li);
+        });
+        chaptersWrap.style.display = '';
     }
 
     window.VectoPlayer = {
@@ -697,7 +752,7 @@
                 ownPlyr = new Plyr(audioEl, { controls: [], storage: { enabled: false } });
             }
             bindPlyr(ownPlyr);
-            setMeta({ title: opts.title || '', show: opts.show || '', cover: opts.cover || '' });
+            setMeta({ title: opts.title || '', show: opts.show || '', cover: opts.cover || '', chapters: opts.chapters || [] });
             ownPlyr.source = { type: 'audio', sources: [{ src: opts.url, type: 'audio/mpeg' }] };
             showBar();
             const startAt = opts.seek || 0;

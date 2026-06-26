@@ -995,7 +995,8 @@ class CreatorInboxActionTests(TestCase):
         # No real change anywhere → zero-approval trap converts to rejection.
         self.assertEqual(edit.status, 'rejected')
         self.episode.refresh_from_db()
-        self.assertEqual(self.episode.chapters_public, [])
+        # Empty chapters normalize to None ("no chapters"); never a legacy [].
+        self.assertIsNone(self.episode.chapters_public)
 
     def test_reject_edit_penalizes_trust_and_marks_rejected(self):
         edit = self._make_pending_edit()

@@ -173,7 +173,7 @@
                         
                         <div class="avatar-option-container {% if membership.preferred_avatar_source == 'custom' %}active-option{% endif %}" onclick="selectAvatar('custom', event)">
                             {% if membership.custom_image_upload.name %}
-                                <img src="{{ membership.custom_image_upload.url }}" class="avatar-img" title="Use Custom Avatar">
+                                <img src="{{ membership.custom_avatar_url }}" class="avatar-img" title="Use Custom Avatar">
                             {% elif membership.custom_image_url %}
                                 <img src="{{ membership.custom_image_url }}" class="avatar-img" title="Use Custom Avatar">
                             {% else %}

@@ -85,6 +85,23 @@ R2_FORCE_SERVE           = os.getenv("R2_FORCE_SERVE", "False") == "True"
 R2_ORPHAN_RETENTION_DAYS = int(os.getenv("R2_ORPHAN_RETENTION_DAYS", "90"))
 R2_REKEY_GRACE_DAYS      = int(os.getenv("R2_REKEY_GRACE_DAYS", "7"))
 
+# Cloudflare R2 — user-asset CDN (see planned_features.txt: vecto-cdn). A SEPARATE
+# bucket from the audio mirror, served via cdn.joshtheblack.com, holding uploaded
+# avatars, mix covers and transcript files so the app container stays stateless.
+# Stable keys + a version-int cache-bust mean NO content hashing / orphan GC here
+# (unlike the audio bucket). Reuses the account R2 creds/endpoint above; the
+# audio bucket's R2_BUCKET / R2_PUBLIC_HOST are left untouched.
+R2_MEDIA_BUCKET          = os.getenv("R2_MEDIA_BUCKET", "vecto-cdn")
+R2_MEDIA_PUBLIC_HOST     = os.getenv("R2_MEDIA_PUBLIC_HOST", "").rstrip("/")
+# Prepended to every media key (django-storages `location`). "" in prod; "dev/"
+# in IDE so dev objects are namespaced + bulk-purgeable. Defaults to "dev/" under
+# IS_IDE so a forgotten .env entry can't write into the prod keyspace.
+R2_MEDIA_KEY_PREFIX      = os.getenv("R2_MEDIA_KEY_PREFIX", "dev/" if IS_IDE else "")
+# Master switch. When False, the per-field image storage falls back to the local
+# FileSystemStorage default (so the app runs without R2). Forced False under
+# IS_TEST so the suite never touches R2, mirroring R2_MIRROR_ENABLED.
+R2_MEDIA_ENABLED         = os.getenv("R2_MEDIA_ENABLED", "True") == "True"
+
 # Django's internal DEBUG needs to be a boolean, so it's True if 'True' OR 'IDE'
 DEBUG = (RAW_DEBUG in ['True', 'IDE'])
 
@@ -385,6 +402,7 @@ if IS_IDE:
     if IS_TEST:
         WHISPER_ENABLED = False
         R2_MIRROR_ENABLED = False
+        R2_MEDIA_ENABLED = False
 else:
     # Use Redis Cache & Full Celery Worker Pipeline
     RAW_REDIS_URL = os.getenv("REDIS_URL")

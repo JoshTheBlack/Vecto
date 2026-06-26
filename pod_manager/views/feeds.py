@@ -174,6 +174,9 @@ class RSSFeedBuilder:
                 etree.SubElement(item, f'{{{itunes_ns}}}episodeType').text = ep.episode_type
 
             if ep.id in transcript_map:
+                # ?v=N so the on-platform URL (which 302s to the immutable cdn
+                # object) busts when a re-transcribe bumps the version.
+                t_version = transcript_map[ep.id].version or 0
                 for ext, mime in (
                     ('vtt',  'text/vtt'),
                     ('json', 'application/json'),
@@ -181,7 +184,8 @@ class RSSFeedBuilder:
                     ('html', 'text/html'),
                 ):
                     t_elem = etree.SubElement(item, f'{{{podcast_ns}}}transcript')
-                    t_elem.set('url', f"{self.base_url}{reverse('serve_transcript', kwargs={'episode_id': ep.id, 'ext': ext})}")
+                    t_url = reverse('serve_transcript', kwargs={'episode_id': ep.id, 'ext': ext})
+                    t_elem.set('url', f"{self.base_url}{t_url}?v={t_version}")
                     t_elem.set('type', mime)
 
         final_xml = etree.tostring(root, encoding='utf-8', xml_declaration=True).decode('utf-8')

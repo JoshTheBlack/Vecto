@@ -260,19 +260,18 @@ def episode_detail(request, episode_id):
     transcript_html = None
     transcript_speakers = []
     transcript_speaker_names = {}
+    # Inline render reads the html + words FROM R2 (or local when not R2-backed)
+    # via the transcript store, so the page no longer depends on local disk.
+    from pod_manager.services.transcription import read_transcript_bytes
     if transcript and transcript.status == Transcript.Status.COMPLETED and transcript.html_file:
-        html_path = os.path.join(settings.MEDIA_ROOT, transcript.html_file)
         try:
-            with open(html_path, 'r', encoding='utf-8') as f:
-                transcript_html = f.read()
-        except OSError:
+            transcript_html = read_transcript_bytes(ep.id, 'html', transcript.version).decode('utf-8')
+        except Exception:
             pass
 
     if transcript and transcript.status == Transcript.Status.COMPLETED and transcript.words_json_file:
-        words_path = os.path.join(settings.MEDIA_ROOT, transcript.words_json_file)
         try:
-            with open(words_path, 'r', encoding='utf-8') as f:
-                words_doc = _json.load(f)
+            words_doc = _json.loads(read_transcript_bytes(ep.id, 'words', transcript.version).decode('utf-8'))
             seen = set()
             for seg in words_doc.get('segments', []):
                 sp = seg.get('speaker', '')
@@ -280,7 +279,7 @@ def episode_detail(request, episode_id):
                     seen.add(sp)
                     transcript_speakers.append(sp)
             transcript_speaker_names = words_doc.get('speaker_mappings', {})
-        except (OSError, _json.JSONDecodeError, ValueError):
+        except Exception:
             pass
 
     cross_targets = ep.cross_publications.select_related('podcast').order_by('podcast__title')

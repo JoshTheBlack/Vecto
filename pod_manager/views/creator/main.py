@@ -185,10 +185,9 @@ def submit_speaker_labels(request, episode_id):
     # Capture existing mappings as original_data so rollback is meaningful
     existing_mappings = {}
     try:
-        from pod_manager.services.transcription import transcript_path
+        from pod_manager.services.transcription import read_transcript_bytes
         if hasattr(ep, 'transcript') and ep.transcript.words_json_file:
-            words_path = transcript_path(ep.id, 'words')
-            doc = _json.loads(words_path.read_text(encoding='utf-8'))
+            doc = _json.loads(read_transcript_bytes(ep.id, 'words', ep.transcript.version).decode('utf-8'))
             existing_mappings = doc.get('speaker_mappings', {})
     except Exception:
         pass

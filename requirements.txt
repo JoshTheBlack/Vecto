@@ -17,8 +17,9 @@ redis
 django-celery-beat
 django-cryptography
 
-# Object Storage (Cloudflare R2 audio mirror)
+# Object Storage (Cloudflare R2 audio mirror + user-asset CDN)
 boto3>=1.36
+django-storages>=1.14
 
 # Utilities
 python-dotenv

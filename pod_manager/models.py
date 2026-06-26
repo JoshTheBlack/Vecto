@@ -17,8 +17,30 @@ from django.conf import settings
 from django.utils import timezone
 
 from .services.images import process_image_field
+from .services.r2_storage import select_media_storage
 
 logger = logging.getLogger(__name__)
+
+# Legacy local-storage key prefixes from before the R2 (vecto-cdn) cutover. Rows
+# still holding one of these names are served straight from /media until the
+# backfill re-keys them to the stable webp key — this keeps the cutover window at
+# zero. DELETE this branch (and the constant) once every row is migrated.
+_LEGACY_IMAGE_PREFIXES = ('custom_avatars/', 'mix_covers/')
+
+
+def _versioned_image_url(fieldfile, version):
+    """Public URL for an R2-backed image field, cache-busted with ?v=version.
+
+    New stable webp keys resolve through the field's storage (the cdn, or local
+    /media when R2 is disabled) plus the version query string. Legacy pre-cutover
+    rows are served from /media unchanged so they keep working until the backfill
+    re-keys them.
+    """
+    name = fieldfile.name or ''
+    if name.startswith(_LEGACY_IMAGE_PREFIXES):
+        return f"{settings.MEDIA_URL}{name}"
+    url = fieldfile.url
+    return f"{url}?v={version}" if version else url
 
 def default_theme_config():
     return {
@@ -477,9 +499,24 @@ class R2OrphanedObject(models.Model):
 
 
 def mix_cover_path(instance, filename):
-    """Always name the file exactly <UUID>.<ext>"""
-    ext = filename.split('.')[-1]
-    return os.path.join('mix_covers', f"{instance.unique_id}.{ext}")
+    """Stable R2 key for a mix cover: covers/<UUID>.webp.
+
+    The extension is always .webp (process_image_field normalizes output), so the
+    key never changes on re-upload — the object is OVERWRITTEN in place, never
+    orphaned. The passed filename is ignored.
+    """
+    return f"covers/{instance.unique_id}.webp"
+
+
+def avatar_upload_path(instance, filename):
+    """Stable R2 key for a custom avatar: avatars/<user>-<network>.webp.
+
+    custom_image_upload is per membership (unique on user+network), so the
+    id-derived key is unique and stable; .webp keeps the extension constant for a
+    true overwrite. The passed filename is ignored.
+    """
+    return f"avatars/{instance.user_id}-{instance.network_id}.webp"
+
 
 class OverwriteStorage(FileSystemStorage):
     def get_available_name(self, name, max_length=None):
@@ -497,8 +534,11 @@ class UserMix(models.Model):
     
     name = models.CharField(max_length=200, default="My Custom Mix")
     image_url = models.URLField(blank=True, help_text="Optional custom artwork URL")
-    image_upload = models.ImageField(upload_to=mix_cover_path, storage=mix_storage, blank=True, null=True, help_text="Uploaded artwork")
-    
+    image_upload = models.ImageField(upload_to=mix_cover_path, storage=select_media_storage, blank=True, null=True, help_text="Uploaded artwork")
+    # Cache-bust counter for the stable R2 key — bumped on each new upload and
+    # appended to the cover URL as ?v=N (the object key never changes).
+    image_version = models.IntegerField(default=0)
+
     unique_id = models.UUIDField(default=uuid.uuid4, editable=False, unique=True)
     selected_podcasts = models.ManyToManyField(Podcast)
     last_accessed = models.DateTimeField(auto_now=True)
@@ -506,23 +546,26 @@ class UserMix(models.Model):
 
     def __str__(self):
         return f"{self.user.username}'s Mix - {self.name}"
-        
+
     @property
     def display_image(self):
         if self.image_upload:
-            return self.image_upload.url
+            return _versioned_image_url(self.image_upload, self.image_version)
         return self.image_url
 
     def save(self, *args, **kwargs):
         logger.debug(f"Saving UserMix: '{self.name}' for user {self.user.username}")
-        super().save(*args, **kwargs)
-        if self.image_upload:
+        # Single-write: process the fresh upload to WebP and write it ONCE at the
+        # stable key, then persist. _committed is False only for a just-uploaded
+        # file, so plain row re-saves never reprocess/re-PUT.
+        if self.image_upload and not self.image_upload._committed:
             try:
                 data = process_image_field(self.image_upload, 500)
-                self.image_upload.close()
-                self.image_upload.save(self.image_upload.name, ContentFile(data), save=False)
+                self.image_upload.save('cover.webp', ContentFile(data), save=False)
+                self.image_version = (self.image_version or 0) + 1
             except Exception as e:
                 logger.error(f"Image processing failed for mix {self.unique_id}: {e}", exc_info=True)
+        super().save(*args, **kwargs)
     
 class PatronProfile(models.Model):
     user = models.OneToOneField(User, on_delete=models.CASCADE, related_name='patron_profile')
@@ -590,7 +633,10 @@ class NetworkMembership(models.Model):
     ]
     preferred_avatar_source = models.CharField(max_length=20, choices=AVATAR_CHOICES, default='discord')
     custom_image_url = models.URLField(max_length=500, blank=True, null=True)
-    custom_image_upload = models.ImageField(upload_to='custom_avatars/', blank=True, null=True)
+    custom_image_upload = models.ImageField(upload_to=avatar_upload_path, storage=select_media_storage, blank=True, null=True)
+    # Cache-bust counter for the stable R2 avatar key — bumped on each new upload
+    # and appended to the avatar URL as ?v=N (the object key never changes).
+    image_version = models.IntegerField(default=0)
 
     class Meta:
         unique_together = ('user', 'network')
@@ -608,9 +654,23 @@ class NetworkMembership(models.Model):
         return "0" * 64
     
     @property
+    def custom_avatar_url(self):
+        """Versioned, legacy-safe URL for the uploaded custom avatar (or None).
+
+        Use this anywhere the custom upload is rendered DIRECTLY (e.g. the
+        profile avatar picker), rather than .url — it appends the ?v=N cache-bust
+        and routes pre-cutover legacy rows to local /media. display_avatar uses
+        the same helper for the 'custom' branch.
+        """
+        if self.custom_image_upload:
+            return _versioned_image_url(self.custom_image_upload, self.image_version)
+        return None
+
+    @property
     def display_avatar(self):
         discord_url = self.discord_image_url
-        custom_url = self.custom_image_upload.url if self.custom_image_upload else self.custom_image_url
+        custom_url = (_versioned_image_url(self.custom_image_upload, self.image_version)
+                      if self.custom_image_upload else self.custom_image_url)
         
         patreon_url = None
         if hasattr(self.user, 'patron_profile') and self.user.patron_profile.profile_image_url:
@@ -637,16 +697,17 @@ class NetworkMembership(models.Model):
         return gravatar_url
 
     def save(self, *args, **kwargs):
-        super().save(*args, **kwargs)
-        if self.custom_image_upload:
+        # Single-write: process the fresh upload to WebP and write it ONCE at the
+        # stable key, then persist. _committed is False only for a just-uploaded
+        # file, so plain row re-saves never reprocess/re-PUT.
+        if self.custom_image_upload and not self.custom_image_upload._committed:
             try:
                 data = process_image_field(self.custom_image_upload, 256)
-                self.custom_image_upload.close()
-                self.custom_image_upload.file = ContentFile(data)
-                # Use update() to avoid triggering save() recursion.
-                NetworkMembership.objects.filter(id=self.id).update(custom_image_upload=self.custom_image_upload.name)
+                self.custom_image_upload.save('avatar.webp', ContentFile(data), save=False)
+                self.image_version = (self.image_version or 0) + 1
             except Exception as e:
                 logger.error(f"Avatar processing failed for membership {self.id}: {e}", exc_info=True)
+        super().save(*args, **kwargs)
 
 @receiver(post_delete, sender=UserMix)
 def auto_delete_file_on_delete(sender, instance, **kwargs):
@@ -689,8 +750,11 @@ class NetworkMix(models.Model):
     slug = models.SlugField()
     
     image_url = models.URLField(max_length=2000, blank=True, help_text="Optional custom artwork URL")
-    image_upload = models.ImageField(upload_to=mix_cover_path, storage=mix_storage, blank=True, null=True, help_text="Uploaded artwork")
-    
+    image_upload = models.ImageField(upload_to=mix_cover_path, storage=select_media_storage, blank=True, null=True, help_text="Uploaded artwork")
+    # Cache-bust counter for the stable R2 key — bumped on each new upload and
+    # appended to the cover URL as ?v=N (the object key never changes).
+    image_version = models.IntegerField(default=0)
+
     unique_id = models.UUIDField(default=uuid.uuid4, editable=False, unique=True)
     selected_podcasts = models.ManyToManyField('Podcast')
     required_tier = models.ForeignKey('PatreonTier', on_delete=models.SET_NULL, null=True, blank=True, help_text="If set, the entire feed requires this tier to access.")
@@ -700,22 +764,25 @@ class NetworkMix(models.Model):
 
     def __str__(self):
         return f"{self.network.name} Mix - {self.name}"
-        
+
     @property
     def display_image(self):
         if self.image_upload:
-            return self.image_upload.url
+            return _versioned_image_url(self.image_upload, self.image_version)
         return self.image_url
 
     def save(self, *args, **kwargs):
-        super().save(*args, **kwargs)
-        if self.image_upload:
+        # Single-write: process the fresh upload to WebP and write it ONCE at the
+        # stable key, then persist. _committed is False only for a just-uploaded
+        # file, so plain row re-saves never reprocess/re-PUT.
+        if self.image_upload and not self.image_upload._committed:
             try:
                 data = process_image_field(self.image_upload, 500)
-                self.image_upload.close()
-                self.image_upload.save(self.image_upload.name, ContentFile(data), save=False)
+                self.image_upload.save('cover.webp', ContentFile(data), save=False)
+                self.image_version = (self.image_version or 0) + 1
             except Exception as e:
                 logger.error(f"Image processing failed for network mix {self.unique_id}: {e}", exc_info=True)
+        super().save(*args, **kwargs)
 
 class EpisodeEditSuggestion(models.Model):
     class Status(models.TextChoices):
@@ -795,12 +862,19 @@ class Transcript(models.Model):
     )
     language = models.CharField(max_length=10, default='en')
 
-    # File paths — populated once transcription completes
+    # File markers — populated once transcription completes. Hold the R2 key
+    # (transcripts/{id}.{ext}) when R2-backed, or the legacy MEDIA_ROOT-relative
+    # path when local; either way they're existence markers per format.
     vtt_file       = models.CharField(max_length=500, blank=True, null=True)
     json_file      = models.CharField(max_length=500, blank=True, null=True)
     srt_file       = models.CharField(max_length=500, blank=True, null=True)
     html_file      = models.CharField(max_length=500, blank=True, null=True)
     words_json_file = models.CharField(max_length=500, blank=True, null=True)
+
+    # Cache-bust counter for the R2 transcript objects (appended as ?v=N). Bumped
+    # on every (re)transcribe and speaker-label rewrite. 0 = legacy local-only
+    # (written before the R2 cutover / when R2_MEDIA_ENABLED is off).
+    version = models.IntegerField(default=0)
 
     # Plain text extracted from JSON for full-text search (Phase 8)
     transcript_text = models.TextField(blank=True, null=True)
@@ -919,6 +993,19 @@ def queue_r2_mirror_on_episode_save(sender, instance, created=False, **kwargs):
 def auto_delete_transcript_files(sender, instance, **kwargs):
     from pathlib import Path
     from django.conf import settings as django_settings
+    from pod_manager.services.transcription import ALLOWED_EXTENSIONS, transcript_r2_key
+
+    # R2-backed transcript (version >= 1, R2 enabled): delete the cdn objects.
+    # Stable keys are overwritten in place, so there's nothing else to track.
+    if django_settings.R2_MEDIA_ENABLED and (instance.version or 0) >= 1:
+        from pod_manager.services.r2_storage import delete_media_object
+        for ext in ALLOWED_EXTENSIONS:
+            try:
+                delete_media_object(transcript_r2_key(instance.episode_id, ext))
+            except Exception as e:
+                logger.error("Failed to delete R2 transcript %s.%s: %s", instance.episode_id, ext, e)
+
+    # Legacy local files (always attempted — markers may point at MEDIA_ROOT).
     fields = ['vtt_file', 'json_file', 'srt_file', 'html_file', 'words_json_file']
     deleted_dir = None
     for field in fields:

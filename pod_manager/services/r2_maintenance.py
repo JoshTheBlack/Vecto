@@ -233,3 +233,23 @@ def purge_dev_prefix() -> dict:
         _batch_delete(client, bucket, keys)
     logger.info("r2 purge dev/: deleted=%d", len(keys))
     return {"deleted": len(keys)}
+
+
+def purge_media_dev_prefix(dry_run: bool = False) -> dict:
+    """Hard-delete every object under dev/ in the vecto-cdn (media) bucket —
+    disposable test avatars / covers / transcripts.
+
+    Uses the hardcoded DEV_PREFIX (never R2_MEDIA_KEY_PREFIX, which is "" in prod)
+    so it can only ever touch the dev namespace, even if run against prod creds.
+    dry_run lists what would be deleted and removes nothing.
+    """
+    client = get_r2_client()
+    bucket = settings.R2_MEDIA_BUCKET
+    keys = [k for k, _ in _iter_bucket_objects(client, bucket, prefix=DEV_PREFIX)]
+    if keys and not dry_run:
+        _batch_delete(client, bucket, keys)
+    logger.info(
+        "r2 purge media dev/: %s=%d (bucket=%s)",
+        "would_delete" if dry_run else "deleted", len(keys), bucket,
+    )
+    return {"deleted": 0 if dry_run else len(keys), "keys": keys, "dry_run": dry_run}

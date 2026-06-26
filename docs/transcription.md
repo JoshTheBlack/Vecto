@@ -136,7 +136,7 @@ The `learnedmachine/whisperx-asr-service` `/asr` endpoint accepts a `model` quer
 
 ## Transcript Formats
 
-Each completed transcription produces five files stored at `MEDIA_ROOT/transcriptions/{bucket}/{episode_id}.{ext}` (where `bucket = episode_id // 1000`):
+Each completed transcription produces five files. They live in **Cloudflare R2** (the `vecto-cdn` bucket, served via `cdn.joshtheblack.com`) at `transcripts/{episode_id // 1000}/{episode_id}.{ext}` — see [Transcript Storage on Cloudflare R2](#transcript-storage-on-cloudflare-r2-cdn). When R2 is disabled (`R2_MEDIA_ENABLED=False`, e.g. dev) they fall back to `MEDIA_ROOT/transcriptions/{bucket}/{episode_id}.{ext}` (where `bucket = episode_id // 1000`).
 
 | Format | Extension | Use |
 |---|---|---|
@@ -144,15 +144,73 @@ Each completed transcription produces five files stored at `MEDIA_ROOT/transcrip
 | SubRip | `.srt` | Widely compatible subtitle format. |
 | HTML | `.html` | Human-readable, inline display on the episode page. Includes `data-start` attributes per word for future audio player sync. |
 | Podcast Index JSON | `.json` | Machine-readable format per the [Podcast Index spec](https://github.com/Podcastindex-org/podcast-namespace/blob/main/transcripts/transcripts.md). |
-| Words JSON | `.words` | Word-level timing + speaker data. Source of truth for all other formats — all formats can be regenerated deterministically from this file. Contains a metadata header (`episode_id`, `audio_url`, `language`, `model`, `transcribed_at`, `speaker_mappings`). |
+| Words JSON | `.words` | Word-level timing + speaker data. Source of truth for all other formats — all formats can be regenerated deterministically from this file. Contains a metadata header (`episode_id`, `title`, `guid_public`, `guid_private`, `audio_url`, `language`, `model`, `transcribed_at`, `speaker_mappings`) — the title/GUIDs/URL are recovery anchors for re-matching after a DB rebuild. |
 
 > **The `.words` file is the source of truth.** If transcript files are lost but the `.words` file survives, all other formats can be regenerated from it.
 
-All transcript files are served at `/transcripts/<episode_id>.<ext>` with:
-- `Cache-Control: public, no-cache` — the browser may cache but **must revalidate** before reuse. A requeued transcription overwrites the same URL, so the files are *not* immutable; `no-cache` lets the ETag actually do its job instead of pinning a year-long copy that only `Ctrl+F5` could clear.
-- ETag based on MD5 of file content (changes automatically when files are regenerated, e.g. after a re-transcription or speaker label edits). Unchanged files return a cheap `304 Not Modified`; changed files are picked up on the next normal load.
-- `Access-Control-Allow-Origin: *` (podcast clients fetch transcripts cross-origin)
-- `Content-Disposition` using the original audio filename stem for readable downloads
+All transcript formats are reached through the on-platform chokepoint
+`/transcripts/<episode_id>.<ext>` (`serve_transcript`). The bytes themselves come
+from the edge — see the serving split in [Transcript Storage on Cloudflare R2](#serving-the-three-links).
+
+---
+
+## Transcript Storage on Cloudflare R2 (cdn)
+
+Transcript files are stored in the same `vecto-cdn` bucket as uploaded avatars and mix covers (see [User Image Assets on R2](images.md) for the shared storage backend, cache rule, and CORS setup). This moves the feed-referenced transcript traffic — hit by every podcast app — onto an edge CDN instead of reading each file into a gunicorn worker per request, and is part of making the app container stateless.
+
+Like the images, transcripts use **stable keys + a version-int cache-bust**, so there is **no content hashing, no orphan table, and no GC**:
+
+```
+transcripts/{episode_id // 1000}/{episode_id}.{ext}    # ext ∈ vtt json srt html words
+```
+
+The key is derived from `episode_id + ext`, so no URL column is stored — the serve view recomputes the target from the key + `Transcript.version`. The `// 1000` bucket folder mirrors the local layout and keeps each prefix to ~1000 episodes (5 objects each) so the bucket stays navigable for recovery. A re-transcribe **overwrites** the same keys in place and bumps `version`; this is safe (unlike audio) because transcripts are tiny single GETs, not range-streamed sessions, so there's no in-flight-stream concern.
+
+> **Recovery metadata is baked into `.words` at upload time.** The `.words` header carries `title`, `guid_public`, `guid_private`, and `audio_url` (alongside `episode_id`, `language`, `model`, `transcribed_at`) so a transcript can be re-matched to its episode after a DB rebuild — episode IDs change on re-import, but those survive. Written by `run_transcription` for new transcripts and merged in by the backfill for existing ones, so no second PUT is ever needed.
+
+### Write path
+
+`run_transcription` and `apply_speaker_labels` write the five formats via `write_transcript_file(episode_id, ext, content)` (`services/transcription.py`):
+
+- **R2** when `R2_MEDIA_ENABLED`, else the legacy `MEDIA_ROOT` path (dev / pre-cutover). Each object is PUT with its per-format `Content-Type` (R2 has no bucket default) and `Cache-Control: public, max-age=31536000, immutable`.
+- Both paths then **bump `Transcript.version`** (the `?v=N` cache-bust). The `*_file` fields are kept as per-format existence markers (holding the R2 key or the legacy relpath).
+
+Every (re)transcribe and speaker-label edit rewrites all five keys in place — there's **no content comparison**, by design (see the [no-content-comparison note](images.md#single-write-save) for images). Overwriting is the intended path; `?v=N` busts the cache. The backfill is a run-once migration (state-based `--only-missing`), not a content-sync.
+
+> **`Transcript.version` is the storage signal.** `version == 0` means a legacy, local-only transcript (written before the cutover / with R2 off); `version >= 1` means it's R2-backed. `read_transcript_bytes(episode_id, ext, version)` routes reads accordingly — R2 when `version >= 1` and R2 enabled, else local disk.
+
+### Serving the three links
+
+Each link was always a *different* URL, so download-rename and edge-offload don't fight:
+
+| Link | URL | Behavior |
+|---|---|---|
+| **RSS feed** | `/transcripts/<id>.<ext>?v=N` | `serve_transcript` **302-redirects** to the immutable cdn object (`?v=N`). Bytes come from the edge; only the 302 touches Django. Uniform, trackable, reversible (mirrors `/play/<id>` → R2). |
+| **Download buttons** | `/transcripts/<id>.<ext>?download=1` | Django **streams the bytes from R2** with `Content-Disposition: attachment; filename="<audio-stem>.<ext>"`. Stays same-origin so the `<a download>` rename works (a cross-origin 302 would drop it). Low volume. |
+| **Inline page render** | server-side | The episode view reads `html` + `words` **from R2** (`read_transcript_bytes`) to embed the transcript and extract speakers. |
+
+> **The page's client-side `.words` fetch must be versioned.** The episode page's JS re-fetches the `.words` file to build the word-synced "enhanced" transcript, overwriting the server-rendered HTML. With immutable cdn objects that URL **must** carry `?v=N` (`data-words-url=".../words?v={{ transcript.version }}"`), or a re-transcribe shows stale text until a hard refresh. The version bump is exactly what makes `immutable` safe here — it replaces the interim `no-cache` revalidation the local-disk view used.
+
+### Caching model (changed by design)
+
+The old local-disk view sent `Cache-Control: public, no-cache` + a content ETag so a re-transcribe revalidated immediately (an earlier `immutable` attempt caused stale-until-hard-refresh bugs). The R2 design **supersedes** that: objects carry `immutable`, and `?v=N` busts on re-transcribe. Legacy local-only transcripts (`version 0`) are still served the old way (ETag + `no-cache`) until backfilled.
+
+### Backfill — `backfill_transcripts_to_r2`
+
+Uploads existing local transcript files to R2 and sets `Transcript.version`. Same ergonomics as the [image backfill](images.md#backfill--backfill_media_to_r2): idempotent, resumable, dry-runnable, with a presence-aware `--only-missing` (HEADs R2, not just the version) and a `--verify` prune gate.
+
+```bash
+python manage.py backfill_transcripts_to_r2 --all --dry-run   # rehearse
+python manage.py backfill_transcripts_to_r2 --all             # upload + set version
+python manage.py backfill_transcripts_to_r2 --network baldmove --limit 10
+python manage.py backfill_transcripts_to_r2 --all --verify    # HEAD every object (prune gate)
+python manage.py backfill_transcripts_to_r2 --all --prune --dry-run   # preview prune
+python manage.py backfill_transcripts_to_r2 --all --prune            # delete local copies
+```
+
+**MIGRATE → VERIFY → PRUNE:** run the backfill, `--verify` confirms every expected object is in R2, then `--prune` deletes the local copies. Deleting a `Transcript` row deletes its cdn objects too (the `post_delete` signal, for `version >= 1`).
+
+> **`--prune` is per-episode all-or-nothing and re-HEADs first.** It deletes an episode's five local format files only after re-confirming **all five** are in R2 — a partially-present episode is left intact. The per-episode `{id}.whisper_raw.txt` debug dump (dev only) is **left in place** for manual cleanup. Honors `--dry-run`.
 
 ---
 
@@ -161,13 +219,13 @@ All transcript files are served at `/transcripts/<episode_id>.<ext>` with:
 Completed transcripts are exposed in RSS feeds via [Podcasting 2.0](https://podcastindex.org/namespace/1.0) `podcast:transcript` tags, one per format per episode:
 
 ```xml
-<podcast:transcript url="https://yourdomain.com/transcripts/42.vtt"  type="text/vtt" />
-<podcast:transcript url="https://yourdomain.com/transcripts/42.json" type="application/json" />
-<podcast:transcript url="https://yourdomain.com/transcripts/42.srt"  type="application/x-subrip" />
-<podcast:transcript url="https://yourdomain.com/transcripts/42.html" type="text/html" />
+<podcast:transcript url="https://yourdomain.com/transcripts/42.vtt?v=3"  type="text/vtt" />
+<podcast:transcript url="https://yourdomain.com/transcripts/42.json?v=3" type="application/json" />
+<podcast:transcript url="https://yourdomain.com/transcripts/42.srt?v=3"  type="application/x-subrip" />
+<podcast:transcript url="https://yourdomain.com/transcripts/42.html?v=3" type="text/html" />
 ```
 
-Tags are only emitted when `Transcript.status == completed`. The Podcasting 2.0 namespace is always declared on the root `<rss>` element.
+Tags are only emitted when `Transcript.status == completed`. The on-platform URL carries `?v=<Transcript.version>` and 302-redirects to the immutable cdn object (see [Serving the three links](#serving-the-three-links)). The Podcasting 2.0 namespace is always declared on the root `<rss>` element.
 
 **Podcast app support:**
 - **PocketCasts** — full support, renders VTT with timecode-synced highlighting
@@ -359,17 +417,18 @@ When deploying to PROD for the first time:
 - [ ] Set `WHISPER_ENABLED=True` in `.env`
 - [ ] `WHISPER_URL` defaults to `http://whisper:9000` — no override needed once the stack is running
 - [ ] `docker compose up -d` — the `whisper` and `celery-transcription` services start automatically
-- [ ] Mount `media/transcriptions` and `media/source_audio` as bind mounts to persistent array storage (not Docker named volumes) on Unraid, so transcript files survive stack rebuilds. Both `celery` and `celery-transcription` need access to these paths.
+- [ ] Mount `media/source_audio` as a bind mount to persistent array storage (not a Docker named volume) on Unraid. With `R2_MEDIA_ENABLED`, new transcripts go to R2, so the `media/transcriptions` bind mount is only needed for **legacy** (`version 0`) transcripts until they're backfilled + pruned.
 - [ ] Run a test transcription via the Django admin → Episodes → select one episode → **Queue transcription** to confirm end-to-end connectivity
+- [ ] **R2 transcript cutover** (after the [image CDN setup](images.md)): with `R2_MEDIA_ENABLED=True`, run `backfill_transcripts_to_r2 --all` then `--all --verify`; only after verify passes, prune the local `media/transcriptions` files.
 
 ---
 
 ## File Storage & Recovery
 
-Transcript files are stored at:
+Transcript files are stored in R2 at `transcripts/{episode_id // 1000}/{episode_id}.{ext}` when `R2_MEDIA_ENABLED` (see [Transcript Storage on Cloudflare R2](#transcript-storage-on-cloudflare-r2-cdn)). With R2 disabled they fall back to:
 ```
 MEDIA_ROOT/transcriptions/{bucket}/{episode_id}.{ext}
 ```
-where `bucket = episode_id // 1000`. This keeps each directory to ~1000 files regardless of total episode count.
+where `bucket = episode_id // 1000` (keeps each directory to ~1000 files). Both layouts use the same `// 1000` bucketing.
 
-The `.words` JSON file contains a metadata header that embeds the original subscriber audio URL. This makes recovery possible even after a database rebuild — episodes can be matched by audio URL if the episode ID changes. A future `recover_transcripts` management command will automate this process (spec documented in [planned_features.txt](../planned_features.txt)).
+The `.words` JSON file embeds `title`, `guid_public`, `guid_private`, and `audio_url` in its metadata header. This makes recovery possible even after a database rebuild — episodes can be re-matched by GUID/title/audio URL when the episode ID changes. A future `recover_transcripts` management command will automate this process (spec documented in [planned_features.txt](../planned_features.txt)).

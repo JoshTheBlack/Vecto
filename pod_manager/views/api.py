@@ -64,9 +64,10 @@ def upload_custom_avatar(request):
     membership = get_membership(request)
     if membership:
         if 'custom_image_upload' in request.FILES and request.FILES['custom_image_upload']:
-            if membership.custom_image_upload:
-                membership.custom_image_upload.delete(save=False)
-
+            # No pre-delete: the stable key is deterministic and storage
+            # overwrites in place, so save() PUTs over any existing object —
+            # an explicit delete would just add a round-trip and a momentary
+            # 404 gap before the PUT lands.
             membership.custom_image_upload = request.FILES['custom_image_upload']
             membership.custom_image_url = ""
 

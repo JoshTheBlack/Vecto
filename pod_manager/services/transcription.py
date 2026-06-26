@@ -147,6 +147,68 @@ def transcript_path(episode_id: int, ext: str) -> Path:
     return path
 
 
+def transcript_r2_key(episode_id: int, ext: str) -> str:
+    """Stable cdn key for a transcript format:
+    transcripts/{episode_id // 1000}/{episode_id}.{ext}.
+
+    Deterministic from id+ext, so no full URL is stored — the serve view
+    recomputes the target from the key + Transcript.version. Overwritten in place
+    on re-transcribe (transcripts are tiny single GETs, no in-flight-stream
+    concern), so no orphan/GC machinery is needed. The // 1000 bucket folder
+    mirrors the local layout and keeps each prefix to ~1000 episodes (5 objects
+    each) so the bucket stays navigable for recovery.
+    """
+    if ext not in ALLOWED_EXTENSIONS:
+        raise ValueError(
+            f"Extension '{ext}' not allowed. Must be one of: {', '.join(sorted(ALLOWED_EXTENSIONS))}"
+        )
+    return f"transcripts/{episode_id // 1000}/{episode_id}.{ext}"
+
+
+def episode_recovery_metadata(episode) -> dict:
+    """Fields embedded in the .words header so a transcript can be re-matched to
+    its episode after a DB rebuild — episode IDs change on re-import, but title /
+    GUIDs / the original subscriber URL survive. Written at upload time so no
+    second PUT is ever needed to add them.
+    """
+    return {
+        'title':        episode.title,
+        'guid_public':  episode.guid_public,
+        'guid_private': episode.guid_private,
+        'audio_url':    episode.audio_url_subscriber,
+    }
+
+
+def write_transcript_file(episode_id: int, ext: str, content: bytes) -> str:
+    """Write one transcript format and return its Transcript.*_file marker.
+
+    R2 (vecto-cdn) when R2_MEDIA_ENABLED, else the legacy MEDIA_ROOT path (dev /
+    pre-cutover). Callers bump Transcript.version after writing all formats.
+    """
+    if settings.R2_MEDIA_ENABLED:
+        from pod_manager.services.r2_storage import put_media_object
+        key = transcript_r2_key(episode_id, ext)
+        put_media_object(key, content, CONTENT_TYPES[ext])
+        return key
+    p = transcript_path(episode_id, ext)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_bytes(content)
+    return str(p.relative_to(settings.MEDIA_ROOT))
+
+
+def read_transcript_bytes(episode_id: int, ext: str, version: int) -> bytes:
+    """Read one transcript format's bytes.
+
+    Reads from R2 when the transcript is R2-backed (version >= 1 and R2 enabled),
+    else from the legacy local file (version 0 / R2 disabled). Raises on miss.
+    """
+    if settings.R2_MEDIA_ENABLED and (version or 0) >= 1:
+        from pod_manager.services.r2_storage import get_media_object
+        data, _ = get_media_object(transcript_r2_key(episode_id, ext))
+        return data
+    return transcript_path(episode_id, ext).read_bytes()
+
+
 def source_audio_filename(episode) -> str:
     """Human-readable download filename for an episode's audio.
 
@@ -817,15 +879,14 @@ def run_transcription(
         if not segments:
             logger.warning("transcribe: episode %d returned 0 segments from whisper ASR", episode_id)
 
-        # 6. Write output files
-        transcript_path(episode_id, 'vtt').parent.mkdir(parents=True, exist_ok=True)
-
+        # 6. Write output files (R2 when enabled, else local)
         words_metadata = {
             'episode_id':     episode_id,
-            'audio_url':      audio_url,
             'language':       detected_language,
             'model':          eff_model,
             'transcribed_at': timezone.now().isoformat(),
+            # title / GUIDs / audio_url for post-DB-rebuild recovery matching.
+            **episode_recovery_metadata(episode),
         }
         written = {}
         for ext, content in [
@@ -835,15 +896,15 @@ def run_transcription(
             ('html',  _to_html(segments)),
             ('words', _to_words_json(segments, metadata=words_metadata)),
         ]:
-            p = transcript_path(episode_id, ext)
-            p.write_bytes(content)
-            written[ext] = str(p.relative_to(settings.MEDIA_ROOT))
+            written[ext] = write_transcript_file(episode_id, ext, content)
 
-        # 7. Mark completed
+        # 7. Mark completed. Bump the cache-bust version so a re-transcribe busts
+        # the immutable cdn cache (?v=N) without a hard refresh.
         transcript.status = Transcript.Status.COMPLETED
         transcript.completed_at = timezone.now()
         transcript.language = detected_language
         transcript.whisper_model_used = eff_model
+        transcript.version = (transcript.version or 0) + 1
         transcript.vtt_file        = written['vtt']
         transcript.json_file       = written['json']
         transcript.srt_file        = written['srt']
@@ -852,7 +913,7 @@ def run_transcription(
         transcript.transcript_text = _plain_text(segments)
         transcript.error_message = None
         transcript.save(update_fields=[
-            'status', 'completed_at', 'language', 'whisper_model_used',
+            'status', 'completed_at', 'language', 'whisper_model_used', 'version',
             'vtt_file', 'json_file', 'srt_file', 'html_file', 'words_json_file',
             'transcript_text', 'error_message',
         ])
@@ -922,12 +983,13 @@ def apply_speaker_labels(episode_id: int, speaker_mappings: dict) -> None:
         logger.error("apply_speaker_labels: no completed transcript for episode %d", episode_id)
         return
 
-    words_path = transcript_path(episode_id, 'words')
-    if not words_path.exists():
-        logger.error("apply_speaker_labels: .words file missing for episode %d", episode_id)
+    try:
+        words_bytes = read_transcript_bytes(episode_id, 'words', transcript.version)
+    except Exception as exc:
+        logger.error("apply_speaker_labels: .words unreadable for episode %d — %s", episode_id, exc)
         return
 
-    doc = json.loads(words_path.read_text(encoding='utf-8'))
+    doc = json.loads(words_bytes.decode('utf-8'))
     segments_raw = doc.get('segments', [])
 
     # Rebuild segments in the internal format run_transcription uses, applying mappings
@@ -957,7 +1019,8 @@ def apply_speaker_labels(episode_id: int, speaker_mappings: dict) -> None:
     metadata = {k: v for k, v in doc.items() if k not in ('segments', 'version')}
     metadata['speaker_mappings'] = speaker_mappings
 
-    # Regenerate and overwrite all formats
+    # Regenerate and overwrite all formats, then bump the version so the
+    # immutable cdn cache (and the page's client-side .words fetch) busts.
     for ext, content in [
         ('vtt',   _to_vtt(segments)),
         ('json',  _to_podcast_index_json(segments)),
@@ -965,9 +1028,12 @@ def apply_speaker_labels(episode_id: int, speaker_mappings: dict) -> None:
         ('html',  _to_html(segments)),
         ('words', _to_words_json(segments, metadata=metadata)),
     ]:
-        transcript_path(episode_id, ext).write_bytes(content)
+        write_transcript_file(episode_id, ext, content)
+
+    transcript.version = (transcript.version or 0) + 1
+    transcript.save(update_fields=['version'])
 
     logger.info(
-        "apply_speaker_labels: episode %d — updated %d mappings, regenerated all formats",
-        episode_id, len(speaker_mappings),
+        "apply_speaker_labels: episode %d — updated %d mappings, regenerated all formats (v%d)",
+        episode_id, len(speaker_mappings), transcript.version,
     )

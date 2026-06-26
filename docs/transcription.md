@@ -197,20 +197,20 @@ The old local-disk view sent `Cache-Control: public, no-cache` + a content ETag 
 
 ### Backfill — `backfill_transcripts_to_r2`
 
-Uploads existing local transcript files to R2 and sets `Transcript.version`. Same ergonomics as the [image backfill](images.md#backfill--backfill_media_to_r2): idempotent, resumable, dry-runnable, with a presence-aware `--only-missing` (HEADs R2, not just the version) and a `--verify` prune gate.
+Uploads existing local transcript files to R2 and sets `Transcript.version`. Same ergonomics as the [image backfill](images.md#backfill--backfill_media_to_r2): idempotent, resumable, **preview by default** (pass `--apply` to act), with a presence-aware `--only-missing` (HEADs R2, not just the version) and a `--verify` prune gate.
 
 ```bash
-python manage.py backfill_transcripts_to_r2 --all --dry-run   # rehearse
-python manage.py backfill_transcripts_to_r2 --all             # upload + set version
-python manage.py backfill_transcripts_to_r2 --network baldmove --limit 10
-python manage.py backfill_transcripts_to_r2 --all --verify    # HEAD every object (prune gate)
-python manage.py backfill_transcripts_to_r2 --all --prune --dry-run   # preview prune
-python manage.py backfill_transcripts_to_r2 --all --prune            # delete local copies
+python manage.py backfill_transcripts_to_r2 --all                    # rehearse (preview)
+python manage.py backfill_transcripts_to_r2 --all --apply            # upload + set version
+python manage.py backfill_transcripts_to_r2 --network baldmove --limit 10 --apply
+python manage.py backfill_transcripts_to_r2 --all --verify           # HEAD every object (read-only prune gate)
+python manage.py backfill_transcripts_to_r2 --all --prune            # preview prune
+python manage.py backfill_transcripts_to_r2 --all --prune --apply --yes   # delete local copies
 ```
 
 **MIGRATE → VERIFY → PRUNE:** run the backfill, `--verify` confirms every expected object is in R2, then `--prune` deletes the local copies. Deleting a `Transcript` row deletes its cdn objects too (the `post_delete` signal, for `version >= 1`).
 
-> **`--prune` is per-episode all-or-nothing and re-HEADs first.** It deletes an episode's five local format files only after re-confirming **all five** are in R2 — a partially-present episode is left intact. The per-episode `{id}.whisper_raw.txt` debug dump (dev only) is **left in place** for manual cleanup. Honors `--dry-run`.
+> **`--prune` is per-episode all-or-nothing and re-HEADs first.** It deletes an episode's five local format files only after re-confirming **all five** are in R2 — a partially-present episode is left intact. The per-episode `{id}.whisper_raw.txt` debug dump (dev only) is **left in place** for manual cleanup. Previews unless `--apply`; the irreversible delete needs `--apply --yes`.
 
 ---
 

@@ -9,20 +9,24 @@ The R2 key is DERIVED from id+ext, so no URL column is needed; the *_file
 existence markers are kept as-is. Idempotent: a transcript already at version
 >= 1 whose objects are present in R2 is skipped (--only-missing default).
 
-    # rehearse — list what would move, change nothing
-    python manage.py backfill_transcripts_to_r2 --all --dry-run
-
-    # upload everything
+    # rehearse — list what would move, change nothing (preview is the default)
     python manage.py backfill_transcripts_to_r2 --all
 
+    # upload everything
+    python manage.py backfill_transcripts_to_r2 --all --apply
+
     # scope + sample
-    python manage.py backfill_transcripts_to_r2 --network baldmove --limit 10
+    python manage.py backfill_transcripts_to_r2 --network baldmove --limit 10 --apply
 
     # re-upload rows already in R2 (bumps version)
-    python manage.py backfill_transcripts_to_r2 --all --force
+    python manage.py backfill_transcripts_to_r2 --all --apply --force
 
-    # MIGRATE -> VERIFY -> PRUNE gate: HEAD every expected object in R2
+    # MIGRATE -> VERIFY -> PRUNE gate: HEAD every expected object in R2 (read-only)
     python manage.py backfill_transcripts_to_r2 --all --verify
+
+    # prune local files once verified — irreversible deletion, needs --apply --yes
+    python manage.py backfill_transcripts_to_r2 --all --prune              # preview the prune
+    python manage.py backfill_transcripts_to_r2 --all --prune --apply --yes
 
 Requires R2_MEDIA_ENABLED=True (it lands objects in the cdn bucket).
 """
@@ -54,17 +58,29 @@ class Command(BaseCommand):
         parser.add_argument('--only-missing', action='store_true',
                             help='Skip transcripts already present in R2 (this is the default).')
         parser.add_argument('--limit', type=int, default=None, help='Process at most N (sample latch).')
-        parser.add_argument('--dry-run', action='store_true', help='List targets; change nothing.')
+        parser.add_argument('--apply', action='store_true',
+                            help='Perform the upload/prune (default is a preview that changes nothing).')
+        parser.add_argument('--yes', action='store_true',
+                            help='Confirm irreversible local deletion; required with --prune --apply.')
         parser.add_argument('--verify', action='store_true',
-                            help='HEAD every expected object in R2 and report any missing (prune gate).')
+                            help='HEAD every expected object in R2 and report any missing (read-only prune gate).')
         parser.add_argument('--prune', action='store_true',
                             help='Delete local transcript files whose R2 objects are confirmed present '
-                                 '(re-HEADs first; leaves the whisper_raw.txt). Honors --dry-run.')
+                                 '(re-HEADs first; leaves the whisper_raw.txt). Previews unless --apply; '
+                                 'deletion needs --apply --yes.')
 
     def handle(self, *args, **options):
         if not (options['all'] or options['network'] or options['podcast']):
             raise CommandError("Specify a scope: --all / --network=<slug> / --podcast=<slug>.")
-        if not settings.R2_MEDIA_ENABLED and not options['dry_run']:
+        apply = options['apply']
+        if options['prune'] and apply and not options['yes']:
+            raise CommandError(
+                "--prune --apply deletes local transcript files irreversibly. Re-run with --prune --apply --yes."
+            )
+        # R2 is touched whenever we upload (apply) or HEAD objects (verify/prune); a
+        # plain preview lists targets only and needs nothing.
+        needs_r2 = apply or options['verify'] or options['prune']
+        if not settings.R2_MEDIA_ENABLED and needs_r2:
             raise CommandError("R2_MEDIA_ENABLED is False — enable it (and restart) before backfilling to R2.")
 
         qs = self._select(options)
@@ -73,7 +89,7 @@ class Command(BaseCommand):
         if options['prune']:
             return self._prune(qs, options)
 
-        force, dry_run, limit = options['force'], options['dry_run'], options['limit']
+        force, dry_run, limit = options['force'], not apply, options['limit']
         totals = {'migrated': 0, 'skipped': 0, 'failed': 0}
         count = 0
         for t in qs:
@@ -170,7 +186,7 @@ class Command(BaseCommand):
         in R2. Per-episode all-or-nothing: a partially-present episode is left
         intact. Leaves {id}.whisper_raw.txt for manual cleanup."""
         from pod_manager.services.r2_storage import media_object_exists
-        dry_run = options['dry_run']
+        dry_run = not options['apply']
         limit = options['limit']
         pruned = refused = skipped = 0
         count = 0

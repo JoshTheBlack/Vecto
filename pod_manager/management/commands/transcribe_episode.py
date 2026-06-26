@@ -1,3 +1,12 @@
+"""Transcribe a single episode synchronously (no Celery, IDE-safe).
+
+Runs the full transcription pipeline inline for one episode and reports success or
+the error. A single-target action — running it *is* the intent, so it takes no
+--apply/--yes flag.
+
+    python manage.py transcribe_episode 1234
+"""
+
 from django.core.management.base import BaseCommand
 
 from pod_manager.services.transcription import run_transcription

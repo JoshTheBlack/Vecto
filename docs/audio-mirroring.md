@@ -199,10 +199,11 @@ The mirror's content idempotency **never** re-keys on a prefix mismatch — only
 # Single episode (inline, surfaces errors — for testing)
 python manage.py mirror_audio_to_r2 --episode <id> [--force]
 
-# Bulk backfill (dispatches task_mirror_episode_audio)
-python manage.py mirror_audio_to_r2 --all
-python manage.py mirror_audio_to_r2 --network=<slug> --origins=gdrive
-python manage.py mirror_audio_to_r2 --podcast=<slug> --stagger=5
+# Bulk backfill — preview by default; --apply dispatches task_mirror_episode_audio
+python manage.py mirror_audio_to_r2 --all                  # preview
+python manage.py mirror_audio_to_r2 --all --apply
+python manage.py mirror_audio_to_r2 --network=<slug> --origins=gdrive --apply
+python manage.py mirror_audio_to_r2 --podcast=<slug> --stagger=5 --apply
 ```
 
 | Option | Effect |
@@ -214,8 +215,8 @@ python manage.py mirror_audio_to_r2 --podcast=<slug> --stagger=5
 | `--force` | Re-mirror even if present / source unchanged. |
 | `--stagger=N` | Seconds (Celery countdown) between dispatches — respects source rate limits. |
 | `--limit=N` | **Sample latch** — process at most N (after filtering). Stops scanning early; for a small prod smoke test before a full run. |
-| `--dry-run` | List targets, dispatch nothing. |
-| `--sync` | Mirror inline in this process, surfacing per-episode results. |
+| `--apply` | Dispatch the mirror work. **Default is a preview** that lists targets and dispatches nothing. |
+| `--sync` | With `--apply`: mirror inline in this process, surfacing per-episode results. |
 
 > **GDrive backfill is quota-aware.** Drive throttles by per-file download quota, not just the account ceiling. The backfill is resumable (already-mirrored episodes are skipped), so a throttled run can simply be re-run. The task retries with back-off on transient errors.
 
@@ -228,12 +229,12 @@ Django admin → **Episodes** → select → **Mirror audio to R2**. Inline in t
 ```bash
 python manage.py r2_smoke_test [--keep]        # put/get/delete a dummy object under dev/
 python manage.py r2_gc [--apply] [--age-days=7]  # reconciliation sweep (records orphans)
-python manage.py r2_cleanup_orphans [--apply]    # delete expired, unreferenced orphans
-python manage.py purge_r2_dev --yes              # hard-delete everything under dev/
+python manage.py r2_cleanup_orphans [--apply --yes]  # delete expired, unreferenced orphans
+python manage.py purge_r2_dev [--apply --yes]    # hard-delete everything under dev/
 python manage.py rename_source_audio_to_r2 [--apply]  # migrate local source-audio files to the R2 naming scheme (dev)
 ```
 
-`r2_gc` and `r2_cleanup_orphans` default to **dry-run**; pass `--apply` to act. `purge_r2_dev` requires `--yes`.
+All default to **preview**; pass `--apply` to act. The irreversible deletions (`r2_cleanup_orphans`, `purge_r2_dev`) additionally require `--yes` — i.e. `--apply --yes`. See [management-command-conventions.md](management-command-conventions.md) for the uniform safety idiom.
 
 ---
 
@@ -252,7 +253,7 @@ Beat entries live in `config/celery.py`. The 90-day / 7-day retention windows ma
 
 ## Dev Isolation
 
-One prod bucket; the IDE/dev environment writes under the `dev/` key prefix. Dev objects never collide with prod keys (which have an empty prefix) and are bulk-purgeable via `purge_r2_dev --yes`. The reconciliation sweep and cleanup **never touch `dev/`** — it's disposable test data with no retention or orphan tracking. (Tradeoff accepted: dev objects share the public host; fine since they're disposable.)
+One prod bucket; the IDE/dev environment writes under the `dev/` key prefix. Dev objects never collide with prod keys (which have an empty prefix) and are bulk-purgeable via `purge_r2_dev --apply --yes`. The reconciliation sweep and cleanup **never touch `dev/`** — it's disposable test data with no retention or orphan tracking. (Tradeoff accepted: dev objects share the public host; fine since they're disposable.)
 
 ---
 

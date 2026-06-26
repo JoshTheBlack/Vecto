@@ -42,8 +42,9 @@ _TITLE_SEPARATORS = [' – ', ' — ', ' - ']  # en dash, em dash, ASCII hyphen-
 class Command(BaseCommand):
     help = (
         'Recovers Google Drive audio links and generates a verification report, '
-        'targeting S3 subscriber URLs. Pass an optional podcast title to restrict '
-        'to one show; omit it to run across every podcast in the database.'
+        'targeting S3 subscriber URLs. Preview by default (writes a dry-run CSV and '
+        'saves nothing); pass --apply to persist matches. Pass an optional podcast '
+        'title to restrict to one show; omit it to run across every podcast.'
     )
 
     def add_arguments(self, parser):
@@ -53,8 +54,8 @@ class Command(BaseCommand):
             help='Partial title of the podcast to target. Omit to run across all podcasts.',
         )
         parser.add_argument(
-            '--dry-run', action='store_true',
-            help='Show what would be matched without saving any changes.',
+            '--apply', action='store_true',
+            help='Save the matched GDrive links (default is a preview that writes nothing).',
         )
         parser.add_argument(
             '--min-confidence', choices=[CONFIDENCE_HIGH, CONFIDENCE_MEDIUM, CONFIDENCE_LOW],
@@ -243,7 +244,7 @@ class Command(BaseCommand):
     def handle(self, *args, **options):
         csv_path = options['csv_path']
         target_title = options['podcast_title']
-        dry_run = options['dry_run']
+        dry_run = not options['apply']
         min_confidence = options['min_confidence']
         output_path = options['output']
         prefix_map_path = options['prefix_map']

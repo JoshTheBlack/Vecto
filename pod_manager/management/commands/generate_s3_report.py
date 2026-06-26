@@ -1,3 +1,12 @@
+"""Generate TXT + CSV reports of episodes still hosted on S3.
+
+Scans every podcast/episode for S3 (s3.amazonaws.com) subscriber URLs and writes a
+summary TXT and a detailed CSV into MEDIA_ROOT. Read-only against the database, so
+it takes no --apply/--yes flag.
+
+    python manage.py generate_s3_report
+"""
+
 import os
 import csv
 from django.conf import settings

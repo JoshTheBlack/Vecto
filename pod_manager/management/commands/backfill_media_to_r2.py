@@ -14,20 +14,24 @@ It is a RE-KEY, so the DB must change; the OLD local file is left in place until
 the post-cutover prune. Idempotent: rows already at a stable webp key are skipped
 (--only-missing, the default), which makes a partial run safely resumable.
 
-    # rehearse — list what would move, change nothing
-    python manage.py backfill_media_to_r2 --all --dry-run
-
-    # migrate everything (avatars + covers)
+    # rehearse — list what would move, change nothing (preview is the default)
     python manage.py backfill_media_to_r2 --all
 
+    # migrate everything (avatars + covers)
+    python manage.py backfill_media_to_r2 --all --apply
+
     # one asset class, small sample first
-    python manage.py backfill_media_to_r2 --avatars --limit 5
+    python manage.py backfill_media_to_r2 --avatars --limit 5 --apply
 
     # re-process rows already migrated (bumps image_version)
-    python manage.py backfill_media_to_r2 --all --force
+    python manage.py backfill_media_to_r2 --all --apply --force
 
-    # MIGRATE -> VERIFY -> PRUNE gate: HEAD every migrated object in R2
+    # MIGRATE -> VERIFY -> PRUNE gate: HEAD every migrated object in R2 (read-only)
     python manage.py backfill_media_to_r2 --all --verify
+
+    # prune local copies once verified — irreversible deletion, needs --apply --yes
+    python manage.py backfill_media_to_r2 --all --prune              # preview the prune
+    python manage.py backfill_media_to_r2 --all --prune --apply --yes
 
 R2 must be reachable (R2_MEDIA_ENABLED=True) to land objects in the cdn bucket;
 with it disabled the same re-key runs against the local OverwriteStorage, which
@@ -65,23 +69,31 @@ class Command(BaseCommand):
                             help='Skip rows already re-keyed to a stable webp key (this is the default).')
         parser.add_argument('--limit', type=int, default=None,
                             help='Process at most N rows per asset class (a sample latch).')
-        parser.add_argument('--dry-run', action='store_true', help='List targets; change nothing.')
+        parser.add_argument('--apply', action='store_true',
+                            help='Perform the migration/prune (default is a preview that changes nothing).')
+        parser.add_argument('--yes', action='store_true',
+                            help='Confirm irreversible local deletion; required with --prune --apply.')
         parser.add_argument('--verify', action='store_true',
-                            help='HEAD every migrated object in R2 and report any missing (prune gate).')
+                            help='HEAD every migrated object in R2 and report any missing (read-only prune gate).')
         parser.add_argument('--prune', action='store_true',
                             help='Delete the local copy of a stable-key image whose R2 object is confirmed '
                                  'present (re-HEADs first). Skips legacy-keyed rows (still served from /media '
-                                 'via the transition branch). Honors --dry-run.')
+                                 'via the transition branch). Previews unless --apply; deletion needs --apply --yes.')
 
     def handle(self, *args, **options):
         which = self._selected_specs(options)
+        apply = options['apply']
+        if options['prune'] and apply and not options['yes']:
+            raise CommandError(
+                "--prune --apply deletes local files irreversibly. Re-run with --prune --apply --yes."
+            )
         if options['verify']:
             return self._verify(which, options)
         if options['prune']:
             return self._prune(which, options)
 
         force = options['force']
-        dry_run = options['dry_run']
+        dry_run = not apply
         limit = options['limit']
 
         totals = {'migrated': 0, 'skipped': 0, 'failed': 0}
@@ -172,7 +184,7 @@ class Command(BaseCommand):
         """Delete the local copy of a stable-key image once its R2 object is
         re-confirmed present. Legacy-keyed rows are skipped — they're still
         served from /media via the transition branch until it's removed."""
-        dry_run = options['dry_run']
+        dry_run = not options['apply']
         pruned = refused = skipped = 0
         for model, field, _max_px, prefix, label in which:
             for instance in self._rows_with_image(model, field):

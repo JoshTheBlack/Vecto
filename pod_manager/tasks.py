@@ -337,7 +337,8 @@ def task_sync_all_networks():
 @shared_task
 def task_clean_mix_images():
     logger.info("Running nightly sweep of orphaned mix images.")
-    call_command('clean_mix_images')
+    # clean_mix_images now previews by default; the nightly sweep must actually delete.
+    call_command('clean_mix_images', apply=True, yes=True)
 
 @shared_task
 def task_rebuild_episode_fragments(episode_id, base_url):
@@ -740,8 +741,10 @@ def task_run_gdrive_recovery(run_id, csv_path, podcast_title, dry_run, min_confi
         args = [csv_path]
         if podcast_title:
             args.append(podcast_title)
+        # recover_gdrive_audio now previews by default; the UI's "dry run" toggle
+        # maps to the inverse of --apply at this task boundary.
         call_command('recover_gdrive_audio', *args,
-                     dry_run=dry_run, min_confidence=min_confidence,
+                     apply=not dry_run, min_confidence=min_confidence,
                      stdout=stream, stderr=stream, no_color=True)
         meta['status'] = 'completed'
     except Exception as e:
@@ -781,7 +784,9 @@ def task_run_gdrive_rewind(run_id, csv_path):
     }
     _save_recovery_run(run_id, meta)
     try:
-        call_command('rewind_gdrive_audio', csv_path,
+        # rewind_gdrive_audio now previews by default; the Creator UI rewind has no
+        # preview toggle, so always apply.
+        call_command('rewind_gdrive_audio', csv_path, apply=True,
                      stdout=stream, stderr=stream, no_color=True)
         meta['status'] = 'completed'
     except Exception as e:

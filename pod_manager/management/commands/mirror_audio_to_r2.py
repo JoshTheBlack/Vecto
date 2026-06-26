@@ -7,14 +7,17 @@ episodes already ingested/transcribed before the mirror existed.
     python manage.py mirror_audio_to_r2 --episode 1234
     python manage.py mirror_audio_to_r2 --episode 1234 --force
 
-    # bulk backfill — dispatches task_mirror_episode_audio (staggered)
-    python manage.py mirror_audio_to_r2 --all
-    python manage.py mirror_audio_to_r2 --network=baldmove --origins=gdrive
-    python manage.py mirror_audio_to_r2 --podcast=watchmen --stagger=5
-    python manage.py mirror_audio_to_r2 --all --dry-run          # list, dispatch nothing
-    python manage.py mirror_audio_to_r2 --all --force            # re-mirror even if present
-    python manage.py mirror_audio_to_r2 --network=baldmove --sync # run inline, not Celery
-    python manage.py mirror_audio_to_r2 --origins=gdrive --limit=3 --sync  # prod smoke test
+    # bulk backfill — preview by default; --apply dispatches task_mirror_episode_audio (staggered)
+    python manage.py mirror_audio_to_r2 --all                    # preview: list targets, dispatch nothing
+    python manage.py mirror_audio_to_r2 --all --apply            # dispatch mirror tasks to Celery
+    python manage.py mirror_audio_to_r2 --network=baldmove --origins=gdrive --apply
+    python manage.py mirror_audio_to_r2 --podcast=watchmen --stagger=5 --apply
+    python manage.py mirror_audio_to_r2 --all --apply --force    # re-mirror even if present
+    python manage.py mirror_audio_to_r2 --network=baldmove --apply --sync  # run inline, not Celery
+    python manage.py mirror_audio_to_r2 --origins=gdrive --limit=3 --apply --sync  # prod smoke test
+
+The single-episode mode (--episode) is a single-target action and runs inline
+immediately — it takes neither --apply nor --sync.
 
 Selection: premium subscriber episodes matching the filters. By default
 already-mirrored episodes (r2_url set) are SKIPPED — that's what makes a
@@ -35,7 +38,8 @@ _UNFETCHABLE_ORIGINS = {'s3_dead', 'megaphone', 'none'}
 
 
 class Command(BaseCommand):
-    help = "Mirror premium subscriber audio to Cloudflare R2 (single episode or bulk backfill)."
+    help = ("Mirror premium subscriber audio to Cloudflare R2 (single episode or bulk backfill). "
+            "Bulk runs preview by default; pass --apply to dispatch.")
 
     def add_arguments(self, parser):
         # Single-episode mode
@@ -57,9 +61,10 @@ class Command(BaseCommand):
         parser.add_argument("--limit", type=int, default=None,
                             help="Sample latch: process at most N episodes (applied after filtering). "
                                  "Use for a small prod smoke test before a full backfill.")
-        parser.add_argument("--dry-run", action="store_true", help="List the targets; dispatch nothing.")
+        parser.add_argument("--apply", action="store_true",
+                            help="Dispatch the mirror work (default is a preview that lists targets only).")
         parser.add_argument("--sync", action="store_true",
-                            help="Mirror inline in this process (no Celery), surfacing per-episode results.")
+                            help="With --apply: mirror inline in this process (no Celery), surfacing per-episode results.")
 
     def handle(self, *args, **options):
         if options["episode"]:
@@ -91,17 +96,18 @@ class Command(BaseCommand):
         targets = self._select(options)
         force = options["force"]
         stagger = options["stagger"]
-        dry_run = options["dry_run"]
+        apply = options["apply"]
         sync = options["sync"]
+        preview = not apply
 
         self.stdout.write(
             f"{len(targets)} episode(s) selected "
-            f"(force={force}, stagger={stagger}s, mode={'dry-run' if dry_run else 'sync' if sync else 'celery'})."
+            f"(force={force}, stagger={stagger}s, mode={'preview' if preview else 'sync' if sync else 'celery'})."
         )
 
         dispatched = mirrored = skipped = failed = 0
         for i, ep in enumerate(targets):
-            if dry_run:
+            if preview:
                 self.stdout.write(f"  would mirror ep {ep.id} [{ep.audio_origin()}] {ep.title[:60]}")
                 continue
             if sync:
@@ -125,8 +131,9 @@ class Command(BaseCommand):
                 )
                 dispatched += 1
 
-        if dry_run:
-            self.stdout.write(self.style.SUCCESS(f"Dry run: {len(targets)} episode(s) would be dispatched."))
+        if preview:
+            self.stdout.write(self.style.SUCCESS(
+                f"Preview: {len(targets)} episode(s) would be dispatched. Re-run with --apply to mirror."))
         elif sync:
             self.stdout.write(self.style.SUCCESS(
                 f"Done: {mirrored} mirrored/deduped, {skipped} skipped, {failed} failed."))

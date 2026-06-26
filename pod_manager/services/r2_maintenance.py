@@ -248,15 +248,17 @@ def _rekey_local_source_audio(old_key: str, new_key: str, episode_id: int) -> No
 # Dev purge
 # ---------------------------------------------------------------------------
 
-def purge_dev_prefix() -> dict:
-    """Hard-delete every object under the dev/ prefix (disposable test data)."""
+def purge_dev_prefix(dry_run: bool = False) -> dict:
+    """Hard-delete every object under the dev/ prefix (disposable test data).
+
+    dry_run lists what would be deleted and removes nothing."""
     client = get_r2_client()
     bucket = settings.R2_BUCKET
     keys = [k for k, _ in _iter_bucket_objects(client, bucket, prefix=DEV_PREFIX)]
-    if keys:
+    if keys and not dry_run:
         _batch_delete(client, bucket, keys)
-    logger.info("r2 purge dev/: deleted=%d", len(keys))
-    return {"deleted": len(keys)}
+    logger.info("r2 purge dev/: %s=%d", "would_delete" if dry_run else "deleted", len(keys))
+    return {"deleted": 0 if dry_run else len(keys), "keys": keys, "dry_run": dry_run}
 
 
 def purge_media_dev_prefix(dry_run: bool = False) -> dict:

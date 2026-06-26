@@ -42,7 +42,7 @@ from pod_manager import views
 from pod_manager.models import (
     Network, PatronProfile, PatreonTier, Podcast, Episode, EpisodeCrossPublication,
     NetworkMembership, NetworkMix, UserMix, EpisodeEditSuggestion, Transcript,
-    R2OrphanedObject,
+    R2OrphanedObject, LogEntry,
 )
 from pod_manager.services.edits import (
     apply_approved_edit, parse_chapter_payload, snapshot_episode,
@@ -3750,9 +3750,11 @@ class R2BackfillCommandTests(TestCase):
                         audio_url_public='https://x.megaphone.fm/p.mp3')
 
     def _run(self, *args):
+        # The bulk command previews by default; these dispatch-asserting tests run
+        # in apply mode. Preview behavior is covered by test_preview_is_the_default.
         out = StringIO()
         with mock.patch('pod_manager.tasks.task_mirror_episode_audio.apply_async') as m:
-            call_command('mirror_audio_to_r2', *args, stdout=out, stderr=StringIO())
+            call_command('mirror_audio_to_r2', '--apply', *args, stdout=out, stderr=StringIO())
         ids = {c.kwargs['args'][0] for c in m.call_args_list}
         return ids, m, out.getvalue()
 
@@ -3788,16 +3790,192 @@ class R2BackfillCommandTests(TestCase):
         self.assertIn(self.e_done.id, ids)
         self.assertTrue(all(c.kwargs['kwargs']['force'] for c in m.call_args_list))
 
-    def test_dry_run_dispatches_nothing(self):
-        ids, m, out = self._run('--all', '--dry-run')
+    def test_preview_is_the_default(self):
+        # No --apply: preview only — lists targets, dispatches nothing.
+        out = StringIO()
+        with mock.patch('pod_manager.tasks.task_mirror_episode_audio.apply_async') as m:
+            call_command('mirror_audio_to_r2', '--all', stdout=out, stderr=StringIO())
         m.assert_not_called()
-        self.assertIn('would mirror', out)
+        self.assertIn('would mirror', out.getvalue())
 
     def test_limit_caps_dispatch_count(self):
         # Two premium fetchable episodes available; --limit=1 dispatches only one.
         ids, m, _ = self._run('--all', '--limit', '1')
         self.assertEqual(len(ids), 1)
         self.assertTrue(ids <= {self.e_gd.id, self.e_lib.id})
+
+
+@override_settings(CACHES=TEST_CACHES)
+class CommandSafetyIdiomTests(TestCase):
+    """Step 0 safety-idiom contract: mutating commands preview by default, --apply
+    executes, and irreversible deletions abort without --yes. One regression guard
+    per changed command — the call-site flips in tasks.py rely on this holding."""
+
+    # -- prune_logs (irreversible deletion) ---------------------------------
+    def _make_old_log(self):
+        entry = LogEntry.objects.create(
+            level=LogEntry.Level.INFO, level_no=20, logger_name='t',
+            module='t', func_name='t', lineno=1, message='old',
+        )
+        old = timezone.now() - timedelta(days=99)
+        LogEntry.objects.filter(pk=entry.pk).update(created_at=old)
+        return entry
+
+    def test_prune_logs_preview_keeps_rows(self):
+        self._make_old_log()
+        call_command('prune_logs', stdout=StringIO())
+        self.assertEqual(LogEntry.objects.count(), 1)
+
+    def test_prune_logs_apply_without_yes_aborts(self):
+        self._make_old_log()
+        with self.assertRaises(CommandError):
+            call_command('prune_logs', '--apply', stdout=StringIO())
+        self.assertEqual(LogEntry.objects.count(), 1)
+
+    def test_prune_logs_apply_yes_deletes(self):
+        self._make_old_log()
+        call_command('prune_logs', '--apply', '--yes', stdout=StringIO())
+        self.assertEqual(LogEntry.objects.count(), 0)
+
+    # -- clean_mix_images (irreversible deletion) ---------------------------
+    def _media_with_orphan(self):
+        media_root = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, media_root, ignore_errors=True)
+        covers = Path(media_root) / 'mix_covers'
+        covers.mkdir()
+        (covers / 'orphan.jpg').write_bytes(b'x')
+        return media_root, covers / 'orphan.jpg'
+
+    def test_clean_mix_images_preview_keeps_file(self):
+        media_root, orphan = self._media_with_orphan()
+        with override_settings(MEDIA_ROOT=media_root):
+            call_command('clean_mix_images', stdout=StringIO())
+        self.assertTrue(orphan.exists())
+
+    def test_clean_mix_images_apply_without_yes_aborts(self):
+        media_root, orphan = self._media_with_orphan()
+        with override_settings(MEDIA_ROOT=media_root):
+            with self.assertRaises(CommandError):
+                call_command('clean_mix_images', '--apply', stdout=StringIO())
+        self.assertTrue(orphan.exists())
+
+    def test_clean_mix_images_apply_yes_deletes(self):
+        media_root, orphan = self._media_with_orphan()
+        with override_settings(MEDIA_ROOT=media_root):
+            call_command('clean_mix_images', '--apply', '--yes', stdout=StringIO())
+        self.assertFalse(orphan.exists())
+
+    # -- destructive R2 commands abort without --yes ------------------------
+    def test_r2_cleanup_orphans_apply_without_yes_aborts(self):
+        # The --yes gate fires before any R2 client is touched, so no mock needed.
+        with self.assertRaises(CommandError):
+            call_command('r2_cleanup_orphans', '--apply', stdout=StringIO())
+
+    def test_purge_r2_dev_apply_without_yes_aborts(self):
+        with self.assertRaises(CommandError):
+            call_command('purge_r2_dev', '--apply', stdout=StringIO())
+
+    def test_purge_r2_media_dev_apply_without_yes_aborts(self):
+        with self.assertRaises(CommandError):
+            call_command('purge_r2_media_dev', '--apply', stdout=StringIO())
+
+    # -- clear_transcription_queue (irreversible deletion) ------------------
+    def test_clear_transcription_queue_preview_does_not_purge(self):
+        with mock.patch(
+            'pod_manager.management.commands.clear_transcription_queue.purge_transcription_queue'
+        ) as m:
+            call_command('clear_transcription_queue', stdout=StringIO())
+        m.assert_not_called()
+
+    def test_clear_transcription_queue_apply_without_yes_aborts(self):
+        with mock.patch(
+            'pod_manager.management.commands.clear_transcription_queue.purge_transcription_queue'
+        ) as m:
+            with self.assertRaises(CommandError):
+                call_command('clear_transcription_queue', '--apply', stdout=StringIO())
+        m.assert_not_called()
+
+    def test_clear_transcription_queue_apply_yes_purges(self):
+        with mock.patch(
+            'pod_manager.management.commands.clear_transcription_queue.purge_transcription_queue',
+            return_value={'purged': 0, 'deleted': 0},
+        ) as m:
+            call_command('clear_transcription_queue', '--apply', '--yes', stdout=StringIO())
+        m.assert_called_once()
+
+    # -- backfill prune gates (irreversible deletion) -----------------------
+    # The --prune --apply --yes gate fires before any storage/R2 call, so these
+    # need no mocking.
+    def test_backfill_media_to_r2_prune_apply_without_yes_aborts(self):
+        with self.assertRaises(CommandError):
+            call_command('backfill_media_to_r2', '--all', '--prune', '--apply', stdout=StringIO())
+
+    def test_backfill_transcripts_to_r2_prune_apply_without_yes_aborts(self):
+        with self.assertRaises(CommandError):
+            call_command('backfill_transcripts_to_r2', '--all', '--prune', '--apply', stdout=StringIO())
+
+    # -- rewind_gdrive_audio (reversible mutation; guards the task call-site) -
+    def _rewind_csv_and_episode(self):
+        net = Network.objects.create(name='Net', slug='net')
+        pod = Podcast.objects.create(network=net, title='Show', slug='show')
+        ep = Episode.objects.create(
+            podcast=pod, title='Ep', pub_date=timezone.now(),
+            raw_description='x', clean_description='x',
+            audio_url_subscriber='https://docs.google.com/uc?id=z',
+            audio_url_public='https://bucket.s3.amazonaws.com/a.mp3',
+            audio_locked=True, match_reason='GDrive Recovery (EXACT)',
+        )
+        d = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, d, ignore_errors=True)
+        csv_path = d / 'run.csv'
+        csv_path.write_text(f"Episode ID\n{ep.id}\n", encoding='utf-8')
+        return ep, str(csv_path)
+
+    def test_rewind_preview_does_not_change_episode(self):
+        ep, csv_path = self._rewind_csv_and_episode()
+        call_command('rewind_gdrive_audio', csv_path, stdout=StringIO())
+        ep.refresh_from_db()
+        self.assertTrue(ep.audio_locked)
+        self.assertEqual(ep.audio_url_subscriber, 'https://docs.google.com/uc?id=z')
+
+    def test_rewind_apply_restores_s3_url(self):
+        ep, csv_path = self._rewind_csv_and_episode()
+        call_command('rewind_gdrive_audio', csv_path, '--apply', stdout=StringIO())
+        ep.refresh_from_db()
+        self.assertFalse(ep.audio_locked)
+        self.assertEqual(ep.audio_url_subscriber, 'https://bucket.s3.amazonaws.com/a.mp3')
+        self.assertEqual(ep.audio_url_public, '')
+        self.assertEqual(ep.match_reason, 'Missing Audio')
+
+    # -- backfill_baldmove_tags (reversible mutation) -----------------------
+    def _baldmove_episode(self):
+        net = Network.objects.create(name='Bald Move', slug='baldmove')
+        pod = Podcast.objects.create(network=net, title='Show', slug='show')
+        return Episode.objects.create(
+            podcast=pod, title='Ep', pub_date=timezone.now(),
+            raw_description='x', clean_description='x',
+            link='https://baldmove.com/?p=1', tags=[],
+        )
+
+    def test_backfill_baldmove_tags_preview_does_not_save(self):
+        ep = self._baldmove_episode()
+        with mock.patch(
+            'pod_manager.management.commands.backfill_baldmove_tags.scrape_tags_from_wp',
+            return_value=['spoilers'],
+        ), mock.patch('pod_manager.management.commands.backfill_baldmove_tags.time.sleep'):
+            call_command('backfill_baldmove_tags', stdout=StringIO())
+        ep.refresh_from_db()
+        self.assertEqual(ep.tags, [])
+
+    def test_backfill_baldmove_tags_apply_saves(self):
+        ep = self._baldmove_episode()
+        with mock.patch(
+            'pod_manager.management.commands.backfill_baldmove_tags.scrape_tags_from_wp',
+            return_value=['spoilers'],
+        ), mock.patch('pod_manager.management.commands.backfill_baldmove_tags.time.sleep'):
+            call_command('backfill_baldmove_tags', '--apply', stdout=StringIO())
+        ep.refresh_from_db()
+        self.assertEqual(ep.tags, ['spoilers'])
 
 
 def _fake_list_client(objects):

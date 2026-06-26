@@ -155,27 +155,27 @@ Consumers:
 
 ## Backfill — `backfill_media_to_r2`
 
-Uploads existing local images to R2 and rewrites the DB so the new stable keys are authoritative. Clones the `mirror_audio_to_r2` ergonomics: idempotent, resumable, dry-runnable.
+Uploads existing local images to R2 and rewrites the DB so the new stable keys are authoritative. Clones the `mirror_audio_to_r2` ergonomics: idempotent, resumable, **preview by default** (pass `--apply` to act).
 
 ```bash
-# rehearse — list what would move, change nothing
-python manage.py backfill_media_to_r2 --all --dry-run
-
-# migrate everything (avatars + covers)
+# rehearse — list what would move, change nothing (preview is the default)
 python manage.py backfill_media_to_r2 --all
 
+# migrate everything (avatars + covers)
+python manage.py backfill_media_to_r2 --all --apply
+
 # one asset class, sample first
-python manage.py backfill_media_to_r2 --avatars --limit 5
+python manage.py backfill_media_to_r2 --avatars --limit 5 --apply
 
 # re-process rows already migrated (bumps image_version)
-python manage.py backfill_media_to_r2 --all --force
+python manage.py backfill_media_to_r2 --all --apply --force
 
-# VERIFY: HEAD every migrated object in R2 (the prune gate)
+# VERIFY: HEAD every migrated object in R2 (read-only prune gate)
 python manage.py backfill_media_to_r2 --all --verify
 
 # PRUNE: delete the local copy of each stable-key image confirmed in R2
-python manage.py backfill_media_to_r2 --all --prune --dry-run   # preview
-python manage.py backfill_media_to_r2 --all --prune             # delete
+python manage.py backfill_media_to_r2 --all --prune             # preview
+python manage.py backfill_media_to_r2 --all --prune --apply --yes   # delete
 ```
 
 For each row with a local file it reads the bytes, processes to WebP, writes once to R2 at the stable key, and sets the field `.name` + bumps `image_version`. The old local file is left in place until the post-cutover prune.
@@ -184,7 +184,7 @@ For each row with a local file it reads the bytes, processes to WebP, writes onc
 
 **MIGRATE → VERIFY → PRUNE:** run the backfill, `--verify` (HEADs every expected object) confirms presence, then `--prune` deletes the local copies. The verify/HEAD gate — not a time delay — is what makes the prune safe.
 
-> **`--prune` re-confirms R2 presence per file before deleting**, so it can never remove something not safely mirrored. It only touches **stable-key** rows; **legacy-keyed** rows are skipped (they're still served from `/media` via the transition branch until that's removed). It honors `--dry-run`. In prod, images were written straight to R2, so there's often nothing local to prune — the leftover legacy directories (`media/custom_avatars/`, `media/mix_covers/`) are removed when the transition branch is deleted.
+> **`--prune` re-confirms R2 presence per file before deleting**, so it can never remove something not safely mirrored. It only touches **stable-key** rows; **legacy-keyed** rows are skipped (they're still served from `/media` via the transition branch until that's removed). It previews unless `--apply`; the irreversible delete needs `--apply --yes`. In prod, images were written straight to R2, so there's often nothing local to prune — the leftover legacy directories (`media/custom_avatars/`, `media/mix_covers/`) are removed when the transition branch is deleted.
 
 ---
 

@@ -1,3 +1,13 @@
+"""Ingest a single podcast feed using its network's configured strategy.
+
+Loads the network's ingester module (Network.ingester_module, falling back to
+'default') and runs it against the given podcast, importing new episodes. A
+single-target operational action — running it *is* the intent, so it takes no
+--apply/--yes flag.
+
+    python manage.py ingest_feed 42
+"""
+
 import importlib
 from django.core.management.base import BaseCommand
 from pod_manager.models import Podcast

@@ -1,3 +1,14 @@
+"""Generate a Discord-formatted links report from an existing recovery CSV.
+
+Reads a recover_gdrive_audio report CSV and writes a Discord-ready .txt grouped by
+podcast and sorted by confidence. Use it when recover_gdrive_audio ran before the
+Discord-report code was deployed. Only writes the report file (no DB writes), so it
+takes no --apply/--yes flag.
+
+    python manage.py gdrive_discord_report recovery_report.csv
+    python manage.py gdrive_discord_report recovery_report.csv --output report.txt
+"""
+
 import csv
 import os
 from django.core.management.base import BaseCommand

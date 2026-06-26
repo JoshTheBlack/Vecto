@@ -1,3 +1,11 @@
+"""List all active Recurly subscription plans.
+
+Queries the Recurly API (RECURLY_API_KEY) and prints active plans as a
+name/code/id table. Read-only, so it takes no --apply/--yes flag.
+
+    python manage.py list_recurly_plans
+"""
+
 import recurly
 from django.conf import settings
 from django.core.management.base import BaseCommand

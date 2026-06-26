@@ -1,3 +1,21 @@
+"""Queue (or preview) transcription for every eligible episode in bulk.
+
+Eligible = has subscriber audio AND has no transcript yet, or only a FAILED one.
+Already-queued/completed episodes are skipped, so the command is safe to re-run.
+Preview is the default: with no flags it lists what it *would* queue and dispatches
+nothing; pass --apply to actually dispatch. In IDE mode (settings.IS_IDE) --apply
+runs each transcription synchronously instead of via Celery.
+
+    python manage.py backfill_transcripts                       # preview everything eligible
+    python manage.py backfill_transcripts --apply               # queue everything eligible
+    python manage.py backfill_transcripts --podcast watchmen --apply
+    python manage.py backfill_transcripts --apply --stagger 60  # 60s Celery countdown between dispatches
+    python manage.py backfill_transcripts --apply --model large --language es
+
+Whisper overrides (--model / --language / --initial-prompt / --*-speakers) fall
+back to the network/podcast setting when omitted.
+"""
+
 from django.core.management.base import BaseCommand, CommandError
 from django.db.models import Q
 
@@ -8,7 +26,7 @@ class Command(BaseCommand):
     help = (
         'Queue transcription for all eligible episodes '
         '(has subscriber audio, no completed/pending/processing transcript). '
-        'Safe to re-run; already-queued and completed episodes are skipped.'
+        'Preview by default; pass --apply to dispatch. Safe to re-run.'
     )
 
     def add_arguments(self, parser):
@@ -21,8 +39,8 @@ class Command(BaseCommand):
             help='Celery countdown seconds between dispatches (default: 30). Ignored in IDE mode.',
         )
         parser.add_argument(
-            '--dry-run', action='store_true',
-            help='Show what would be queued without dispatching any tasks.',
+            '--apply', action='store_true',
+            help='Queue the transcription tasks (default is a preview that dispatches nothing).',
         )
         parser.add_argument(
             '--model', default=None, metavar='MODEL',
@@ -56,7 +74,7 @@ class Command(BaseCommand):
 
         podcast_slugs = options['podcasts'] or []
         stagger       = options['stagger']
-        dry_run       = options['dry_run']
+        dry_run       = not options['apply']
 
         transcription_kwargs = {}
         for key in ('model', 'language', 'initial_prompt'):

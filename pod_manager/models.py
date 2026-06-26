@@ -1046,3 +1046,66 @@ def auto_delete_transcript_files(sender, instance, **kwargs):
             deleted_dir.rmdir()
         except Exception:
             pass
+
+
+class CommandRun(models.Model):
+    """Durable audit record of one Admin Command Console run (design §8a).
+
+    Every console-initiated management command is recorded here — who launched it,
+    with what (redacted) arguments, how it ended, and the full captured log — so
+    history survives even if the operator closes the browser mid-run. The worker
+    (``task_run_management_command``) writes the lifecycle transitions; the run view
+    pre-creates the row in ``queued`` state. ``run_id`` matches the live cache stream
+    key ``admin_cmd_{run_id}`` the poller tails (§8).
+    """
+
+    class Status(models.TextChoices):
+        QUEUED    = 'queued',    'Queued'
+        RUNNING   = 'running',   'Running'
+        COMPLETED = 'completed', 'Completed'
+        FAILED    = 'failed',    'Failed'
+
+    run_id = models.UUIDField(default=uuid.uuid4, unique=True, editable=False, db_index=True)
+    command = models.CharField(max_length=100, db_index=True)
+    # args/options/command_line persist the *redacted* invocation — sensitive args
+    # (e.g. cookies/tokens) are stored as '***' so history can't leak them (§15.6).
+    args = models.JSONField(default=list, blank=True)
+    options = models.JSONField(default=dict, blank=True)
+    command_line = models.TextField(blank=True, help_text="Redacted 'python manage.py …' string for display/replay.")
+    user = models.ForeignKey(
+        User, null=True, blank=True, on_delete=models.SET_NULL,
+        related_name='command_runs',
+    )
+    status = models.CharField(
+        max_length=20, choices=Status.choices, default=Status.QUEUED, db_index=True,
+    )
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+    started_at = models.DateTimeField(null=True, blank=True)
+    finished_at = models.DateTimeField(null=True, blank=True)
+    error = models.TextField(blank=True)
+    log = models.TextField(blank=True, help_text="Full captured stdout/stderr.")
+    result_summary = models.JSONField(null=True, blank=True)
+
+    class Meta:
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f"{self.command} [{self.status}] {self.run_id}"
+
+    def mark_running(self):
+        self.status = self.Status.RUNNING
+        self.started_at = timezone.now()
+        self.save(update_fields=['status', 'started_at'])
+
+    def mark_finished(self, status, error=None):
+        self.status = status
+        self.finished_at = timezone.now()
+        if error:
+            self.error = error
+        self.save(update_fields=['status', 'finished_at', 'error'])
+
+    @property
+    def duration_seconds(self):
+        if self.started_at and self.finished_at:
+            return (self.finished_at - self.started_at).total_seconds()
+        return None

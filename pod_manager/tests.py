@@ -4226,3 +4226,354 @@ class CommandLogStreamTests(TestCase):
         self.assertIsNone(cache.get('admin_cmd_test'))
         self.assertEqual(stream.captured(), "\n")
 
+
+# ===========================================================================
+# Admin Command Console — Step 2 backend (design §13). Registry, introspection /
+# widget resolver, the CommandRun model + runner task, and the superuser routes.
+# ===========================================================================
+
+class AdminConsoleSchemaTests(TestCase):
+    """Registry + introspection/reconstruction contract (§4b/§5/§5a/§15)."""
+
+    def _schema(self, name):
+        from pod_manager.admin_console.schema import build_schema
+        return build_schema(name)
+
+    def _field(self, name, dest):
+        for f in self._schema(name)['fields']:
+            if f['dest'] == dest:
+                return f
+        self.fail(f"{dest!r} not in schema for {name}")
+
+    def test_every_discovered_command_is_registered(self):
+        # §4c self-policing: no pod_manager command should be silently unexposed.
+        from pod_manager.admin_console.schema import unregistered_commands
+        self.assertEqual(unregistered_commands(), [])
+
+    def test_globals_are_hidden_from_the_form(self):
+        dests = {f['dest'] for f in self._schema('mirror_audio_to_r2')['fields']}
+        for hidden in ('help', 'verbosity', 'settings', 'pythonpath', 'no_color'):
+            self.assertNotIn(hidden, dests)
+
+    def test_widget_inference_conventional_dests(self):
+        self.assertEqual(self._field('mirror_audio_to_r2', 'network')['widget'], 'network')
+        self.assertEqual(self._field('mirror_audio_to_r2', 'podcast')['widget'], 'podcast')
+        self.assertEqual(self._field('mirror_audio_to_r2', 'episode')['widget'], 'episode')
+        self.assertEqual(self._field('mirror_audio_to_r2', 'apply')['widget'], 'flag')
+        self.assertEqual(self._field('mirror_audio_to_r2', 'limit')['widget'], 'number')
+
+    def test_podcast_multi_inference_from_append(self):
+        # backfill_transcripts --podcast dest='podcasts' action='append'
+        f = self._field('backfill_transcripts', 'podcasts')
+        self.assertEqual(f['widget'], 'podcast_multi')
+        self.assertTrue(f['multi'])
+
+    def test_choice_widget_ships_inline_options(self):
+        f = self._field('recover_gdrive_audio', 'min_confidence')
+        self.assertEqual(f['widget'], 'choice')
+        self.assertEqual([o['value'] for o in f['options']], ['HIGH', 'MEDIUM', 'LOW'])
+
+    def test_registry_override_enum_multi(self):
+        f = self._field('mirror_audio_to_r2', 'origins')
+        self.assertEqual(f['widget'], 'enum_multi:audio_origins')
+        self.assertTrue(f['multi'])
+        self.assertEqual([o['value'] for o in f['options']], ['gdrive', 'libsyn', 'other'])
+
+    def test_csv_path_override(self):
+        self.assertEqual(self._field('recover_gdrive_audio', 'csv_path')['widget'], 'csv_path')
+
+    def test_sensitive_field_flagged(self):
+        schema = self._schema('crawl_by_id')
+        self.assertEqual(schema['sensitive'], ['cookie_value'])
+        self.assertTrue(self._field('crawl_by_id', 'cookie_value')['sensitive'])
+        self.assertFalse(self._field('crawl_by_id', 'cookie_name')['sensitive'])
+
+    def test_docs_come_from_in_code_sources(self):
+        schema = self._schema('mirror_audio_to_r2')
+        self.assertTrue(schema['summary'])               # Command.help
+        self.assertIn('Mirror', schema['long_doc'])      # module docstring
+
+    def test_import_error_surfaces_as_disabled_card(self):
+        # §15.8: one un-importable command must not break the console.
+        from pod_manager.admin_console import schema as schema_mod
+        with mock.patch.object(schema_mod, 'load_command_class', side_effect=ImportError('no discord')):
+            schema = schema_mod.build_schema('run_discord_bot')
+        self.assertIn('no discord', schema['import_error'])
+        self.assertEqual(schema['fields'], [])
+
+    # -- reconstruction (form → invocation) ---------------------------------
+    def _reconstruct(self, name, payload):
+        from pod_manager.admin_console.schema import reconstruct_invocation
+        return reconstruct_invocation(name, payload)
+
+    def test_reconstruct_coerces_int_positional(self):
+        inv = self._reconstruct('ingest_feed', {'podcast_id': '42'})
+        self.assertEqual(inv['args'], [42])
+
+    def test_reconstruct_missing_required_positional_raises(self):
+        from pod_manager.admin_console.schema import InvalidInvocation
+        with self.assertRaises(InvalidInvocation):
+            self._reconstruct('ingest_feed', {})
+
+    def test_reconstruct_revalidates_choice(self):
+        from pod_manager.admin_console.schema import InvalidInvocation
+        with self.assertRaises(InvalidInvocation):
+            self._reconstruct('recover_gdrive_audio', {'csv_path': 'x.csv', 'min_confidence': 'BOGUS'})
+
+    def test_reconstruct_enum_multi_comma_joins(self):
+        inv = self._reconstruct('mirror_audio_to_r2', {'origins': ['gdrive', 'libsyn'], 'apply': True})
+        self.assertEqual(inv['options']['origins'], 'gdrive,libsyn')
+        self.assertIs(inv['options']['apply'], True)
+
+    def test_reconstruct_nargs_plus_multi_positional(self):
+        inv = self._reconstruct('rewind_gdrive_audio', {'csv_paths': ['a.csv', 'b.csv'], 'apply': True})
+        self.assertEqual(inv['args'], ['a.csv', 'b.csv'])
+
+    def test_reconstruct_redacts_sensitive(self):
+        inv = self._reconstruct('crawl_by_id', {
+            'cookie_name': 'wp', 'cookie_value': 'SECRET', 'start': 34, 'end': 50,
+        })
+        # Real invocation keeps the value; persisted/displayed copies are redacted.
+        self.assertEqual(inv['options']['cookie_value'], 'SECRET')
+        self.assertEqual(inv['redacted_options']['cookie_value'], '***')
+        self.assertNotIn('SECRET', inv['command_line'])
+        self.assertIn('***', inv['command_line'])
+
+    def test_command_line_is_shell_quoted_for_copy_paste(self):
+        # Recovery CSVs have spaces; the paste-ready command line must quote them so a
+        # deep-link command (recover_gdrive_audio) copies into a terminal correctly (§5b).
+        inv = self._reconstruct('recover_gdrive_audio', {
+            'csv_path': 'Vecto Recovery Links.csv', 'podcast_title': 'Watchmen', 'apply': True,
+        })
+        self.assertIn("'Vecto Recovery Links.csv'", inv['command_line'])
+        # Reassembled args stay unquoted (they go to call_command, not a shell).
+        self.assertEqual(inv['args'], ['Vecto Recovery Links.csv', 'Watchmen'])
+
+
+class AdminConsoleViewTests(TestCase):
+    """Superuser routes + dispatch/poll/history (§3/§7/§9)."""
+
+    def setUp(self):
+        cache.clear()
+        self.superuser = User.objects.create_user('root', password='x')
+        self.superuser.is_superuser = True
+        self.superuser.is_staff = True
+        self.superuser.save()
+        self.staff = User.objects.create_user('mod', password='x')
+        self.staff.is_staff = True
+        self.staff.save()
+        self.client = Client()
+
+    # -- access control -----------------------------------------------------
+    def test_anonymous_redirected_to_login(self):
+        resp = self.client.get(reverse('admin_console'))
+        self.assertEqual(resp.status_code, 302)
+
+    def test_staff_nonsuper_forbidden(self):
+        self.client.force_login(self.staff)
+        self.assertEqual(self.client.get(reverse('admin_console')).status_code, 403)
+
+    def test_superuser_allowed(self):
+        self.client.force_login(self.superuser)
+        self.assertEqual(self.client.get(reverse('admin_console')).status_code, 200)
+
+    # -- console list -------------------------------------------------------
+    def test_console_groups_commands_and_reports_no_unregistered(self):
+        self.client.force_login(self.superuser)
+        data = self.client.get(reverse('admin_console')).json()
+        cats = {c['category'] for c in data['categories']}
+        self.assertIn('R2 / Storage', cats)
+        self.assertEqual(data['unregistered'], [])
+        self.assertEqual(data['discovered_count'], 23)
+
+    # -- detail -------------------------------------------------------------
+    def test_command_detail_returns_schema(self):
+        self.client.force_login(self.superuser)
+        data = self.client.get(reverse('admin_console_command_detail', args=['mirror_audio_to_r2'])).json()
+        self.assertTrue(data['runnable'])
+        self.assertIn('recent_runs', data)
+
+    def test_command_detail_unregistered_404(self):
+        self.client.force_login(self.superuser)
+        resp = self.client.get(reverse('admin_console_command_detail', args=['nope']))
+        self.assertEqual(resp.status_code, 404)
+
+    # -- run dispatch -------------------------------------------------------
+    def _run(self, name, body):
+        return self.client.post(
+            reverse('admin_console_run', args=[name]),
+            data=json.dumps(body), content_type='application/json',
+        )
+
+    def test_run_rejects_non_runnable(self):
+        self.client.force_login(self.superuser)
+        for name in ('run_discord_bot', 'crawl_by_id'):
+            self.assertEqual(self._run(name, {'fields': {}}).status_code, 403)
+
+    def test_run_rejects_deep_link_command(self):
+        self.client.force_login(self.superuser)
+        self.assertEqual(self._run('recover_gdrive_audio', {'fields': {'csv_path': 'x.csv'}}).status_code, 403)
+
+    def test_run_invalid_args_400(self):
+        self.client.force_login(self.superuser)
+        resp = self._run('ingest_feed', {'fields': {}})
+        self.assertEqual(resp.status_code, 400)
+
+    def test_run_danger_requires_confirmation(self):
+        self.client.force_login(self.superuser)
+        with mock.patch('pod_manager.tasks.task_run_management_command.delay') as delay:
+            resp = self._run('purge_r2_dev', {'fields': {'apply': True, 'yes': True}})
+            self.assertEqual(resp.status_code, 400)
+            delay.assert_not_called()
+
+    def test_run_creates_commandrun_and_dispatches(self):
+        from pod_manager.models import CommandRun
+        self.client.force_login(self.superuser)
+        with mock.patch('pod_manager.tasks.task_run_management_command.delay') as delay:
+            resp = self._run('ingest_feed', {'fields': {'podcast_id': '7'}})
+        self.assertEqual(resp.status_code, 200)
+        run_id = resp.json()['run_id']
+        run = CommandRun.objects.get(run_id=run_id)
+        self.assertEqual(run.command, 'ingest_feed')
+        self.assertEqual(run.status, CommandRun.Status.QUEUED)
+        self.assertEqual(run.user, self.superuser)
+        delay.assert_called_once()
+        # The task receives the *real* coerced invocation.
+        _rid, name, args, options = delay.call_args.args
+        self.assertEqual(name, 'ingest_feed')
+        self.assertEqual(args, [7])
+
+    def test_run_danger_dispatches_when_confirmed(self):
+        from pod_manager.models import CommandRun
+        self.client.force_login(self.superuser)
+        with mock.patch('pod_manager.tasks.task_run_management_command.delay') as delay:
+            resp = self._run('purge_r2_dev', {
+                'fields': {'apply': True, 'yes': True}, 'confirm': 'purge_r2_dev',
+            })
+        self.assertEqual(resp.status_code, 200)
+        delay.assert_called_once()
+        self.assertEqual(CommandRun.objects.filter(command='purge_r2_dev').count(), 1)
+
+    def test_prune_subfield_triggers_dynamic_danger_gate(self):
+        # backfill_media_to_r2 is benign by default but --prune deletes, so a pruning
+        # run needs the typed confirm while a plain backfill does not (danger_fields).
+        self.client.force_login(self.superuser)
+        with mock.patch('pod_manager.tasks.task_run_management_command.delay') as delay:
+            # Plain backfill: no confirm required.
+            ok = self._run('backfill_media_to_r2', {'fields': {'all': True, 'apply': True}})
+            self.assertEqual(ok.status_code, 200)
+            # --prune without confirm is blocked…
+            blocked = self._run('backfill_media_to_r2',
+                                {'fields': {'all': True, 'apply': True, 'yes': True, 'prune': True}})
+            self.assertEqual(blocked.status_code, 400)
+            # …and allowed once confirmed.
+            confirmed = self._run('backfill_media_to_r2', {
+                'fields': {'all': True, 'apply': True, 'yes': True, 'prune': True},
+                'confirm': 'backfill_media_to_r2',
+            })
+            self.assertEqual(confirmed.status_code, 200)
+        self.assertEqual(delay.call_count, 2)  # plain + confirmed-prune dispatched; blocked did not
+
+    # -- build (copy-box serializer, §5b) -----------------------------------
+    def _build(self, name, body):
+        return self.client.post(
+            reverse('admin_console_build', args=[name]),
+            data=json.dumps(body), content_type='application/json',
+        )
+
+    def test_build_returns_quoted_command_line_for_deep_link_command(self):
+        self.client.force_login(self.superuser)
+        data = self._build('recover_gdrive_audio', {
+            'fields': {'csv_path': 'Vecto Recovery Links.csv', 'apply': True},
+        }).json()
+        self.assertTrue(data['valid'])
+        self.assertIn("recover_gdrive_audio 'Vecto Recovery Links.csv' --apply", data['command_line'])
+
+    def test_build_incomplete_form_is_soft_invalid(self):
+        self.client.force_login(self.superuser)
+        data = self._build('recover_gdrive_audio', {'fields': {}}).json()
+        self.assertFalse(data['valid'])
+        self.assertIsNone(data['command_line'])
+        self.assertTrue(data['error'])
+
+    # -- poll / detail / history -------------------------------------------
+    def test_run_poll_returns_delta_and_status(self):
+        from pod_manager.models import CommandRun
+        run = CommandRun.objects.create(command='ingest_feed', status=CommandRun.Status.RUNNING)
+        cache.set(f"admin_cmd_{run.run_id}", "data: hello\n\n")
+        self.client.force_login(self.superuser)
+        url = reverse('admin_console_run_poll', args=[str(run.run_id)])
+        data = self.client.get(url).json()
+        self.assertEqual(data['chunk'], "data: hello\n\n")
+        self.assertEqual(data['status'], 'running')
+        # Polling again from the returned offset yields no duplicate output.
+        data2 = self.client.get(url, {'offset': data['offset']}).json()
+        self.assertEqual(data2['chunk'], '')
+
+    def test_run_detail_includes_log(self):
+        from pod_manager.models import CommandRun
+        run = CommandRun.objects.create(command='ingest_feed', status=CommandRun.Status.COMPLETED, log='all output')
+        self.client.force_login(self.superuser)
+        data = self.client.get(reverse('admin_console_run_detail', args=[str(run.run_id)])).json()
+        self.assertEqual(data['log'], 'all output')
+
+    def test_history_filters_by_command(self):
+        from pod_manager.models import CommandRun
+        CommandRun.objects.create(command='ingest_feed')
+        CommandRun.objects.create(command='prune_logs')
+        self.client.force_login(self.superuser)
+        data = self.client.get(reverse('admin_console_history'), {'command': 'prune_logs'}).json()
+        self.assertEqual(len(data['runs']), 1)
+        self.assertEqual(data['runs'][0]['command'], 'prune_logs')
+
+    def test_episode_search_typeahead(self):
+        net = Network.objects.create(name='Bald Move', slug='baldmove')
+        pod = Podcast.objects.create(network=net, title='Watchmen', slug='watchmen')
+        ep = Episode.objects.create(
+            podcast=pod, title='The Pilot', pub_date=timezone.now(), raw_description='x',
+        )
+        self.client.force_login(self.superuser)
+        data = self.client.get(reverse('admin_console_episode_search'), {'q': 'Pilot'}).json()
+        self.assertEqual([r['id'] for r in data['results']], [ep.id])
+        # Empty query returns nothing rather than the whole table.
+        self.assertEqual(self.client.get(reverse('admin_console_episode_search')).json()['results'], [])
+
+
+class TaskRunManagementCommandTests(TestCase):
+    """The generic runner task records lifecycle + log on CommandRun (§7/§8a)."""
+
+    def setUp(self):
+        cache.clear()
+
+    def test_happy_path_records_completed_and_streams_done(self):
+        from pod_manager.models import CommandRun
+        from pod_manager.tasks import task_run_management_command
+        run = CommandRun.objects.create(command='ingest_feed', command_line='python manage.py ingest_feed 7')
+
+        def fake_call(name, *args, stdout=None, **kw):
+            stdout.write("did the thing\n")
+
+        with mock.patch('pod_manager.tasks.call_command', side_effect=fake_call):
+            task_run_management_command(str(run.run_id), 'ingest_feed', [7], {})
+
+        run.refresh_from_db()
+        self.assertEqual(run.status, CommandRun.Status.COMPLETED)
+        self.assertIn('did the thing', run.log)
+        self.assertIsNotNone(run.started_at)
+        self.assertIsNotNone(run.finished_at)
+        self.assertIn('[DONE]', cache.get(f"admin_cmd_{run.run_id}"))
+
+    def test_failure_records_failed_and_reraises(self):
+        from pod_manager.models import CommandRun
+        from pod_manager.tasks import task_run_management_command
+        run = CommandRun.objects.create(command='ingest_feed', command_line='python manage.py ingest_feed 7')
+
+        with mock.patch('pod_manager.tasks.call_command', side_effect=RuntimeError('boom')):
+            with self.assertRaises(RuntimeError):
+                task_run_management_command(str(run.run_id), 'ingest_feed', [7], {})
+
+        run.refresh_from_db()
+        self.assertEqual(run.status, CommandRun.Status.FAILED)
+        self.assertIn('boom', run.error)
+        self.assertIn('[DONE]', cache.get(f"admin_cmd_{run.run_id}"))
+

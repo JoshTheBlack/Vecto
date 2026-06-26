@@ -1,8 +1,8 @@
 # Admin Command Console — Design Document
 
-**Status:** Draft for review — **Steps 0–1 implemented 2026-06-26.**
+**Status:** Draft for review — **Steps 0–2 implemented 2026-06-26.**
 **Author:** Josh + Claude (design session 2026-06-26)
-**Implementation:** Step 0 (command normalization, §16) and Step 1 (log-buffer refactor, §8 "As-built") landed in the working tree; Steps 2–6 deferred to separate sessions.
+**Implementation:** Step 0 (command normalization, §16), Step 1 (log-buffer refactor, §8 "As-built"), and Step 2 (backend skeleton — registry, introspection, `CommandRun`, runner task, superuser routes; §13 "As-built") landed in the working tree; Steps 3–6 (frontend + polish) deferred to separate sessions.
 
 ---
 
@@ -496,12 +496,21 @@ views. Proposed routes (under `/admin-console/` to avoid colliding with Django's
 ```
 GET  /admin-console/                      console  — page shell + command list
 GET  /admin-console/command/<name>/       command_detail — JSON: docs + form schema + recent runs
+POST /admin-console/command/<name>/build/ build    — JSON: {valid, command_line} serializer for the copy box (§5b), any command
 POST /admin-console/command/<name>/run/   run      — validate + create CommandRun + dispatch, returns run_id
 GET  /admin-console/run/<run_id>/poll/    run_poll — JSON: {chunk, offset, status} (polled, §8)
 GET  /admin-console/runs/                  history  — JSON: global run history (filterable)
 GET  /admin-console/run/<run_id>/         run_detail — JSON: one CommandRun (log + summary), for replay/expand
 GET  /admin-console/lookup/episodes/      episode_search — JSON typeahead for the episode picker (§5a)
 ```
+
+The **`build`** endpoint is the server-side realization of §5b's "one source of truth":
+it runs the same `reconstruct_invocation` serializer as `run` but **without
+dispatching**, returning the shell-quoted, secret-redacted command line. It works for
+*every* registered command — crucially the deep-link / docs-only ones
+(`recover_gdrive_audio`, `crawl_by_id`, …), whose CLI is meant for a terminal even
+though the console won't execute them. An incomplete form returns `valid=False` (nothing
+to copy yet) rather than an error.
 
 All `@superuser_required`. `command_detail` returns the introspected form schema +
 merged docs + the command's recent `CommandRun`s as JSON so the frontend renders
@@ -632,10 +641,10 @@ and optionally `backfill_transcripts --model`/`--language`.
    [pod_manager/admin_console/log_stream.py](../pod_manager/admin_console/log_stream.py);
    all three callers in [tasks.py](../pod_manager/tasks.py) repointed (no behavior
    change). Logging + `CommandLogStreamTests` added. As-built note in §8.
-2. **Backend skeleton:** `superuser_required`, registry module (category/danger/
-   runnable/deep_link/field_widgets), introspection + semantic-widget resolver →
-   schema helper (§5a), `CommandRun` model + migration (§8a),
-   `task_run_management_command`, the routes.
+2. ✅ **Backend skeleton — DONE (2026-06-26).** `superuser_required`, the registry
+   module, introspection + semantic-widget resolver → schema helper, the `CommandRun`
+   model + migration, `task_run_management_command`, and the eight superuser JSON
+   routes (incl. the §5b `build` copy-box serializer). As-built record below.
 3. **Frontend:** nav tab, console page, dynamic form renderer with the semantic
    widgets + DB-backed pickers, live command-line builder + Execute/Open-in
    actions, log pane (reuse `/staff/logs/` JS), per-command + global run history.
@@ -647,6 +656,94 @@ and optionally `backfill_transcripts --model`/`--language`.
    messaging.
 6. **Convert this doc to living documentation** (see §0): as each piece lands,
    update the matching section to describe what *is*, not what's *planned*.
+
+---
+
+### As-built (Step 2 — implemented 2026-06-26)
+
+The backend skeleton landed; the frontend (Step 3) will consume the JSON these
+routes return. Ground truth for the next session:
+
+**New files**
+
+| File | Contents |
+|---|---|
+| [admin_console/registry.py](../pod_manager/admin_console/registry.py) | `CommandSpec` dataclass (`category`/`danger`/`runnable`/`deep_link`/`field_widgets`/`field_labels`/`sensitive` + the doc escape-hatch fields) and `REGISTRY` — **one entry per command, all 23 from §12 registered**. `get_spec(name)`. |
+| [admin_console/schema.py](../pod_manager/admin_console/schema.py) | `discover_commands` / `unregistered_commands` (§4a/§4c); `build_schema(name)` (introspection + widget resolver + in-code docs, fault-tolerant §15.8); `reconstruct_invocation(name, payload)` (form → validated `*args`/`**options` + redacted, **shell-quoted** copies, §15.5/§15.6); option-list sources (`_network_options`/`_podcast_options`/`audio_origin_choices`/`list_recovery_csvs`); `InvalidInvocation`. |
+| [views/admin_console.py](../pod_manager/views/admin_console.py) | The eight `@superuser_required` JSON views (§9): `console`, `command_detail`, `build`, `run`, `run_poll`, `run_detail`, `history`, `episode_search`. |
+| [migrations/0086_commandrun.py](../pod_manager/migrations/0086_commandrun.py) | `CommandRun` table. |
+
+**Touched files**
+- [views/staff.py](../pod_manager/views/staff.py#L37) — added `superuser_required` (mirrors `staff_required`, `is_staff`→`is_superuser`).
+- [models.py](../pod_manager/models.py) — `CommandRun` model (§8a) with `Status` choices, `mark_running()`/`mark_finished()`, `duration_seconds`.
+- [tasks.py](../pod_manager/tasks.py) — `task_run_management_command(run_id, name, args, options)` (§7), reusing the Step 1 `CommandLogStream`.
+- [views/__init__.py](../pod_manager/views/__init__.py) + [config/urls.py](../config/urls.py) — exports + the `/admin-console/…` routes. (The `NetworkResolver` middleware already whitelists `/admin*`, so the console path needs no middleware change.)
+
+**Decisions made during the build (deviations / resolutions worth keeping):**
+
+1. **`danger` is two-tier: always-danger vs. danger-only-when-pruning.** Static
+   `danger=True` is set for the **six commands whose *primary* action irreversibly
+   deletes** (the "**yes**" rows in §12: `purge_r2_dev`, `purge_r2_media_dev`,
+   `r2_cleanup_orphans`, `clear_transcription_queue`, `prune_logs`, `clean_mix_images`)
+   — these always require the typed-confirm gate. The two `backfill_*_to_r2` commands
+   are benign backfills whose *only* destructive path is `--prune`, so rather than a
+   blanket `danger` (which would force a confirm on an ordinary backfill), they declare
+   `danger_fields=frozenset({"prune"})`: the run view engages the gate when
+   `spec.danger` **or** any `danger_fields` dest is truthy in the payload. Net effect —
+   a plain `--apply` backfill runs without a confirm; the same command with `--prune`
+   checked requires typing the command name. (`danger_fields` is surfaced in the schema
+   so the Step 3 UI can light the field up red dynamically.) This honors §12's
+   distinction between "prune (needs --yes)" and "**yes**" while keeping §11's intent
+   that anything actually deleting gets confirmed.
+2. **Secret redaction is now real (closes the §16/§15.6 stub).** `reconstruct_invocation`
+   returns both the *real* `args`/`options` (passed to `call_command`) and *redacted*
+   copies (`***` for any dest in `spec.sensitive`); `CommandRun.args`/`options`/
+   `command_line` persist the redacted form, and the worker's `[SYSTEM]` echo uses the
+   redacted `command_line`, so secrets never reach the DB or the live log. `crawl_by_id`'s
+   `--cookie_value` is wired as `sensitive` (it's non-runnable, so this is purely the
+   forward-looking guard §15.6 asked for). **Caveat:** the *real* values still travel in
+   the Celery message body (necessary to execute); §15.6 concerns DB persistence + the
+   copy box, both covered. No runnable command currently has a sensitive arg.
+3. **`enum_multi` over a single-valued arg comma-joins.** `mirror_audio_to_r2 --origins`
+   is one `type=str` comma-list, not `append`; the multi-select widget posts a list and
+   reconstruction joins it (`--origins=gdrive,libsyn`). The append-backed multis
+   (`backfill_transcripts --podcast`) repeat the flag instead. Both are handled.
+4. **Globals hidden, not surfaced.** `--verbosity` and the argparse/Django built-ins are
+   denylisted out of the form (`_HIDDEN_DESTS`). The §14 "Advanced disclosure for
+   verbosity" idea is **not** implemented — deferred; revisit in Step 3 if wanted.
+5. **`recover_gdrive_audio`'s `podcast_title` positional** resolves to a plain `text`
+   widget (not the slug picker) because its dest isn't a conventional name and it matches
+   by *partial title*, not slug. It's a deep-link/non-runnable command, so low priority;
+   left as text rather than inventing a `podcast_by_title` widget.
+6. **`run` view ordering:** validates registered + runnable → danger typed-confirm →
+   `reconstruct_invocation` (re-parse) → Celery import guard (503 if unavailable) →
+   *then* creates the `CommandRun` row and dispatches. The row is only written once
+   dispatch is certain, so there are no orphan `queued` rows from a rejected request.
+7. **Copy box served by `build`, not built blind in JS.** The paste-ready command line
+   comes from the backend `build` endpoint (same serializer as `run`), so it's
+   shell-quoted (`shlex.quote` — Recovery CSV names contain spaces) and secret-redacted
+   identically to what a dispatched run records. The Step 3 frontend posts form state
+   and renders the returned string; it never reassembles the CLI itself, so the copy box
+   and Execute can't drift. Works for deep-link/docs-only commands too (their whole
+   point is a terminal-ready CLI).
+
+**Open §14 questions still open after Step 2:** concurrency (duplicate-run blocking) is
+**not** implemented (a second identical run is allowed); `result_summary` is left `null`
+for every command (the full `log` is the universal fallback) — both are v1-acceptable per
+§8a/§14 and deferred.
+
+**Logging.** `task_run_management_command` logs the cache key it streams to (INFO); the
+`run` view logs every dispatch at INFO with user + redacted command line (§11 audit
+trail, lands in the `LogEntry` viewer).
+
+**Tests.** Three new classes in [tests.py](../pod_manager/tests.py), **38 tests**:
+`AdminConsoleSchemaTests` (widget inference, registry overrides, sensitive flagging,
+shell-quoted command line, import-error fault tolerance, reconstruction coercion/
+validation/redaction), `AdminConsoleViewTests` (superuser gating, console grouping,
+detail, `build` copy-box serializer, run dispatch + non-runnable/static-danger/
+dynamic-prune-danger/invalid rejection, poll/detail/history, episode search), and
+`TaskRunManagementCommandTests` (runner lifecycle on success + failure). Verified: full
+`pod_manager` suite (**349 tests**) green; `manage.py check` clean.
 
 ---
 
@@ -698,10 +795,11 @@ than mid-build. None block starting.
    trust the posted form. (Note: passing kwargs to `call_command` can bypass argparse
    `required`/default handling, which is exactly why we re-parse.)
 
-6. **Secret redaction.** `CommandRun.args/options/command_line` persist to the DB and
-   the copy box echoes them. Mark sensitive fields (e.g. a `sensitive` widget flag or
-   `sensitive_fields` set on the spec) and store/display them as `***`. Moot for
-   today's runnable set, but design it in so a future token/cookie arg can't leak.
+6. **Secret redaction (resolved → Step 2 as-built §13, item 2).** `CommandSpec.sensitive`
+   (a frozenset of arg dests) marks secrets; `reconstruct_invocation` redacts them to
+   `***` in the persisted `CommandRun.args/options/command_line` and the worker's
+   `[SYSTEM]` echo, while the real values pass to `call_command` only. `crawl_by_id`'s
+   `--cookie_value` is wired as the first `sensitive` field.
 
 7. **Command style uniformity (Step 0).** Findings: stdout capture is already
    uniform (✅). Module docstrings are missing on ~11 commands — add them.

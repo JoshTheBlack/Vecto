@@ -765,6 +765,42 @@ def task_run_gdrive_rewind(run_id, csv_path):
 
 
 # ---------------------------------------------------------------------------
+# Admin Command Console — generic management-command runner (design §7)
+# ---------------------------------------------------------------------------
+
+@shared_task
+def task_run_management_command(run_id, name, args, options):
+    """Run any console-dispatched management command off the request thread.
+
+    One generic task replaces the per-command wrappers: it streams live output to
+    the ``admin_cmd_{run_id}`` cache key (polled by the console, §8) and records the
+    lifecycle + full log on the pre-created ``CommandRun`` row (§8a). ``args`` /
+    ``options`` are the *real* (un-redacted) invocation; the [SYSTEM] echo uses the
+    row's already-redacted ``command_line`` so secrets never reach the log (§15.6).
+    """
+    from .models import CommandRun
+
+    task_id = f"admin_cmd_{run_id}"
+    stream = CommandLogStream(task_id)
+    logger.info("task_run_management_command streaming to cache key %s (run %s, command %s)",
+                task_id, run_id, name)
+    run = CommandRun.objects.get(run_id=run_id)
+    run.mark_running()
+    try:
+        stream.write(f"[SYSTEM] Running: {run.command_line}\n")
+        call_command(name, *args, stdout=stream, stderr=stream, no_color=True, **options)
+        run.mark_finished(CommandRun.Status.COMPLETED)
+    except Exception as e:
+        stream.write(f"\n[ERROR] {str(e)}\n")
+        run.mark_finished(CommandRun.Status.FAILED, error=str(e))
+        raise  # Let Celery record the failure; finally still persists log + [DONE]
+    finally:
+        run.log = stream.captured()
+        run.save(update_fields=['log'])
+        stream.write("[DONE]")
+
+
+# ---------------------------------------------------------------------------
 # Transcription
 # ---------------------------------------------------------------------------
 

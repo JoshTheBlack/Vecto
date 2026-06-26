@@ -34,6 +34,22 @@ def staff_required(view_func):
     return wrapper
 
 
+def superuser_required(view_func):
+    """Gate a view behind ``is_superuser`` (Admin Command Console, §3).
+
+    Mirrors :func:`staff_required` but checks ``is_superuser`` — the console is
+    superuser-only, and every console endpoint carries this so the hidden nav is
+    never the only line of defense."""
+    @wraps(view_func)
+    def wrapper(request, *args, **kwargs):
+        if not request.user.is_authenticated:
+            return redirect_to_login(request.get_full_path(), 'patreon_login')
+        if not request.user.is_superuser:
+            return HttpResponseForbidden("Superuser access required.")
+        return view_func(request, *args, **kwargs)
+    return wrapper
+
+
 @staff_required
 def log_viewer(request):
     override = cache.get(CACHE_KEY)

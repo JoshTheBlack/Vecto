@@ -67,6 +67,16 @@ urlpatterns = [
     path('staff/logs/poll/', views.log_poll, name='log_poll'),
     path('staff/logs/level/', views.log_level_toggle, name='log_level_toggle'),
     path('staff/logs/resources/', views.log_resources, name='log_resources'),
+
+    # Admin Command Console (superuser-only; under /admin-console/ to avoid Django /admin/)
+    path('admin-console/', views.admin_console, name='admin_console'),
+    path('admin-console/command/<str:name>/', views.admin_console_command_detail, name='admin_console_command_detail'),
+    path('admin-console/command/<str:name>/build/', views.admin_console_build, name='admin_console_build'),
+    path('admin-console/command/<str:name>/run/', views.admin_console_run, name='admin_console_run'),
+    path('admin-console/run/<uuid:run_id>/poll/', views.admin_console_run_poll, name='admin_console_run_poll'),
+    path('admin-console/runs/', views.admin_console_history, name='admin_console_history'),
+    path('admin-console/run/<uuid:run_id>/', views.admin_console_run_detail, name='admin_console_run_detail'),
+    path('admin-console/lookup/episodes/', views.admin_console_episode_search, name='admin_console_episode_search'),
 ]
 
 urlpatterns += [

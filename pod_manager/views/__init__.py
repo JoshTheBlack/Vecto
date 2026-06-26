@@ -85,7 +85,18 @@ from ..security import (
 )
 from ..utils import validate_public_url, sanitize_user_html
 
-from .staff import log_viewer, log_stream, log_poll, log_level_toggle, log_resources
+from .staff import log_viewer, log_stream, log_poll, log_level_toggle, log_resources, superuser_required
+
+from .admin_console import (
+    console as admin_console,
+    command_detail as admin_console_command_detail,
+    build as admin_console_build,
+    run as admin_console_run,
+    run_poll as admin_console_run_poll,
+    run_detail as admin_console_run_detail,
+    history as admin_console_history,
+    episode_search as admin_console_episode_search,
+)
 
 from .creator.gdrive_recovery import (
     gdrive_recovery_files,

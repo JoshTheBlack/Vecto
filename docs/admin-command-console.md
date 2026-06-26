@@ -1,8 +1,8 @@
 # Admin Command Console — Design Document
 
-**Status:** Draft for review — **Step 0 (command normalization) implemented 2026-06-26.**
+**Status:** Draft for review — **Steps 0–1 implemented 2026-06-26.**
 **Author:** Josh + Claude (design session 2026-06-26)
-**Implementation:** Step 0 landed in the working tree (see §16 "As-built"); Steps 1–6 deferred to separate sessions.
+**Implementation:** Step 0 (command normalization, §16) and Step 1 (log-buffer refactor, §8 "As-built") landed in the working tree; Steps 2–6 deferred to separate sessions.
 
 ---
 
@@ -54,7 +54,7 @@ patterns we use today.
 | Capability | Where it lives now | How we reuse it |
 |---|---|---|
 | Run a command off the request thread | `task_ingest_feed`, `task_run_gdrive_recovery` in [tasks.py](../pod_manager/tasks.py) call `call_command(..., stdout=stream)` | Generalize into one `task_run_management_command` |
-| Buffer command output for streaming | `CacheLogStream` ([tasks.py:28](../pod_manager/tasks.py#L28)) and `_RecoveryStream` ([tasks.py:674](../pod_manager/tasks.py#L674)) — **duplicated** | Refactor into a single shared util (§8) |
+| Buffer command output for streaming | **Done (Step 1):** one shared `CommandLogStream` ([admin_console/log_stream.py](../pod_manager/admin_console/log_stream.py)) — was the duplicated `CacheLogStream` / `_RecoveryStream` | Single shared util, used by all callers (§8) |
 | Deliver live command output to the browser | SSE: `stream_feed_import`, `gdrive_recovery_stream`; **polling**: `log_poll` ([staff.py:125](../pod_manager/views/staff.py#L125)) | Console uses the **polling** path (more reliable behind gunicorn/Traefik — §8), keyed by run id |
 | Superuser/staff gating | `staff_required` ([staff.py:26](../pod_manager/views/staff.py#L26)); nav already conditional on `is_staff` / `is_superuser` ([base.html:281-296](../pod_manager/templates/pod_manager/base.html#L281)) | Add a `superuser_required` decorator + nav block |
 | Live log viewer UI precedent | `/staff/logs/` log viewer + poll/stream endpoints | Visual + interaction reference for the console's log pane |
@@ -353,23 +353,55 @@ def task_run_management_command(run_id, name, args, options):
 
 ## 8. Log streaming — buffer util + polling delivery
 
-### Buffer (shared util)
+### Buffer (shared util) — **implemented (Step 1, 2026-06-26)**
 
-`CacheLogStream` and `_RecoveryStream` are near-duplicates. Extract one canonical
-class (e.g. `pod_manager/admin_console/log_stream.py` or a shared `services` util)
-and have all call sites use it:
+The near-duplicate `CacheLogStream` and `_RecoveryStream` are now one canonical class,
+`CommandLogStream`, living in
+[pod_manager/admin_console/log_stream.py](../pod_manager/admin_console/log_stream.py).
+All call sites use it (see "As-built" below):
 
 ```python
 class CommandLogStream(io.StringIO):
     """Tees command stdout/stderr to a cache key (the live buffer) while keeping a
     raw capture for post-run parsing / persistence. Terminal marker is '[DONE]'."""
     def __init__(self, task_id): ...
-    def write(self, s): ...        # append new output to the cache key
+    def write(self, s): ...        # append new output to the cache key (SSE-framed)
     def captured(self): ...        # raw text, for CommandRun.log + summary parsing
 ```
 
-Keep the `captured()` capability `_RecoveryStream` relies on so the existing GDrive
-caller migrates without behavior loss. Buffer key = `admin_cmd_{run_id}`.
+It keeps the `captured()` capability `_RecoveryStream` relied on, so the GDrive
+callers migrated with no behavior loss. Buffer key for the console = `admin_cmd_{run_id}`
+(the existing callers keep their own keys: `import_logs_{show_id}`,
+`gdrive_recovery_{run_id}`).
+
+> **As-built (Step 1 — 2026-06-26).** Extracted `CommandLogStream` into the new
+> `pod_manager/admin_console/` package
+> ([log_stream.py](../pod_manager/admin_console/log_stream.py)) and repointed all
+> three callers in [tasks.py](../pod_manager/tasks.py):
+> `task_ingest_feed` ([tasks.py:64](../pod_manager/tasks.py#L64)),
+> `task_run_gdrive_recovery` ([tasks.py:690](../pod_manager/tasks.py#L690)), and
+> `task_run_gdrive_rewind` ([tasks.py:739](../pod_manager/tasks.py#L739)). The two
+> old classes and the now-unused `import io` were removed from `tasks.py`.
+>
+> **Unification details (no behavior change):** the merged `write()` (a) calls
+> `super().write()` so `captured()` is just `getvalue()` — no separate list/string
+> accumulator; (b) keeps `_RecoveryStream`'s empty-write guard and "only `cache.set`
+> when there's a framed chunk" (a strict superset of the old `CacheLogStream`, which
+> set the key unconditionally — harmless either way); (c) returns the char count from
+> `write()` (both old classes returned `None`; proven-safe, now strictly more correct).
+> The `[DONE]` sentinel is still written by each caller in its `finally` block, not by
+> the stream — `write('[DONE]')` frames to `data: [DONE]\n\n` exactly as before, so the
+> SSE views' `"[DONE]" in chunk` close condition is untouched. The cache timeout (3600s)
+> is preserved as a module constant `CACHE_TIMEOUT`.
+>
+> **Logging.** Added an INFO line per task naming the cache key it streams to
+> (pre-seeds the §11 audit trail / aids ops debugging). The util module has its own
+> `logger` for future use.
+>
+> **Tests.** New `CommandLogStreamTests` (5 tests, [tests.py](../pod_manager/tests.py))
+> assert the contract: SSE framing in cache, raw `captured()`, `[DONE]` framing,
+> empty-write no-op, and blank-line-captured-but-not-framed. Verified: full
+> `pod_manager` suite (311 tests) green; `manage.py check` clean.
 
 ### Delivery — polling, not SSE
 
@@ -595,8 +627,11 @@ and optionally `backfill_transcripts --model`/`--language`.
    `CommandSafetyIdiomTests` regression suite were added. Verified non-issue: stdout
    capture (only `run_discord_bot` logs instead of writing to stdout, and it's
    non-runnable).
-1. **Refactor** `CacheLogStream`/`_RecoveryStream` → shared `CommandLogStream` util;
-   repoint existing call sites (no behavior change). *Low risk, lands first.*
+1. ✅ **Log-buffer refactor — DONE (2026-06-26).** `CacheLogStream`/`_RecoveryStream`
+   → one shared `CommandLogStream` util in
+   [pod_manager/admin_console/log_stream.py](../pod_manager/admin_console/log_stream.py);
+   all three callers in [tasks.py](../pod_manager/tasks.py) repointed (no behavior
+   change). Logging + `CommandLogStreamTests` added. As-built note in §8.
 2. **Backend skeleton:** `superuser_required`, registry module (category/danger/
    runnable/deep_link/field_widgets), introspection + semantic-widget resolver →
    schema helper (§5a), `CommandRun` model + migration (§8a),

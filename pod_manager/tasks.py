@@ -1,6 +1,5 @@
 import json
 import logging
-import io
 import os
 import platform
 import redis
@@ -22,21 +21,10 @@ from django.core.files.base import ContentFile
 from django.template.loader import render_to_string
 
 from .models import Network, PatronProfile, Invoice, Podcast, Episode, NetworkMembership, LogEntry
+from .admin_console.log_stream import CommandLogStream
 
 logger = logging.getLogger(__name__)
 
-class CacheLogStream(io.StringIO):
-    def __init__(self, task_id):
-        super().__init__()
-        self.task_id = task_id
-        self.buffer = ""
-
-    def write(self, s):
-        super().write(s)
-        self.buffer += s
-        formatted_chunk = "".join([f"data: {line}\n\n" for line in s.splitlines() if line])
-        current_logs = cache.get(self.task_id, "")
-        cache.set(self.task_id, current_logs + formatted_chunk, timeout=3600)
 
 def parse_duration_to_hours(duration_str):
     """Helper to convert the HH:MM:SS string to fractional hours."""
@@ -73,7 +61,8 @@ def task_smart_poll_feeds():
 @shared_task
 def task_ingest_feed(show_id):
     task_id = f"import_logs_{show_id}"
-    stream = CacheLogStream(task_id)
+    stream = CommandLogStream(task_id)
+    logger.info("task_ingest_feed streaming to cache key %s for show %s", task_id, show_id)
     try:
         stream.write("\n[SYSTEM] Celery worker acquired task. Starting ingestion...\n")
         call_command('ingest_feed', show_id, stdout=stream, stderr=stream, no_color=True)
@@ -672,31 +661,6 @@ def ingest_wp_post_task(self, post_id, cookie_name, cookie_value, ingest_podcast
 # GDrive Audio Recovery
 # ---------------------------------------------------------------------------
 
-class _RecoveryStream(io.StringIO):
-    """Writes SSE-formatted lines to cache (for live streaming) and captures
-    raw text (so the task can parse output file paths after completion)."""
-
-    def __init__(self, task_id):
-        super().__init__()
-        self.task_id = task_id
-        self._captured = []
-
-    def write(self, s):
-        if not s:
-            return
-        self._captured.append(s)
-        formatted = "".join(f"data: {line}\n\n" for line in s.splitlines() if line)
-        if formatted:
-            current = cache.get(self.task_id, "")
-            cache.set(self.task_id, current + formatted, timeout=3600)
-
-    def flush(self):
-        pass
-
-    def captured(self):
-        return "".join(self._captured)
-
-
 def _s3_count_for_podcast(podcast_title):
     """Count episodes with S3 subscriber URLs, optionally scoped to one podcast."""
     qs = Episode.objects.filter(audio_url_subscriber__icontains='s3.amazonaws.com')
@@ -723,7 +687,8 @@ def _abs_path_to_media_url(abs_path):
 @shared_task
 def task_run_gdrive_recovery(run_id, csv_path, podcast_title, dry_run, min_confidence='HIGH'):
     task_id = f"gdrive_recovery_{run_id}"
-    stream = _RecoveryStream(task_id)
+    stream = CommandLogStream(task_id)
+    logger.info("task_run_gdrive_recovery streaming to cache key %s (run %s)", task_id, run_id)
     meta = {
         'run_id': run_id,
         'csv_filename': os.path.basename(csv_path),
@@ -771,7 +736,8 @@ def task_run_gdrive_recovery(run_id, csv_path, podcast_title, dry_run, min_confi
 @shared_task
 def task_run_gdrive_rewind(run_id, csv_path):
     task_id = f"gdrive_recovery_{run_id}"
-    stream = _RecoveryStream(task_id)
+    stream = CommandLogStream(task_id)
+    logger.info("task_run_gdrive_rewind streaming to cache key %s (run %s)", task_id, run_id)
     meta = {
         'run_id': run_id,
         'csv_filename': os.path.basename(csv_path),

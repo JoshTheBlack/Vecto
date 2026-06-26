@@ -4180,3 +4180,49 @@ class R2MoveRekeyHookTests(TestCase):
             actions.handle_move_episodes(req, self.network)
         rekey.assert_not_called()
 
+
+@override_settings(CACHES=TEST_CACHES)
+class CommandLogStreamTests(TestCase):
+    """Contract for the shared CommandLogStream buffer util (Admin Command Console,
+    §8). Guards the streaming behavior the SSE callers (stream_feed_import,
+    gdrive_recovery_stream) and the GDrive recovery/rewind tasks rely on."""
+
+    def setUp(self):
+        from pod_manager.admin_console.log_stream import CommandLogStream
+        self.CommandLogStream = CommandLogStream
+        cache.clear()
+
+    def test_write_appends_sse_framed_lines_to_cache(self):
+        stream = self.CommandLogStream('admin_cmd_test')
+        stream.write("hello\nworld\n")
+        self.assertEqual(cache.get('admin_cmd_test'), "data: hello\n\ndata: world\n\n")
+
+    def test_captured_returns_raw_unframed_text(self):
+        stream = self.CommandLogStream('admin_cmd_test')
+        stream.write("line one\n")
+        stream.write("line two\n")
+        # captured() is the post-run parse/persist source — no SSE framing.
+        self.assertEqual(stream.captured(), "line one\nline two\n")
+
+    def test_done_sentinel_is_framed_for_sse_close(self):
+        # The SSE views close when "[DONE]" appears in the tailed chunk; callers
+        # write the sentinel themselves, so it must frame identically.
+        stream = self.CommandLogStream('admin_cmd_test')
+        stream.write('[DONE]')
+        self.assertIn("[DONE]", cache.get('admin_cmd_test'))
+        self.assertEqual(cache.get('admin_cmd_test'), "data: [DONE]\n\n")
+
+    def test_empty_write_is_a_noop(self):
+        stream = self.CommandLogStream('admin_cmd_test')
+        self.assertEqual(stream.write(''), 0)
+        self.assertIsNone(cache.get('admin_cmd_test'))
+        self.assertEqual(stream.captured(), '')
+
+    def test_blank_lines_produce_no_cache_chunk_but_are_captured(self):
+        # splitlines() drops blank lines from the framed buffer, but the raw text
+        # is still captured verbatim (matches the legacy _RecoveryStream behavior).
+        stream = self.CommandLogStream('admin_cmd_test')
+        stream.write("\n")
+        self.assertIsNone(cache.get('admin_cmd_test'))
+        self.assertEqual(stream.captured(), "\n")
+

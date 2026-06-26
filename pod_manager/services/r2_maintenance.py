@@ -20,6 +20,7 @@ lives in exactly one place.
 """
 
 import logging
+import shutil
 from datetime import timedelta
 
 from django.conf import settings
@@ -217,7 +218,30 @@ def rekey_episode_audio(episode_id: int) -> dict:
         if not _key_referenced_by_other(old_key, episode_id):
             _record_orphan(old_key, episode, reason=R2OrphanedObject.Reason.MOVE_REKEY)
     logger.info("r2 rekey: ep %d %s -> %s", episode_id, old_key, new_key)
+
+    _rekey_local_source_audio(old_key, new_key, episode_id)
     return {"status": "rekeyed", "old_key": old_key, "new_key": new_key}
+
+
+def _rekey_local_source_audio(old_key: str, new_key: str, episode_id: int) -> None:
+    """Relocate the local WHISPER_KEEP_SOURCE_AUDIO copy alongside the R2 move so
+    the on-disk mirror keeps parity with R2. Best-effort: the R2 object is the
+    source of truth, so a local FS hiccup must never fail the rekey. No-op in prod
+    (retention is dev-only) and whenever the file isn't present."""
+    try:
+        from pod_manager.services.transcription import source_audio_path_for_key
+        old_local = source_audio_path_for_key(old_key)
+        new_local = source_audio_path_for_key(new_key)
+        if old_local == new_local or not old_local.exists():
+            return
+        new_local.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(old_local), str(new_local))
+        logger.info("r2 rekey: moved local source audio %s -> %s", old_local, new_local)
+    except Exception as exc:
+        logger.warning(
+            "r2 rekey: local source-audio move failed for ep %d (continuing) — %s",
+            episode_id, exc,
+        )
 
 
 # ---------------------------------------------------------------------------

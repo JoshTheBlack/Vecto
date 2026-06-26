@@ -1,3 +1,4 @@
+import hashlib
 import json
 import logging
 import os
@@ -228,19 +229,56 @@ def source_audio_filename(episode) -> str:
     )
 
 
-def source_audio_path(episode) -> Path:
+def _hash_file(path: Path) -> str:
+    """SHA-256 hexdigest of a file, streamed. Matches r2_mirror's hashing so a
+    locally-computed name lands on the same {stem}-{shorthash} as the R2 key."""
+    h = hashlib.sha256()
+    with path.open('rb') as fp:
+        for chunk in iter(lambda: fp.read(1 << 20), b''):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _source_audio_root() -> Path:
+    return Path(settings.MEDIA_ROOT) / 'source_audio'
+
+
+def _strip_key_prefix(key: str) -> str:
+    """Drop the R2 bucket key-prefix (e.g. 'dev/') so the local mirror tree is
+    laid out identically under dev and prod."""
+    prefix = settings.R2_KEY_PREFIX or ''
+    if prefix and key.startswith(prefix):
+        return key[len(prefix):]
+    return key
+
+
+def source_audio_path_for_key(key: str) -> Path:
+    """Local path that mirrors a (possibly prefixed) R2 object key:
+    MEDIA_ROOT/source_audio/{network_id}/{podcast_id}/{stem}-{shorthash}.{ext}.
+    The single place that maps an R2 key to its on-disk twin (used by the
+    rekey-on-move relocation and the backfill rename command)."""
+    return _source_audio_root() / _strip_key_prefix(key)
+
+
+def source_audio_path(episode, content_hash: str | None = None) -> Path | None:
     """Persistent save path for a subscriber MP3 when WHISPER_KEEP_SOURCE_AUDIO=True.
 
-    Layout: MEDIA_ROOT/source_audio/{network_slug}/{podcast_slug}/{original_filename}
+    The local copy mirrors the R2 object key EXACTLY — same id-based folders and
+    same ``{stem}-{shorthash}.{ext}`` filename — so it stays in lockstep with R2
+    and a feed move re-keys both together. The content hash is taken from
+    ``episode.r2_url`` when the episode is already mirrored (exact parity, nothing
+    to recompute); otherwise from a freshly computed ``content_hash``.
+
+    Returns None when neither is available — the canonical name isn't yet knowable
+    (e.g. the very first transcription, before the inline mirror has run).
     """
-    filename = source_audio_filename(episode)
-    return (
-        Path(settings.MEDIA_ROOT)
-        / 'source_audio'
-        / episode.podcast.network.slug
-        / episode.podcast.slug
-        / filename
-    )
+    if episode.r2_url:
+        from pod_manager.services.r2_client import key_from_public_url
+        return source_audio_path_for_key(key_from_public_url(episode.r2_url))
+    if content_hash:
+        from pod_manager.services.r2_mirror import object_key_bare
+        return _source_audio_root() / object_key_bare(episode, content_hash)
+    return None
 
 
 def ensure_source_audio(episode_id: int) -> bool:
@@ -263,19 +301,35 @@ def ensure_source_audio(episode_id: int) -> bool:
     if not episode.audio_url_subscriber:
         return False
 
+    # Canonical (R2-mirroring) destination. None until we know the content hash —
+    # i.e. when the episode hasn't been mirrored yet — in which case we hash the
+    # download as it streams and name the file the same way R2 would.
     dest = source_audio_path(episode)
-    if dest.exists():
+    if dest is not None and dest.exists():
         return False
+    need_hash = dest is None
 
-    logger.info("ensure_source_audio: downloading audio for episode %d to %s", episode_id, dest)
+    logger.info("ensure_source_audio: downloading audio for episode %d", episode_id)
     dl = requests.get(episode.audio_url_subscriber, stream=True, timeout=300)
     dl.raise_for_status()
 
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.NamedTemporaryFile(suffix='.mp3', delete=False, dir=dest.parent) as tmp:
+    root = _source_audio_root()
+    root.mkdir(parents=True, exist_ok=True)
+    h = hashlib.sha256() if need_hash else None
+    with tempfile.NamedTemporaryFile(suffix='.mp3', delete=False, dir=root) as tmp:
         tmp_path = Path(tmp.name)
         for chunk in dl.iter_content(chunk_size=65536):
             tmp.write(chunk)
+            if h is not None:
+                h.update(chunk)
+
+    if need_hash:
+        dest = source_audio_path(episode, content_hash=h.hexdigest())
+    if dest.exists():
+        tmp_path.unlink(missing_ok=True)
+        return False
+
+    dest.parent.mkdir(parents=True, exist_ok=True)
     tmp_path.rename(dest)
     _chmod_777(dest)
 
@@ -788,15 +842,6 @@ def run_transcription(
                 )
             time.sleep(_HTML_RETRY_BACKOFF_SECONDS)
 
-        # Persist a freshly downloaded file for reuse — default flow only. We
-        # never cache an override's bytes under the subscriber-derived cache
-        # name (a public/R2 file would then masquerade as the subscriber audio).
-        if cached_path is not None and audio_fp_path is tmp_path and not source_override:
-            cached_path.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(tmp_path, cached_path)
-            _chmod_777(cached_path)
-            logger.info("transcribe: saved source audio to %s", cached_path)
-
         # 3b. Mirror to R2 — reuse THIS download (one download, two consumers).
         # Best-effort: a mirror failure must never fail the transcription. The
         # mirror only READS audio_fp_path; it never moves/deletes it, so the
@@ -815,6 +860,9 @@ def run_transcription(
                     res = mirror_episode_audio(
                         episode_id, local_path=audio_fp_path, force=bool(source_override),
                     )
+                    # Reflect the freshly-set r2_url in our in-memory episode so
+                    # the source-audio cache below names the file from it.
+                    episode.r2_url = res.get('r2_url') or episode.r2_url
                     logger.info(
                         "transcribe: r2 mirror for episode %d -> %s (%s)",
                         episode_id, res.get('status'), res.get('key'),
@@ -831,6 +879,25 @@ def run_transcription(
                 "transcribe: r2 mirror skipped for episode %d — transcribing from a "
                 "non-subscriber source (%s)", episode_id, source_override,
             )
+
+        # 3c. Persist a freshly downloaded file for reuse (WHISPER_KEEP_SOURCE_AUDIO,
+        # dev only). Saved AFTER the mirror so it can adopt the R2 key's exact name
+        # (id folders + {stem}-{shorthash}.{ext}), keeping the on-disk copy in
+        # lockstep with R2 and relocated alongside it on a feed move. Default flow
+        # only — never cache an override's bytes under the subscriber name (a
+        # public/R2 file would then masquerade as the subscriber audio).
+        if (settings.WHISPER_KEEP_SOURCE_AUDIO and audio_fp_path is tmp_path
+                and not source_override):
+            dest = source_audio_path(episode)
+            if dest is None:
+                # Mirror disabled/skipped — no r2_url to name from. Hash the bytes
+                # we already have so the name still matches what R2 WOULD assign.
+                dest = source_audio_path(episode, content_hash=_hash_file(audio_fp_path))
+            if dest is not None and not dest.exists():
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(tmp_path, dest)
+                _chmod_777(dest)
+                logger.info("transcribe: saved source audio to %s", dest)
 
         # 4. POST to whisper /asr
         logger.info(

@@ -183,8 +183,11 @@ Within the window the object is untouched at its original key — restore by re-
 1. Computes the new key from the **current** parent — preserving the byte-identical `{stem}-{hash}.{ext}` filename, swapping only the `network_id/podcast_id` folder.
 2. No-op if it already matches.
 3. Server-side `CopyObject` (no egress) → verify → commit `r2_url` → clear any new-key orphan → record the old key as `reason='move_rekey'` (short 7-day grace, unless still referenced).
+4. **Relocates the local `WHISPER_KEEP_SOURCE_AUDIO` copy too** (best-effort), `shutil.move`-ing it from the old-key path to the new-key path under `MEDIA_ROOT/source_audio/` so the on-disk mirror keeps parity with R2. No-op in prod (retention is dev-only) and whenever the file isn't present; a local FS hiccup never fails the R2 rekey (`r2_url` is the source of truth).
 
 The mirror's content idempotency **never** re-keys on a prefix mismatch — only the explicit move action does, so a routine re-ingest after a move doesn't churn.
+
+> **Local source-audio parity.** The retained dev copy mirrors the R2 object key exactly — `source_audio/{network_id}/{podcast_id}/{stem}-{shorthash}.{ext}` (bucket prefix stripped) — so it relocates on move via the same key delta. Files written before this naming existed are migrated with `manage.py rename_source_audio_to_r2` (dry-run by default; `--apply` to move).
 
 ---
 
@@ -227,6 +230,7 @@ python manage.py r2_smoke_test [--keep]        # put/get/delete a dummy object u
 python manage.py r2_gc [--apply] [--age-days=7]  # reconciliation sweep (records orphans)
 python manage.py r2_cleanup_orphans [--apply]    # delete expired, unreferenced orphans
 python manage.py purge_r2_dev --yes              # hard-delete everything under dev/
+python manage.py rename_source_audio_to_r2 [--apply]  # migrate local source-audio files to the R2 naming scheme (dev)
 ```
 
 `r2_gc` and `r2_cleanup_orphans` default to **dry-run**; pass `--apply` to act. `purge_r2_dev` requires `--yes`.

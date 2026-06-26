@@ -84,13 +84,18 @@ def _split_stem_ext(filename: str) -> tuple[str, str]:
     return stem, chosen_ext
 
 
-def _object_key(episode, content_hash: str) -> tuple[str, str]:
-    """Build the (prefixed_key, content_type) for an episode's mirror.
+def object_key_bare(episode, content_hash: str) -> str:
+    """The R2 object key WITHOUT the bucket prefix:
+    {network_id}/{podcast_id}/{stem}-{shorthash}.{ext}.
 
     Folders are IMMUTABLE network_id/podcast_id (slug changes are free); meaning
     is carried by the readable filename stem. Reuses transcription's
     source_audio_filename() so GDrive /uc?... links resolve to episode_{pk}.mp3
     instead of a garbage "uc" stem.
+
+    Exposed (not underscore-private) because the local WHISPER_KEEP_SOURCE_AUDIO
+    copy reuses this byte-for-byte, so the on-disk mirror and the R2 object share
+    one naming scheme (folders + filename) and stay in lockstep.
     """
     raw_name = source_audio_filename(episode)
     # Drop any query string / tracking prefix that slipped through.
@@ -98,7 +103,13 @@ def _object_key(episode, content_hash: str) -> tuple[str, str]:
     stem, ext = _split_stem_ext(raw_name)
     safe_stem = slugify(stem) or f"episode-{episode.pk}"
     shorthash = content_hash[:_HASH_PREFIX_LEN]
-    bare = f"{episode.podcast.network_id}/{episode.podcast_id}/{safe_stem}-{shorthash}.{ext}"
+    return f"{episode.podcast.network_id}/{episode.podcast_id}/{safe_stem}-{shorthash}.{ext}"
+
+
+def _object_key(episode, content_hash: str) -> tuple[str, str]:
+    """Build the (prefixed_key, content_type) for an episode's mirror."""
+    bare = object_key_bare(episode, content_hash)
+    ext = bare.rsplit('.', 1)[-1]
     content_type = _CONTENT_TYPE_BY_EXT.get(ext, 'audio/mpeg')
     return prefixed_key(bare), content_type
 

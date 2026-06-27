@@ -33,3 +33,10 @@ class Command(BaseCommand):
             self.stdout.write(self.style.SUCCESS(f"Recorded {len(result['orphans'])} orphan row(s)."))
         else:
             self.stdout.write(self.style.WARNING("Dry run — nothing recorded. Re-run with --apply."))
+
+        from pod_manager.admin_console.summary import emit_summary
+        emit_summary(self.stdout, {
+            "applied": bool(options["apply"]),
+            "scanned": result["scanned"],
+            "orphans": len(result["orphans"]),
+        })

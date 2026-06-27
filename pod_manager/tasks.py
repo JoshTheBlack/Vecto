@@ -795,8 +795,20 @@ def task_run_management_command(run_id, name, args, options):
         run.mark_finished(CommandRun.Status.FAILED, error=str(e))
         raise  # Let Celery record the failure; finally still persists log + [DONE]
     finally:
-        run.log = stream.captured()
-        run.save(update_fields=['log'])
+        from .admin_console.summary import extract_summary
+        captured = stream.captured()
+        run.log = captured
+        # Pull a command-emitted [SUMMARY] line into result_summary, if any (§8a).
+        # Fault-tolerant: a missing/malformed marker just leaves it null.
+        try:
+            summary = extract_summary(captured)
+        except Exception:  # noqa: BLE001 - summary extraction must never fail the run
+            summary = None
+        if summary is not None:
+            run.result_summary = summary
+            run.save(update_fields=['log', 'result_summary'])
+        else:
+            run.save(update_fields=['log'])
         stream.write("[DONE]")
 
 

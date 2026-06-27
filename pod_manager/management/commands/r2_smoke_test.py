@@ -41,6 +41,8 @@ class Command(BaseCommand):
         self.stdout.write(f"key      : {key}")
         self.stdout.write(f"prefix   : {settings.R2_KEY_PREFIX!r}")
 
+        from pod_manager.admin_console.summary import emit_summary
+
         # PUT
         client.put_object(
             Bucket=bucket,
@@ -62,9 +64,11 @@ class Command(BaseCommand):
                 f"--keep set; object left at {public_url(key)} "
                 "(public host serves it only if the bucket is mapped to that domain)."
             )
+            emit_summary(self.stdout, {"ok": True, "kept": True})
             return
 
         # DELETE
         client.delete_object(Bucket=bucket, Key=key)
         self.stdout.write(self.style.SUCCESS("DEL  ok"))
         self.stdout.write(self.style.SUCCESS("R2 smoke test passed."))
+        emit_summary(self.stdout, {"ok": True, "kept": False})

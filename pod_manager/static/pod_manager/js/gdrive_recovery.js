@@ -6,7 +6,7 @@
     'use strict';
 
     // ── State ──────────────────────────────────────────────────
-    let activeStreams = {};  // run_id → EventSource
+    let activeStreams = {};  // run_id → poll controller ({ stop })
     let runLogs = {};        // run_id → captured log text
 
     // ── Bootstrap ──────────────────────────────────────────────
@@ -275,8 +275,9 @@
         const dismissBtn = panel.querySelector('.run-panel-dismiss');
         streamsDiv.prepend(panel);
 
-        // Dismiss: remove panel, refresh list, then re-expand this card
+        // Dismiss: stop any active poll, remove panel, refresh list, then re-expand this card
         dismissBtn.addEventListener('click', () => {
+            if (activeStreams[runId]) { activeStreams[runId].stop = true; delete activeStreams[runId]; }
             panel.remove();
             recoveryRefresh().then(() => {
                 const newBody = document.getElementById(`body-${cardId}`);
@@ -288,28 +289,56 @@
             });
         });
 
-        const es = new EventSource(`/creator/gdrive-recovery/stream/${runId}/`);
-        activeStreams[runId] = es;
+        // Poll the run's log buffer (polling, not SSE — more reliable behind
+        // gunicorn/Traefik). The buffer is SSE-framed (data: <line>\n\n), so we parse
+        // complete frames client-side and keep a remainder across polls.
+        const ctl = { stop: false };
+        activeStreams[runId] = ctl;
+        let offset = 0;
+        let remainder = '';
+        let sawDone = false;
 
-        es.onmessage = function (event) {
-            if (event.data === '[DONE]') {
-                es.close();
-                delete activeStreams[runId];
-                badge.textContent = 'Complete — dismiss to refresh table';
-                badge.className = 'badge bg-success';
-            } else {
-                terminal.textContent += event.data + '\n';
-                terminal.scrollTop = terminal.scrollHeight;
-            }
-        };
+        function consume(raw) {
+            remainder += raw;
+            const parts = remainder.split('\n\n');
+            remainder = parts.pop();
+            parts.forEach(part => {
+                if (part.indexOf('data: ') === 0) {
+                    const line = part.slice(6);
+                    if (line === '[DONE]') { sawDone = true; return; }
+                    terminal.textContent += line + '\n';
+                } else if (part.trim()) {
+                    terminal.textContent += part + '\n';
+                }
+            });
+            terminal.scrollTop = terminal.scrollHeight;
+        }
 
-        es.onerror = function () {
-            es.close();
-            delete activeStreams[runId];
-            terminal.textContent += '\n[CONNECTION ERROR] Lost connection to server.\n';
-            badge.textContent = 'Error';
-            badge.className = 'badge bg-danger';
-        };
+        function pollRun() {
+            if (ctl.stop) return;
+            fetch(`/creator/gdrive-recovery/poll/${runId}/?offset=${offset}`, {
+                headers: { 'X-Requested-With': 'XMLHttpRequest' },
+            })
+                .then(r => r.json())
+                .then(data => {
+                    if (ctl.stop) return;
+                    if (data.chunk) { offset = data.offset; consume(data.chunk); }
+                    if (sawDone || data.done) {
+                        delete activeStreams[runId];
+                        badge.textContent = 'Complete — dismiss to refresh table';
+                        badge.className = 'badge bg-success';
+                        return;
+                    }
+                    setTimeout(pollRun, 1500);
+                })
+                .catch(() => {
+                    delete activeStreams[runId];
+                    terminal.textContent += '\n[CONNECTION ERROR] Lost connection to server.\n';
+                    badge.textContent = 'Error';
+                    badge.className = 'badge bg-danger';
+                });
+        }
+        pollRun();
     }
 
     // ── Build past-runs table for one CSV ───────────────────────

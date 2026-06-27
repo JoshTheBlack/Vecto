@@ -4184,8 +4184,8 @@ class R2MoveRekeyHookTests(TestCase):
 @override_settings(CACHES=TEST_CACHES)
 class CommandLogStreamTests(TestCase):
     """Contract for the shared CommandLogStream buffer util (Admin Command Console,
-    §8). Guards the streaming behavior the SSE callers (stream_feed_import,
-    gdrive_recovery_stream) and the GDrive recovery/rewind tasks rely on."""
+    §8). Guards the streaming behavior the polled log callers (import_feed_poll,
+    gdrive_recovery_poll) and the GDrive recovery/rewind tasks rely on."""
 
     def setUp(self):
         from pod_manager.admin_console.log_stream import CommandLogStream
@@ -4291,6 +4291,21 @@ class AdminConsoleSchemaTests(TestCase):
         self.assertEqual(f['widget'], 'enum_multi:audio_origins')
         self.assertTrue(f['multi'])
         self.assertEqual([o['value'] for o in f['options']], ['gdrive', 'libsyn', 'other'])
+
+    def test_registry_override_single_enum(self):
+        # backfill_transcripts --model / --language are free-form args given curated
+        # single-select enum pickers via field_widgets (§5a).
+        model = self._field('backfill_transcripts', 'model')
+        self.assertEqual(model['widget'], 'enum:whisper_models')
+        self.assertFalse(model['multi'])
+        self.assertIn('large-v3', [o['value'] for o in model['options']])
+        lang = self._field('backfill_transcripts', 'language')
+        self.assertEqual(lang['widget'], 'enum:whisper_languages')
+        self.assertIn('es', [o['value'] for o in lang['options']])
+        # A picked value round-trips through reconstruction as a plain --flag=value.
+        inv = self._reconstruct('backfill_transcripts', {'apply': True, 'model': 'large', 'language': 'es'})
+        self.assertEqual(inv['options']['model'], 'large')
+        self.assertEqual(inv['options']['language'], 'es')
 
     def test_csv_path_override(self):
         self.assertEqual(self._field('recover_gdrive_audio', 'csv_path')['widget'], 'csv_path')
@@ -4497,6 +4512,31 @@ class AdminConsoleViewTests(TestCase):
             self.assertEqual(confirmed.status_code, 200)
         self.assertEqual(delay.call_count, 2)  # plain + confirmed-prune dispatched; blocked did not
 
+    def test_run_soft_blocks_identical_in_flight_run(self):
+        # §14 (resolved): a second identical invocation while one is queued/running is
+        # rejected (409); a *different* invocation of the same command still dispatches.
+        self.client.force_login(self.superuser)
+        with mock.patch('pod_manager.tasks.task_run_management_command.delay') as delay:
+            first = self._run('ingest_feed', {'fields': {'podcast_id': '7'}})
+            self.assertEqual(first.status_code, 200)
+            dup = self._run('ingest_feed', {'fields': {'podcast_id': '7'}})
+            self.assertEqual(dup.status_code, 409)
+            other = self._run('ingest_feed', {'fields': {'podcast_id': '8'}})
+            self.assertEqual(other.status_code, 200)
+        self.assertEqual(delay.call_count, 2)  # first + other; the duplicate never dispatched
+
+    def test_run_503_and_drops_row_when_broker_down(self):
+        # If `.delay()` raises (broker unreachable), the run degrades to a 503 and leaves
+        # no orphan `queued` row behind (§7).
+        from pod_manager.models import CommandRun
+        self.client.force_login(self.superuser)
+        with mock.patch('pod_manager.tasks.task_run_management_command.delay',
+                        side_effect=RuntimeError('broker down')) as delay:
+            resp = self._run('ingest_feed', {'fields': {'podcast_id': '7'}})
+        self.assertEqual(resp.status_code, 503)
+        delay.assert_called_once()
+        self.assertEqual(CommandRun.objects.filter(command='ingest_feed').count(), 0)
+
     # -- build (copy-box serializer, §5b) -----------------------------------
     def _build(self, name, body):
         return self.client.post(
@@ -4599,4 +4639,122 @@ class TaskRunManagementCommandTests(TestCase):
         self.assertEqual(run.status, CommandRun.Status.FAILED)
         self.assertIn('boom', run.error)
         self.assertIn('[DONE]', cache.get(f"admin_cmd_{run.run_id}"))
+
+    def test_command_emitted_summary_lands_in_result_summary(self):
+        # A command that emits a [SUMMARY] line has it sliced into result_summary (§8a).
+        from pod_manager.models import CommandRun
+        from pod_manager.tasks import task_run_management_command
+        from pod_manager.admin_console.summary import emit_summary
+        run = CommandRun.objects.create(command='mirror_audio_to_r2', command_line='x')
+
+        def fake_call(name, *args, stdout=None, **kw):
+            stdout.write("Dispatched 5 mirror task(s) to Celery.\n")
+            emit_summary(stdout, {"mode": "celery", "dispatched": 5})
+
+        with mock.patch('pod_manager.tasks.call_command', side_effect=fake_call):
+            task_run_management_command(str(run.run_id), 'mirror_audio_to_r2', [], {})
+
+        run.refresh_from_db()
+        self.assertEqual(run.result_summary, {"mode": "celery", "dispatched": 5})
+
+    def test_no_summary_leaves_result_summary_null(self):
+        from pod_manager.models import CommandRun
+        from pod_manager.tasks import task_run_management_command
+        run = CommandRun.objects.create(command='ingest_feed', command_line='x')
+
+        with mock.patch('pod_manager.tasks.call_command', side_effect=lambda *a, **k: k['stdout'].write("plain output\n")):
+            task_run_management_command(str(run.run_id), 'ingest_feed', [], {})
+
+        run.refresh_from_db()
+        self.assertIsNone(run.result_summary)
+
+
+class CommandSummaryHelperTests(TestCase):
+    """The command-emitted [SUMMARY] convention (admin_console/summary.py, §8a)."""
+
+    def test_emit_then_extract_round_trips(self):
+        import io
+        from pod_manager.admin_console.summary import emit_summary, extract_summary
+        buf = io.StringIO()
+        emit_summary(buf, {"deleted": 12, "kept": 3})
+        self.assertEqual(extract_summary(buf.getvalue()), {"deleted": 12, "kept": 3})
+
+    def test_last_summary_wins(self):
+        from pod_manager.admin_console.summary import extract_summary
+        captured = '[SUMMARY] {"n": 1}\nworking...\n[SUMMARY] {"n": 2}\n'
+        self.assertEqual(extract_summary(captured), {"n": 2})
+
+    def test_malformed_or_missing_yields_none(self):
+        from pod_manager.admin_console.summary import extract_summary
+        self.assertIsNone(extract_summary("just regular output\n"))
+        self.assertIsNone(extract_summary("[SUMMARY] not-json\n"))
+        self.assertIsNone(extract_summary(""))
+
+    def test_real_command_emits_parseable_summary(self):
+        # End-to-end guard: a real command's emit_summary line round-trips through
+        # extract_summary. prune_logs preview deletes nothing, so it's safe.
+        import io
+        from django.core.management import call_command
+        from pod_manager.admin_console.summary import extract_summary
+        buf = io.StringIO()
+        call_command('prune_logs', stdout=buf)
+        summary = extract_summary(buf.getvalue())
+        self.assertIsNotNone(summary)
+        self.assertIs(summary['applied'], False)
+        self.assertIn('deleted', summary)
+
+
+@override_settings(CACHES=TEST_CACHES)
+class LiveImportPollTests(TestCase):
+    """The polled feed-import endpoints (migrated from SSE → polling)."""
+
+    def setUp(self):
+        cache.clear()
+        self.factory = RequestFactory()
+        self.network = Network.objects.create(name='Bald Move', slug='baldmove')
+        self.podcast = Podcast.objects.create(network=self.network, title='Watchmen', slug='watchmen')
+        self.user = User.objects.create_user('creator', password='x')
+
+    def test_poll_returns_delta_and_done(self):
+        from pod_manager.views import import_feed_poll
+        cache.set(f"import_logs_{self.podcast.id}", "data: hello\n\ndata: [DONE]\n\n")
+        req = _make_tenant_request(self.factory, self.network, path='/import/poll/', user=self.user)
+        data = json.loads(import_feed_poll(req, self.podcast.id).content)
+        self.assertIn('hello', data['chunk'])
+        self.assertTrue(data['done'])
+        # Re-poll from the returned offset → no duplicate output.
+        req2 = _make_tenant_request(self.factory, self.network, path='/import/poll/',
+                                    data={'offset': data['offset']}, user=self.user)
+        self.assertEqual(json.loads(import_feed_poll(req2, self.podcast.id).content)['chunk'], '')
+
+    def test_start_seeds_buffer_and_dispatches(self):
+        from pod_manager.views import import_feed_start
+        with mock.patch('pod_manager.tasks.task_ingest_feed.delay') as delay:
+            req = _make_tenant_request(self.factory, self.network, method='post',
+                                       path='/import/start/', user=self.user)
+            resp = import_feed_start(req, self.podcast.id)
+        self.assertEqual(resp.status_code, 200)
+        delay.assert_called_once_with(self.podcast.id)
+        self.assertIn('[QUEUED]', cache.get(f"import_logs_{self.podcast.id}"))
+
+
+@override_settings(CACHES=TEST_CACHES)
+class GdriveRecoveryPollTests(TestCase):
+    """The polled GDrive-recovery log endpoint (migrated from SSE → polling)."""
+
+    def setUp(self):
+        cache.clear()
+        self.factory = RequestFactory()
+        self.user = User.objects.create_user('creator', password='x')
+
+    def test_poll_returns_delta_and_rejects_bad_uuid(self):
+        from pod_manager.views import gdrive_recovery_poll
+        import uuid as _uuid
+        rid = str(_uuid.uuid4())
+        cache.set(f"gdrive_recovery_{rid}", "data: working\n\n")
+        req = _make_tenant_request(self.factory, None, path='/creator/gdrive-recovery/poll/', user=self.user)
+        data = json.loads(gdrive_recovery_poll(req, rid).content)
+        self.assertIn('working', data['chunk'])
+        self.assertFalse(data['done'])
+        self.assertEqual(gdrive_recovery_poll(req, 'not-a-uuid').status_code, 400)
 

@@ -45,3 +45,10 @@ class Command(BaseCommand):
             self.stdout.write(self.style.SUCCESS(f"Deleted {len(result['deleted'])} object(s)."))
         else:
             self.stdout.write(self.style.WARNING("Dry run — nothing deleted. Re-run with --apply --yes."))
+
+        from pod_manager.admin_console.summary import emit_summary
+        emit_summary(self.stdout, {
+            "applied": apply,
+            "deleted": len(result["deleted"]),
+            "readopted": result["readopted"],
+        })

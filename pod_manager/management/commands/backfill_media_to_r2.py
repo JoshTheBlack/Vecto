@@ -110,6 +110,14 @@ class Command(BaseCommand):
             f"\nDone: {totals['migrated']} migrated, {totals['skipped']} skipped, "
             f"{totals['failed']} failed{' (dry-run)' if dry_run else ''}."
         ))
+        from pod_manager.admin_console.summary import emit_summary
+        emit_summary(self.stdout, {
+            "mode": "migrate",
+            "applied": apply,
+            "migrated": totals['migrated'],
+            "skipped": totals['skipped'],
+            "failed": totals['failed'],
+        })
 
     # ------------------------------------------------------------------
     def _migrate_one(self, instance, field, max_px, prefix, force, dry_run):
@@ -175,6 +183,13 @@ class Command(BaseCommand):
         self.stdout.write(style(
             f"\nVerify: {present} present, {missing} missing, {unmigrated} not-yet-migrated."
         ))
+        from pod_manager.admin_console.summary import emit_summary
+        emit_summary(self.stdout, {
+            "mode": "verify",
+            "present": present,
+            "missing": missing,
+            "unmigrated": unmigrated,
+        })
         if missing or unmigrated:
             raise CommandError("Verification failed — do NOT prune local files yet.")
 
@@ -209,6 +224,14 @@ class Command(BaseCommand):
         self.stdout.write(self.style.SUCCESS(
             f"\nPrune: {verb} {pruned} local file(s); {refused} refused (not in R2); "
             f"{skipped} legacy-keyed (left for the transition branch)."))
+        from pod_manager.admin_console.summary import emit_summary
+        emit_summary(self.stdout, {
+            "mode": "prune",
+            "applied": not dry_run,
+            "pruned": pruned,
+            "refused": refused,
+            "skipped": skipped,
+        })
 
     # ------------------------------------------------------------------
     def _rows_with_image(self, model, field):

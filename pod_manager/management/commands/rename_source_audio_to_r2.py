@@ -111,6 +111,15 @@ class Command(BaseCommand):
         if not apply and moved:
             self.stdout.write("Re-run with --apply to perform the moves.")
 
+        from pod_manager.admin_console.summary import emit_summary
+        emit_summary(self.stdout, {
+            "applied": apply,
+            "moved": moved,
+            "already_canonical": already,
+            "no_file": missing,
+            "ambiguous": ambiguous,
+        })
+
     def _locate_legacy_file(self, ep, root: Path, files_by_name):
         """Find ep's existing source-audio file. Prefer the legacy path under the
         episode's CURRENT slugs; fall back to a unique tree-wide basename match

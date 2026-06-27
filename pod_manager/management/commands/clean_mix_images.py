@@ -40,6 +40,8 @@ class Command(BaseCommand):
 
         if not os.path.exists(mix_covers_dir):
             self.stdout.write(self.style.WARNING("No mix_covers directory found. Nothing to clean."))
+            from pod_manager.admin_console.summary import emit_summary
+            emit_summary(self.stdout, {"applied": apply, "deleted": 0})
             return
 
         # 1. Ask the database what files ACTUALLY exist right now
@@ -74,3 +76,6 @@ class Command(BaseCommand):
         else:
             self.stdout.write(self.style.WARNING(
                 f"Preview: {deleted_count} orphaned image(s) would be deleted. Re-run with --apply --yes."))
+
+        from pod_manager.admin_console.summary import emit_summary
+        emit_summary(self.stdout, {"applied": apply, "deleted": deleted_count})

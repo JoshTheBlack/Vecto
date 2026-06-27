@@ -2,7 +2,9 @@
 
 A short reference for writing new Django management commands in this project so they
 are safe, self-documenting, and automatically usable from the **Admin Command
-Console**. For the console's full design see [admin-command-console.md](admin-command-console.md).
+Console**. For how that console works and how to add commands to it, see
+[admin-command-console.md](admin-command-console.md) (full design history in
+[admin-command-console-design.md](admin-command-console-design.md)).
 
 ---
 
@@ -58,7 +60,27 @@ all user-facing progress with `self.stdout.write(...)` / `self.stderr.write(...)
 
 ---
 
-## 3. Documentation (three in-code sources)
+## 3. Result summaries (optional)
+
+For a structured outcome in the console's run history (an at-a-glance chip + a key/value
+block), emit one **summary line** near the end of the command — don't make the console
+parse your prose. The command stays the source of truth for its own numbers:
+
+```python
+from pod_manager.admin_console.summary import emit_summary
+
+emit_summary(self.stdout, {"applied": apply, "migrated": migrated, "skipped": skipped})
+```
+
+This writes a `[SUMMARY] {…json…}` line that the runner slices into
+`CommandRun.result_summary` (the **last** one wins, so emit one per terminal path —
+preview vs apply, etc.). It's harmless on the CLI (just an extra line) and optional: no
+summary simply means the full log is the record. Bulk / maintenance / report commands
+should emit one; single-target actions (ingest one feed, transcribe one episode) need not.
+
+---
+
+## 4. Documentation (three in-code sources)
 
 The console builds each command's docs entirely from in-code sources — no separate
 doc file. Fill in all three:
@@ -83,7 +105,7 @@ Examples should show the new defaults — i.e. include `--apply` for the live fo
 
 ---
 
-## 4. Arguments → console widgets
+## 5. Arguments → console widgets
 
 The console auto-generates a form from `add_arguments`. Most fields render correctly
 with **zero extra work** if you follow the naming/shape conventions:
@@ -103,15 +125,15 @@ with **zero extra work** if you follow the naming/shape conventions:
 **Prefer these conventional dest names** (`--network`, `--podcast`, `--episode`) for
 scoping flags so the pickers light up automatically. If an argument can't describe
 itself through argparse (e.g. a fixed enum that isn't `choices=`, or a file picker),
-add a `field_widgets` override in the registry entry (§5) — see the
-[admin-command-console.md §5a](admin-command-console.md) widget list.
+add a `field_widgets` override in the registry entry — see the widget list in
+[admin-command-console.md](admin-command-console.md).
 
 If an argument carries a secret (token, cookie, password), mark it sensitive in the
 registry so it is redacted in run history and the command-line preview.
 
 ---
 
-## 5. Register it in the Admin Command Console
+## 6. Register it in the Admin Command Console
 
 Commands are auto-discovered but only **shown** when registered. Add an entry to
 `pod_manager/admin_console/registry.py`:
@@ -137,7 +159,7 @@ Commands are auto-discovered but only **shown** when registered. Add an entry to
 
 ---
 
-## 6. New-command checklist
+## 7. New-command checklist
 
 - [ ] Mutating? Default to a dry run; add `--apply` (and `--yes` if it deletes).
 - [ ] Exempt (read-only / single action)? No safety flags.
@@ -146,6 +168,8 @@ Commands are auto-discovered but only **shown** when registered. Add an entry to
 - [ ] Scoping flags use conventional dest names (`--network` / `--podcast` /
       `--episode`) so pickers auto-render.
 - [ ] Any secret argument flagged sensitive for redaction.
+- [ ] Bulk / maintenance / report command? Emit a result summary via
+      `emit_summary(self.stdout, {...})` (optional for single-target actions).
 - [ ] Registry entry added (`category`, `danger`, `runnable`, overrides as needed).
 - [ ] Tests assert the contract: no-flag = no writes, `--apply` = writes, destructive
       without `--yes` = aborts.

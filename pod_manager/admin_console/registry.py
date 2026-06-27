@@ -73,6 +73,12 @@ REGISTRY = {
     "backfill_transcripts": CommandSpec(
         name="backfill_transcripts",
         category="Transcription",
+        # --podcast (append) auto-infers to podcast_multi; the free-form Whisper
+        # --model / --language args get curated single-select enum pickers (§5a).
+        field_widgets={
+            "model": "enum:whisper_models",
+            "language": "enum:whisper_languages",
+        },
     ),
     "clear_transcription_queue": CommandSpec(
         name="clear_transcription_queue",

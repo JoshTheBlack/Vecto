@@ -80,9 +80,55 @@ def audio_origin_choices():
         {"value": "other", "label": "Other"},
     ]
 
-# Named server-side lists referenced by `enum_multi:<name>` registry overrides.
+
+def whisper_model_choices():
+    """Common Whisper model names for the `backfill_transcripts --model` picker.
+
+    The underlying arg is free-form (any model a worker has pinned is valid); this is a
+    curated convenience list of the standard sizes + `.en` variants and the large
+    revisions. Leaving the field blank passes nothing, so the network/podcast setting
+    (or ``WHISPER_DEFAULT_MODEL``) applies. For an exotic pin, use the copy-box CLI."""
+    models = []
+    for s in ("tiny", "base", "small", "medium"):
+        models.append({"value": s, "label": s})
+        models.append({"value": f"{s}.en", "label": f"{s}.en (English-only)"})
+    models += [
+        {"value": "large", "label": "large"},
+        {"value": "large-v2", "label": "large-v2"},
+        {"value": "large-v3", "label": "large-v3"},
+    ]
+    return models
+
+
+def whisper_language_choices():
+    """Curated common language codes for the `backfill_transcripts --language` picker.
+
+    Whisper supports ~99 languages; this is the realistic podcast subset. Blank leaves
+    the field unset (network/podcast default, or Whisper auto-detect). For a code not
+    listed, use the copy-box CLI."""
+    return [
+        {"value": "en", "label": "English (en)"},
+        {"value": "es", "label": "Spanish (es)"},
+        {"value": "fr", "label": "French (fr)"},
+        {"value": "de", "label": "German (de)"},
+        {"value": "it", "label": "Italian (it)"},
+        {"value": "pt", "label": "Portuguese (pt)"},
+        {"value": "nl", "label": "Dutch (nl)"},
+        {"value": "ru", "label": "Russian (ru)"},
+        {"value": "ja", "label": "Japanese (ja)"},
+        {"value": "zh", "label": "Chinese (zh)"},
+        {"value": "ko", "label": "Korean (ko)"},
+        {"value": "ar", "label": "Arabic (ar)"},
+        {"value": "hi", "label": "Hindi (hi)"},
+    ]
+
+
+# Named server-side lists referenced by `enum:<name>` (single) / `enum_multi:<name>`
+# (multi) registry overrides.
 _NAMED_ENUMS = {
     "audio_origins": audio_origin_choices,
+    "whisper_models": whisper_model_choices,
+    "whisper_languages": whisper_language_choices,
 }
 
 
@@ -178,7 +224,7 @@ def _widget_options(widget, action):
             return [{"value": c, "label": str(c)} for c in (action.choices or [])]
         if widget == "csv_path":
             return list_recovery_csvs()
-        if widget.startswith("enum_multi:"):
+        if widget.startswith("enum_multi:") or widget.startswith("enum:"):
             name = widget.split(":", 1)[1]
             resolver = _NAMED_ENUMS.get(name)
             return resolver() if resolver else []

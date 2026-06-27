@@ -62,7 +62,8 @@ from .api import (
     check_audio_status,
     update_avatar_preference,
     upload_custom_avatar,
-    stream_feed_import,
+    import_feed_start,
+    import_feed_poll,
     process_mix_image_url,
     toggle_totp_mode,
 )
@@ -101,7 +102,7 @@ from .admin_console import (
 from .creator.gdrive_recovery import (
     gdrive_recovery_files,
     gdrive_recovery_run,
-    gdrive_recovery_stream,
+    gdrive_recovery_poll,
     gdrive_recovery_rewind,
 )
 

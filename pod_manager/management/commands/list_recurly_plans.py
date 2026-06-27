@@ -33,6 +33,8 @@ class Command(BaseCommand):
             
             if not plan_list:
                 self.stdout.write(self.style.WARNING("No active plans found."))
+                from pod_manager.admin_console.summary import emit_summary
+                emit_summary(self.stdout, {"active_plans": 0})
                 return
 
             self.stdout.write(self.style.SUCCESS(f"Found {len(plan_list)} Active Plans:\n"))
@@ -43,6 +45,9 @@ class Command(BaseCommand):
 
             for plan in plan_list:
                 self.stdout.write(f"{plan.name[:30]:<30} | {plan.code:<20} | {plan.id:<20}")
+
+            from pod_manager.admin_console.summary import emit_summary
+            emit_summary(self.stdout, {"active_plans": len(plan_list)})
 
         except recurly.ApiError as e:
             # Corrected exception handling for Recurly v3 SDK

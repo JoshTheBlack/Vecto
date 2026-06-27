@@ -44,6 +44,8 @@ class Command(BaseCommand):
                 f"Preview: would purge the transcription queue and delete {pending} pending "
                 "transcript(s). Re-run with --apply --yes to perform the purge."
             ))
+            from pod_manager.admin_console.summary import emit_summary
+            emit_summary(self.stdout, {"applied": False, "pending_deleted": pending})
             return
 
         if not options['yes']:
@@ -61,3 +63,9 @@ class Command(BaseCommand):
             f"Purged {purged_str} queued task(s); "
             f"deleted {result['deleted']} pending transcript(s)."
         ))
+        from pod_manager.admin_console.summary import emit_summary
+        emit_summary(self.stdout, {
+            "applied": True,
+            "queued_purged": purged,
+            "pending_deleted": result['deleted'],
+        })

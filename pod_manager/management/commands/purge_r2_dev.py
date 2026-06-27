@@ -44,3 +44,9 @@ class Command(BaseCommand):
             self.stdout.write(self.style.WARNING(
                 f"Preview: {len(result['keys'])} object(s) under '{DEV_PREFIX}' would be deleted. "
                 "Re-run with --apply --yes."))
+
+        from pod_manager.admin_console.summary import emit_summary
+        emit_summary(self.stdout, {
+            "applied": apply,
+            "deleted": result["deleted"] if apply else len(result["keys"]),
+        })

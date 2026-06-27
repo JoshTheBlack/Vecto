@@ -79,3 +79,5 @@ class Command(BaseCommand):
         self.stdout.write(self.style.SUCCESS(
             f"Discord report: {os.path.abspath(output_path)} ({total} episodes, {len(by_podcast)} podcast(s))"
         ))
+        from pod_manager.admin_console.summary import emit_summary
+        emit_summary(self.stdout, {"episodes": total, "podcasts": len(by_podcast)})

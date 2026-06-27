@@ -243,7 +243,8 @@
             control = renderEpisodeTypeahead(f, prefVal);
         } else if (multiSelectWidgets.includes(widget) || (selectWidgets.includes(widget) && f.multi) || widget.indexOf("enum_multi") === 0) {
             control = renderMultiSelect(f, prefVal);
-        } else if (selectWidgets.includes(widget)) {
+        } else if (selectWidgets.includes(widget) || widget.indexOf("enum:") === 0) {
+            // Single-valued enum picker (e.g. enum:whisper_models) → dropdown.
             control = renderSelect(f, prefVal);
         } else if (widget === "number") {
             control = renderInput(f, "number", prefVal);
@@ -576,6 +577,26 @@
         runs.forEach((run) => container.appendChild(renderRun(run, showCommand)));
     }
 
+    // Compact "k: v · k: v" string from a result_summary dict, for an at-a-glance chip.
+    function summaryChipText(summary) {
+        return Object.keys(summary).map((k) => `${k}: ${summary[k]}`).join(" · ");
+    }
+
+    // Structured result_summary block (key/value grid) for the run-detail expand panel.
+    function renderSummary(summary) {
+        const wrap = el("div", "ac-summary-block");
+        wrap.appendChild(el("div", "ac-section-label", "Summary"));
+        const grid = el("div", "ac-summary-grid");
+        Object.keys(summary).forEach((k) => {
+            const item = el("div", "ac-summary-item");
+            item.appendChild(el("span", "ac-summary-k", k));
+            item.appendChild(el("span", "ac-summary-v", String(summary[k])));
+            grid.appendChild(item);
+        });
+        wrap.appendChild(grid);
+        return wrap;
+    }
+
     function renderRun(run, showCommand) {
         const box = el("div", "ac-run");
         const summary = el("div", "ac-run-summary");
@@ -585,6 +606,9 @@
         const dur = run.duration_seconds != null ? " · " + fmtDuration(run.duration_seconds) : "";
         meta.textContent = `${run.user || "—"} · ${fmtTime(run.created_at)}${dur}`;
         summary.appendChild(meta);
+        if (run.result_summary) {
+            summary.appendChild(el("span", "ac-run-sumchip", summaryChipText(run.result_summary)));
+        }
 
         const rerun = el("button", "btn btn-sm ac-link-btn ac-run-rerun", "Re-run");
         rerun.addEventListener("click", (e) => { e.stopPropagation(); rerunFrom(run); });
@@ -603,6 +627,7 @@
                     if (!ok) { detail.appendChild(el("div", "ac-runs-empty", "Failed to load run.")); return; }
                     detail.appendChild(el("div", "ac-field-help", data.command_line || ""));
                     if (data.error) detail.appendChild(el("div", "ac-import-error", data.error));
+                    if (data.result_summary) detail.appendChild(renderSummary(data.result_summary));
                     const pre = el("pre", null, data.log || "(no output captured)");
                     detail.appendChild(pre);
                 });

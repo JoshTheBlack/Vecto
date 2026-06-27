@@ -102,6 +102,14 @@ class Command(BaseCommand):
             f"\nDone: {totals['migrated']} migrated, {totals['skipped']} skipped, "
             f"{totals['failed']} failed{' (dry-run)' if dry_run else ''}."
         ))
+        from pod_manager.admin_console.summary import emit_summary
+        emit_summary(self.stdout, {
+            "mode": "migrate",
+            "applied": apply,
+            "migrated": totals['migrated'],
+            "skipped": totals['skipped'],
+            "failed": totals['failed'],
+        })
 
     # ------------------------------------------------------------------
     def _migrate_one(self, t, force, dry_run):
@@ -176,6 +184,13 @@ class Command(BaseCommand):
                     self.stdout.write(self.style.ERROR(f"  MISSING in R2: ep {t.episode_id}.{ext}"))
         style = self.style.SUCCESS if (missing == 0 and unmigrated == 0) else self.style.ERROR
         self.stdout.write(style(f"\nVerify: {present} present, {missing} missing, {unmigrated} not-yet-migrated."))
+        from pod_manager.admin_console.summary import emit_summary
+        emit_summary(self.stdout, {
+            "mode": "verify",
+            "present": present,
+            "missing": missing,
+            "unmigrated": unmigrated,
+        })
         if missing or unmigrated:
             raise CommandError("Verification failed — do NOT prune local transcript files yet.")
 
@@ -215,6 +230,14 @@ class Command(BaseCommand):
         self.stdout.write(self.style.SUCCESS(
             f"\nPrune: {verb} {pruned} local file(s); {refused} episode(s) refused (not fully in R2); "
             f"{skipped} not-migrated. whisper_raw.txt left in place."))
+        from pod_manager.admin_console.summary import emit_summary
+        emit_summary(self.stdout, {
+            "mode": "prune",
+            "applied": not dry_run,
+            "pruned": pruned,
+            "refused": refused,
+            "skipped": skipped,
+        })
 
     # ------------------------------------------------------------------
     def _select(self, options):

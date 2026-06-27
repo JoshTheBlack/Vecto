@@ -131,14 +131,20 @@ class Command(BaseCommand):
                 )
                 dispatched += 1
 
+        from pod_manager.admin_console.summary import emit_summary
         if preview:
             self.stdout.write(self.style.SUCCESS(
                 f"Preview: {len(targets)} episode(s) would be dispatched. Re-run with --apply to mirror."))
+            emit_summary(self.stdout, {"mode": "preview", "selected": len(targets)})
         elif sync:
             self.stdout.write(self.style.SUCCESS(
                 f"Done: {mirrored} mirrored/deduped, {skipped} skipped, {failed} failed."))
+            emit_summary(self.stdout, {
+                "mode": "sync", "mirrored": mirrored, "skipped": skipped, "failed": failed,
+            })
         else:
             self.stdout.write(self.style.SUCCESS(f"Dispatched {dispatched} mirror task(s) to Celery."))
+            emit_summary(self.stdout, {"mode": "celery", "dispatched": dispatched})
 
     # ------------------------------------------------------------------
     def _select(self, options):

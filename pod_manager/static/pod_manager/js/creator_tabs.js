@@ -30,49 +30,84 @@ document.addEventListener('DOMContentLoaded', function() {
 });
 
 // ==========================================
-// LIVE IMPORT STREAMING
+// LIVE IMPORT STREAMING (polling, not SSE — more reliable behind gunicorn/Traefik)
 // ==========================================
+function importCsrfToken() {
+    const el = document.querySelector('[name=csrfmiddlewaretoken]');
+    if (el) return el.value;
+    const cookie = document.cookie.split(';').find(c => c.trim().startsWith('csrftoken='));
+    return cookie ? cookie.split('=')[1] : '';
+}
+
 function startLiveImport(showId) {
     const btn = document.getElementById(`btn-import-${showId}`);
     const terminalContainer = document.getElementById(`terminal-container-${showId}`);
     const terminal = document.getElementById(`terminal-${showId}`);
-    
+
     // UI Updates
     btn.disabled = true;
     btn.innerHTML = '<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span> Running...';
     terminalContainer.classList.remove('d-none');
     terminal.textContent = ''; // Clear previous logs
-    
-    // Open Server-Sent Events Connection
-    const eventSource = new EventSource(`/import/stream/${showId}/`);
-    
-    let isDone = false;
-    
-    eventSource.onmessage = function(event) {
-        if (event.data === '[DONE]') {
-            isDone = true; 
-            eventSource.close();
-            btn.innerHTML = '<i class="bi bi-check-circle-fill"></i> Import Complete';
-            btn.classList.replace('btn-success', 'btn-outline-success');
-            setTimeout(() => { 
-                btn.disabled = false; 
-                btn.innerHTML = '<i class="bi bi-cloud-arrow-down-fill"></i> Run Live Import';
-                btn.classList.replace('btn-outline-success', 'btn-success');
-            }, 3000);
-        } else {
-            terminal.textContent += event.data + '\n';
-            terminal.scrollTop = terminal.scrollHeight;
-        }
-    };
 
-    eventSource.onerror = function() {
-        if (isDone) return; 
-        
-        terminal.textContent += '\n[CONNECTION ERROR] Lost connection to server.\n';
-        eventSource.close();
+    function complete() {
+        btn.innerHTML = '<i class="bi bi-check-circle-fill"></i> Import Complete';
+        btn.classList.replace('btn-success', 'btn-outline-success');
+        setTimeout(() => {
+            btn.disabled = false;
+            btn.innerHTML = '<i class="bi bi-cloud-arrow-down-fill"></i> Run Live Import';
+            btn.classList.replace('btn-outline-success', 'btn-success');
+        }, 3000);
+    }
+    function fail(msg) {
+        terminal.textContent += '\n' + msg + '\n';
+        terminal.scrollTop = terminal.scrollHeight;
         btn.disabled = false;
         btn.innerHTML = '<i class="bi bi-cloud-arrow-down-fill"></i> Retry Import';
-    };
+    }
+
+    // The buffer is SSE-framed (data: <line>\n\n); parse complete frames client-side,
+    // keeping a remainder across polls so a split frame never corrupts a line.
+    let remainder = '';
+    let sawDone = false;
+    function consume(raw) {
+        remainder += raw;
+        const parts = remainder.split('\n\n');
+        remainder = parts.pop();
+        parts.forEach(part => {
+            if (part.indexOf('data: ') === 0) {
+                const line = part.slice(6);
+                if (line === '[DONE]') { sawDone = true; return; }
+                terminal.textContent += line + '\n';
+            } else if (part.trim()) {
+                terminal.textContent += part + '\n';
+            }
+        });
+        terminal.scrollTop = terminal.scrollHeight;
+    }
+
+    let offset = 0;
+    function poll() {
+        fetch(`/import/poll/${showId}/?offset=${offset}`, { headers: { 'X-Requested-With': 'XMLHttpRequest' } })
+            .then(r => r.json())
+            .then(data => {
+                if (data.chunk) { offset = data.offset; consume(data.chunk); }
+                if (sawDone || data.done) { complete(); return; }
+                setTimeout(poll, 1500);
+            })
+            .catch(() => fail('[CONNECTION ERROR] Lost connection to server.'));
+    }
+
+    fetch(`/import/start/${showId}/`, {
+        method: 'POST',
+        headers: { 'X-CSRFToken': importCsrfToken(), 'X-Requested-With': 'XMLHttpRequest' },
+    })
+        .then(r => r.json().then(d => ({ ok: r.ok, d })))
+        .then(({ ok, d }) => {
+            if (!ok) { fail('[ERROR] ' + (d.error || 'Could not start import.')); return; }
+            poll();
+        })
+        .catch(() => fail('[ERROR] Could not start import.'));
 }
 
 function startAllLiveImports() {

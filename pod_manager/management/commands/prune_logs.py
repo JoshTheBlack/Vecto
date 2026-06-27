@@ -61,6 +61,8 @@ class Command(BaseCommand):
             )
             if count:
                 self.stdout.write("Re-run with --apply --yes to delete.")
+            from pod_manager.admin_console.summary import emit_summary
+            emit_summary(self.stdout, {"applied": False, "deleted": count, "retention_days": retention_days})
             return
 
         self.stdout.write(
@@ -74,3 +76,6 @@ class Command(BaseCommand):
             self.stdout.write(self.style.SUCCESS(f"Removed {deleted} log entries."))
         else:
             self.stdout.write(self.style.SUCCESS("Nothing to prune — no entries older than the cutoff."))
+
+        from pod_manager.admin_console.summary import emit_summary
+        emit_summary(self.stdout, {"applied": True, "deleted": deleted, "retention_days": retention_days})

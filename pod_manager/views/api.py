@@ -1,9 +1,8 @@
 """
 Misc API & utility endpoints: Traefik dynamic config, audio status check,
-avatar preferences, custom avatar uploads, SSE feed-import streamer, and
-profile preference toggles.
+avatar preferences, custom avatar uploads, the polled feed-import streamer
+(start + poll), and profile preference toggles.
 """
-import asyncio
 import logging
 import os
 
@@ -14,16 +13,13 @@ from django.contrib import messages
 from django.contrib.auth.decorators import login_required
 from django.core.cache import cache
 from django.core.files.base import ContentFile
-from django.http import (
-    JsonResponse, HttpResponseForbidden, StreamingHttpResponse,
-)
+from django.http import JsonResponse, HttpResponseForbidden
 from django.shortcuts import redirect
 from django.views.decorators.http import require_POST
 
 from django.shortcuts import get_object_or_404
 
 from ..models import NetworkMembership, Network, PatronProfile, Podcast, Episode, Transcript
-from ..tasks import task_ingest_feed
 from ..utils import get_membership, validate_public_url
 
 logger = logging.getLogger(__name__)
@@ -109,35 +105,49 @@ def traefik_config_api(request):
 
 
 @login_required(login_url='/login/')
-def stream_feed_import(request, show_id):
+@require_POST
+def import_feed_start(request, show_id):
+    """Kick a live feed import and seed its log buffer. The browser then polls
+    ``import_feed_poll`` for the streamed output (polling, not SSE — more reliable
+    behind gunicorn/Traefik, mirroring the admin console)."""
     get_object_or_404(Podcast, id=show_id, network=request.network)
     task_id = f"import_logs_{show_id}"
+    try:
+        from ..tasks import task_ingest_feed as _task_ingest_feed
+    except ImportError:
+        return JsonResponse(
+            {'error': 'Celery/tasks unavailable in this environment. Deploy to Docker to run imports.'},
+            status=503,
+        )
+    # Clear any prior run's buffer so a re-import starts fresh, then dispatch.
+    cache.set(task_id, "data: [QUEUED] Waiting for Celery worker...\n\n", timeout=3600)
+    try:
+        _task_ingest_feed.delay(show_id)
+    except Exception as exc:  # noqa: BLE001 — broker down → clean 503, not a 500
+        cache.delete(task_id)
+        logger.warning("import_feed_start: could not enqueue show %s: %s", show_id, exc, exc_info=True)
+        return JsonResponse(
+            {'error': 'Celery broker unavailable — the import could not be queued.'}, status=503,
+        )
+    return JsonResponse({'ok': True})
 
-    if not cache.get(task_id):
-        cache.set(task_id, "data: [QUEUED] Waiting for Celery worker...\n\n", timeout=3600)
-        task_ingest_feed.delay(show_id)
 
-    async def event_stream():
-        last_length = 0
-        loop = asyncio.get_event_loop()
-        deadline = loop.time() + 120
-        while True:
-            if loop.time() >= deadline:
-                yield "data: [ERROR] Timed out waiting for Celery worker. Is the worker running?\n\n"
-                yield "data: [DONE]\n\n"
-                await cache.adelete(task_id)
-                break
-            logs = await cache.aget(task_id, "")
-            if len(logs) > last_length:
-                new_logs = logs[last_length:]
-                yield new_logs
-                last_length = len(logs)
-                if "[DONE]" in new_logs:
-                    await cache.adelete(task_id)
-                    break
-            await asyncio.sleep(0.5)
+@login_required(login_url='/login/')
+def import_feed_poll(request, show_id):
+    """Return the live import log delta since ``offset`` (polling delivery).
 
-    return StreamingHttpResponse(event_stream(), content_type='text/event-stream')
+    Shape ``{chunk, offset, done}``; the buffer is the same SSE-framed cache key the
+    worker writes (``import_logs_{show_id}``), so the client parses ``data: …\\n\\n``
+    frames and stops on ``[DONE]``."""
+    get_object_or_404(Podcast, id=show_id, network=request.network)
+    task_id = f"import_logs_{show_id}"
+    try:
+        offset = int(request.GET.get('offset', 0))
+    except (TypeError, ValueError):
+        offset = 0
+    buf = cache.get(task_id, "") or ""
+    chunk = buf[offset:] if offset <= len(buf) else buf
+    return JsonResponse({'chunk': chunk, 'offset': len(buf), 'done': "[DONE]" in buf})
 
 
 def check_audio_status(request):

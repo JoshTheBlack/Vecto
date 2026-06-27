@@ -44,7 +44,8 @@ urlpatterns = [
     path('feed/<slug:network_slug>/mix/<slug:mix_slug>/', views.generate_network_mix_feed, name='network_mix_feed'),
     path('public/feed/<slug:podcast_slug>/', views.generate_public_feed, name='public_feed'),
     path('feed/mix/<uuid:unique_id>', views.generate_mix_feed, name='mix_feed'),
-    path('import/stream/<int:show_id>/', views.stream_feed_import, name='stream_feed_import'),
+    path('import/start/<int:show_id>/', views.import_feed_start, name='import_feed_start'),
+    path('import/poll/<int:show_id>/', views.import_feed_poll, name='import_feed_poll'),
     path('play/<int:episode_id>.mp3', views.play_episode, name='play_episode'),
     path('login/legacy/', views.recurly_login, name='recurly_login'),
     path('api/check-audio/', views.check_audio_status, name='check_audio_status'),
@@ -58,7 +59,7 @@ urlpatterns = [
     # GDrive Recovery
     path('creator/gdrive-recovery/files/', views.gdrive_recovery_files, name='gdrive_recovery_files'),
     path('creator/gdrive-recovery/run/', views.gdrive_recovery_run, name='gdrive_recovery_run'),
-    path('creator/gdrive-recovery/stream/<str:run_id>/', views.gdrive_recovery_stream, name='gdrive_recovery_stream'),
+    path('creator/gdrive-recovery/poll/<str:run_id>/', views.gdrive_recovery_poll, name='gdrive_recovery_poll'),
     path('creator/gdrive-recovery/rewind/', views.gdrive_recovery_rewind, name='gdrive_recovery_rewind'),
 
     # Staff tools

@@ -64,8 +64,10 @@ class Command(BaseCommand):
 
         total = episodes.count()
         
+        from pod_manager.admin_console.summary import emit_summary
         if total == 0:
             self.stdout.write(self.style.WARNING(f"Found 0 episodes to process. Try running with --force to see if tags are already populated."))
+            emit_summary(self.stdout, {"applied": apply, "processed": 0, "updated": 0})
             return
             
         self.stdout.write(self.style.WARNING(f"Found {total} episodes to process for {network.name}..."))
@@ -97,3 +99,9 @@ class Command(BaseCommand):
             f"Finished. {verb.capitalize()} {updated_count} out of {total} episodes."))
         if not apply and updated_count:
             self.stdout.write("Re-run with --apply to save the scraped tags.")
+
+        emit_summary(self.stdout, {
+            "applied": apply,
+            "processed": total,
+            "updated": updated_count,
+        })

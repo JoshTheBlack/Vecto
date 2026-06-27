@@ -109,10 +109,12 @@ class Command(BaseCommand):
 
         total = episodes.count()
 
+        from pod_manager.admin_console.summary import emit_summary
         if total == 0:
             self.stdout.write(self.style.SUCCESS(
                 'Nothing to do — all eligible episodes already have completed or in-progress transcripts.'
             ))
+            emit_summary(self.stdout, {"applied": not dry_run, "found": 0, "queued": 0})
             return
 
         noun = 'episode' if total == 1 else 'episodes'
@@ -145,3 +147,9 @@ class Command(BaseCommand):
                     f'\nDone. {total} episode(s) queued with {stagger}s stagger '
                     f'(total spread: ~{(total - 1) * stagger}s).'
                 ))
+
+        emit_summary(self.stdout, {
+            "applied": not dry_run,
+            "found": total,
+            "queued": 0 if dry_run else total,
+        })

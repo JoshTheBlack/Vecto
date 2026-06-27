@@ -47,6 +47,8 @@ class Command(BaseCommand):
 
         if not s3_episodes:
             self.stdout.write(self.style.WARNING("No S3 episodes found. Skipping file generation."))
+            from pod_manager.admin_console.summary import emit_summary
+            emit_summary(self.stdout, {"podcasts": len(all_podcasts), "s3_episodes": 0})
             return
 
         # Write TXT (Using 'w' automatically overwrites existing files)
@@ -71,3 +73,5 @@ class Command(BaseCommand):
                 writer.writerow([ep.podcast.title, ep.id, ep.title, ep.audio_url_subscriber])
 
         self.stdout.write(self.style.SUCCESS(f"Successfully generated reports in {output_dir}!"))
+        from pod_manager.admin_console.summary import emit_summary
+        emit_summary(self.stdout, {"podcasts": len(all_podcasts), "s3_episodes": len(s3_episodes)})

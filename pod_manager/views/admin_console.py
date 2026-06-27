@@ -174,6 +174,21 @@ def run(request, name):
     except InvalidInvocation as exc:
         return JsonResponse({"error": str(exc)}, status=400)
 
+    # Concurrency: soft-block a second *identical* run while one is still queued or
+    # running (§14 — resolved: soft-block duplicates). Identity is the command plus its
+    # redacted command line, so two genuinely different invocations of the same command
+    # (e.g. two podcasts) never collide — only an accidental repeat does.
+    if CommandRun.objects.filter(
+        command=name,
+        command_line=invocation["command_line"],
+        status__in=(CommandRun.Status.QUEUED, CommandRun.Status.RUNNING),
+    ).exists():
+        return JsonResponse(
+            {"error": f"An identical {name!r} run is already in progress — wait for it to "
+                      "finish or check Recent Runs."},
+            status=409,
+        )
+
     # Degrade gracefully when the worker/broker is unavailable (§7), and only create
     # the history row once we know we can dispatch.
     try:
@@ -198,9 +213,24 @@ def run(request, name):
         "Admin console: %s dispatched %s (run %s) — %s",
         request.user, name, run_id, invocation["command_line"],
     )
-    task_run_management_command.delay(
-        str(run_id), name, invocation["args"], invocation["options"],
-    )
+    # Enqueue. Importing the task only guards a missing-Celery environment; if the
+    # broker itself is down, `.delay()` raises (e.g. kombu OperationalError) — catch it
+    # so the operator gets a clean 503 instead of a 500, and drop the row we just
+    # created so no orphan `queued` record lingers in history (§7).
+    try:
+        task_run_management_command.delay(
+            str(run_id), name, invocation["args"], invocation["options"],
+        )
+    except Exception as exc:  # noqa: BLE001 — broker/connection failure → graceful 503
+        cmd_run.delete()
+        logger.warning(
+            "Admin console: could not enqueue %s (run %s): %s", name, run_id, exc, exc_info=True,
+        )
+        return JsonResponse(
+            {"error": "Celery broker unavailable — the command could not be queued. "
+                      "Is the worker / Redis running?"},
+            status=503,
+        )
     return JsonResponse({
         "run_id": str(run_id),
         "status": cmd_run.status,

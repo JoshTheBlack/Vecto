@@ -3,18 +3,17 @@ Views for the GDrive Audio Recovery tab in Creator Settings.
 
 GET  /creator/gdrive-recovery/files/          — JSON list of input CSVs + their run history
 POST /creator/gdrive-recovery/run/            — Start one recovery run per podcast selection
-GET  /creator/gdrive-recovery/stream/<id>/   — SSE stream for a running task
+GET  /creator/gdrive-recovery/poll/<id>/     — Poll a running task's live log delta
 POST /creator/gdrive-recovery/rewind/         — Rewind a completed live run
 """
 import csv as csv_module
 import json
 import os
-import time
 import uuid
 
 from django.conf import settings
 from django.contrib.auth.decorators import login_required
-from django.http import JsonResponse, StreamingHttpResponse
+from django.http import JsonResponse
 from django.core.cache import cache
 from django.views.decorators.http import require_POST
 
@@ -117,38 +116,26 @@ def gdrive_recovery_run(request):
 
 
 @login_required(login_url='/login/')
-def gdrive_recovery_stream(request, run_id):
-    # Sanitise run_id to a valid UUID before using it as a cache key
+def gdrive_recovery_poll(request, run_id):
+    """Return a recovery run's live log delta since ``offset`` (polling, not SSE —
+    more reliable behind gunicorn/Traefik, mirroring the admin console).
+
+    Shape ``{chunk, offset, done}``. The buffer (``gdrive_recovery_{run_id}``) is the
+    same SSE-framed cache key the worker writes, so the client parses ``data: …\\n\\n``
+    frames and stops on ``[DONE]``. The run was already dispatched by the run POST."""
     try:
         uuid.UUID(run_id)
     except ValueError:
         return JsonResponse({'error': 'Invalid run ID'}, status=400)
 
     task_id = f"gdrive_recovery_{run_id}"
-
-    def event_stream():
-        last_length = 0
-        deadline = time.time() + 300  # 5-minute hard timeout
-        while True:
-            if time.time() >= deadline:
-                yield "data: [ERROR] Stream timed out waiting for worker.\n\n"
-                yield "data: [DONE]\n\n"
-                break
-            logs = cache.get(task_id, "") or ""
-            if len(logs) > last_length:
-                new_chunk = logs[last_length:]
-                yield new_chunk
-                last_length = len(logs)
-                if "[DONE]" in new_chunk:
-                    cache.delete(task_id)
-                    break
-            time.sleep(0.5)
-
-    return StreamingHttpResponse(
-        event_stream(),
-        content_type='text/event-stream',
-        headers={'X-Accel-Buffering': 'no', 'Cache-Control': 'no-cache'},
-    )
+    try:
+        offset = int(request.GET.get('offset', 0))
+    except (TypeError, ValueError):
+        offset = 0
+    buf = cache.get(task_id, "") or ""
+    chunk = buf[offset:] if offset <= len(buf) else buf
+    return JsonResponse({'chunk': chunk, 'offset': len(buf), 'done': "[DONE]" in buf})
 
 
 @require_POST

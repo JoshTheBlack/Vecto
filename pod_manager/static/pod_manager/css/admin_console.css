@@ -310,6 +310,31 @@ select.ac-control[multiple] { min-height: 7rem; }
     white-space: pre-wrap;
     word-break: break-word;
 }
+.ac-run-sumchip {
+    font-size: 0.68rem;
+    color: var(--vecto-surface-text);
+    background: color-mix(in srgb, var(--vecto-primary) 12%, transparent);
+    border-radius: var(--vecto-radius-sm);
+    padding: 0.05rem 0.4rem;
+    margin-left: 0.5rem;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 50%;
+}
+.ac-summary-block { margin-bottom: 0.5rem; }
+.ac-summary-grid { display: flex; flex-wrap: wrap; gap: 0.35rem; }
+.ac-summary-item {
+    display: inline-flex;
+    align-items: baseline;
+    gap: 0.3rem;
+    background: var(--vecto-bg);
+    border: 1px solid var(--bs-border-color);
+    border-radius: var(--vecto-radius-sm);
+    padding: 0.1rem 0.45rem;
+}
+.ac-summary-k { font-size: 0.68rem; color: var(--vecto-bg-muted); text-transform: uppercase; letter-spacing: 0.02em; }
+.ac-summary-v { font-size: 0.8rem; color: var(--vecto-surface-text); font-weight: 600; }
 .ac-runs-empty { font-size: 0.78rem; color: var(--vecto-bg-muted); font-style: italic; }
 
 /* ── History modal ──────────────────────────────────────────────── */

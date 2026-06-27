@@ -334,7 +334,7 @@ select.ac-control[multiple] { min-height: 7rem; }
     padding: 0.1rem 0.45rem;
 }
 .ac-summary-k { font-size: 0.68rem; color: var(--vecto-bg-muted); text-transform: uppercase; letter-spacing: 0.02em; }
-.ac-summary-v { font-size: 0.8rem; color: var(--vecto-surface-text); font-weight: 600; }
+.ac-summary-v { font-size: 0.8rem; color: var(--vecto-bg-text); font-weight: 600; }
 .ac-runs-empty { font-size: 0.78rem; color: var(--vecto-bg-muted); font-style: italic; }
 
 /* ── History modal ──────────────────────────────────────────────── */

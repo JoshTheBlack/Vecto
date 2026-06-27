@@ -768,9 +768,14 @@ def task_run_gdrive_rewind(run_id, csv_path):
 # Admin Command Console — generic management-command runner (design §7)
 # ---------------------------------------------------------------------------
 
-@shared_task
+@shared_task(queue='admin')
 def task_run_management_command(run_id, name, args, options):
     """Run any console-dispatched management command off the request thread.
+
+    Routed to the dedicated ``admin`` queue (its own idle ``celery-admin`` worker)
+    so an operator waiting on output isn't stuck behind a bulk backlog on the default
+    queue — e.g. hundreds of ``ensure_source_audio`` jobs (design §15.3 / §7). The
+    main worker also drains ``admin`` as a fallback if ``celery-admin`` is down.
 
     One generic task replaces the per-command wrappers: it streams live output to
     the ``admin_cmd_{run_id}`` cache key (polled by the console, §8) and records the

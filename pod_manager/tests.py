@@ -4562,7 +4562,10 @@ class AdminConsoleViewTests(TestCase):
         cats = {c['category'] for c in resp.context['categories']}
         self.assertIn('R2 / Storage', cats)
         self.assertEqual(resp.context['unregistered'], [])
-        self.assertEqual(resp.context['discovered_count'], 23)
+        # Every discovered command is registered, so the counts line up — avoids a
+        # brittle hardcoded total each time a command is added.
+        from pod_manager.admin_console.registry import REGISTRY
+        self.assertEqual(resp.context['discovered_count'], len(REGISTRY))
 
     # -- detail -------------------------------------------------------------
     def test_command_detail_returns_schema(self):

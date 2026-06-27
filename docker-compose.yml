@@ -106,7 +106,31 @@ services:
 
   celery:
     build: .
-    command: celery -A config worker -Q default,celery -l INFO
+    # Drains 'admin' too as a fallback if celery-admin is down, but the dedicated
+    # (usually-idle) celery-admin worker picks admin jobs up first.
+    command: celery -A config worker -Q admin,default,celery -l INFO
+    volumes:
+      - .:/app
+      - media_data:/app/media
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+    env_file: .env
+    depends_on:
+      pgbouncer:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - internal
+    restart: unless-stopped
+
+  celery-admin:
+    build: .
+    # Dedicated worker for Admin Command Console runs (design §7/§15.3). It drains
+    # ONLY the 'admin' queue, so a console command an operator is watching runs
+    # immediately instead of queuing behind a bulk default-queue backlog (e.g. the
+    # hundreds of ensure_source_audio jobs a transcription batch spawns).
+    command: celery -A config worker -Q admin --concurrency=2 -l INFO
     volumes:
       - .:/app
       - media_data:/app/media

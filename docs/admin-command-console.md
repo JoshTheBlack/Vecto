@@ -145,8 +145,8 @@ a command fetches `command_detail` (introspected form schema + merged docs + rec
 runs). The form posts to `build` for the live copy box and to `run` to execute. `run`
 re-validates the arguments through the command's real parser, enforces the danger gate
 and the duplicate-run block, creates a `CommandRun` row, and dispatches the generic
-`task_run_management_command` Celery task. The browser then polls `run_poll` for the log
-delta until the run reaches a terminal status.
+`task_run_management_command` task to the dedicated **`admin`** queue. The browser then
+polls `run_poll` for the log delta until the run reaches a terminal status.
 
 **Routes** (all `@superuser_required`, under `/admin-console/`):
 
@@ -197,6 +197,14 @@ shared log buffer) · `CommandRun` model in [`models.py`](../pod_manager/models.
 - **Command-emitted summaries**, not console-side parsing — each command owns its own
   numbers via `emit_summary`, so a wording change never breaks the console.
 
+- **Dedicated `admin` queue + worker.** `task_run_management_command` is routed to its
+  own `admin` queue, drained by a dedicated `celery-admin` worker (`docker-compose.yml`).
+  An operator watching a run would otherwise queue behind the default queue's bulk
+  backlog — e.g. the hundreds of `ensure_source_audio` jobs a transcription batch spawns —
+  and `prefetch_multiplier=1` + a busy worker still means waiting for a slot. The idle
+  dedicated worker runs console commands immediately; the main `celery` worker also drains
+  `admin` (`-Q admin,default,celery`) as a fallback if `celery-admin` is down.
+
 - **Graceful when Celery is down.** A missing-Celery import or an unreachable broker
   returns a clean 503 (and drops the just-created `CommandRun` row) instead of a 500.
 
@@ -218,3 +226,7 @@ shared log buffer) · `CommandRun` model in [`models.py`](../pod_manager/models.
   periodic cleanup mirroring `prune_logs` (which only trims `LogEntry`, not `CommandRun`).
 - **Adding a `field_widgets` option list** — add the source function to `_NAMED_ENUMS`
   in `schema.py` and reference it as `enum:<name>` / `enum_multi:<name>`.
+- **The `celery-admin` worker must be deployed** alongside `web`/`celery`. If it's
+  absent, console runs fall back to the main `celery` worker (slower under load) — and
+  if you ever split workers across machines, make sure at least one drains the `admin`
+  queue. Rebuild/restart it on any task-code change like the other workers.

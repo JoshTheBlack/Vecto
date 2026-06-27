@@ -32,7 +32,9 @@ class CommandSpec:
     # If set, the detail pane shows an "Open in <label>" deep-link instead of an
     # Execute button — execution lives in an existing dedicated UI. The command
     # builder / copy box still renders (so it's runnable from a terminal).
-    # Shape: (url_name, button_label), e.g. ("creator_settings", "Open GDrive Recovery").
+    # Shape: (url_name, button_label) or (url_name, button_label, query_string),
+    # e.g. ("creator_settings", "Open GDrive Recovery", "tab=gdrive") — the optional
+    # query string selects the right tab in the target UI.
     deep_link: Optional[tuple] = None
     # Semantic widget overrides for args argparse can't self-describe (§5a).
     # arg dest -> widget id. Most fields auto-infer; this names the exceptions.
@@ -131,14 +133,14 @@ REGISTRY = {
         name="recover_gdrive_audio",
         category="GDrive",
         runnable=False,             # execute via the existing Creator UI…
-        deep_link=("creator_settings", "Open GDrive Recovery"),
+        deep_link=("creator_settings", "Open GDrive Recovery", "tab=gdrive"),
         field_widgets={"csv_path": "csv_path"},  # …but still build the CLI here
     ),
     "rewind_gdrive_audio": CommandSpec(
         name="rewind_gdrive_audio",
         category="GDrive",
         runnable=False,
-        deep_link=("creator_settings", "Open GDrive Recovery"),
+        deep_link=("creator_settings", "Open GDrive Recovery", "tab=gdrive"),
         field_widgets={"csv_paths": "csv_path"},  # nargs='+' → multi CSV picker
     ),
     # --- Maintenance -------------------------------------------------------

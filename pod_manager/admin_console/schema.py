@@ -102,15 +102,18 @@ def list_recovery_csvs():
     return [{"value": f, "label": f} for f in names]
 
 
-def _network_options():
+def _network_options(by_id=False):
     from pod_manager.models import Network
-    return [{"value": n.slug, "label": n.name} for n in Network.objects.all().order_by("name")]
+    return [
+        {"value": n.id if by_id else n.slug, "label": n.name}
+        for n in Network.objects.all().order_by("name")
+    ]
 
 
-def _podcast_options():
+def _podcast_options(by_id=False):
     from pod_manager.models import Podcast
     return [
-        {"value": p.slug, "label": p.title}
+        {"value": p.id if by_id else p.slug, "label": p.title}
         for p in Podcast.objects.all().order_by("title")
     ]
 
@@ -161,11 +164,16 @@ def _is_multi(action, widget):
 def _widget_options(widget, action):
     """Inline option list shipped with the schema for dropdown/multiselect widgets.
     ``None`` means the widget needs no inline list (text/number/flag/episode)."""
+    # A field typed `int` (e.g. ingest_feed's `podcast_id`) consumes the DB id;
+    # a slug-typed field (e.g. mirror's `--podcast watchmen`) consumes the slug. The
+    # option *value* must match what the command actually accepts, or reconstruction
+    # int()-coerces a slug and crashes.
+    by_id = action is not None and action.type is int
     try:
         if widget in ("network", "network_multi"):
-            return _network_options()
+            return _network_options(by_id=by_id)
         if widget in ("podcast", "podcast_multi"):
-            return _podcast_options()
+            return _podcast_options(by_id=by_id)
         if widget == "choice":
             return [{"value": c, "label": str(c)} for c in (action.choices or [])]
         if widget == "csv_path":
@@ -196,9 +204,14 @@ def _public_actions(parser):
 def _deep_link_payload(spec):
     if not spec or not spec.deep_link:
         return None
-    url_name, label = spec.deep_link
+    # (url_name, label) or (url_name, label, query) — the optional query string
+    # (e.g. "tab=gdrive") selects the right tab in the target UI.
+    url_name, label = spec.deep_link[0], spec.deep_link[1]
+    query = spec.deep_link[2] if len(spec.deep_link) > 2 else None
     try:
         url = reverse(url_name)
+        if query:
+            url = f"{url}?{query}"
     except NoReverseMatch:
         url = None
     return {"url": url, "label": label}
@@ -273,7 +286,13 @@ def build_schema(name):
 
 def _coerce(action, value):
     if action.type in (int, float):
-        return action.type(value)
+        try:
+            return action.type(value)
+        except (TypeError, ValueError):
+            raise InvalidInvocation(
+                f"{action.dest!r} expects a{'n integer' if action.type is int else ' number'}, "
+                f"got {value!r}."
+            )
     return value if isinstance(value, str) else str(value)
 
 

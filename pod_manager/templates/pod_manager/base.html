@@ -291,7 +291,14 @@
                                 <i class="bi bi-terminal-split me-1"></i> Logs
                             </a>
                         </li>
-                    {% endif %}  
+                    {% endif %}
+                    {% if request.user.is_superuser %}
+                        <li class="nav-item">
+                            <a class="nav-link" href="{% url 'admin_console' %}">
+                                <i class="bi bi-sliders me-1"></i> Admin
+                            </a>
+                        </li>
+                    {% endif %}
                 </ul>
                 
                 <div class="me-4 d-none d-lg-block">

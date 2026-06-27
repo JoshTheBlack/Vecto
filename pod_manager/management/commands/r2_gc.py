@@ -1,4 +1,4 @@
-"""Reconciliation sweep (planned_features.txt section I, Layer 2).
+"""Reconciliation sweep over the production R2 keyspace.
 
 Lists the entire prod keyspace and RECORDS objects that no Episode.r2_url points
 at (partial-failure orphans) into R2OrphanedObject. Never deletes — that's

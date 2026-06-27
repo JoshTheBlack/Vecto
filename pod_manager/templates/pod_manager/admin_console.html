@@ -1,0 +1,114 @@
+{% extends "pod_manager/base.html" %}
+{% load static %}
+
+{% block content %}
+<link rel="stylesheet" href="{% static 'pod_manager/css/admin_console.css' %}">
+
+<div class="d-flex align-items-center justify-content-between mb-3 ac-topbar">
+    <h4 class="mb-0"><i class="bi bi-sliders me-2" style="color:var(--vecto-primary);"></i>Admin Command Console</h4>
+    <div class="d-flex align-items-center gap-2">
+        <span class="ac-discovered-note">{{ categories|length }} categories · {{ discovered_count }} discovered</span>
+        <button class="btn btn-sm btn-outline-secondary" id="ac-history-btn">
+            <i class="bi bi-clock-history me-1"></i>Recent Runs
+        </button>
+    </div>
+</div>
+
+{% if unregistered %}
+<div class="alert ac-alert-warn d-flex align-items-start gap-2 py-2 mb-3">
+    <i class="bi bi-exclamation-triangle-fill mt-1"></i>
+    <div>
+        <strong>Discovered but unregistered ({{ unregistered|length }}):</strong>
+        these <code>pod_manager</code> commands have no registry entry, so they are
+        hidden from the console (§4c) —
+        <span class="ac-unreg-list">{{ unregistered|join:", " }}</span>
+    </div>
+</div>
+{% endif %}
+
+<div class="ac-layout">
+    <!-- ── Sidebar (§10.1) ─────────────────────────────────────── -->
+    <aside class="ac-sidebar" id="ac-sidebar">
+        <div class="ac-sidebar-search">
+            <input type="text" class="form-control form-control-sm" id="ac-filter" placeholder="Filter commands…">
+        </div>
+        {% for group in categories %}
+        <div class="ac-cat-group" data-category="{{ group.category }}">
+            <div class="ac-cat-label">{{ group.category }}</div>
+            {% for cmd in group.commands %}
+            <button class="ac-cmd-item{% if cmd.danger %} ac-danger{% endif %}"
+                    data-command="{{ cmd.name }}"
+                    data-runnable="{{ cmd.runnable|yesno:'1,0' }}"
+                    data-deeplink="{{ cmd.deep_link|yesno:'1,0' }}">
+                <span class="ac-cmd-name">{{ cmd.name }}</span>
+                {% if cmd.danger %}<i class="bi bi-shield-fill-exclamation ac-cmd-flag" title="Destructive — typed confirmation required"></i>
+                {% elif cmd.danger_fields %}<i class="bi bi-shield-exclamation ac-cmd-flag ac-flag-muted" title="Has a destructive sub-mode"></i>
+                {% elif not cmd.runnable and cmd.deep_link %}<i class="bi bi-box-arrow-up-right ac-cmd-flag ac-flag-muted" title="Deep-link only"></i>
+                {% elif not cmd.runnable %}<i class="bi bi-file-text ac-cmd-flag ac-flag-muted" title="Docs only"></i>
+                {% endif %}
+            </button>
+            {% endfor %}
+        </div>
+        {% endfor %}
+    </aside>
+
+    <!-- ── Main column: detail pane + log pane ─────────────────── -->
+    <main class="ac-main">
+        <section class="ac-detail" id="ac-detail">
+            <div class="ac-empty" id="ac-detail-empty">
+                <i class="bi bi-arrow-left-circle"></i>
+                <p>Select a command to view its documentation and build an invocation.</p>
+            </div>
+            <div id="ac-detail-body" hidden></div>
+        </section>
+
+        <section class="ac-log" id="ac-log" hidden>
+            <div class="ac-log-head">
+                <span class="ac-log-title"><i class="bi bi-terminal-fill me-1"></i><span id="ac-log-cmd">Output</span></span>
+                <span class="ac-status-badge" id="ac-log-status">idle</span>
+                <div class="ac-log-actions ms-auto">
+                    <label class="ac-follow" title="Auto-scroll to newest output"><input type="checkbox" id="ac-log-follow" checked> Follow</label>
+                    <button class="btn btn-sm btn-outline-secondary" id="ac-log-copy" title="Copy output"><i class="bi bi-clipboard"></i></button>
+                    <button class="btn btn-sm btn-outline-secondary" id="ac-log-dismiss" title="Dismiss output"><i class="bi bi-x-lg"></i></button>
+                </div>
+            </div>
+            <pre class="ac-log-body" id="ac-log-body"></pre>
+        </section>
+    </main>
+</div>
+
+<!-- ── Global run-history modal (§8a) ──────────────────────────── -->
+<div class="modal fade" id="ac-history-modal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-xl modal-dialog-scrollable">
+        <div class="modal-content ac-modal">
+            <div class="modal-header">
+                <h5 class="modal-title"><i class="bi bi-clock-history me-2"></i>Recent Runs</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <div class="d-flex flex-wrap gap-2 mb-3 ac-history-filters">
+                    <input type="text" class="form-control form-control-sm" id="ac-hist-command" placeholder="Command…" style="max-width:200px;">
+                    <input type="text" class="form-control form-control-sm" id="ac-hist-user" placeholder="User…" style="max-width:160px;">
+                    <select class="form-select form-select-sm" id="ac-hist-status" style="max-width:160px;">
+                        <option value="">Any status</option>
+                        <option value="queued">Queued</option>
+                        <option value="running">Running</option>
+                        <option value="completed">Completed</option>
+                        <option value="failed">Failed</option>
+                    </select>
+                    <button class="btn btn-sm btn-outline-secondary" id="ac-hist-refresh"><i class="bi bi-arrow-clockwise"></i></button>
+                </div>
+                <div id="ac-history-list" class="ac-history-list"></div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+  window.ADMIN_CONSOLE = {
+    csrfToken: "{{ csrf_token }}",
+    base: "{% url 'admin_console' %}",
+  };
+</script>
+<script src="{% static 'pod_manager/js/admin_console.js' %}"></script>
+{% endblock %}

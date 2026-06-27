@@ -21,6 +21,7 @@ import uuid
 
 from django.core.cache import cache
 from django.http import JsonResponse
+from django.shortcuts import render
 from django.views.decorators.http import require_GET, require_POST
 
 from pod_manager.admin_console.registry import REGISTRY, get_spec
@@ -61,16 +62,15 @@ def _run_to_dict(run, include_log=False):
     return data
 
 
-@superuser_required
-@require_GET
-def console(request):
-    """Page shell data: registered commands grouped by category + the
-    discovered-but-unregistered notice (§4c). Cheap — does not introspect."""
+def _console_payload():
+    """Registered commands grouped by category + the discovered-but-unregistered
+    notice (§4c). Cheap — does not introspect any command module."""
     categories = {}
     for name, spec in sorted(REGISTRY.items()):
         categories.setdefault(spec.category, []).append({
             "name": name,
             "danger": spec.danger,
+            "danger_fields": sorted(spec.danger_fields),
             "runnable": spec.runnable,
             "deep_link": bool(spec.deep_link),
         })
@@ -78,11 +78,20 @@ def console(request):
         {"category": cat, "commands": cmds}
         for cat, cmds in sorted(categories.items())
     ]
-    return JsonResponse({
+    return {
         "categories": grouped,
         "unregistered": unregistered_commands(),
         "discovered_count": len(discover_commands()),
-    })
+    }
+
+
+@superuser_required
+@require_GET
+def console(request):
+    """The console page shell (§10). Renders the sidebar from the cheap registry
+    payload; the detail pane, log pane, and history are populated client-side from
+    the JSON endpoints below."""
+    return render(request, "pod_manager/admin_console.html", _console_payload())
 
 
 @superuser_required
@@ -147,10 +156,13 @@ def run(request, name):
     payload = body.get("fields", {})
 
     # Danger gate: destructive runs require typing the command name to confirm (§11).
-    # Engages when the command is always-dangerous (`danger`) OR this particular run
-    # activates a destructive sub-mode (`danger_fields`, e.g. --prune). The UI supplies
-    # --apply/--yes as normal fields once confirmed.
-    is_danger = spec.danger or any(payload.get(d) for d in spec.danger_fields)
+    # A run is destructive when the command is always-dangerous (`danger`) OR this run
+    # activates a destructive sub-mode (`danger_fields`, e.g. --prune) — but ONLY when
+    # the run actually executes (`--apply`). A preview/dry-run mutates nothing, so it
+    # never needs confirmation; the gate engages exactly when Apply is set on a
+    # destructive command.
+    destructive = spec.danger or any(payload.get(d) for d in spec.danger_fields)
+    is_danger = destructive and bool(payload.get("apply"))
     if is_danger and body.get("confirm", "").strip() != name:
         return JsonResponse(
             {"error": f"This run is destructive — confirm by sending the command name {name!r}."},

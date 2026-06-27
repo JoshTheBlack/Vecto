@@ -1,4 +1,4 @@
-"""Orphan cleanup — the only hard-delete (planned_features.txt section I, CLEANUP).
+"""Orphan cleanup — the only hard-delete in the R2 object lifecycle.
 
 Deletes R2 objects for orphan rows past their per-reason retention (move_rekey ->
 R2_REKEY_GRACE_DAYS, else R2_ORPHAN_RETENTION_DAYS), re-validating against live

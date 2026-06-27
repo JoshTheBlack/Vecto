@@ -4,9 +4,8 @@ Walks a contiguous range of baldmove.com WordPress post IDs and, for any not
 already ingested, dispatches ingest_wp_post_task to crawl and import it into the
 "Unsorted Ingest" bin. Authentication cookies are required to reach gated posts.
 
-WARNING — heavy and vestigial: the default range queues on the order of 100k
-Celery tasks. It is surfaced in the Admin Command Console as docs-only
-(runnable=False) for exactly this reason; run it from a shell deliberately.
+WARNING — very heavy: the default range queues on the order of 100k Celery
+tasks. Run it from a shell deliberately, with a scoped --start/--end range.
 
     python manage.py crawl_by_id --cookie_name <name> --cookie_value <value>
     python manage.py crawl_by_id --start 34 --end 500 --cookie_name <n> --cookie_value <v>

@@ -1,6 +1,5 @@
 """Backfill existing local images (avatars + mix covers) to Cloudflare R2.
 
-Phase 2 of the user-asset CDN feature (see planned_features.txt, section F).
 For each row whose image field still points at a legacy LOCAL key, this:
 
     1. reads the existing local bytes,

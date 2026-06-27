@@ -1,7 +1,7 @@
 """Mirror subscriber audio to Cloudflare R2.
 
-Single episode (Phase 3 end-to-end testing) OR bulk backfill (Phase 5) of
-episodes already ingested/transcribed before the mirror existed.
+Mirror a single episode inline, or bulk-backfill episodes whose audio is not yet
+on R2.
 
     # one episode, inline (no Celery), surfaces errors — for IDE testing
     python manage.py mirror_audio_to_r2 --episode 1234

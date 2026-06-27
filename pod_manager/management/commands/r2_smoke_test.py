@@ -1,8 +1,8 @@
-"""Phase 1 smoke test: put / get / delete a dummy object under the dev/ prefix.
+"""Smoke test: put / get / delete a dummy object under the dev/ prefix.
 
 Confirms the R2 credentials, endpoint, checksum config and key prefixing all
-work end to end before any real mirror logic exists. Writes only under
-R2_KEY_PREFIX (dev/ in the IDE), so it never touches prod audio.
+work end to end. Writes only under R2_KEY_PREFIX (dev/ in the IDE), so it never
+touches prod audio.
 
     python manage.py r2_smoke_test
     python manage.py r2_smoke_test --keep   # leave the object for manual checks

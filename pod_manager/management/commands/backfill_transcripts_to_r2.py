@@ -1,6 +1,5 @@
 """Backfill existing local transcript files to Cloudflare R2 (vecto-cdn).
 
-Phase 3 of the user-asset CDN feature (see planned_features.txt, section F).
 For each completed Transcript, this uploads the on-disk formats (vtt/json/srt/
 html/words) to R2 at transcripts/{episode_id}.{ext} (ContentType + immutable
 cache) and sets Transcript.version so the serve view + feed switch to the cdn.

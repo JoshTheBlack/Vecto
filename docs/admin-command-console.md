@@ -1,8 +1,8 @@
 # Admin Command Console — Design Document
 
-**Status:** Draft for review — **Steps 0–2 implemented 2026-06-26.**
+**Status:** Draft for review — **Steps 0–4 implemented 2026-06-26.**
 **Author:** Josh + Claude (design session 2026-06-26)
-**Implementation:** Step 0 (command normalization, §16), Step 1 (log-buffer refactor, §8 "As-built"), and Step 2 (backend skeleton — registry, introspection, `CommandRun`, runner task, superuser routes; §13 "As-built") landed in the working tree; Steps 3–6 (frontend + polish) deferred to separate sessions.
+**Implementation:** Step 0 (command normalization, §16), Step 1 (log-buffer refactor, §8 "As-built"), Step 2 (backend skeleton — registry, introspection, `CommandRun`, runner task, superuser routes; §13 "As-built"), and Steps 3–4 (frontend: nav tab, console page, data-driven form renderer, command-line builder, Execute/Open-in, polling log pane, run history + re-run, and the in-code docs wired into the detail pane; §13 "As-built (Steps 3 & 4)") landed in the working tree; Steps 5–6 (safety polish + doc conversion) remain.
 
 ---
 
@@ -645,12 +645,14 @@ and optionally `backfill_transcripts --model`/`--language`.
    module, introspection + semantic-widget resolver → schema helper, the `CommandRun`
    model + migration, `task_run_management_command`, and the eight superuser JSON
    routes (incl. the §5b `build` copy-box serializer). As-built record below.
-3. **Frontend:** nav tab, console page, dynamic form renderer with the semantic
-   widgets + DB-backed pickers, live command-line builder + Execute/Open-in
-   actions, log pane (reuse `/staff/logs/` JS), per-command + global run history.
-4. **In-code doc backfill (small):** add the four missing `help=` strings to
-   `crawl_by_id`; optional one-line `Command.help` examples elsewhere. No registry
-   prose. Wire module docstrings into the detail pane.
+3. ✅ **Frontend — DONE (2026-06-26).** Nav tab, console page, dynamic form renderer
+   with the semantic widgets + DB-backed pickers, live command-line builder +
+   Execute/Open-in actions, polling log pane, per-command + global run history with
+   expand-to-log and one-click re-run. As-built record below.
+4. ✅ **In-code doc backfill + wiring — DONE.** The four `crawl_by_id` `help=` strings
+   landed in Step 0 (§16 as-built); Step 3's `build_schema` already merges the three
+   in-code doc sources (§6) and the detail pane now renders them (summary, module
+   docstring, per-arg help). No registry prose was needed. See the as-built below.
 5. **Safety polish:** danger confirmations, audit logging (via `CommandRun`),
    "discovered but unregistered" notice + optional CI test, graceful Celery-down
    messaging.
@@ -744,6 +746,80 @@ detail, `build` copy-box serializer, run dispatch + non-runnable/static-danger/
 dynamic-prune-danger/invalid rejection, poll/detail/history, episode search), and
 `TaskRunManagementCommandTests` (runner lifecycle on success + failure). Verified: full
 `pod_manager` suite (**349 tests**) green; `manage.py check` clean.
+
+---
+
+### As-built (Steps 3 & 4 — implemented 2026-06-26)
+
+The frontend landed and wires the in-code docs into the UI; the backend JSON
+contract from Step 2 is consumed unchanged. Ground truth for future sessions:
+
+**New files**
+
+| File | Contents |
+|---|---|
+| [templates/pod_manager/admin_console.html](../pod_manager/templates/pod_manager/admin_console.html) | The single page shell (extends `base.html`, §10). Renders the **sidebar** server-side from the cheap registry payload (categories + the §4c "discovered but unregistered" notice); the detail pane, log pane, and global-history modal are populated client-side. Embeds `csrf_token` via `json_script` + a small `window.ADMIN_CONSOLE` config (base URL), then loads the CSS/JS below. |
+| [static/pod_manager/css/admin_console.css](../pod_manager/static/pod_manager/css/admin_console.css) | All console styling. Squared/themed; rides the `--vecto-*` tokens + the `--vecto-radius-*` scale (no hardcoded colors/radii). One console-local token `--ac-danger: var(--bs-danger)` for the destructive accent. |
+| [static/pod_manager/js/admin_console.js](../pod_manager/static/pod_manager/js/admin_console.js) | The whole data-driven frontend (one IIFE, vendored — no CDN): sidebar select/filter, `command_detail` fetch → detail render, the **per-widget form renderer** (§5a), the live **command-line builder** (debounced `build` POST), the primary action (Execute / Open-in / none, §5b), the **polling log pane** (`run_poll`, parses the `data: …\n\n` SSE frames + `[DONE]`, stall indicator §8), per-command + global **run history** (expand-to-log via `run_detail`, one-click **re-run** that prefills the form from stored args/options), and the history modal. |
+
+**Touched files**
+- [templates/pod_manager/base.html](../pod_manager/templates/pod_manager/base.html) — new `{% if request.user.is_superuser %}` **Admin** nav link next to **Logs** (§3).
+- [views/admin_console.py](../pod_manager/views/admin_console.py) — `console` now **renders the template** (page shell) instead of returning JSON; grouping extracted to `_console_payload()` (now also ships `danger_fields` per command so the sidebar/UI can flag dynamic-danger commands). All other routes unchanged.
+- [tests.py](../pod_manager/tests.py) — `test_console_groups_commands_and_reports_no_unregistered` updated to assert the template + `resp.context` (the view no longer returns JSON).
+
+**Frontend ↔ schema mapping (the widget renderers):** `flag`→checkbox; `choice`/
+`network`/`podcast`/`csv_path` (single)→`<select>`; `network_multi`/`podcast_multi`/
+`enum_multi:*`/any multi `csv_path` (rewind's `nargs='+'`)→`<select multiple>`;
+`episode`→typeahead backed by `episode_search`; `number`→number input; everything
+else→text. The form never reassembles the CLI itself — the copy box and Execute both
+come from the backend `build`/`run` serializer (§5b / Step 2 as-built item 7), so they
+can't drift.
+
+**Decisions made during the build:**
+
+1. **`console` became an HTML view (deviation from the Step 2 JSON stub).** §9 always
+   described `/admin-console/` as the *page shell*; Step 2 had it return JSON as a
+   placeholder. Step 3 makes it render `admin_console.html`, with the sidebar grouped
+   server-side (no extra round-trip for the static command list) and the dynamic panes
+   fetched from the JSON endpoints. The grouping logic is preserved in
+   `_console_payload()` and still covered by a test (now via `resp.context`).
+2. **Danger flags are shown as real checkboxes, not auto-supplied.** For destructive
+   commands the form renders the actual `--apply`/`--yes`/`--prune` checkboxes; the
+   operator ticks the flags and (for an apply) types the name. This is more explicit
+   than silently injecting the flags (the command line reflects exactly what runs) and
+   matches the run view's contract that `apply`/`yes` arrive as normal `fields`.
+   **The typed-confirm gate engages only on a real apply.** A preview/dry-run mutates
+   nothing, so it never asks for confirmation — both the frontend (`dangerActiveNow`)
+   and the `run` view require the destructive condition *and* `--apply` (falling back
+   to always-confirm only for a destructive command that has no `--apply` flag). So
+   ticking only Apply+Yes on `purge_r2_dev` shows the gate; running it with no flags
+   (a preview) dispatches straight away.
+3. **Log frame parsing on the client.** The poll buffer is SSE-framed (`data: <line>\n\n`
+   from `CommandLogStream`); the poller keeps a remainder buffer and only renders
+   complete frames, so a delta that splits mid-frame never corrupts a line. `[SYSTEM]`/
+   `[ERROR]` prefixes get accent coloring; `[DONE]` ends the poll.
+4. **Re-run prefill.** Stored `args` (positionals, in declared order) + `options`
+   (`{dest: value}`) are mapped back onto the schema's fields to repopulate the form
+   for a one-click repeat. Cross-command re-run (from the global history modal) loads
+   the target command's schema first, then prefills. Redacted secrets would prefill as
+   `***`, but no runnable command has a sensitive arg today.
+5. **Stall indicator (§8).** If status is `running` but the buffer hasn't grown for
+   >2 min, the badge shows `stalled` rather than an error; polling continues.
+
+**Conventions honored:** all JS/CSS is self-hosted under `static/` (no CDN —
+`VendoredAssetTests` only flags CDN `<script>`/`<link>`, which the page has none of);
+styling uses the `--vecto-*` tokens and the `--vecto-radius-*` scale exclusively.
+
+**Verification.** `manage.py check` clean; `AdminConsoleViewTests` (22, incl. the
+template-render assertion) + `AdminConsoleSchemaTests`/`TaskRunManagementCommandTests`
+(19) + `VendoredAssetTests` green via the project venv; JS passes `node --check`. One
+runtime bug was caught and fixed during Josh's first page load: `csrf_token` is a
+`SimpleLazyObject`, so `json_script` couldn't encode it — the config block now emits the
+token as a plain string (`"{{ csrf_token }}"`). Live UI behavior is Josh's to verify
+(he browser-tests himself, per project convention). **Step 5** (safety polish —
+confirmations + the unregistered notice are in; remaining: optional CI test for
+unregistered, richer Celery-down messaging) and **Step 6** (final doc conversion) are
+the only build-order items left.
 
 ---
 

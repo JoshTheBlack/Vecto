@@ -4268,6 +4268,19 @@ class AdminConsoleSchemaTests(TestCase):
         self.assertEqual(f['widget'], 'podcast_multi')
         self.assertTrue(f['multi'])
 
+    def test_int_picker_ships_id_values_slug_picker_ships_slugs(self):
+        # ingest_feed's podcast_id is type=int → option values must be ids (selecting a
+        # slug crashes reconstruction); mirror's --podcast is a slug field → slug values.
+        net = Network.objects.create(name='Bald Move', slug='baldmove')
+        pod = Podcast.objects.create(network=net, title='Mr Robot', slug='mrrobot')
+        id_field = self._field('ingest_feed', 'podcast_id')
+        self.assertEqual([o['value'] for o in id_field['options']], [pod.id])
+        slug_field = self._field('mirror_audio_to_r2', 'podcast')
+        self.assertIn('mrrobot', [o['value'] for o in slug_field['options']])
+        # And the id round-trips through reconstruction without crashing.
+        inv = self._reconstruct('ingest_feed', {'podcast_id': pod.id})
+        self.assertEqual(inv['args'], [pod.id])
+
     def test_choice_widget_ships_inline_options(self):
         f = self._field('recover_gdrive_audio', 'min_confidence')
         self.assertEqual(f['widget'], 'choice')
@@ -4380,11 +4393,12 @@ class AdminConsoleViewTests(TestCase):
     # -- console list -------------------------------------------------------
     def test_console_groups_commands_and_reports_no_unregistered(self):
         self.client.force_login(self.superuser)
-        data = self.client.get(reverse('admin_console')).json()
-        cats = {c['category'] for c in data['categories']}
+        resp = self.client.get(reverse('admin_console'))
+        self.assertTemplateUsed(resp, 'pod_manager/admin_console.html')
+        cats = {c['category'] for c in resp.context['categories']}
         self.assertIn('R2 / Storage', cats)
-        self.assertEqual(data['unregistered'], [])
-        self.assertEqual(data['discovered_count'], 23)
+        self.assertEqual(resp.context['unregistered'], [])
+        self.assertEqual(resp.context['discovered_count'], 23)
 
     # -- detail -------------------------------------------------------------
     def test_command_detail_returns_schema(self):
@@ -4453,6 +4467,15 @@ class AdminConsoleViewTests(TestCase):
         self.assertEqual(resp.status_code, 200)
         delay.assert_called_once()
         self.assertEqual(CommandRun.objects.filter(command='purge_r2_dev').count(), 1)
+
+    def test_danger_preview_skips_confirmation(self):
+        # purge_r2_dev is always-danger, but a preview (no --apply) mutates nothing,
+        # so it dispatches without the typed confirm — the gate is only for real applies.
+        self.client.force_login(self.superuser)
+        with mock.patch('pod_manager.tasks.task_run_management_command.delay') as delay:
+            resp = self._run('purge_r2_dev', {'fields': {}})
+        self.assertEqual(resp.status_code, 200)
+        delay.assert_called_once()
 
     def test_prune_subfield_triggers_dynamic_danger_gate(self):
         # backfill_media_to_r2 is benign by default but --prune deletes, so a pruning

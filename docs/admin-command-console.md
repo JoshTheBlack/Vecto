@@ -758,7 +758,7 @@ contract from Step 2 is consumed unchanged. Ground truth for future sessions:
 
 | File | Contents |
 |---|---|
-| [templates/pod_manager/admin_console.html](../pod_manager/templates/pod_manager/admin_console.html) | The single page shell (extends `base.html`, §10). Renders the **sidebar** server-side from the cheap registry payload (categories + the §4c "discovered but unregistered" notice); the detail pane, log pane, and global-history modal are populated client-side. Embeds `csrf_token` via `json_script` + a small `window.ADMIN_CONSOLE` config (base URL), then loads the CSS/JS below. |
+| [templates/pod_manager/admin_console.html](../pod_manager/templates/pod_manager/admin_console.html) | The single page shell (extends `base.html`, §10). Renders the **sidebar** server-side from the cheap registry payload (categories + the §4c "discovered but unregistered" notice); the detail pane, log pane, and global-history modal are populated client-side. Emits a small `window.ADMIN_CONSOLE` config — the CSRF token as a plain string (`"{{ csrf_token }}"`; `json_script` can't encode the `SimpleLazyObject`) + the base URL — then loads the CSS/JS below. |
 | [static/pod_manager/css/admin_console.css](../pod_manager/static/pod_manager/css/admin_console.css) | All console styling. Squared/themed; rides the `--vecto-*` tokens + the `--vecto-radius-*` scale (no hardcoded colors/radii). One console-local token `--ac-danger: var(--bs-danger)` for the destructive accent. |
 | [static/pod_manager/js/admin_console.js](../pod_manager/static/pod_manager/js/admin_console.js) | The whole data-driven frontend (one IIFE, vendored — no CDN): sidebar select/filter, `command_detail` fetch → detail render, the **per-widget form renderer** (§5a), the live **command-line builder** (debounced `build` POST), the primary action (Execute / Open-in / none, §5b), the **polling log pane** (`run_poll`, parses the `data: …\n\n` SSE frames + `[DONE]`, stall indicator §8), per-command + global **run history** (expand-to-log via `run_detail`, one-click **re-run** that prefills the form from stored args/options), and the history modal. |
 
@@ -774,6 +774,14 @@ contract from Step 2 is consumed unchanged. Ground truth for future sessions:
 else→text. The form never reassembles the CLI itself — the copy box and Execute both
 come from the backend `build`/`run` serializer (§5b / Step 2 as-built item 7), so they
 can't drift.
+
+**Picker option *values* match the field type (§5a refinement).** A network/podcast
+dropdown ships the value the command actually consumes, decided by `action.type`: an
+**int-typed** field (e.g. `ingest_feed`'s `podcast_id`) gets DB **ids**, a slug field
+(e.g. `mirror_audio_to_r2 --podcast watchmen`) gets **slugs**. Without this the picker
+posted a slug into an `int` arg and reconstruction crashed on `int("mrrobot")`. As a
+backstop, `_coerce` now raises `InvalidInvocation` (clean 400 / soft-invalid copy box)
+instead of letting a bad numeric value bubble up as a 500.
 
 **Decisions made during the build:**
 
@@ -805,18 +813,41 @@ can't drift.
    `***`, but no runnable command has a sensitive arg today.
 5. **Stall indicator (§8).** If status is `running` but the buffer hasn't grown for
    >2 min, the badge shows `stalled` rather than an error; polling continues.
+6. **Deep-link query string.** `CommandSpec.deep_link` grew an optional 3rd element —
+   `(url_name, label, query)`. The GDrive commands use
+   `("creator_settings", "Open GDrive Recovery", "tab=gdrive")` so the button lands on
+   the right Creator-settings tab (`?tab=gdrive` → `#list-gdrive-recovery`), not the
+   bare page. `_deep_link_payload` appends the query to the reversed URL.
+7. **Log-pane controls.** **Follow** is an auto-scroll toggle (pins to newest output;
+   uncheck to read back without it snapping down). A **Dismiss (×)** button stops any
+   active poll and hides/clears the pane — the worker keeps running and the run stays
+   in history; the pane returns on the next Execute.
+8. **History modal resolved lazily.** `bootstrap.bundle.js` loads *after* this script
+   (end of `base.html`), so `window.bootstrap` is undefined at parse time; the modal is
+   constructed on first click (`ensureHistoryModal`) rather than at init, or the Recent
+   Runs button silently does nothing.
+9. **Step 4 docstring trim (§6).** The detail pane renders the module docstring
+   verbatim, so the in-code docs were cleaned to be *command*-relevant only: removed the
+   planning/phase scaffolding ("Phase N of the user-asset CDN feature", "planned_features.txt
+   section …", "before the mirror existed", `crawl_by_id`'s "vestigial" + console
+   self-reference) from `mirror_audio_to_r2`, `backfill_media_to_r2`,
+   `backfill_transcripts_to_r2`, `r2_gc`, `r2_cleanup_orphans`, `r2_smoke_test`, and
+   `crawl_by_id`. No behavior change — docstrings only.
 
 **Conventions honored:** all JS/CSS is self-hosted under `static/` (no CDN —
 `VendoredAssetTests` only flags CDN `<script>`/`<link>`, which the page has none of);
 styling uses the `--vecto-*` tokens and the `--vecto-radius-*` scale exclusively.
 
-**Verification.** `manage.py check` clean; `AdminConsoleViewTests` (22, incl. the
-template-render assertion) + `AdminConsoleSchemaTests`/`TaskRunManagementCommandTests`
-(19) + `VendoredAssetTests` green via the project venv; JS passes `node --check`. One
-runtime bug was caught and fixed during Josh's first page load: `csrf_token` is a
-`SimpleLazyObject`, so `json_script` couldn't encode it — the config block now emits the
-token as a plain string (`"{{ csrf_token }}"`). Live UI behavior is Josh's to verify
-(he browser-tests himself, per project convention). **Step 5** (safety polish —
+**Verification.** `manage.py check` clean; the admin-console suites green via the
+project venv (**45 tests** across `AdminConsoleViewTests` — incl. the template-render
+assertion + `test_danger_preview_skips_confirmation` —, `AdminConsoleSchemaTests` —
+incl. `test_int_picker_ships_id_values_slug_picker_ships_slugs` —,
+`TaskRunManagementCommandTests`, and `CommandLogStreamTests`) plus `VendoredAssetTests`;
+JS passes `node --check`. Several bugs were caught during Josh's browser testing and
+fixed (the `SimpleLazyObject` csrf encode, the slug-into-int picker crash, the dead
+Recent-Runs button, the deep-link tab) — see decisions above. Live UI behavior is
+Josh's to verify (he browser-tests himself, per project convention). Committed to `main`
+(`feat: Admin Command Console frontend (Steps 3 & 4)`). **Step 5** (safety polish —
 confirmations + the unregistered notice are in; remaining: optional CI test for
 unregistered, richer Celery-down messaging) and **Step 6** (final doc conversion) are
 the only build-order items left.

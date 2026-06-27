@@ -3805,6 +3805,155 @@ class R2BackfillCommandTests(TestCase):
         self.assertTrue(ids <= {self.e_gd.id, self.e_lib.id})
 
 
+class ChapterExtractionTests(TestCase):
+    """Unit coverage for the style-driven description → chapters parser."""
+
+    def test_trailing_paren_style(self):
+        from pod_manager.services.chapter_extraction import extract_chapters_from_html
+        desc = (
+            "<p>There are SPOILERS ahead.</p>"
+            "<p>DTF St. Louis (00:01:33)</p>"
+            "<p>One Battle After Another (2025) (00:39:38)</p>"
+        )
+        result = extract_chapters_from_html(desc)
+        # First marker isn't at 0 → an Intro chapter is prepended.
+        self.assertEqual(result['version'], '1.2.0')
+        self.assertEqual(result['chapters'], [
+            {'startTime': 0, 'title': 'Intro'},
+            {'startTime': 93, 'title': 'DTF St. Louis'},
+            {'startTime': 2378, 'title': 'One Battle After Another (2025)'},
+        ])
+
+    def test_hms_and_ms_timecodes(self):
+        from pod_manager.services.chapter_extraction import extract_chapters_from_html
+        desc = "A (01:24:09)\nB (1:10:26)\nC (35:32)"
+        chapters = extract_chapters_from_html(desc)['chapters']
+        times = {c['title']: c['startTime'] for c in chapters}
+        self.assertEqual(times['A'], 5049)
+        self.assertEqual(times['B'], 4226)
+        self.assertEqual(times['C'], 35 * 60 + 32)
+
+    def test_leading_time_style(self):
+        from pod_manager.services.chapter_extraction import extract_chapters_from_html
+        desc = "<ul><li>(00:00:00) Intro</li><li>00:05:30 - Topic Two</li></ul>"
+        chapters = extract_chapters_from_html(desc)['chapters']
+        self.assertEqual(chapters, [
+            {'startTime': 0, 'title': 'Intro'},
+            {'startTime': 330, 'title': 'Topic Two'},
+        ])
+
+    def test_no_intro_added_when_first_is_zero(self):
+        from pod_manager.services.chapter_extraction import extract_chapters_from_html
+        chapters = extract_chapters_from_html("Open (00:00:00)\nNext (00:10:00)")['chapters']
+        self.assertEqual(chapters[0], {'startTime': 0, 'title': 'Open'})
+
+    def test_prose_without_two_markers_yields_nothing(self):
+        from pod_manager.services.chapter_extraction import extract_chapters_from_html
+        self.assertIsNone(extract_chapters_from_html("Just some show notes, no chapters."))
+        self.assertIsNone(extract_chapters_from_html("One lonely marker (00:01:00)"))
+
+
+class ExtractDescriptionChaptersCommandTests(TestCase):
+    """manage.py extract_description_chapters: scope, preview/apply, leave-alone."""
+
+    def setUp(self):
+        self.network = Network.objects.create(name='Net', slug='net')
+        self.other_net = Network.objects.create(name='Other', slug='other')
+        self.p1 = Podcast.objects.create(network=self.network, title='P1', slug='p1')
+        self.p2 = Podcast.objects.create(network=self.network, title='P2', slug='p2')
+        self.desc = (
+            "<p>DTF St. Louis (00:01:33)</p>"
+            "<p>Shoresey Spoilers (00:48:36)</p>"
+        )
+
+        def mk(podcast, desc='', **extra):
+            return Episode.objects.create(
+                podcast=podcast, title='t', pub_date=timezone.now(),
+                raw_description=desc, clean_description=desc, **extra,
+            )
+
+        self.e_has_chaps = mk(self.p1, self.desc)
+        self.e_blank = mk(self.p1, self.desc)
+        self.e_no_markers = mk(self.p2, 'Plain notes, nothing to see.')
+        # Give one episode existing chapters so it's left alone by default.
+        self.e_has_chaps.chapters_public = {'version': '1.2.0',
+                                            'chapters': [{'startTime': 5, 'title': 'Manual'}]}
+        self.e_has_chaps.save()
+
+    def _run(self, *args):
+        out = StringIO()
+        call_command('extract_description_chapters', '--network=net', *args,
+                     stdout=out, stderr=StringIO())
+        return out.getvalue()
+
+    def _reload(self, ep):
+        return Episode.objects.get(pk=ep.pk)
+
+    def test_unknown_network_errors(self):
+        with self.assertRaises(CommandError):
+            call_command('extract_description_chapters', '--network=nope',
+                         stdout=StringIO(), stderr=StringIO())
+
+    def test_unknown_podcast_errors(self):
+        with self.assertRaises(CommandError):
+            call_command('extract_description_chapters', '--network=net', '--podcast=ghost',
+                         stdout=StringIO(), stderr=StringIO())
+
+    def test_preview_is_default_writes_nothing(self):
+        out = self._run()
+        self.assertIn('Would apply', out)
+        self.assertIsNone(self._reload(self.e_blank).chapters_public)
+
+    def test_apply_writes_chapters_to_both_sides(self):
+        self._run('--apply')
+        ep = self._reload(self.e_blank)
+        titles = [c['title'] for c in ep.chapters_public['chapters']]
+        self.assertEqual(titles, ['Intro', 'DTF St. Louis', 'Shoresey Spoilers'])
+        # Both feeds are filled from the single stored description.
+        self.assertEqual(ep.chapters_public, ep.chapters_private)
+
+    def test_existing_chapters_left_alone_by_default(self):
+        self._run('--apply')
+        ep = self._reload(self.e_has_chaps)
+        self.assertEqual(ep.chapters_public['chapters'], [{'startTime': 5, 'title': 'Manual'}])
+
+    def test_overwrite_replaces_existing(self):
+        self._run('--overwrite', '--apply')
+        ep = self._reload(self.e_has_chaps)
+        titles = [c['title'] for c in ep.chapters_public['chapters']]
+        self.assertIn('DTF St. Louis', titles)
+
+    def test_no_markers_episode_is_not_updated(self):
+        self._run('--apply')
+        self.assertIsNone(self._reload(self.e_no_markers).chapters_public)
+
+    def test_podcast_scope_limits_to_podcast(self):
+        self._run('--podcast=p1', '--apply')
+        self.assertIsNotNone(self._reload(self.e_blank).chapters_public)
+        # p2's episode is out of scope (it had no markers anyway, but assert scoping).
+        self.assertIsNone(self._reload(self.e_no_markers).chapters_public)
+
+    def test_episode_scope_limits_to_episode(self):
+        self._run('--episode', str(self.e_blank.id), '--apply')
+        self.assertIsNotNone(self._reload(self.e_blank).chapters_public)
+        # The other episode is out of scope and keeps its manual chapters.
+        self.assertEqual(
+            self._reload(self.e_has_chaps).chapters_public['chapters'],
+            [{'startTime': 5, 'title': 'Manual'}],
+        )
+
+    def test_limit_caps_examined(self):
+        # Three episodes in the network; --limit=1 examines only one.
+        out = self._run('--limit', '1')
+        self.assertIn('examined 1', out)
+
+    def test_other_network_untouched(self):
+        Podcast.objects.create(network=self.other_net, title='OP', slug='op')
+        self._run('--apply')
+        # nothing in the other network was even considered
+        self.assertIsNone(self._reload(self.e_no_markers).chapters_public)
+
+
 @override_settings(CACHES=TEST_CACHES)
 class CommandSafetyIdiomTests(TestCase):
     """Step 0 safety-idiom contract: mutating commands preview by default, --apply

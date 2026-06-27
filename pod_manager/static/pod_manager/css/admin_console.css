@@ -150,6 +150,17 @@
 select.ac-control[multiple] { min-height: 7rem; }
 .ac-check { display: flex; align-items: center; gap: 0.5rem; }
 
+/* multi-select as a scrollable checkbox list (toggle independently, clear to empty) */
+.ac-multiselect { max-height: 11rem; overflow-y: auto; padding: 0.3rem; display: flex; flex-direction: column; gap: 0.1rem; }
+.ac-multiselect-opt {
+    display: flex; align-items: center; gap: 0.5rem;
+    padding: 0.2rem 0.35rem;
+    font-size: 0.82rem; color: var(--vecto-bg-text);
+    border-radius: var(--vecto-radius-sm); cursor: pointer;
+}
+.ac-multiselect-opt:hover { background: color-mix(in srgb, var(--vecto-primary) 14%, transparent); }
+.ac-multiselect-opt input { cursor: pointer; }
+
 /* episode typeahead */
 .ac-typeahead { position: relative; }
 .ac-typeahead-results {

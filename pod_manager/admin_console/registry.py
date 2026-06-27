@@ -65,6 +65,14 @@ REGISTRY = {
         name="backfill_baldmove_tags",
         category="Feeds",
     ),
+    "extract_description_chapters": CommandSpec(
+        name="extract_description_chapters",
+        category="Feeds",
+        # --network / --podcast (append → podcast_multi) / --episode auto-infer.
+        # Benign backfill, but --overwrite can clobber curated chapters, so its
+        # apply run gets the typed-confirm gate (preview still runs gate-free).
+        danger_fields=frozenset({"overwrite"}),
+    ),
     # --- Transcription -----------------------------------------------------
     "transcribe_episode": CommandSpec(
         name="transcribe_episode",

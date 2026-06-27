@@ -291,21 +291,39 @@
     }
 
     function renderMultiSelect(f, prefVal) {
-        const sel = el("select", "form-select form-select-sm ac-control");
-        sel.multiple = true;
-        (f.options || []).forEach((o) => {
-            const opt = el("option", null, o.label);
-            opt.value = o.value;
-            sel.appendChild(opt);
-        });
+        // A checkbox list, not a native <select multiple>: the native control
+        // replaces the whole selection on a plain click and needs ctrl/cmd-click to
+        // deselect (undiscoverable). Checkboxes toggle independently and clear to
+        // empty — which, for these scoping fields, means "all" (e.g. all podcasts).
         const pre = Array.isArray(prefVal) ? prefVal.map(String) : (prefVal != null ? [String(prefVal)] : []);
-        Array.from(sel.options).forEach((o) => { o.selected = pre.includes(o.value); });
-        formState[f.dest] = Array.from(sel.selectedOptions).map((o) => o.value);
-        sel.addEventListener("change", () => {
-            formState[f.dest] = Array.from(sel.selectedOptions).map((o) => o.value);
-            onFormChange();
+        const selected = new Set(pre);
+        const options = f.options || [];
+        const wrap = el("div", "ac-multiselect ac-control");
+
+        const sync = () => { formState[f.dest] = Array.from(selected); onFormChange(); };
+
+        options.forEach((o) => {
+            const value = String(o.value);
+            const row = el("label", "ac-multiselect-opt");
+            const cb = el("input");
+            cb.type = "checkbox";
+            cb.value = value;
+            cb.checked = selected.has(value);
+            cb.addEventListener("change", () => {
+                if (cb.checked) selected.add(value); else selected.delete(value);
+                sync();
+            });
+            row.appendChild(cb);
+            row.appendChild(el("span", null, o.label));
+            wrap.appendChild(row);
         });
-        return sel;
+
+        if (!options.length) {
+            wrap.appendChild(el("div", "ac-field-help", "No options available."));
+        }
+
+        formState[f.dest] = Array.from(selected);
+        return wrap;
     }
 
     function renderEpisodeTypeahead(f, prefVal) {

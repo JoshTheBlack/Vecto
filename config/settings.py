@@ -97,10 +97,12 @@ R2_MEDIA_PUBLIC_HOST     = os.getenv("R2_MEDIA_PUBLIC_HOST", "").rstrip("/")
 # in IDE so dev objects are namespaced + bulk-purgeable. Defaults to "dev/" under
 # IS_IDE so a forgotten .env entry can't write into the prod keyspace.
 R2_MEDIA_KEY_PREFIX      = os.getenv("R2_MEDIA_KEY_PREFIX", "dev/" if IS_IDE else "")
-# Master switch. When False, the per-field image storage falls back to the local
-# FileSystemStorage default (so the app runs without R2). Forced False under
-# IS_TEST so the suite never touches R2, mirroring R2_MIRROR_ENABLED.
-R2_MEDIA_ENABLED         = os.getenv("R2_MEDIA_ENABLED", "True") == "True"
+# Master switch. OPT-IN (default False): an env carrying the shared R2 account
+# creds must explicitly set this True before anything writes to the vecto-cdn
+# bucket — otherwise an unconfigured box would silently write to prod R2. When
+# False, per-field image storage falls back to local FileSystemStorage (so the
+# app runs without R2). Forced False under IS_TEST so the suite never touches R2.
+R2_MEDIA_ENABLED         = os.getenv("R2_MEDIA_ENABLED", "False") == "True"
 
 # Django's internal DEBUG needs to be a boolean, so it's True if 'True' OR 'IDE'
 DEBUG = (RAW_DEBUG in ['True', 'IDE'])

@@ -39,7 +39,18 @@ def media_object_key(key: str) -> str:
 
 
 def media_public_url(key: str) -> str:
-    """Public cdn URL for a bare media key (prefix applied)."""
+    """Public cdn URL for a bare media key (prefix applied).
+
+    Raises if R2_MEDIA_PUBLIC_HOST is unset: a blank host would otherwise yield a
+    host-RELATIVE URL that the browser resolves against the app domain, so a
+    transcript 302 would loop back into Django and 404 (and image .url helpers
+    would point at the app). Fail loudly instead of serving a broken link.
+    """
+    if not settings.R2_MEDIA_PUBLIC_HOST:
+        raise RuntimeError(
+            "R2_MEDIA_PUBLIC_HOST is not set but R2 media is in use. Set it to the "
+            "vecto-cdn public host (e.g. https://cdn.joshtheblack.com)."
+        )
     return f"{settings.R2_MEDIA_PUBLIC_HOST}/{media_object_key(key).lstrip('/')}"
 
 

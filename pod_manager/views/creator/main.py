@@ -208,6 +208,14 @@ def submit_speaker_labels(request, episode_id):
         membership.save()
         from pod_manager.tasks import task_rebuild_episode_fragments
         task_rebuild_episode_fragments.delay(ep.id, request.build_absolute_uri('/')[:-1])
-        return JsonResponse({'status': 'approved', 'edit_id': edit.id})
+        # apply_approved_edit() bumped Transcript.version; hand it back so the page
+        # can refetch the rewritten .words at the canonical ?v=N (clean cache key).
+        new_version = None
+        try:
+            ep.transcript.refresh_from_db(fields=['version'])
+            new_version = ep.transcript.version
+        except Exception:
+            pass
+        return JsonResponse({'status': 'approved', 'edit_id': edit.id, 'version': new_version})
 
     return JsonResponse({'status': 'pending', 'edit_id': edit.id})

@@ -1621,10 +1621,14 @@
             if (data.status === 'approved') {
                 statusEl.textContent = '✓ Applied instantly.';
                 statusEl.className = 'small text-success';
-                // The .words file was rewritten — bust the immutable cache and rebuild the diarization display
+                // The .words file was rewritten — refetch at the new canonical
+                // ?v=N (the bumped version) so the cache key matches future page
+                // loads. Strip any existing query so we don't double up "?v=".
                 const txBody = document.getElementById('transcriptBody');
                 if (txBody && txBody.dataset.wordsUrl) {
-                    const freshUrl = txBody.dataset.wordsUrl + '?v=' + Date.now();
+                    const base = txBody.dataset.wordsUrl.split('?')[0];
+                    const freshUrl = base + '?v=' + (data.version || Date.now());
+                    txBody.dataset.wordsUrl = freshUrl;
                     fetch(freshUrl).then(r => r.json()).then(doc => {
                         if (doc && doc.segments) {
                             // Re-use the buildEnhancedTranscript function defined in the transcript init IIFE

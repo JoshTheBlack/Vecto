@@ -234,8 +234,29 @@ class Command(BaseCommand):
         })
 
     # ------------------------------------------------------------------
-    def _rows_with_image(self, model, field):
-        return model.objects.exclude(**{f'{field}': ''}).exclude(**{f'{field}__isnull': True}).iterator()
+    def _rows_with_image(self, model, field, batch_size=500):
+        # Keyset pagination by PK rather than .iterator(). .iterator() opens a
+        # server-side (named) cursor, which dies behind a transaction-pooling
+        # PgBouncer (each FETCH may hit a different backend) -> 'cursor
+        # "_django_curs_..." does not exist'. Here every batch is an ordinary
+        # client-side query (pooler-safe), and only `batch_size` instances are
+        # held at once, so this scales to arbitrarily many rows without buffering
+        # the whole table. Ordering by pk is stable under the save()s we do
+        # mid-loop in apply mode: pk never changes, migrated rows still match the
+        # filter, so `pk__gt=last` neither re-visits nor skips a row.
+        base = (model.objects
+                .exclude(**{f'{field}': ''})
+                .exclude(**{f'{field}__isnull': True})
+                .order_by('pk'))
+        last_pk = None
+        while True:
+            qs = base if last_pk is None else base.filter(pk__gt=last_pk)
+            batch = list(qs[:batch_size])
+            if not batch:
+                return
+            for instance in batch:
+                yield instance
+            last_pk = batch[-1].pk
 
     def _selected_specs(self, options):
         if options['all'] or not (options['avatars'] or options['covers']):

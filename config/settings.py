@@ -268,6 +268,12 @@ else:
             'HOST': os.getenv('POSTGRES_HOST', 'pgbouncer'),
             'PORT': os.getenv('POSTGRES_PORT', '6432'),
 
+            # PgBouncer runs in transaction-pooling mode, so a statement can
+            # land on a different backend than the one that opened a server-side
+            # (named) cursor -> 'cursor "_django_curs_..." does not exist'.
+            # Disabling them makes QuerySet.iterator() safe pooler-wide.
+            'DISABLE_SERVER_SIDE_CURSORS': True,
+
             # Connection Pooling
             'CONN_MAX_AGE': 60,
             'CONN_HEALTH_CHECKS': True,

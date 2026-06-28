@@ -3833,6 +3833,18 @@ class ChapterExtractionTests(TestCase):
         self.assertEqual(times['B'], 4226)
         self.assertEqual(times['C'], 35 * 60 + 32)
 
+    def test_single_digit_minute_in_hms_is_recognized(self):
+        from pod_manager.services.chapter_extraction import extract_chapters_from_html
+        # "00:1:13" — a hand-typed single-digit minute — must parse, not be dropped
+        # (the drop used to lose the first real chapter and leave only the Intro).
+        desc = "Cold Open (00:1:13)\nMain Topic (00:42:05)"
+        chapters = extract_chapters_from_html(desc)['chapters']
+        self.assertEqual(chapters, [
+            {'startTime': 0, 'title': 'Intro'},
+            {'startTime': 73, 'title': 'Cold Open'},
+            {'startTime': 2525, 'title': 'Main Topic'},
+        ])
+
     def test_leading_time_style(self):
         from pod_manager.services.chapter_extraction import extract_chapters_from_html
         desc = "<ul><li>(00:00:00) Intro</li><li>00:05:30 - Topic Two</li></ul>"

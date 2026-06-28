@@ -29,8 +29,12 @@ from bs4 import BeautifulSoup
 
 logger = logging.getLogger(__name__)
 
-# A timecode is H:MM:SS / HH:MM:SS / M:SS / MM:SS. Re-used by every style.
-_TIMECODE = r"\d{1,2}:\d{2}(?::\d{2})?"
+# A timecode is H:MM:SS / HH:MM:SS / M:SS / MM:SS. Re-used by every style. The
+# three-part form tolerates a single-digit minute (e.g. "0:1:13" / "00:1:13") that
+# publishers sometimes type by hand — the seconds field disambiguates it. The
+# two-part form keeps a strict 2-digit seconds field so stray prose ratios like
+# "1:3" aren't mistaken for a marker.
+_TIMECODE = r"\d{1,2}:\d{1,2}:\d{2}|\d{1,2}:\d{2}"
 
 # Minimum recognized lines before we trust a description as a real chapter list.
 # Guards against a lone stray timestamp in prose ("...around 1:30 he says...").

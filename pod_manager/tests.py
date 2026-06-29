@@ -1090,6 +1090,44 @@ class CreatorRollbackTests(TestCase):
         ).count()
         self.assertEqual(reverted, 3)
 
+    def _speaker_edit(self, mappings, resolved_at=None):
+        return EpisodeEditSuggestion.objects.create(
+            episode=self.episode, user=self.spammer,
+            status=EpisodeEditSuggestion.Status.APPROVED,
+            original_data={'speaker_mappings': {}},
+            suggested_data={'speaker_mappings': mappings},
+            resolved_at=resolved_at or timezone.now(),
+        )
+
+    @mock.patch('pod_manager.services.transcription.apply_speaker_labels')
+    def test_speaker_rollback_not_blocked_by_newer_approved(self, mock_apply):
+        """Speaker edits replay order-correct, so the newer-approved blocker that
+        applies to metadata edits must NOT apply to them (§3.4)."""
+        base = timezone.now()
+        older = self._speaker_edit({'SPEAKER_00': 'Jim'}, resolved_at=base)
+        self._speaker_edit({'SPEAKER_01': 'A.Ron'},
+                           resolved_at=base + timedelta(seconds=30))
+
+        self._post({'action': 'rollback_single_edit', 'edit_id': older.id})
+
+        older.refresh_from_db()
+        self.assertEqual(older.status, 'rolled_back')
+        mock_apply.assert_called_once_with(self.episode.id)
+
+    @mock.patch('pod_manager.services.transcription.apply_speaker_labels')
+    def test_bulk_rollback_replays_speaker_episode_once(self, mock_apply):
+        """Many speaker edits on one episode → one replay after all are flipped."""
+        self._speaker_edit({'SPEAKER_00': 'Jim'})
+        self._speaker_edit({'SPEAKER_01': 'A.Ron'})
+
+        self._post({'action': 'bulk_rollback', 'spammer_id': self.spammer.id})
+
+        self.assertEqual(
+            EpisodeEditSuggestion.objects.filter(
+                user=self.spammer, status=EpisodeEditSuggestion.Status.ROLLED_BACK
+            ).count(), 2)
+        mock_apply.assert_called_once_with(self.episode.id)
+
 
 # ---------------------------------------------------------------------------
 # Creator settings: network and show management
@@ -2593,12 +2631,24 @@ class ApplySpeakerLabelsTests(TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp()
         _, _, self.ep = _make_fixture()
+        self.user = User.objects.create_user(username=f'labeller-{self.ep.id}')
         self.transcript = Transcript.objects.create(
             episode=self.ep, status=Transcript.Status.COMPLETED,
         )
 
     def tearDown(self):
         shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _approve(self, mappings, *, resolved_at=None):
+        """Create an APPROVED speaker edit — one delta in the replay chain. Replay
+        folds these (no mappings argument), so a test sets state by approving edits."""
+        return EpisodeEditSuggestion.objects.create(
+            episode=self.ep, user=self.user,
+            suggested_data={'speaker_mappings': mappings},
+            original_data={'speaker_mappings': {}},
+            status=EpisodeEditSuggestion.Status.APPROVED,
+            resolved_at=resolved_at or timezone.now(),
+        )
 
     def _write_files(self, segments):
         """Write a .words file (plus stub files for other formats) into tmp."""
@@ -2623,44 +2673,145 @@ class ApplySpeakerLabelsTests(TestCase):
         self.transcript.save()
 
     def test_speaker_label_applied_in_vtt(self):
-        segs = [{'start': 0, 'end': 1, 'text': 'Hi', 'speaker': 'SPEAKER_00', 'words': []}]
+        segs = [{'start': 0, 'end': 1, 'text': 'Hi', 'speaker_id': 'SPEAKER_00',
+                 'speaker': 'SPEAKER_00', 'words': []}]
         self._write_files(segs)
+        self._approve({'SPEAKER_00': 'Jim'})
         with override_settings(MEDIA_ROOT=self.tmp):
-            apply_speaker_labels(self.ep.id, {'SPEAKER_00': 'Jim'})
+            apply_speaker_labels(self.ep.id)
             vtt = transcript_path(self.ep.id, 'vtt').read_bytes().decode('utf-8')
         self.assertIn('Jim', vtt)
         self.assertNotIn('SPEAKER_00', vtt)
 
     def test_words_json_updated_with_mapping_record(self):
-        segs = [{'start': 0, 'end': 1, 'text': 'Hi', 'speaker': 'SPEAKER_00', 'words': []}]
+        segs = [{'start': 0, 'end': 1, 'text': 'Hi', 'speaker_id': 'SPEAKER_00',
+                 'speaker': 'SPEAKER_00', 'words': []}]
         self._write_files(segs)
+        self._approve({'SPEAKER_00': 'Jim'})
         with override_settings(MEDIA_ROOT=self.tmp):
-            apply_speaker_labels(self.ep.id, {'SPEAKER_00': 'Jim'})
+            apply_speaker_labels(self.ep.id)
             doc = json.loads(transcript_path(self.ep.id, 'words').read_bytes().decode('utf-8'))
         self.assertEqual(doc['speaker_mappings'], {'SPEAKER_00': 'Jim'})
         self.assertEqual(doc['segments'][0]['speaker'], 'Jim')
+        # speaker_id is the immutable base — never rewritten by replay.
+        self.assertEqual(doc['segments'][0]['speaker_id'], 'SPEAKER_00')
 
     def test_unmapped_speaker_preserved_unchanged(self):
         segs = [
-            {'start': 0, 'end': 1, 'text': 'Hi',    'speaker': 'SPEAKER_00', 'words': []},
-            {'start': 1, 'end': 2, 'text': 'There',  'speaker': 'SPEAKER_01', 'words': []},
+            {'start': 0, 'end': 1, 'text': 'Hi',    'speaker_id': 'SPEAKER_00', 'speaker': 'SPEAKER_00', 'words': []},
+            {'start': 1, 'end': 2, 'text': 'There',  'speaker_id': 'SPEAKER_01', 'speaker': 'SPEAKER_01', 'words': []},
         ]
         self._write_files(segs)
+        self._approve({'SPEAKER_00': 'Jim'})
         with override_settings(MEDIA_ROOT=self.tmp):
-            apply_speaker_labels(self.ep.id, {'SPEAKER_00': 'Jim'})
+            apply_speaker_labels(self.ep.id)
             doc = json.loads(transcript_path(self.ep.id, 'words').read_bytes().decode('utf-8'))
         self.assertEqual(doc['segments'][1]['speaker'], 'SPEAKER_01')
 
+    def test_chain_is_last_writer_wins_by_resolved_at(self):
+        """A later approved edit overrides an earlier one per speaker_id (§3.2)."""
+        from datetime import timedelta
+        segs = [{'start': 0, 'end': 1, 'text': 'Hi', 'speaker_id': 'SPEAKER_00',
+                 'speaker': 'SPEAKER_00', 'words': []}]
+        self._write_files(segs)
+        t0 = timezone.now()
+        self._approve({'SPEAKER_00': 'Jim'}, resolved_at=t0)
+        self._approve({'SPEAKER_00': 'A.Ron'}, resolved_at=t0 + timedelta(minutes=1))
+        with override_settings(MEDIA_ROOT=self.tmp):
+            apply_speaker_labels(self.ep.id)
+            doc = json.loads(transcript_path(self.ep.id, 'words').read_bytes().decode('utf-8'))
+        self.assertEqual(doc['segments'][0]['speaker'], 'A.Ron')
+
+    def test_rolled_back_edit_excluded_from_replay(self):
+        """Removing an edit (ROLLED_BACK) and replaying restores the prior name —
+        the griefing-recovery / rollback guarantee (§3.4)."""
+        segs = [{'start': 0, 'end': 1, 'text': 'Hi', 'speaker_id': 'SPEAKER_00',
+                 'speaker': 'SPEAKER_00', 'words': []}]
+        self._write_files(segs)
+        edit = self._approve({'SPEAKER_00': 'Jim'})
+        edit.status = EpisodeEditSuggestion.Status.ROLLED_BACK
+        edit.save()
+        with override_settings(MEDIA_ROOT=self.tmp):
+            apply_speaker_labels(self.ep.id)
+            doc = json.loads(transcript_path(self.ep.id, 'words').read_bytes().decode('utf-8'))
+        # Empty chain → name falls back to the immutable speaker_id base.
+        self.assertEqual(doc['segments'][0]['speaker'], 'SPEAKER_00')
+
+    def test_no_speaker_id_falls_back_to_speaker(self):
+        """Pre-backfill .words (no speaker_id) still labels via the speaker fallback."""
+        segs = [{'start': 0, 'end': 1, 'text': 'Hi', 'speaker': 'SPEAKER_00', 'words': []}]
+        self._write_files(segs)
+        self._approve({'SPEAKER_00': 'Jim'})
+        with override_settings(MEDIA_ROOT=self.tmp):
+            apply_speaker_labels(self.ep.id)
+            doc = json.loads(transcript_path(self.ep.id, 'words').read_bytes().decode('utf-8'))
+        self.assertEqual(doc['segments'][0]['speaker'], 'Jim')
+
     def test_missing_words_file_returns_gracefully(self):
         # No files written — should not raise
+        self._approve({'SPEAKER_00': 'Jim'})
         with override_settings(MEDIA_ROOT=self.tmp):
-            apply_speaker_labels(self.ep.id, {'SPEAKER_00': 'Jim'})
+            apply_speaker_labels(self.ep.id)
 
     def test_non_completed_transcript_returns_gracefully(self):
         self.transcript.status = Transcript.Status.PENDING
         self.transcript.save()
         with override_settings(MEDIA_ROOT=self.tmp):
-            apply_speaker_labels(self.ep.id, {'SPEAKER_00': 'Jim'})
+            apply_speaker_labels(self.ep.id)
+
+
+# ── 8b. supersede_speaker_edits() (re-transcription, §7) ─────────────────────
+
+@override_settings(**TRANSCRIPTION_SETTINGS)
+class SupersedeSpeakerEditsTests(TestCase):
+
+    def setUp(self):
+        _, _, self.ep = _make_fixture()
+        self.user = User.objects.create_user(username=f'sup-{self.ep.id}')
+        Transcript.objects.create(episode=self.ep, status=Transcript.Status.COMPLETED)
+
+    def _edit(self, status, data):
+        return EpisodeEditSuggestion.objects.create(
+            episode=self.ep, user=self.user, status=status,
+            suggested_data=data, original_data={},
+            resolved_at=timezone.now() if status != EpisodeEditSuggestion.Status.PENDING else None,
+        )
+
+    def test_supersedes_approved_and_pending_speaker_edits(self):
+        from pod_manager.services.transcription import supersede_speaker_edits
+        S = EpisodeEditSuggestion.Status
+        approved = self._edit(S.APPROVED, {'speaker_mappings': {'SPEAKER_00': 'Jim'}})
+        pending = self._edit(S.PENDING, {'speaker_mappings': {'SPEAKER_01': 'A.Ron'}})
+
+        n = supersede_speaker_edits(self.ep.id)
+
+        self.assertEqual(n, 2)
+        approved.refresh_from_db(); pending.refresh_from_db()
+        self.assertEqual(approved.status, S.SUPERSEDED)
+        self.assertEqual(pending.status, S.SUPERSEDED)
+
+    def test_leaves_metadata_and_rolled_back_edits_alone(self):
+        from pod_manager.services.transcription import supersede_speaker_edits
+        S = EpisodeEditSuggestion.Status
+        meta = self._edit(S.APPROVED, {'title': 'New'})
+        rolled = self._edit(S.ROLLED_BACK, {'speaker_mappings': {'SPEAKER_00': 'Jim'}})
+
+        n = supersede_speaker_edits(self.ep.id)
+
+        self.assertEqual(n, 0)
+        meta.refresh_from_db(); rolled.refresh_from_db()
+        self.assertEqual(meta.status, S.APPROVED)
+        self.assertEqual(rolled.status, S.ROLLED_BACK)
+
+    def test_superseded_edits_excluded_from_replay_fold(self):
+        from pod_manager.services.transcription import (
+            fold_speaker_mappings, supersede_speaker_edits,
+        )
+        self._edit(EpisodeEditSuggestion.Status.APPROVED,
+                   {'speaker_mappings': {'SPEAKER_00': 'Jim'}})
+        self.assertEqual(fold_speaker_mappings(self.ep.id), {'SPEAKER_00': 'Jim'})
+        supersede_speaker_edits(self.ep.id)
+        self.assertEqual(fold_speaker_mappings(self.ep.id), {})
 
 
 # ── 9. serve_transcript view ─────────────────────────────────────────────────
@@ -2966,7 +3117,9 @@ class ApplyApprovedEditSpeakerMappingsTests(TestCase):
     def test_calls_apply_speaker_labels(self, mock_apply):
         mappings = {'SPEAKER_00': 'Jim', 'SPEAKER_01': 'A.Ron'}
         apply_approved_edit(self.ep, {'speaker_mappings': mappings})
-        mock_apply.assert_called_once_with(self.ep.id, mappings)
+        # Replay is recompute-from-base: no mappings argument — the chain is folded
+        # from the episode's APPROVED edits inside apply_speaker_labels itself.
+        mock_apply.assert_called_once_with(self.ep.id)
 
     @mock.patch('pod_manager.services.transcription.apply_speaker_labels')
     def test_speaker_only_edit_does_not_set_metadata_locked(self, _):

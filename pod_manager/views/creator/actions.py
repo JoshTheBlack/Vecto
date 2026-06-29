@@ -162,23 +162,17 @@ def _handle_approve_edit(request, current_network):
             logger.warning(f"Failed to parse cross-publish ids from inbox for edit #{edit_id}: {e}")
 
     # --- SPEAKER LABEL APPROVAL ---
-    # Speaker label edits carry suggested_data = {"speaker_mappings": {...}}
-    # and bypass the normal field-approval flow — the whole mapping is applied atomically.
+    # Speaker label edits carry suggested_data = {"speaker_mappings": {...}} and
+    # bypass the normal field-approval flow. Replay recomputes the whole transcript
+    # from the speaker_id base + the approved chain, so it must run AFTER this edit
+    # is flipped to APPROVED below — here we only score it and defer the apply.
     speaker_mappings = edit.suggested_data.get('speaker_mappings')
-    if speaker_mappings and isinstance(speaker_mappings, dict) and request.POST.get('approve_speaker_labels') == 'on':
-        try:
-            from pod_manager.services.transcription import apply_speaker_labels
-            apply_speaker_labels(ep.id, speaker_mappings)
-            # Bust the RSS fragment cache so the updated transcript is picked up
-            network = ep.podcast.network
-            if network.custom_domain:
-                _base = f"https://{network.custom_domain}".rstrip('/')
-            else:
-                _base = getattr(settings, 'SITE_URL', 'http://localhost:8000').rstrip('/')
-            task_rebuild_episode_fragments.delay(ep.id, _base)
-            points += 1
-        except Exception as e:
-            logger.error("Speaker label approval failed for episode %d: %s", ep.id, e)
+    apply_speaker = bool(
+        speaker_mappings and isinstance(speaker_mappings, dict)
+        and request.POST.get('approve_speaker_labels') == 'on'
+    )
+    if apply_speaker:
+        points += 1
 
     # --- THE ZERO-APPROVAL TRAP ---
     if points == 0:
@@ -209,6 +203,15 @@ def _handle_approve_edit(request, current_network):
     edit.resolved_at = timezone.now()
     edit.save()
 
+    # Now that the row is APPROVED, replay the chain so this edit's mapping folds
+    # into the materialised transcript (the final fragment rebuild below picks it up).
+    if apply_speaker:
+        try:
+            from pod_manager.services.transcription import apply_speaker_labels
+            apply_speaker_labels(ep.id)
+        except Exception as e:
+            logger.error("Speaker label approval failed for episode %d: %s", ep.id, e)
+
     membership.trust_score += points
     if edit.is_first_responder:
         membership.first_responder_count += 1
@@ -238,44 +241,59 @@ def _handle_rollback_single_edit(request, current_network):
     edit = get_object_or_404(EpisodeEditSuggestion, id=request.POST.get('edit_id'), episode__podcast__network=current_network, status=EpisodeEditSuggestion.Status.APPROVED)
     membership, _ = NetworkMembership.objects.get_or_create(user=edit.user, network=current_network)
 
-    # Block when newer approved edits exist on the same episode.
-    newer_approved = EpisodeEditSuggestion.objects.filter(
-        episode=edit.episode,
-        status=EpisodeEditSuggestion.Status.APPROVED,
-        resolved_at__gt=edit.resolved_at,
-    ).select_related('user').order_by('resolved_at')
+    is_speaker = 'speaker_mappings' in (edit.suggested_data or {})
 
-    if newer_approved.exists():
-        blockers = ", ".join(
-            f"#{e.id} by {e.user.username}" for e in newer_approved[:5]
-        )
-        extra = "" if newer_approved.count() <= 5 else f" (and {newer_approved.count() - 5} more)"
-        messages.error(
-            request,
-            f"Cannot roll back edit #{edit.id}: later approved edits exist on this episode "
-            f"({blockers}{extra}). Roll those back first, or leave this edit in place."
-        )
-        return
+    # Block when newer approved edits exist on the same episode — but ONLY for
+    # snapshot-based metadata edits. Speaker edits replay from the immutable base
+    # over the remaining approved chain, so removing one is order-correct
+    # regardless of which edit it is (transcript_rollback.md §3.4); no blocker.
+    if not is_speaker:
+        newer_approved = EpisodeEditSuggestion.objects.filter(
+            episode=edit.episode,
+            status=EpisodeEditSuggestion.Status.APPROVED,
+            resolved_at__gt=edit.resolved_at,
+        ).select_related('user').order_by('resolved_at')
+
+        if newer_approved.exists():
+            blockers = ", ".join(
+                f"#{e.id} by {e.user.username}" for e in newer_approved[:5]
+            )
+            extra = "" if newer_approved.count() <= 5 else f" (and {newer_approved.count() - 5} more)"
+            messages.error(
+                request,
+                f"Cannot roll back edit #{edit.id}: later approved edits exist on this episode "
+                f"({blockers}{extra}). Roll those back first, or leave this edit in place."
+            )
+            return
 
     ep = edit.episode
-    ep.title = edit.original_data.get('title', ep.title)
-    ep.clean_description = edit.original_data.get('description', ep.clean_description)
-    ep.tags = edit.original_data.get('tags', ep.tags)
-    ep.chapters_public = edit.original_data.get('chapters', ep.chapters_public)
-    ep.save()
+    if is_speaker:
+        # Flip to ROLLED_BACK first, then replay — the fold now excludes this edit
+        # and rebuilds current state from the base + remaining approved chain.
+        edit.status = EpisodeEditSuggestion.Status.ROLLED_BACK
+        edit.resolved_at = timezone.now()
+        edit.save()
+        from pod_manager.services.transcription import apply_speaker_labels
+        apply_speaker_labels(ep.id)
+    else:
+        ep.title = edit.original_data.get('title', ep.title)
+        ep.clean_description = edit.original_data.get('description', ep.clean_description)
+        ep.tags = edit.original_data.get('tags', ep.tags)
+        ep.chapters_public = edit.original_data.get('chapters', ep.chapters_public)
+        ep.save()
 
-    # Key-presence guard: pre-feature edits have no cross-publish snapshot and
-    # must not wipe the episode's current links.
-    if 'cross_publish_podcast_ids' in (edit.original_data or {}):
-        restore_ids = edit.original_data.get('cross_publish_podcast_ids') or []
-        sync_cross_publications(ep, validate_cross_targets(ep, restore_ids, current_network))
+        # Key-presence guard: pre-feature edits have no cross-publish snapshot and
+        # must not wipe the episode's current links.
+        if 'cross_publish_podcast_ids' in (edit.original_data or {}):
+            restore_ids = edit.original_data.get('cross_publish_podcast_ids') or []
+            sync_cross_publications(ep, validate_cross_targets(ep, restore_ids, current_network))
+
+        edit.status = EpisodeEditSuggestion.Status.ROLLED_BACK
+        edit.resolved_at = timezone.now()
+        edit.save()
 
     base_url = request.build_absolute_uri('/')[:-1]
     task_rebuild_episode_fragments.delay(ep.id, base_url)
-
-    edit.status = EpisodeEditSuggestion.Status.ROLLED_BACK
-    edit.resolved_at = timezone.now()
-    edit.save()
 
     membership.trust_score = max(0, membership.trust_score - 5)
     if edit.suggested_data.get('title') != edit.original_data.get('title'): membership.edits_title = max(0, membership.edits_title - 1)
@@ -302,8 +320,20 @@ def _handle_bulk_rollback(request, current_network):
     base_url = request.build_absolute_uri('/')[:-1]
 
     count = 0
+    speaker_episode_ids = set()
     for edit in approved_edits:
         ep = edit.episode
+        if 'speaker_mappings' in (edit.suggested_data or {}):
+            # Speaker edits: just flip the status — the actual recompute is a single
+            # replay per affected episode after the loop (deltas don't restore
+            # field-by-field; replay rebuilds from the base + remaining chain).
+            edit.status = EpisodeEditSuggestion.Status.ROLLED_BACK
+            edit.resolved_at = timezone.now()
+            edit.save()
+            speaker_episode_ids.add(ep.id)
+            count += 1
+            continue
+
         ep.title = edit.original_data.get('title', ep.title)
         ep.clean_description = edit.original_data.get('description', ep.clean_description)
         ep.tags = edit.original_data.get('tags', ep.tags)
@@ -320,6 +350,14 @@ def _handle_bulk_rollback(request, current_network):
         edit.resolved_at = timezone.now()
         edit.save()
         count += 1
+
+    # Replay once per affected episode now that all of this user's speaker edits
+    # are ROLLED_BACK (deduped — a griefer may have many edits on one episode).
+    if speaker_episode_ids:
+        from pod_manager.services.transcription import apply_speaker_labels
+        for ep_id in speaker_episode_ids:
+            apply_speaker_labels(ep_id)
+            task_rebuild_episode_fragments.delay(ep_id, base_url)
 
     # Nuke their stats for this network
     membership.trust_score = 0

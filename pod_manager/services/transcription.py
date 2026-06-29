@@ -1084,6 +1084,19 @@ def run_transcription(
             episode_id, len(segments), detected_language,
         )
 
+        # Re-transcription renumbers diarization, so any prior speaker-edit chain
+        # no longer aligns with this fresh base — supersede it (§7). The names are
+        # already reset to raw labels by the formats just written above; this only
+        # stops the old mappings from being re-applied by a future replay. No-op
+        # for a brand-new transcript (no prior edits). Takes the per-episode
+        # Transcript lock so it can't interleave with a live approve/rollback.
+        superseded = supersede_speaker_edits(episode_id)
+        if superseded:
+            logger.info(
+                "transcribe: episode %d — superseded %d prior speaker edit(s)",
+                episode_id, superseded,
+            )
+
         # Bust the cached RSS fragment so the podcast:transcript tag appears immediately.
         network = episode.podcast.network
         if network.custom_domain:
@@ -1128,74 +1141,149 @@ def run_transcription(
 # Speaker label editing
 # ---------------------------------------------------------------------------
 
-def apply_speaker_labels(episode_id: int, speaker_mappings: dict) -> None:
-    """Apply speaker name mappings to all transcript formats for an episode.
+def fold_speaker_mappings(episode_id: int) -> dict:
+    """The cumulative speaker mapping = last-writer-wins fold over the episode's
+    APPROVED speaker edits, ordered by resolved_at (transcript_rollback.md §3.2).
 
-    Reads the stored .words JSON, replaces SPEAKER_XX labels in segment.speaker
-    and word.speaker fields (key lookup only — never touches transcript text),
-    then regenerates and overwrites VTT, SRT, HTML, JSON, and words files.
-
-    speaker_mappings: e.g. {"SPEAKER_00": "Jim", "SPEAKER_01": "A.Ron"}
+    Each EpisodeEditSuggestion with suggested_data['speaker_mappings'] is one
+    delta keyed on speaker_id; later edits overwrite earlier ones per key,
+    unmentioned keys keep their prior value. Only APPROVED rows count —
+    PENDING / REJECTED / ROLLED_BACK / SUPERSEDED are excluded, so removing an
+    edit (rollback) or re-transcribing (supersede) is just a re-fold.
     """
+    from pod_manager.models import EpisodeEditSuggestion
+
+    mapping: dict = {}
+    edits = (EpisodeEditSuggestion.objects
+             .filter(episode_id=episode_id, status=EpisodeEditSuggestion.Status.APPROVED)
+             .order_by('resolved_at', 'id'))
+    for edit in edits:
+        delta = (edit.suggested_data or {}).get('speaker_mappings')
+        if isinstance(delta, dict):
+            mapping.update(delta)
+    return mapping
+
+
+def apply_speaker_labels(episode_id: int) -> None:
+    """Recompute and re-materialise all transcript formats from the immutable
+    speaker_id base + the approved speaker-edit chain (transcript_rollback.md §3.3).
+
+    Replay, not in-place mutation: the current state is a pure function of the
+    pristine speaker_id (written once at transcription) folded with the APPROVED,
+    non-superseded speaker edits (fold_speaker_mappings). The same function serves
+    approve, rollback, and re-fold — callers only set edit statuses, then call this.
+
+    The whole read→render→write→version-bump runs inside a transaction holding
+    select_for_update() on the episode's Transcript row (per-episode lock, §3.3),
+    so two concurrent approvals — or an approval racing a re-transcription — block
+    rather than clobber each other's .words; other episodes still run in parallel.
+
+    ROBUSTNESS: until the §6 backfill stamps speaker_id onto the existing
+    catalogue, some .words have only the mutable `speaker`. We fall back to that
+    value as the id so live edits keep working (split == combined there until the
+    episode is backfilled or re-transcribed).
+    """
+    from django.db import transaction
     from pod_manager.models import Transcript
 
-    try:
-        transcript = Transcript.objects.get(episode_id=episode_id, status=Transcript.Status.COMPLETED)
-    except Transcript.DoesNotExist:
-        logger.error("apply_speaker_labels: no completed transcript for episode %d", episode_id)
-        return
+    with transaction.atomic():
+        try:
+            transcript = (Transcript.objects
+                          .select_for_update()
+                          .get(episode_id=episode_id, status=Transcript.Status.COMPLETED))
+        except Transcript.DoesNotExist:
+            logger.error("apply_speaker_labels: no completed transcript for episode %d", episode_id)
+            return
 
-    try:
-        words_bytes = read_transcript_bytes(episode_id, 'words', transcript.version)
-    except Exception as exc:
-        logger.error("apply_speaker_labels: .words unreadable for episode %d — %s", episode_id, exc)
-        return
+        try:
+            words_bytes = read_transcript_bytes(episode_id, 'words', transcript.version)
+        except Exception as exc:
+            logger.error("apply_speaker_labels: .words unreadable for episode %d — %s", episode_id, exc)
+            return
 
-    doc = json.loads(words_bytes.decode('utf-8'))
-    segments_raw = doc.get('segments', [])
+        doc = json.loads(words_bytes.decode('utf-8'))
+        segments_raw = doc.get('segments', [])
+        mapping = fold_speaker_mappings(episode_id)
 
-    # Rebuild segments in the internal format run_transcription uses, applying mappings
-    segments = []
-    for seg in segments_raw:
-        raw_speaker = seg.get('speaker', '')
-        new_speaker = speaker_mappings.get(raw_speaker, raw_speaker)
-        words = []
-        for w in seg.get('words', []):
-            raw_ws = w.get('speaker', '')
-            words.append({
-                'word':    w.get('word', ''),
-                'start':   w.get('startTime'),
-                'end':     w.get('endTime'),
-                'score':   w.get('score'),
-                'speaker': speaker_mappings.get(raw_ws, raw_ws) if raw_ws else None,
+        # Rebuild segments from the speaker_id base, resolving each id through the
+        # folded mapping. speaker_id is preserved verbatim (never rewritten); only
+        # the resolved `speaker` changes.
+        segments = []
+        for seg in segments_raw:
+            seg_id = seg.get('speaker_id') or seg.get('speaker')  # fallback pre-backfill
+            words = []
+            for w in seg.get('words', []):
+                w_id = w.get('speaker_id') or w.get('speaker')
+                words.append({
+                    'word':       w.get('word', ''),
+                    'start':      w.get('startTime'),
+                    'end':        w.get('endTime'),
+                    'score':      w.get('score'),
+                    'speaker_id': w_id,
+                    'speaker':    mapping.get(w_id, w_id) if w_id else None,
+                })
+            segments.append({
+                'start':      seg.get('startTime'),
+                'end':        seg.get('endTime'),
+                'text':       seg.get('body', ''),
+                'speaker_id': seg_id,
+                'speaker':    mapping.get(seg_id, seg_id) if seg_id else None,
+                'words':      words,
             })
-        segments.append({
-            'start':   seg.get('startTime'),
-            'end':     seg.get('endTime'),
-            'text':    seg.get('body', ''),
-            'speaker': new_speaker,
-            'words':   words,
-        })
 
-    # Preserve existing metadata header fields, update with new mappings note
-    metadata = {k: v for k, v in doc.items() if k not in ('segments', 'version')}
-    metadata['speaker_mappings'] = speaker_mappings
+        # Preserve the existing header (transcribed_at, model, language, recovery
+        # anchors) and refresh the cached resolved-mapping note.
+        metadata = {k: v for k, v in doc.items() if k not in ('segments', 'version')}
+        metadata['speaker_mappings'] = mapping
 
-    # Regenerate and overwrite all formats, then bump the version so the
-    # immutable cdn cache (and the page's client-side .words fetch) busts.
-    for ext, content in [
-        ('vtt',   _to_vtt(segments)),
-        ('json',  _to_podcast_index_json(segments)),
-        ('srt',   _to_srt(segments)),
-        ('html',  _to_html(segments)),
-        ('words', _to_words_json(segments, metadata=metadata)),
-    ]:
-        write_transcript_file(episode_id, ext, content)
+        # Idempotent write (§4): hash-check all five formats, PUT only those that
+        # changed, bump version only on real change — so a rollback to a prior
+        # state or a no-op re-fold costs no Class A writes and no cache bust.
+        written, changed = write_transcript_formats(episode_id, [
+            ('vtt',   _to_vtt(segments)),
+            ('json',  _to_podcast_index_json(segments)),
+            ('srt',   _to_srt(segments)),
+            ('html',  _to_html(segments)),
+            ('words', _to_words_json(segments, metadata=metadata)),
+        ])
 
-    transcript.version = (transcript.version or 0) + 1
-    transcript.save(update_fields=['version'])
+        if changed:
+            transcript.version = (transcript.version or 0) + 1
+            transcript.vtt_file        = written['vtt']
+            transcript.json_file       = written['json']
+            transcript.srt_file        = written['srt']
+            transcript.html_file       = written['html']
+            transcript.words_json_file = written['words']
+            transcript.save(update_fields=[
+                'version', 'vtt_file', 'json_file', 'srt_file', 'html_file', 'words_json_file',
+            ])
 
     logger.info(
-        "apply_speaker_labels: episode %d — updated %d mappings, regenerated all formats (v%d)",
-        episode_id, len(speaker_mappings), transcript.version,
+        "apply_speaker_labels: episode %d — replayed %d mapping(s), %d format(s) changed (v%d)",
+        episode_id, len(mapping), len(changed), transcript.version,
     )
+
+
+def supersede_speaker_edits(episode_id: int) -> int:
+    """On re-transcription the diarization is renumbered (SPEAKER_00 in v2 ≠ v1),
+    so the prior speaker-edit chain no longer aligns with the fresh base. Mark all
+    prior APPROVED / PENDING speaker edits SUPERSEDED — retained for audit & trust
+    history, excluded from the replay fold (transcript_rollback.md §7). Returns the
+    number of edits superseded (0 for a brand-new transcript with no prior edits).
+
+    Takes the same per-episode Transcript lock as apply_speaker_labels (§3.3) so a
+    re-transcription can't interleave with a live approve/rollback replay.
+    """
+    from django.db import transaction
+    from pod_manager.models import EpisodeEditSuggestion, Transcript
+
+    with transaction.atomic():
+        # Acquire the per-episode lock (no-op result if the row doesn't exist yet).
+        list(Transcript.objects.select_for_update().filter(episode_id=episode_id))
+        return (EpisodeEditSuggestion.objects
+                .filter(episode_id=episode_id,
+                        status__in=[EpisodeEditSuggestion.Status.APPROVED,
+                                    EpisodeEditSuggestion.Status.PENDING],
+                        suggested_data__has_key='speaker_mappings')
+                .update(status=EpisodeEditSuggestion.Status.SUPERSEDED,
+                        resolved_at=timezone.now()))

@@ -790,6 +790,10 @@ class EpisodeEditSuggestion(models.Model):
         APPROVED = 'approved', 'Approved'
         REJECTED = 'rejected', 'Rejected'
         ROLLED_BACK = 'rolled_back', 'Rolled Back'
+        # Re-transcription renumbers diarization, so prior speaker edits no longer
+        # align with the fresh base — they are SUPERSEDED: retained for audit /
+        # trust history but excluded from the replay fold (see transcript_rollback.md §7).
+        SUPERSEDED = 'superseded', 'Superseded'
 
     episode = models.ForeignKey(Episode, on_delete=models.CASCADE, related_name='edit_suggestions')
     user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='submitted_edits')

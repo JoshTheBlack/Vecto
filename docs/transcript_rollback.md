@@ -41,6 +41,81 @@ any deviations from the plan) and ticks the phase in §10. Read this before star
     fallback). Full suite (390 tests, incl. the new ones) green via
     `./.venv/Scripts/python.exe manage.py test`.
 
+- **Window 2 — Phases 3, 4 & 8 (§3.2–§3.4, §7).** Replay engine, speaker-aware
+  rollback, and re-transcription supersede. Phase 5 (trust counters / §8a),
+  Phase 6 (backfill) and Phase 7 (front-end / review surfaces) remain.
+  - **Phase 3 (§3.2–§3.3, replay engine)** — `apply_speaker_labels` lost its
+    `speaker_mappings` argument; it is now `apply_speaker_labels(episode_id)` and
+    **recomputes from base**: new `fold_speaker_mappings(episode_id)` folds the
+    episode's `APPROVED` speaker edits (last-writer-wins per `speaker_id`, ordered
+    `resolved_at, id`) and each segment/word resolves `speaker = mapping.get(speaker_id, speaker_id)`.
+    The pristine `speaker_id` is preserved verbatim (never rewritten); the rewritten
+    `.words` re-emits it. Renders all 5 formats and uses Phase 2's idempotent
+    `write_transcript_formats` (hash-check, version bump only on real change). The
+    whole read→render→write→bump runs inside `transaction.atomic()` +
+    `select_for_update()` on the `Transcript` row (per-episode lock, §3.3).
+    **Robustness:** `seg_id = seg.get('speaker_id') or seg.get('speaker')` (word-level
+    too) so pre-backfill `.words` with no `speaker_id` still label correctly.
+    `original_data.speaker_mappings` (submit-time audit before-state) and the
+    `.words` header's `speaker_mappings` cache are both still written.
+  - **Call sites converged to the no-arg form:** `edits.apply_approved_edit`
+    speaker branch; `actions._handle_approve_edit` (see deviation below);
+    `submit_speaker_labels`'s trusted path is unchanged in shape — it still creates
+    the row `APPROVED` *then* calls `apply_approved_edit`, so the fold already
+    includes the new edit.
+  - **`SUPERSEDED` status** added to `EpisodeEditSuggestion.Status`
+    (migration `0087_alter_episodeeditsuggestion_status`). It's a distinct status,
+    so the `status=APPROVED` fold/rollback filters exclude it automatically.
+  - **Phase 4 (§3.4, rollback handlers)** — single + bulk rollback in
+    [actions.py](../pod_manager/views/creator/actions.py) are now speaker-aware
+    (`'speaker_mappings' in edit.suggested_data`). **Single:** the
+    "newer approved edits exist" blocker is skipped for speaker edits (replay is
+    order-correct); flip to `ROLLED_BACK`, then `apply_speaker_labels(ep.id)`.
+    Metadata edits keep the blocker + the field-restore path verbatim. **Bulk:**
+    speaker edits are flipped in the loop and collected into a deduped set, then
+    replayed **once per affected episode** after the loop (metadata edits restore
+    in-loop as before). Trust accounting left **as-is** per the brief (flat `−5`
+    single, zeroing on bulk) — Phase 5 replaces it.
+  - **Phase 8 (§7, re-transcription)** — new `supersede_speaker_edits(episode_id)`
+    marks all prior `APPROVED`/`PENDING` speaker edits `SUPERSEDED` (via a
+    `suggested_data__has_key='speaker_mappings'` filter) under the same per-episode
+    `Transcript` `select_for_update` lock. `run_transcription` calls it right after
+    a transcript is marked `COMPLETED` — a no-op for brand-new transcripts (no prior
+    edits), and the freshly-written formats already carry raw labels, so superseding
+    only stops the stale chain from being re-applied by a future replay.
+  - **Deviations:**
+    1. **Approve-handler ordering.** The old speaker block applied labels *before*
+       the row was flipped to `APPROVED`; under recompute-from-base that would
+       exclude the very edit being approved. Reworked so the speaker block only
+       scores (`points += 1`) + sets an `apply_speaker` flag, and the actual
+       `apply_speaker_labels(ep.id)` runs **after** `edit.status = APPROVED` is
+       saved. Also dropped that block's own fragment-rebuild (it referenced an
+       **unimported `settings`** — a latent `NameError` on the non-custom-domain
+       path); the function's existing end-of-handler `task_rebuild_episode_fragments`
+       covers it.
+    2. **File markers on replay.** `apply_speaker_labels` now also writes the
+       `*_file` markers returned by `write_transcript_formats` (only when ≥1 format
+       changed), where the old version saved `version` alone. Markers are
+       deterministic from id+ext, so this is harmless and keeps the row consistent
+       with `run_transcription`.
+  - **Tests:** rewrote `ApplySpeakerLabelsTests` to drive state via `APPROVED`
+    edit rows + the no-arg call (last-writer-wins, rolled-back-excluded,
+    `speaker_id`-fallback, immutable-base assertions); updated the
+    `apply_approved_edit` mock to `assert_called_once_with(ep.id)`; added
+    `SupersedeSpeakerEditsTests` (supersedes approved+pending, leaves
+    metadata/rolled-back alone, excluded from fold) and speaker-rollback wiring
+    tests in `CreatorRollbackTests` (no newer-approved block; bulk replays once
+    per episode). Full suite **398 tests green** via
+    `./.venv/Scripts/python.exe manage.py test`.
+  - **For Window 3:** (a) Phase 5 will add `EpisodeEditSuggestion.points` +
+    `NetworkMembership.edits_speakers`/`edits_sequence` and rework the trust math
+    that is currently left flat in approve/rollback. (b) The submit endpoint still
+    keys mappings on whatever the client sends and does **not yet** validate keys
+    against known `speaker_id`s (§5.1/§9) — that's Phase 7. (c) `_to_words_json`
+    only emits `speaker_id` when truthy, so a degraded backfill that seeds it from
+    a name still round-trips. (d) Re-transcription's supersede runs unconditionally
+    on every completion; it's a cheap no-op when there's nothing to supersede.
+
 ## 1. Problem
 
 Speaker name matching (the **Speaker Labels** form on the episode page) currently
@@ -565,11 +640,11 @@ isn't legible. Adds:
    (`media_object_etag` helper.)~~ ✅ **Done (Window 1).**
 2. ~~**Idempotent R2 write** (§4) — hash-before-PUT in the format-write path;
    version bump only on change.~~ ✅ **Done (Window 1).**
-3. **Replay engine** — rewrite `apply_speaker_labels` to recompute from
+3. ~~**Replay engine** — rewrite `apply_speaker_labels` to recompute from
    `speaker_id` base + approved chain; wire approve & rollback to call it.
-   Add `SUPERSEDED` status + migration.
-4. **Rollback handlers** — speaker-aware single + bulk rollback; relax the
-   newer-approved blocker for speaker-only edits.
+   Add `SUPERSEDED` status + migration.~~ ✅ **Done (Window 2).**
+4. ~~**Rollback handlers** — speaker-aware single + bulk rollback; relax the
+   newer-approved blocker for speaker-only edits.~~ ✅ **Done (Window 2).**
 5. **Trust counters & edit-pipeline cleanup (§8a)** — add `edits_speakers` +
    `edits_sequence` and `EpisodeEditSuggestion.points` (one migration); wire the
    per-speaker `+1`/`−1` (newly-named) + `+1` correction award into
@@ -585,7 +660,7 @@ isn't legible. Adds:
    structured speaker diff (§8b): `speaker_changed` + per-speaker before→after in
    `_annotate_edit_changes` / `gather_inbox`, and render before→after in the inbox
    speaker block (audit log already shows "Previous:").
-8. **Re-transcription** — supersede prior speaker edits.
+8. ~~**Re-transcription** — supersede prior speaker edits.~~ ✅ **Done (Window 2).**
 9. **Docs** — fold the implemented behaviour back into
    [transcription.md](transcription.md) (correct the current "one-click
    reversal" claim) and remove the dead `original_data` speaker capture note.

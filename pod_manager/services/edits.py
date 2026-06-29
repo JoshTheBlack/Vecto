@@ -78,10 +78,14 @@ def snapshot_episode(ep) -> dict:
 
 def apply_approved_edit(ep, suggested_data, user=None):
     """Writes an auto-approved edit directly onto the episode and saves it."""
-    # Speaker label edits only touch transcript files, not Episode fields.
+    # Speaker label edits only touch transcript files, not Episode fields. Replay
+    # recomputes state from the speaker_id base + the approved chain, so the edit
+    # row must already be APPROVED before this runs (it is — submit_speaker_labels
+    # creates it APPROVED on the trusted path). The mappings dict is no longer
+    # passed: apply_speaker_labels folds the chain itself (transcript_rollback.md §3.3).
     if 'speaker_mappings' in suggested_data:
         from pod_manager.services.transcription import apply_speaker_labels
-        apply_speaker_labels(ep.id, suggested_data['speaker_mappings'])
+        apply_speaker_labels(ep.id)
         return
 
     ep.title = suggested_data.get('title', ep.title)

@@ -703,16 +703,9 @@
                             </div>
                         </div>
 
-                        {% if network_podcasts %}
-                        <div class="mb-4 pt-3 border-top border-secondary" id="editCrossPublish">
-                            <h5 class="text-light fw-bold mb-3">
-                                <i class="bi bi-broadcast text-warning me-1"></i> Feed Placement
-                                <small class="text-muted fw-normal">(other shows this episode should also appear in)</small>
-                            </h5>
-                            {% include 'pod_manager/snippets/show_multiselect.html' with field_name='cross_publish_ids_suggest' podcast_list=network_podcasts selected_ids=cross_target_ids placeholder='Only its parent feed' %}
-                            <div class="form-text text-muted">Untouched, this section is left out of your suggestion.</div>
-                        </div>
-                        {% endif %}
+                        {# Cross-publish (feed placement) is owner/admin only — see the
+                           Owner Controls block below. It was removed from the community
+                           suggestion form per transcript_rollback.md §8a. #}
 
                         <div class="d-grid gap-2 d-md-flex justify-content-md-end mt-5 pt-3 border-top border-secondary">
                             <button type="submit" class="btn btn-warning btn-lg"><i class="bi bi-send"></i> Submit Edit Suggestion</button>
@@ -1144,14 +1137,8 @@
                     episode_type: episodeTypeVal,
                 };
 
-                // Feed placement is suggested only when the archivist touched
-                // the section, so untouched edits don't claim the field.
-                const crossWrap = document.getElementById('editCrossPublish');
-                if (crossWrap && crossWrap.dataset.touched === '1') {
-                    finalPayload.cross_publish_podcast_ids = [...crossWrap.querySelectorAll(
-                        'input[name="cross_publish_ids_suggest"]:checked'
-                    )].map(c => parseInt(c.value, 10));
-                }
+                // Cross-publish is no longer community-suggestible (owner/admin only,
+                // transcript_rollback.md §8a) — the payload never carries it.
 
                 payloadInput.value = JSON.stringify(finalPayload);
             });
@@ -1656,13 +1643,6 @@
 
 <script>
 document.addEventListener('DOMContentLoaded', () => {
-    // Archivist desk: mark the feed-placement section as touched so the
-    // payload builder knows to include it.
-    const crossWrap = document.getElementById('editCrossPublish');
-    if (crossWrap) {
-        crossWrap.addEventListener('sms:change', () => { crossWrap.dataset.touched = '1'; });
-    }
-
     // Owner form: one access-mode select per chosen target podcast.
     const ownerForm = document.getElementById('ownerCrossPublishForm');
     if (ownerForm) {

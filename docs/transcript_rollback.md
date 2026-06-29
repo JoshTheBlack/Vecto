@@ -116,6 +116,76 @@ any deviations from the plan) and ticks the phase in §10. Read this before star
     a name still round-trips. (d) Re-transcription's supersede runs unconditionally
     on every completion; it's a cheap no-op when there's nothing to supersede.
 
+- **Window 3 — Phase 5 & §8a (trust counters + edit-pipeline cleanup).** Per-speaker
+  trust award, `edits_speakers`/`edits_sequence` counters, `EpisodeEditSuggestion.points`,
+  and the cross-publish lockdown. Phase 6 (backfill + retroactive `edits_speakers`
+  recompute) and Phase 7 (front-end / review surfaces) remain.
+  - **Migration `0088`** — one migration adds `EpisodeEditSuggestion.points`,
+    `NetworkMembership.edits_speakers`, and `NetworkMembership.edits_sequence`
+    (all `IntegerField(default=0)`).
+  - **Reusable helper (§3.4)** — new `speaker_edit_points(edit_mappings, prior_mapping)
+    -> (points, newly_named)` in [transcription.py](../pod_manager/services/transcription.py)
+    beside `fold_speaker_mappings`. `+1` per first-time naming (prior resolved value
+    == the raw `SPEAKER_XX`), `+1` flat for any correction (already-named id renamed).
+    The caller owns the fold ordering and passes the prior cumulative mapping, so the
+    Phase 6 backfill recompute reuses it unchanged.
+  - **Approve handler** ([actions.py](../pod_manager/views/creator/actions.py)) —
+    the speaker block now scores via the helper against `fold_speaker_mappings(ep.id)`
+    (the APPROVED chain *before* this still-PENDING edit) into a **separate**
+    `speaker_points`, kept out of the metadata perfect-sweep (`points == 3`) bonus.
+    The zero-approval trap now treats a speaker approval as a real action
+    (`points == 0 and not apply_speaker`) so a no-op rename isn't converted to a
+    penalising rejection. `total_points = points + speaker_points` is banked on
+    `edit.points`, added to `trust_score`, and `speaker_points` increments
+    `edits_speakers`. The flat `+1` for speaker approval is gone.
+  - **Trusted submit path** ([main.py](../pod_manager/views/creator/main.py)
+    `submit_speaker_labels`) — replaced the flat `+5` with the same helper, using the
+    `.words` header cache (`existing_mappings`) as the prior fold; banks `points`,
+    awards `trust_score` + `edits_speakers`.
+  - **Rollback** — single speaker rollback subtracts the **exact** `edit.points` from
+    both `trust_score` and `edits_speakers` (wash); metadata rollback keeps the `−5`
+    path and now also decrements `edits_sequence` by the count of approved
+    season/episode/type fields present in `suggested_data`. Bulk rollback zeroes
+    `edits_speakers` + `edits_sequence` alongside the other counters. Reject is the
+    unchanged `−2`; supersede touches no trust.
+  - **Sequence counter + field restore (§8a)** — the season/episode/type approve
+    blocks each `membership.edits_sequence += 1` when their field changes (grouped
+    "iTunes / Sequence Metadata"). Rollback now reverts **both** halves: a new
+    `_restore_sequence_fields(ep, original_data)` helper restores
+    `season_number / episode_number / episode_type` onto the episode (key-presence
+    guarded) in the single **and** bulk handlers, and `edits_sequence` is decremented
+    on the membership. To make the restore possible, `pre_approval_snapshot` (the
+    approve handler's `original_data`) now also captures those three fields — they
+    were previously dropped, so the pre-Phase-5 rollback left edited sequence values
+    baked into the episode.
+  - **Cross-publish lockdown (§8a, owner/admin only)** — removed the `editCrossPublish`
+    section + its touched-listener + payload key from the community suggestion form
+    in [episode_detail.html](../pod_manager/templates/pod_manager/episode_detail.html)
+    (owner `ownerCrossPublishForm` untouched); `submit_episode_edit` now **drops**
+    `cross_publish_podcast_ids` server-side unless `_require_owner` passes
+    (authoritative against crafted POSTs); `_require_owner`
+    ([publish.py](../pod_manager/views/creator/publish.py)) now also allows
+    `is_staff` (superuser already allowed). No contribution counter for cross-publish.
+    The in-flight `apply_approved_edit` / `snapshot_episode` / rollback cross-publish
+    handling is kept so already-submitted rows still resolve.
+  - **Profile** ([profile_content.html](../pod_manager/templates/pod_manager/profile_tabs/profile_content.html))
+    — added "Voices Named" (`edits_speakers`) and "Episodes Sequenced"
+    (`edits_sequence`) counter rows and a "Diarization Path" speaker skill-tree
+    (tiers 1/10/50/100/500) reusing the existing `skill-node` / `badge-icon-sm`
+    classes (radii come from the shared `--vecto-radius-*` tokens; nothing hardcoded).
+  - **Deviations:** none from the brief. `edits_speakers`/`edits_sequence` are awarded
+    only at approval (not retroactively) — the §6 backfill recompute will set
+    `edits_speakers` from the historical chain.
+  - **Tests:** added `SpeakerEditPointsTests` (helper math: naming / correction /
+    mixed / no-op / multi-correction), approve+rollback speaker-trust cases, a
+    sequence-counter approve case, a sequence rollback that asserts **both** the
+    restored episode field values and the decremented counter, and an end-to-end
+    approve→rollback round-trip of the sequence values — all in
+    `CreatorInboxActionTests` — plus a non-owner cross-publish-drop test in
+    `CrossPublishSuggestionTests` (existing two community-submission tests repointed
+    to an owner). Full suite **410 tests green** via
+    `./.venv/Scripts/python.exe manage.py test`.
+
 ## 1. Problem
 
 Speaker name matching (the **Speaker Labels** form on the episode page) currently
@@ -288,6 +358,12 @@ points  = newly_named + (1 if has_correction else 0)
 
 Record `points` on the `EpisodeEditSuggestion` at approval so rollback reverses the
 exact amount without recomputation.
+
+**Expose this as a reusable helper** — e.g. `speaker_edit_points(edit_mappings,
+prior_mapping) -> (points, newly_named)` — used by both the live approve handler
+**and** the §6 backfill recompute. It needs the `prior_mapping` (the cumulative
+fold *before* the edit) to tell a first-time naming from a correction, so callers
+pass it in.
 
 **Counter on `NetworkMembership`.** Add an `edits_speakers` IntegerField alongside
 the existing `edits_title / edits_chapters / edits_tags / edits_descriptions`
@@ -512,6 +588,24 @@ for each episode with a completed transcript:
 - **Idempotent / re-runnable.** Skips transcripts already at schema `1.1.0`, and
   re-parses `whisper_raw.txt` (not the live `.words`) so repeated runs are stable.
 
+### Retroactively credit `edits_speakers`
+
+The `edits_speakers` counter (added in Phase 5) starts at 0 for everyone, but
+historical speaker identifications predate it. As part of the conversion,
+**recompute** each `NetworkMembership.edits_speakers` from the historical chain:
+
+- For each network membership, replay that user's `APPROVED` (non-`SUPERSEDED`,
+  non-`ROLLED_BACK`) speaker edits **per episode, in `resolved_at` order**, folding
+  as you go, and sum each edit's `speaker_edit_points(...)` (§3.4 helper) against
+  the prior fold.
+- **Set** the counter to that sum (don't increment) so the pass is **idempotent**
+  and safe to re-run independently of the per-episode `1.1.0` skip.
+- **Scope: the counter only.** Trust score is **not** retroactively re-credited —
+  the historical flat `+5` per edit already banked at approval time stands;
+  re-crediting would double-count. (Confirm if you'd rather reconcile trust too.)
+- Gated behind `--apply` like the rest of the command; logs the per-membership
+  before → after.
+
 ## 7. Re-transcription
 
 A fresh diarization renumbers speakers (`SPEAKER_00` in v2 ≠ v1), so the old edit
@@ -563,6 +657,14 @@ Two outcomes: track the sequence edits; **lock cross-publish to owner/admin.**
   rollback. Profile row: e.g. "Episodes Sequenced". (Granularity adjustable —
   could be three counters; grouped recommended.) Skill-tree badges optional (the
   `edits_title` "Titles Scribed" stat is counter-only today, a fine precedent.)
+- **Rollback restores the field values, not just the counter.** Pre-existing
+  metadata rollback never restored `season_number / episode_number / episode_type`
+  (the approve handler's `pre_approval_snapshot` didn't even capture them), so a
+  rollback decremented the counter while leaving the edited values baked into the
+  episode. Phase 5 fixes this: the snapshot now captures the three fields and the
+  single + bulk rollback handlers restore them (key-presence guarded for
+  pre-feature edits) **and** decrement `edits_sequence`. Both the episode data and
+  the `NetworkMembership` stat are reverted on rollback.
 
 ### Lock down cross-publish (owner/admin only)
 
@@ -645,16 +747,20 @@ isn't legible. Adds:
    Add `SUPERSEDED` status + migration.~~ ✅ **Done (Window 2).**
 4. ~~**Rollback handlers** — speaker-aware single + bulk rollback; relax the
    newer-approved blocker for speaker-only edits.~~ ✅ **Done (Window 2).**
-5. **Trust counters & edit-pipeline cleanup (§8a)** — add `edits_speakers` +
+5. ~~**Trust counters & edit-pipeline cleanup (§8a)** — add `edits_speakers` +
    `edits_sequence` and `EpisodeEditSuggestion.points` (one migration); wire the
    per-speaker `+1`/`−1` (newly-named) + `+1` correction award into
    approve/rollback, and the sequence counter into the existing per-section blocks;
    add counter rows ("Voices Named", "Episodes Sequenced") + speaker skill-tree on
-   the profile. **Lock cross-publish to owner/admin** — remove it from the
-   community suggestion form/payload, server-side gate it in `submit_episode_edit`,
-   and allow `is_staff` in the owner action.
+   the profile. **Factor the per-edit speaker-points calc into a reusable helper**
+   (§3.4) — the Phase 6 backfill recompute reuses it. **Lock cross-publish to
+   owner/admin** — remove it from the community suggestion form/payload, server-side
+   gate it in `submit_episode_edit`, and allow `is_staff` in the owner action.~~
+   ✅ **Done (Window 3).**
 6. **Backfill command** (§6) — mixed local/R2 reconstruction with fallback;
-   `1.1.0` skip; name-change logging; preview/`--apply`.
+   `1.1.0` skip; name-change logging; preview/`--apply`. Plus a **retroactive
+   `edits_speakers` recompute** from the historical approved chain (idempotent
+   set, using the Phase 5 helper).
 7. **Front-end & review surfaces** — form carries `speaker_id` / displays name;
    combined↔split toggle for form boxes + transcript grouping + colour key. Add the
    structured speaker diff (§8b): `speaker_changed` + per-speaker before→after in

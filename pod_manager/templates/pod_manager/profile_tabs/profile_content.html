@@ -37,6 +37,16 @@
         </div>
 
         <div class="d-flex justify-content-between align-items-center mb-3 pb-2 border-bottom" style="border-color: rgba(0,0,0,0.1) !important;">
+            <span><i class="bi bi-mic me-2 text-surface-muted"></i> Voices Named</span>
+            <span class="badge border fs-6" style="background-color: rgba(0,0,0,0.2); border-color: var(--bs-border-color) !important;">{{ profile.edits_speakers }}</span>
+        </div>
+
+        <div class="d-flex justify-content-between align-items-center mb-3 pb-2 border-bottom" style="border-color: rgba(0,0,0,0.1) !important;">
+            <span><i class="bi bi-list-ol me-2 text-surface-muted"></i> Episodes Sequenced</span>
+            <span class="badge border fs-6" style="background-color: rgba(0,0,0,0.2); border-color: var(--bs-border-color) !important;">{{ profile.edits_sequence }}</span>
+        </div>
+
+        <div class="d-flex justify-content-between align-items-center mb-3 pb-2 border-bottom" style="border-color: rgba(0,0,0,0.1) !important;">
             <span><i class="bi bi-lightning-charge me-2 text-surface-muted"></i> First Responder</span>
             <span class="badge border fs-6" style="background-color: rgba(0,0,0,0.2); border-color: var(--bs-border-color) !important;">{{ profile.first_responder_count }}</span>
         </div>
@@ -174,6 +184,33 @@
             <div class="skill-node">
                 <div class="badge-icon-sm {% if profile.edits_descriptions >= 500 %}unlocked{% endif %}"><i class="bi bi-book-fill"></i></div>
                 <div class="badge-title">Historian</div><div class="badge-req">500 Descs</div>
+            </div>
+        </div>
+    </div>
+
+    <div class="skill-tree-section">
+        <div class="skill-tree-title">Diarization Path</div>
+        <div class="skill-tree-path">
+            <div class="skill-tree-line"></div>
+            <div class="skill-node">
+                <div class="badge-icon-sm {% if profile.edits_speakers >= 1 %}unlocked{% endif %}"><i class="bi bi-mic"></i></div>
+                <div class="badge-title">Namer</div><div class="badge-req">1 Voice</div>
+            </div>
+            <div class="skill-node">
+                <div class="badge-icon-sm {% if profile.edits_speakers >= 10 %}unlocked{% endif %}"><i class="bi bi-mic-fill"></i></div>
+                <div class="badge-title">Identifier</div><div class="badge-req">10 Voices</div>
+            </div>
+            <div class="skill-node">
+                <div class="badge-icon-sm {% if profile.edits_speakers >= 50 %}unlocked{% endif %}"><i class="bi bi-soundwave"></i></div>
+                <div class="badge-title">Voice Caster</div><div class="badge-req">50 Voices</div>
+            </div>
+            <div class="skill-node">
+                <div class="badge-icon-sm {% if profile.edits_speakers >= 100 %}unlocked{% endif %}"><i class="bi bi-people"></i></div>
+                <div class="badge-title">Caller of Names</div><div class="badge-req">100 Voices</div>
+            </div>
+            <div class="skill-node">
+                <div class="badge-icon-sm {% if profile.edits_speakers >= 500 %}unlocked{% endif %}"><i class="bi bi-people-fill"></i></div>
+                <div class="badge-title">Master of Voices</div><div class="badge-req">500 Voices</div>
             </div>
         </div>
     </div>

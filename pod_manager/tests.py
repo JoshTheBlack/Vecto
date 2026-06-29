@@ -1008,6 +1008,127 @@ class CreatorInboxActionTests(TestCase):
         self.membership.refresh_from_db()
         self.assertEqual(self.membership.trust_score, 3)  # -2
 
+    # --- Phase 5: speaker per-speaker award (§3.4) -------------------------------
+
+    @mock.patch('pod_manager.services.transcription.apply_speaker_labels')
+    def test_approve_speaker_awards_points_and_counter(self, mock_apply):
+        """Two first-time namings → +2 trust, +2 edits_speakers, points banked."""
+        edit = EpisodeEditSuggestion.objects.create(
+            episode=self.episode, user=self.submitter,
+            status=EpisodeEditSuggestion.Status.PENDING,
+            original_data={'speaker_mappings': {}},
+            suggested_data={'speaker_mappings': {'SPEAKER_00': 'Jim', 'SPEAKER_01': 'Aron'}},
+        )
+        self._post({'action': 'approve_edit', 'edit_id': edit.id,
+                    'approve_speaker_labels': 'on'})
+        edit.refresh_from_db()
+        self.assertEqual(edit.status, 'approved')
+        self.assertEqual(edit.points, 2)
+        self.membership.refresh_from_db()
+        self.assertEqual(self.membership.trust_score, 7)       # 5 + 2
+        self.assertEqual(self.membership.edits_speakers, 2)
+        mock_apply.assert_called_once_with(self.episode.id)
+
+    @mock.patch('pod_manager.services.transcription.apply_speaker_labels')
+    def test_speaker_rollback_washes_exact_points(self, mock_apply):
+        """Single rollback subtracts exactly the banked points from both
+        trust and edits_speakers (§3.4 wash)."""
+        edit = EpisodeEditSuggestion.objects.create(
+            episode=self.episode, user=self.submitter,
+            status=EpisodeEditSuggestion.Status.APPROVED,
+            original_data={'speaker_mappings': {}},
+            suggested_data={'speaker_mappings': {'SPEAKER_00': 'Jim', 'SPEAKER_01': 'Aron'}},
+            points=2, resolved_at=timezone.now(),
+        )
+        self.membership.trust_score = 7
+        self.membership.edits_speakers = 2
+        self.membership.save()
+        self._post({'action': 'rollback_single_edit', 'edit_id': edit.id})
+        edit.refresh_from_db()
+        self.assertEqual(edit.status, 'rolled_back')
+        self.membership.refresh_from_db()
+        self.assertEqual(self.membership.trust_score, 5)
+        self.assertEqual(self.membership.edits_speakers, 0)
+
+    # --- Phase 5 / §8a: sequence counter ----------------------------------------
+
+    def test_approve_sequence_fields_increment_counter(self):
+        edit = EpisodeEditSuggestion.objects.create(
+            episode=self.episode, user=self.submitter,
+            status=EpisodeEditSuggestion.Status.PENDING,
+            original_data={'title': self.episode.title,
+                           'description': self.episode.clean_description,
+                           'tags': [], 'chapters': []},
+            suggested_data={'season_number': 2, 'episode_number': 5},
+        )
+        self._post({'action': 'approve_edit', 'edit_id': edit.id,
+                    'approve_season_number': 'on', 'edited_season_number': '2',
+                    'approve_episode_number': 'on', 'edited_episode_number': '5'})
+        self.membership.refresh_from_db()
+        self.assertEqual(self.membership.edits_sequence, 2)
+        self.assertEqual(self.membership.trust_score, 7)  # 5 + 2
+
+    def test_rollback_sequence_restores_values_and_decrements_counter(self):
+        # Episode currently holds the approved (edited) sequence values.
+        self.episode.season_number = 2
+        self.episode.episode_number = 5
+        self.episode.episode_type = 'bonus'
+        self.episode.save()
+        edit = EpisodeEditSuggestion.objects.create(
+            episode=self.episode, user=self.submitter,
+            status=EpisodeEditSuggestion.Status.APPROVED,
+            original_data={'title': self.episode.title,
+                           'description': self.episode.clean_description,
+                           'tags': [], 'chapters': [],
+                           'season_number': 1, 'episode_number': 4,
+                           'episode_type': 'full'},
+            suggested_data={'title': self.episode.title,
+                            'season_number': 2, 'episode_number': 5,
+                            'episode_type': 'bonus'},
+            resolved_at=timezone.now(),
+        )
+        self.membership.edits_sequence = 3
+        self.membership.save()
+        self._post({'action': 'rollback_single_edit', 'edit_id': edit.id})
+        # Field values are restored to the pre-approval snapshot, not just the counter.
+        self.episode.refresh_from_db()
+        self.assertEqual(self.episode.season_number, 1)
+        self.assertEqual(self.episode.episode_number, 4)
+        self.assertEqual(self.episode.episode_type, 'full')
+        self.membership.refresh_from_db()
+        self.assertEqual(self.membership.edits_sequence, 0)
+
+    def test_approve_then_rollback_round_trips_sequence_values(self):
+        """End-to-end: approving sequence fields captures the pre-approval values,
+        so rollback restores them (here: back to 'no sequence metadata')."""
+        self.assertIsNone(self.episode.season_number)
+        edit = EpisodeEditSuggestion.objects.create(
+            episode=self.episode, user=self.submitter,
+            status=EpisodeEditSuggestion.Status.PENDING,
+            original_data={'title': self.episode.title,
+                           'description': self.episode.clean_description,
+                           'tags': [], 'chapters': []},
+            suggested_data={'season_number': 3, 'episode_number': 7,
+                            'episode_type': 'trailer'},
+        )
+        self._post({'action': 'approve_edit', 'edit_id': edit.id,
+                    'approve_season_number': 'on', 'edited_season_number': '3',
+                    'approve_episode_number': 'on', 'edited_episode_number': '7',
+                    'approve_episode_type': 'on', 'edited_episode_type': 'trailer'})
+        self.episode.refresh_from_db()
+        self.assertEqual(self.episode.season_number, 3)
+        self.assertEqual(self.episode.episode_type, 'trailer')
+        self.membership.refresh_from_db()
+        self.assertEqual(self.membership.edits_sequence, 3)
+
+        self._post({'action': 'rollback_single_edit', 'edit_id': edit.id})
+        self.episode.refresh_from_db()
+        self.assertIsNone(self.episode.season_number)
+        self.assertIsNone(self.episode.episode_number)
+        self.assertEqual(self.episode.episode_type, '')
+        self.membership.refresh_from_db()
+        self.assertEqual(self.membership.edits_sequence, 0)
+
 
 # ---------------------------------------------------------------------------
 # Creator settings: rollback handlers
@@ -2760,6 +2881,38 @@ class ApplySpeakerLabelsTests(TestCase):
             apply_speaker_labels(self.ep.id)
 
 
+# ── 8a. speaker_edit_points() helper (§3.4) ──────────────────────────────────
+
+class SpeakerEditPointsTests(SimpleTestCase):
+    """Per-speaker award math: +1 per first-time naming, +1 flat for a correction."""
+
+    def _points(self, edit_mappings, prior):
+        from pod_manager.services.transcription import speaker_edit_points
+        return speaker_edit_points(edit_mappings, prior)
+
+    def test_first_time_naming_scores_one_each(self):
+        self.assertEqual(self._points({'SPEAKER_00': 'Jim', 'SPEAKER_01': 'Aron'}, {}), (2, 2))
+
+    def test_two_ids_to_one_name_first_time_scores_two(self):
+        self.assertEqual(self._points({'SPEAKER_00': 'Aron', 'SPEAKER_03': 'Aron'}, {}), (2, 2))
+
+    def test_correction_scores_one_flat(self):
+        # Already named Aron → renamed Jim: correction, no new naming.
+        self.assertEqual(self._points({'SPEAKER_00': 'Jim'}, {'SPEAKER_00': 'Aron'}), (1, 0))
+
+    def test_mixed_naming_and_correction(self):
+        prior = {'SPEAKER_00': 'Aron'}
+        # SPEAKER_01 newly named (+1), SPEAKER_00 corrected (+1 flat) → points 2, newly 1.
+        self.assertEqual(self._points({'SPEAKER_00': 'Jim', 'SPEAKER_01': 'Bob'}, prior), (2, 1))
+
+    def test_noop_rename_to_raw_label_scores_zero(self):
+        self.assertEqual(self._points({'SPEAKER_00': 'SPEAKER_00'}, {}), (0, 0))
+
+    def test_multiple_corrections_score_one_flat(self):
+        prior = {'SPEAKER_00': 'Aron', 'SPEAKER_01': 'Bob'}
+        self.assertEqual(self._points({'SPEAKER_00': 'Jim', 'SPEAKER_01': 'Ben'}, prior), (1, 0))
+
+
 # ── 8b. supersede_speaker_edits() (re-transcription, §7) ─────────────────────
 
 @override_settings(**TRANSCRIPTION_SETTINGS)
@@ -3583,10 +3736,12 @@ class CrossPublishSuggestionTests(TestCase):
         return views.creator_settings(req)
 
     def test_submission_strips_parent_and_foreign_network_ids(self):
+        # Cross-publish is owner/admin only (§8a); an owner keeps the key and the
+        # sanitizer still strips parent + foreign-network ids.
         self._submit({
             'title': 'Ep', 'description': '<p>x</p>', 'tags': [], 'chapters': [],
             'cross_publish_podcast_ids': [self.target.id, self.parent.id, self.foreign.id],
-        })
+        }, user=self.owner)
         suggestion = EpisodeEditSuggestion.objects.get(episode=self.episode)
         self.assertEqual(suggestion.suggested_data['cross_publish_podcast_ids'], [self.target.id])
         # Pending edit must not create links yet.
@@ -3598,9 +3753,22 @@ class CrossPublishSuggestionTests(TestCase):
         self._submit({
             'title': 'Ep', 'description': '<p>x</p>', 'tags': [], 'chapters': [],
             'cross_publish_podcast_ids': [self.target.id],
-        })
+        }, user=self.owner)
         link = EpisodeCrossPublication.objects.get(episode=self.episode, podcast=self.target)
-        self.assertEqual(link.added_by, self.submitter)
+        self.assertEqual(link.added_by, self.owner)
+
+    def test_non_owner_submission_drops_cross_publish(self):
+        """§8a lockdown: a non-owner POST carrying cross_publish_podcast_ids has the
+        key dropped server-side, even on the trusted auto-approve path."""
+        self.network.auto_approve_trust_threshold = 0
+        self.network.save()
+        self._submit({
+            'title': 'A Different Title', 'description': '<p>x</p>', 'tags': [], 'chapters': [],
+            'cross_publish_podcast_ids': [self.target.id],
+        })  # default user = self.submitter (not an owner)
+        suggestion = EpisodeEditSuggestion.objects.get(episode=self.episode)
+        self.assertNotIn('cross_publish_podcast_ids', suggestion.suggested_data)
+        self.assertFalse(self.episode.cross_publications.exists())
 
     def _pending_edit(self, suggested_ids, original_ids=None):
         return EpisodeEditSuggestion.objects.create(

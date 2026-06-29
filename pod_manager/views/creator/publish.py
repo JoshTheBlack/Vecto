@@ -33,7 +33,9 @@ def _get_owner_networks(user):
 
 
 def _require_owner(user, network):
-    if user.is_superuser:
+    # Admins (staff / superuser) manage cross-publish alongside owners
+    # (transcript_rollback.md §8a — cross-publish is owner/admin only).
+    if user.is_superuser or user.is_staff:
         return True
     return network.owners.filter(pk=user.pk).exists()
 

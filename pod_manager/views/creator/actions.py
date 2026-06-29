@@ -41,6 +41,19 @@ def _check_scalar_approval(request, approve_key, value_key, snapshot_val, ep_fie
     return 1
 
 
+def _restore_sequence_fields(ep, original_data):
+    """Restore season/episode/type onto the episode from a rollback snapshot
+    (transcript_rollback.md §8a). Key-presence guarded so pre-feature edits — whose
+    original_data predates the sequence snapshot — don't wipe the current values."""
+    original_data = original_data or {}
+    if 'season_number' in original_data:
+        ep.season_number = original_data.get('season_number')
+    if 'episode_number' in original_data:
+        ep.episode_number = original_data.get('episode_number')
+    if 'episode_type' in original_data:
+        ep.episode_type = original_data.get('episode_type')
+
+
 def _handle_approve_edit(request, current_network):
     edit_id = request.POST.get('edit_id')
     edit = get_object_or_404(EpisodeEditSuggestion, id=edit_id, episode__podcast__network=current_network)
@@ -57,6 +70,11 @@ def _handle_approve_edit(request, current_network):
         'description': ep.clean_description or '',
         'tags': list(ep.tags or []),
         'chapters': ep.chapters_public if ep.chapters_public is not None else [],
+        # Sequence fields captured so rollback restores the pre-approval values,
+        # not just the edits_sequence counter (transcript_rollback.md §8a).
+        'season_number': ep.season_number,
+        'episode_number': ep.episode_number,
+        'episode_type': ep.episode_type,
         'cross_publish_podcast_ids': sorted(ep.cross_publications.values_list('podcast_id', flat=True)),
     }
     # User's submission-time snapshot, used to compute deltas.
@@ -129,6 +147,7 @@ def _handle_approve_edit(request, current_network):
             ep.season_number = new_val
             edit.suggested_data['season_number'] = new_val
             points += 1
+            membership.edits_sequence += 1
 
     # 5. PROCESS EPISODE NUMBER
     if request.POST.get('approve_episode_number') == 'on':
@@ -138,6 +157,7 @@ def _handle_approve_edit(request, current_network):
             ep.episode_number = new_val
             edit.suggested_data['episode_number'] = new_val
             points += 1
+            membership.edits_sequence += 1
 
     # 6. PROCESS EPISODE TYPE
     if request.POST.get('approve_episode_type') == 'on':
@@ -146,6 +166,7 @@ def _handle_approve_edit(request, current_network):
             ep.episode_type = new_val
             edit.suggested_data['episode_type'] = new_val
             points += 1
+            membership.edits_sequence += 1
 
     # 7. PROCESS CROSS-PUBLISH TARGETS — full replacement of the link set.
     if request.POST.get('approve_cross_publish') == 'on':
@@ -171,11 +192,19 @@ def _handle_approve_edit(request, current_network):
         speaker_mappings and isinstance(speaker_mappings, dict)
         and request.POST.get('approve_speaker_labels') == 'on'
     )
+    # Per-speaker award (transcript_rollback.md §3.4): +1 per first-time naming,
+    # +1 flat for a correction. The prior fold is the APPROVED chain BEFORE this
+    # edit (still PENDING here, so fold_speaker_mappings excludes it).
+    speaker_points = 0
     if apply_speaker:
-        points += 1
+        from pod_manager.services.transcription import fold_speaker_mappings, speaker_edit_points
+        prior_mapping = fold_speaker_mappings(ep.id)
+        speaker_points, _newly_named = speaker_edit_points(speaker_mappings, prior_mapping)
 
     # --- THE ZERO-APPROVAL TRAP ---
-    if points == 0:
+    # A speaker approval is a real action even when it scores 0 points (e.g. a
+    # no-op re-name), so it must not be converted to a penalising rejection.
+    if points == 0 and not apply_speaker:
         edit.status = EpisodeEditSuggestion.Status.REJECTED
         edit.resolved_at = timezone.now()
         edit.save()
@@ -184,9 +213,12 @@ def _handle_approve_edit(request, current_network):
         messages.warning(request, "No sections selected for approval. Edit converted to rejection. User penalized -2 Trust.")
         return
 
-    # --- PERFECT SWEEP BONUS ---
+    # --- PERFECT SWEEP BONUS (metadata sections only) ---
     if points == 3:
         points += 2
+
+    # Speaker points are tracked separately so they never trip the metadata sweep.
+    total_points = points + speaker_points
 
     # Speaker-only edits don't touch Episode model fields — skip lock + save
     is_speaker_only = set(edit.suggested_data.keys()) == {'speaker_mappings'}
@@ -199,6 +231,8 @@ def _handle_approve_edit(request, current_network):
     # For speaker-only edits the original_data is already the prior mappings.
     if not is_speaker_only:
         edit.original_data = pre_approval_snapshot
+    # Bank the awarded delta so rollback reverses the exact amount (§3.4).
+    edit.points = total_points
     edit.status = EpisodeEditSuggestion.Status.APPROVED
     edit.resolved_at = timezone.now()
     edit.save()
@@ -212,13 +246,15 @@ def _handle_approve_edit(request, current_network):
         except Exception as e:
             logger.error("Speaker label approval failed for episode %d: %s", ep.id, e)
 
-    membership.trust_score += points
+    membership.trust_score += total_points
+    if speaker_points:
+        membership.edits_speakers += speaker_points
     if edit.is_first_responder:
         membership.first_responder_count += 1
     membership.save()
 
-    logger.info(f"Edit #{edit.id} approved for episode '{ep.title}' — user {edit.user.username} awarded +{points} trust")
-    messages.success(request, f"Partial edit approved! User awarded +{points} Trust Score.")
+    logger.info(f"Edit #{edit.id} approved for episode '{ep.title}' — user {edit.user.username} awarded +{total_points} trust")
+    messages.success(request, f"Partial edit approved! User awarded +{total_points} Trust Score.")
 
     base_url = request.build_absolute_uri('/')[:-1]
     task_rebuild_episode_fragments.delay(ep.id, base_url)
@@ -280,6 +316,9 @@ def _handle_rollback_single_edit(request, current_network):
         ep.clean_description = edit.original_data.get('description', ep.clean_description)
         ep.tags = edit.original_data.get('tags', ep.tags)
         ep.chapters_public = edit.original_data.get('chapters', ep.chapters_public)
+        # Restore sequence fields too (§8a). Key-presence guard: pre-feature edits
+        # captured no sequence snapshot and must keep the episode's current values.
+        _restore_sequence_fields(ep, edit.original_data)
         ep.save()
 
         # Key-presence guard: pre-feature edits have no cross-publish snapshot and
@@ -295,14 +334,26 @@ def _handle_rollback_single_edit(request, current_network):
     base_url = request.build_absolute_uri('/')[:-1]
     task_rebuild_episode_fragments.delay(ep.id, base_url)
 
-    membership.trust_score = max(0, membership.trust_score - 5)
-    if edit.suggested_data.get('title') != edit.original_data.get('title'): membership.edits_title = max(0, membership.edits_title - 1)
-    if edit.suggested_data.get('chapters') != edit.original_data.get('chapters'): membership.edits_chapters = max(0, membership.edits_chapters - len(edit.suggested_data.get('chapters', [])))
-    if edit.suggested_data.get('tags') != edit.original_data.get('tags'): membership.edits_tags = max(0, membership.edits_tags - 1)
-    if edit.suggested_data.get('description') != edit.original_data.get('description'): membership.edits_descriptions = max(0, membership.edits_descriptions - 1)
-    if edit.is_first_responder: membership.first_responder_count = max(0, membership.first_responder_count - 1)
-    membership.save()
-    logger.info(f"Edit #{edit.id} rolled back on episode '{ep.title}' — user {edit.user.username} penalized -5 trust")
+    if is_speaker:
+        # Exact wash: subtract the points banked at approval (§3.4).
+        pts = edit.points or 0
+        membership.trust_score = max(0, membership.trust_score - pts)
+        membership.edits_speakers = max(0, membership.edits_speakers - pts)
+        if edit.is_first_responder: membership.first_responder_count = max(0, membership.first_responder_count - 1)
+        membership.save()
+        logger.info(f"Speaker edit #{edit.id} rolled back on episode '{ep.title}' — user {edit.user.username} penalized -{pts} trust")
+    else:
+        membership.trust_score = max(0, membership.trust_score - 5)
+        if edit.suggested_data.get('title') != edit.original_data.get('title'): membership.edits_title = max(0, membership.edits_title - 1)
+        if edit.suggested_data.get('chapters') != edit.original_data.get('chapters'): membership.edits_chapters = max(0, membership.edits_chapters - len(edit.suggested_data.get('chapters', [])))
+        if edit.suggested_data.get('tags') != edit.original_data.get('tags'): membership.edits_tags = max(0, membership.edits_tags - 1)
+        if edit.suggested_data.get('description') != edit.original_data.get('description'): membership.edits_descriptions = max(0, membership.edits_descriptions - 1)
+        # One sequence point per approved season/episode/type field on this edit.
+        seq_fields = sum(1 for k in ('season_number', 'episode_number', 'episode_type') if k in edit.suggested_data)
+        if seq_fields: membership.edits_sequence = max(0, membership.edits_sequence - seq_fields)
+        if edit.is_first_responder: membership.first_responder_count = max(0, membership.first_responder_count - 1)
+        membership.save()
+        logger.info(f"Edit #{edit.id} rolled back on episode '{ep.title}' — user {edit.user.username} penalized -5 trust")
     messages.success(request, "Edit rolled back and user penalized.")
 
 
@@ -338,6 +389,7 @@ def _handle_bulk_rollback(request, current_network):
         ep.clean_description = edit.original_data.get('description', ep.clean_description)
         ep.tags = edit.original_data.get('tags', ep.tags)
         ep.chapters_public = edit.original_data.get('chapters', ep.chapters_public)
+        _restore_sequence_fields(ep, edit.original_data)
         ep.save()
 
         if 'cross_publish_podcast_ids' in (edit.original_data or {}):
@@ -364,6 +416,8 @@ def _handle_bulk_rollback(request, current_network):
     membership.edits_chapters = 0
     membership.edits_tags = 0
     membership.edits_descriptions = 0
+    membership.edits_speakers = 0
+    membership.edits_sequence = 0
     membership.first_responder_count = 0
     membership.save()
 

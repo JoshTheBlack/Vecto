@@ -1164,6 +1164,40 @@ def fold_speaker_mappings(episode_id: int) -> dict:
     return mapping
 
 
+def speaker_edit_points(edit_mappings: dict, prior_mapping: dict) -> tuple:
+    """Per-speaker contribution points for one approved speaker-label edit
+    (transcript_rollback.md §3.4). Returns ``(points, newly_named)``.
+
+    ``prior_mapping`` is the cumulative last-writer-wins fold of the already-APPROVED
+    speaker edits *before* this one (e.g. ``fold_speaker_mappings`` excluding the
+    edit being scored), so a first-time naming is distinguished from a correction:
+
+    - ``newly_named`` — speaker_ids whose prior value was still the raw ``SPEAKER_XX``
+      label (i.e. unnamed) and are now given a real name → **+1 each**.
+    - a *correction* — any speaker_id whose prior value was already a real name and
+      is now changed to a different name → **+1 flat** for the whole edit.
+
+    ``points = newly_named + (1 if has_correction else 0)``.
+
+    Reused by both the live approve handler and the §6 backfill recompute, so the
+    caller owns the fold ordering and passes ``prior_mapping`` in.
+    """
+    prior_mapping = prior_mapping or {}
+    newly_named = 0
+    has_correction = False
+    for sid, new_name in (edit_mappings or {}).items():
+        prior_value = prior_mapping.get(sid, sid)
+        if prior_value == sid:
+            # Unnamed before (resolved to its own raw label) → first identification.
+            if new_name != sid:
+                newly_named += 1
+        elif new_name != prior_value:
+            # Already had a real name, now renamed → correction (flat, scored once).
+            has_correction = True
+    points = newly_named + (1 if has_correction else 0)
+    return points, newly_named
+
+
 def apply_speaker_labels(episode_id: int) -> None:
     """Recompute and re-materialise all transcript formats from the immutable
     speaker_id base + the approved speaker-edit chain (transcript_rollback.md §3.3).

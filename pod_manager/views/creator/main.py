@@ -97,11 +97,19 @@ def submit_episode_edit(request, episode_id):
         if 'episode_type' in suggested_data:
             suggested_data['episode_type'] = str(suggested_data['episode_type'])[:50]
         if 'cross_publish_podcast_ids' in suggested_data:
-            # Strip foreign-network ids and the parent podcast before storing.
-            targets = validate_cross_targets(
-                ep, suggested_data['cross_publish_podcast_ids'], ep.podcast.network
-            )
-            suggested_data['cross_publish_podcast_ids'] = sorted(t.id for t in targets)
+            # Cross-publish is owner/admin only (transcript_rollback.md §8a). The
+            # community suggestion form no longer offers it; drop the key server-side
+            # (authoritative) so a crafted POST can't bypass the hidden UI. Owners use
+            # the dedicated manage_episode → update_cross_publish action instead.
+            from .publish import _require_owner
+            if not _require_owner(request.user, ep.podcast.network):
+                suggested_data.pop('cross_publish_podcast_ids')
+            else:
+                # Strip foreign-network ids and the parent podcast before storing.
+                targets = validate_cross_targets(
+                    ep, suggested_data['cross_publish_podcast_ids'], ep.podcast.network
+                )
+                suggested_data['cross_publish_podcast_ids'] = sorted(t.id for t in targets)
 
         network = ep.podcast.network
         membership, _ = NetworkMembership.objects.get_or_create(user=request.user, network=network)
@@ -192,6 +200,14 @@ def submit_speaker_labels(request, episode_id):
     except Exception:
         pass
 
+    # Per-speaker award (transcript_rollback.md §3.4) replaces the old flat +5.
+    # existing_mappings is the .words header cache = the fold BEFORE this edit, so
+    # it's the prior mapping the helper needs to tell naming from correction.
+    speaker_points = 0
+    if is_trusted:
+        from pod_manager.services.transcription import speaker_edit_points
+        speaker_points, _newly_named = speaker_edit_points(safe_mappings, existing_mappings)
+
     edit = EpisodeEditSuggestion.objects.create(
         episode=ep,
         user=request.user,
@@ -199,12 +215,15 @@ def submit_speaker_labels(request, episode_id):
         original_data={'speaker_mappings': existing_mappings},
         status=EpisodeEditSuggestion.Status.APPROVED if is_trusted else EpisodeEditSuggestion.Status.PENDING,
         resolved_at=timezone.now() if is_trusted else None,
+        points=speaker_points if is_trusted else 0,
     )
 
     if is_trusted:
         from pod_manager.services.edits import apply_approved_edit
         apply_approved_edit(ep, {'speaker_mappings': safe_mappings})
-        membership.trust_score += 5
+        membership.trust_score += speaker_points
+        if speaker_points:
+            membership.edits_speakers += speaker_points
         membership.save()
         from pod_manager.tasks import task_rebuild_episode_fragments
         task_rebuild_episode_fragments.delay(ep.id, request.build_absolute_uri('/')[:-1])

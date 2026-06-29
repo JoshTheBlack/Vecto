@@ -622,6 +622,11 @@ class NetworkMembership(models.Model):
     edits_chapters = models.IntegerField(default=0)
     edits_tags = models.IntegerField(default=0)
     edits_descriptions = models.IntegerField(default=0)
+    # Speaker-label identifications (transcript_rollback.md §3.4) — moved by the
+    # per-speaker points award at approval and the exact wash on rollback.
+    edits_speakers = models.IntegerField(default=0)
+    # iTunes / Sequence Metadata (season / episode # / episode type) edits (§8a).
+    edits_sequence = models.IntegerField(default=0)
     first_responder_count = models.IntegerField(default=0)
 
     # Avatar Preferences
@@ -803,6 +808,9 @@ class EpisodeEditSuggestion(models.Model):
 
     status = models.CharField(max_length=20, choices=Status.choices, default=Status.PENDING)
     is_first_responder = models.BooleanField(default=False)
+    # Trust/counter delta banked at approval so rollback reverses the exact amount
+    # without recomputation (transcript_rollback.md §3.4 — speaker edits).
+    points = models.IntegerField(default=0)
     
     created_at = models.DateTimeField(auto_now_add=True)
     resolved_at = models.DateTimeField(null=True, blank=True)

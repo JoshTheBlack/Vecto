@@ -88,6 +88,12 @@ REGISTRY = {
             "language": "enum:whisper_languages",
         },
     ),
+    "backfill_speaker_ids": CommandSpec(
+        name="backfill_speaker_ids",
+        category="Transcription",
+        # Idempotent (skips schema 1.1.0), previews unless --apply; local-first
+        # so it does NOT push to R2 (only updates already-mirrored transcripts).
+    ),
     "clear_transcription_queue": CommandSpec(
         name="clear_transcription_queue",
         category="Transcription",
@@ -167,6 +173,12 @@ REGISTRY = {
         name="prune_logs",
         category="Maintenance",
         danger=True,
+    ),
+    "backfill_edit_points": CommandSpec(
+        name="backfill_edit_points",
+        category="Maintenance",
+        # Idempotent SET; previews unless --apply. Banks per-edit rollback deltas
+        # onto historical APPROVED edits; does not touch membership aggregates.
     ),
     # --- Reports -----------------------------------------------------------
     "generate_s3_report": CommandSpec(

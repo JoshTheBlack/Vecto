@@ -138,7 +138,7 @@ def submit_episode_edit(request, episode_id):
         is_first = not EpisodeEditSuggestion.objects.filter(episode=ep, status=EpisodeEditSuggestion.Status.APPROVED).exists()
         is_trusted = membership.trust_score >= network.auto_approve_trust_threshold
 
-        EpisodeEditSuggestion.objects.create(
+        edit = EpisodeEditSuggestion.objects.create(
             episode=ep, user=request.user, suggested_data=suggested_data,
             original_data=original_data, status=EpisodeEditSuggestion.Status.APPROVED if is_trusted else EpisodeEditSuggestion.Status.PENDING,
             is_first_responder=is_first,
@@ -147,9 +147,14 @@ def submit_episode_edit(request, episode_id):
 
         if is_trusted:
             apply_approved_edit(ep, suggested_data, user=request.user)
-            update_contribution_stats(membership, suggested_data, original_data, is_first=is_first)
+            # Auto-approval scores identically to a manual inbox approval.
+            points, deltas = update_contribution_stats(membership, suggested_data, original_data, is_first=is_first)
+            # Bank trust + per-counter deltas so a later rollback is an exact wash.
+            edit.points = points
+            edit.counter_deltas = deltas
+            edit.save(update_fields=['points', 'counter_deltas'])
             task_rebuild_episode_fragments.delay(ep.id, request.build_absolute_uri('/')[:-1])
-            messages.success(request, "Edit approved instantly. +5 Trust.")
+            messages.success(request, f"Edit approved instantly. +{points} Trust.")
         else:
             messages.success(request, "Edit submitted for review.")
 
@@ -216,6 +221,8 @@ def submit_speaker_labels(request, episode_id):
         status=EpisodeEditSuggestion.Status.APPROVED if is_trusted else EpisodeEditSuggestion.Status.PENDING,
         resolved_at=timezone.now() if is_trusted else None,
         points=speaker_points if is_trusted else 0,
+        # edits_speakers is reversed generically from counter_deltas on rollback.
+        counter_deltas={'edits_speakers': speaker_points} if (is_trusted and speaker_points) else {},
     )
 
     if is_trusted:

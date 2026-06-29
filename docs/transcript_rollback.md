@@ -186,6 +186,171 @@ any deviations from the plan) and ticks the phase in §10. Read this before star
     to an owner). Full suite **410 tests green** via
     `./.venv/Scripts/python.exe manage.py test`.
 
+- **Window 4 — Phase 6 (§6) + rollback-completeness audit.** The one-time
+  `speaker_id` backfill command, the retroactive `edits_speakers` recompute, and a
+  verification pass that every edit-suggestion field reverses on rollback (value
+  **and** counter). Phase 7 (front-end / review surfaces) and Phase 9 (docs fold)
+  remain.
+  - **Backfill command (§6)** — new
+    [`backfill_speaker_ids`](../pod_manager/management/commands/backfill_speaker_ids.py)
+    (preview unless `--apply`; scope `--all` / `--network` / `--podcast` /
+    `--episode` / `--limit`). Per completed transcript: reads the current `.words`
+    (local for the majority, R2 for `version>=1`), **skips schema `1.1.0`**
+    (idempotent re-runs), then:
+    - **raw present** (`{id}.whisper_raw.txt`) → re-parse via
+      `_parse_whisper_response` to recover pristine `SPEAKER_XX` as write-once
+      `speaker_id`, fold the episode's APPROVED edits (`fold_speaker_mappings`) to
+      set the resolved `speaker`, **preserve the existing `.words` header verbatim**
+      (transcribed_at / model / language / recovery anchors — only `speaker_id` is
+      added, plus the refreshed `speaker_mappings` cache), render all 5 formats.
+    - **raw missing** → degraded fallback: seed `speaker_id` from the current
+      resolved `speaker` (preserved as-is; no fold — its name keys wouldn't match).
+    - **Write routing (local-first):** R2-resident (`R2_MEDIA_ENABLED` and
+      `version>=1`) → Phase 2 idempotent `write_transcript_formats` (hash-check, PUT
+      only changed, bump version only on real change). Everything else → write the
+      `MEDIA_ROOT` files in place (free) with **no R2 I/O and no version bump**
+      (a `version>=1` would misroute reads to a not-yet-existing R2 object);
+      `backfill_transcripts_to_r2` pushes those later.
+    - **Name-change logging:** the fold excludes `ROLLED_BACK` edits, so a file
+      still baking in a since-reverted edit reconciles here — every episode whose
+      distinct resolved-name set moves is logged `before -> after`.
+  - **Retroactive `edits_speakers` recompute (§6)** — part of the same command
+    (`--apply`; `--skip-recompute` to opt out). For each `NetworkMembership` (scoped
+    by `--network` / `--podcast` when given) it replays that user's APPROVED
+    (non-SUPERSEDED, non-ROLLED_BACK — distinct statuses) speaker edits **per
+    episode in `resolved_at` order**, folding the user's own deltas as it goes and
+    summing `speaker_edit_points` against the prior fold, then **SETs**
+    `edits_speakers` to that total (idempotent; independent of the per-episode
+    `1.1.0` skip). Trust score is **not** re-credited. Logs per-membership
+    `before -> after`. Registered in the admin-console
+    [registry](../pod_manager/admin_console/registry.py) under "Transcription".
+  - **Rollback-completeness audit + fixes.** Verified every `suggested_data` key
+    reverses on single **and** bulk rollback, in both value and `NetworkMembership`
+    counter. Found and fixed:
+    1. **`chapters_private` not restored** — approve mirrors new chapters onto
+       **both** `chapters_public` + `chapters_private`
+       ([edits.py](../pod_manager/services/edits.py) `apply_approved_edit`;
+       [actions.py](../pod_manager/views/creator/actions.py) approve handler), but
+       rollback restored only `chapters_public`, leaving the edited chapters baked
+       into the private feed (same class of bug §8a fixed for the sequence fields).
+       Both single + bulk rollback now restore **both** columns.
+    2. **`edits_chapters` decrement used the wrong count** — it subtracted
+       `len(suggested_data['chapters'])`, which on a v1.2 chapters **dict** counts
+       its keys (`version`/`chapters`/…), not the chapters. Now uses
+       `len(chapter_items(...))` to mirror the approval credit.
+    3. **Trusted auto-apply never credited `edits_sequence`** —
+       `update_contribution_stats` incremented title/tags/chapters/descriptions but
+       not the §8a sequence counter, so a trusted season/episode/type edit banked
+       `0` while rollback decremented it (clamped at 0, silently asymmetric). It now
+       credits one per present sequence field, matching the inbox approve handler and
+       the rollback decrement.
+  - **Exact per-counter wash via `EpisodeEditSuggestion.counter_deltas`** (migration
+    `0089`). A new `JSONField(default=dict)` banks the exact membership-counter
+    deltas an approval credited, e.g. `{"edits_tags": 3, "edits_chapters": 2}`. All
+    three approval sites populate it — the inbox approve handler
+    ([actions.py](../pod_manager/views/creator/actions.py)), the trusted auto-apply
+    (`update_contribution_stats` now **returns** the delta map, banked by
+    `submit_episode_edit`), and `submit_speaker_labels` (`{"edits_speakers": N}`).
+    Single rollback replaced its per-field decrement block with **one generic loop**
+    — `for attr, amt in edit.counter_deltas: membership.attr -= amt` (clamped at 0)
+    — so `edits_tags` (and every counter) is now an exact wash, killing the old flat
+    `−1` tags drift and the `len(dict)` chapters miscount. **Trust** still reverses
+    via the flat `−5` (metadata) / banked `points` (speaker); **`first_responder_count`**
+    still reverses from `edit.is_first_responder` (both legacy-safe). The earlier
+    per-field fixes (chapters counter, trusted `edits_sequence`) are subsumed by this.
+  - **Legacy + forward-compat (decided with the user):** pre-feature rows have an
+    empty `counter_deltas` (the `AddField` default), so rollback **skips** their
+    counter decrement (trust still reverses) — no zero-backfill data migration. And
+    because the loop iterates only the keys actually banked, a **counter added in the
+    future** is reversed generically, with older edits that lack the key left
+    untouched (no `KeyError`, no over-decrement). Bulk rollback still zeroes every
+    counter (griefer nuke), so it's independent of the map.
+  - **Deviations:**
+    1. The §6 retroactive recompute folds **each user's own** approved deltas per
+       episode (per the brief's wording), which can differ slightly from the live
+       award's prior fold (which folds *all* users' approved edits as the prior). On
+       single-contributor episodes — the common case — they coincide; the recompute
+       is a deliberate idempotent **set**, not a reproduction of historical awards.
+    2. Backfill is **lossless only where the raw dump lives** (the Unraid
+       transcription box). Run `--apply` there so the catalogue is recovered from
+       `whisper_raw.txt`; running it elsewhere (e.g. a dev box that has the `.words`
+       in R2 but no raw dumps) falls back to seeding from resolved names and
+       **degrades** the base (split == combined). The dev preview shows this:
+       7 transcripts "seeded (fallback)" because the raw dumps are on Unraid.
+  - **Tests:** `BackfillSpeakerIdsTests` (1.1.0 skip; whisper_raw id-recovery +
+    fold; header preservation; ROLLED_BACK reconciliation + name-change log;
+    fallback seeding; preview writes nothing; recompute set + idempotent + trust
+    untouched), two `UpdateContributionStatsTests` sequence-credit cases, and a
+    `CreatorInboxActionTests` chapters rollback case (both columns + inner-count
+    decrement), plus the `counter_deltas` cases (tags exact wash, legacy-row skip,
+    speaker counter_deltas banked, sequence/chapters rollback via the banked map).
+    Full suite **423 tests green** via `./.venv/Scripts/python.exe manage.py test`.
+
+- **Window 5 — Unified trust model (exact award + exact reversal).** Replaced the
+  two-scale trust system (inbox per-section + sweep-3 vs. trusted flat `+5`) with one
+  scorer used by every approval path, and made single **and** bulk rollback reverse
+  the exact banked amounts.
+  - **`score_contribution(changes, is_first)`** ([edits.py](../pod_manager/services/edits.py))
+    is the single source of truth → `(points, counter_deltas)`. Per applied field:
+    title/description **+1pt/+1ctr**; tags **+1pt / +N ctr** (N = tags added; a pure
+    removal scores the point, adds 0 counter); chapters **+N pt / +N ctr** (N =
+    chapter count); season/episode#/type **+1pt/+1ctr each** (`edits_sequence`);
+    speaker **+N/+N**; first-responder **+1pt/+1ctr**. **Cross-publish is never
+    scored** (owner/admin-only). Multi-field **bonus** (trust only, no counter):
+    **+2** if ≥3 of fields 1–7 applied, **+4** if all of 1–7 — banked into `points`
+    so rollback removes it exactly.
+  - **`points` = trust, `counter_deltas` = counters** (incl. `first_responder_count`),
+    both banked on the edit at approval. **Auto-approve now scores identically to
+    manual** — `update_contribution_stats` builds the same `changes` (value-compared
+    to the original) and calls the shared scorer; the flat `+5` is gone. The inbox
+    approve handler builds `changes` as it applies sections and calls the same scorer.
+  - **Rollback is a pure exact wash.** Single + bulk both call `_reverse_award`:
+    `trust -= edit.points`, then `counter -= amt` for each `counter_deltas` entry
+    (clamped at 0). No more flat `−5`, no more blanket zeroing — **bulk rollback now
+    just runs the exact per-edit reversal in a loop** (value restore via the shared
+    `_restore_metadata_values`, speaker episodes replayed once). Reject stays `−2`.
+  - **Legacy rows** (pre-`counter_deltas`, `points` 0) reverse nothing by design;
+    a counter added in the future is reversed generically (the loop only touches keys
+    that were banked). Speaker rollback continues to replay from the immutable base.
+  - **Tests:** rewrote `UpdateContributionStatsTests` to the new scorer (no flat +5,
+    added-only tag counter, sweep bonus), updated the trusted-path/cross-publish/
+    rollback expectations, and `CreatorRollbackTests` bulk now asserts exact reversal
+    (not zeroing). Full suite **424 green** via `./.venv/Scripts/python.exe manage.py test`.
+
+- **Window 6 — Full rollback closure (legacy backfill, metadata unlock, chapters).**
+  Three follow-ups so *every* user-submittable edit is fully reversible.
+  - **Legacy points backfill** — new
+    [`backfill_edit_points`](../pod_manager/management/commands/backfill_edit_points.py)
+    (preview unless `--apply`; `--all`/`--network`/`--podcast`) reconstructs and
+    banks `points` + `counter_deltas` onto historical APPROVED edits that predate
+    the unified trust model (they had `points 0` / empty map, so rollback reversed
+    no trust/counters). Metadata edits → `metadata_changes()` + `score_contribution()`;
+    speaker edits → per-episode `resolved_at` fold scored with `speaker_edit_points`.
+    Idempotent SET; does NOT touch `NetworkMembership` aggregates (historical totals
+    stand — re-crediting would double-count), only per-edit deltas so future
+    rollbacks are exact. Registered under "Maintenance".
+  - **Metadata unlock on rollback** — `_handle_approve_edit` sets
+    `Episode.is_metadata_locked` but rollback never cleared it. New
+    `_maybe_unlock_metadata(ep)` clears the lock when an episode has no APPROVED
+    edits left, called from single + bulk rollback (bulk captures the affected
+    episodes before statuses flip, since the APPROVED queryset re-evaluates empty).
+  - **Chapters effective-snapshot fix** — approve overwrites BOTH `chapters_public`
+    and `chapters_private`, but the snapshot captured only `chapters_public` (which
+    is typically blank — the public feed falls back to `chapters_private`
+    [feeds.py](../pod_manager/views/feeds.py), and the editor edits the private set
+    [listener/main.py](../pod_manager/views/listener/main.py)). So approve→rollback
+    on a typical episode wiped both columns to blank, losing the real (private)
+    chapters. `snapshot_episode` + the approve handler now capture the **effective**
+    chapters (`chapters_private or chapters_public`); rollback restores both columns
+    to it, so served output matches the pre-edit state. (Column-level public/private
+    distinction isn't separately preserved — public is best-effort and approve
+    already collapses it; flag if exact column fidelity is wanted.)
+  - **Tests:** `BackfillEditPointsTests` (metadata award, speaker chain fold,
+    preview no-op, idempotent re-run), plus `CreatorInboxActionTests` cases for
+    metadata unlock (and stays-locked when another approved edit remains) and the
+    private-chapters effective-snapshot restore. Full suite **431 green** via
+    `./.venv/Scripts/python.exe manage.py test`.
+
 ## 1. Problem
 
 Speaker name matching (the **Speaker Labels** form on the episode page) currently
@@ -625,8 +790,10 @@ chain no longer lines up. On re-transcription:
   (default 0). One migration. (No cross-publish counter — §8a locks it to
   owner/admin, out of the contribution system.)
 - `EpisodeEditSuggestion`: add `points` (IntegerField) recorded at approval so
-  rollback reverses the exact trust/counter delta (used by speaker edits; can also
-  simplify the metadata-edit reversal later).
+  rollback reverses the exact **trust** delta (speaker edits). Also add
+  `counter_deltas` (JSONField, migration `0089`) recording the exact
+  **per-`NetworkMembership`-counter** deltas the approval credited, so single
+  rollback reverses every `edits_*` counter generically and exactly (Window 4).
 - `.words` schema: add `speaker_id` (segment + word), bump version to `1.1.0`
   (also the backfill idempotency marker).
 - Optional later: per-format content hashes on `Transcript` to skip HEADs; and/or
@@ -757,10 +924,10 @@ isn't legible. Adds:
    owner/admin** — remove it from the community suggestion form/payload, server-side
    gate it in `submit_episode_edit`, and allow `is_staff` in the owner action.~~
    ✅ **Done (Window 3).**
-6. **Backfill command** (§6) — mixed local/R2 reconstruction with fallback;
+6. ~~**Backfill command** (§6) — mixed local/R2 reconstruction with fallback;
    `1.1.0` skip; name-change logging; preview/`--apply`. Plus a **retroactive
    `edits_speakers` recompute** from the historical approved chain (idempotent
-   set, using the Phase 5 helper).
+   set, using the Phase 5 helper).~~ ✅ **Done (Window 4).**
 7. **Front-end & review surfaces** — form carries `speaker_id` / displays name;
    combined↔split toggle for form boxes + transcript grouping + colour key. Add the
    structured speaker diff (§8b): `speaker_changed` + per-speaker before→after in
@@ -803,10 +970,21 @@ isn't legible. Adds:
 - **Execution context (§3.3)** — live apply/rollback runs **synchronously /
   immediately** in the request (page refetches the new version right away). No
   `admin`-queue indirection.
-- **Trust accounting (§3.4)** — `+1` per **newly identified** speaker, `+1` flat
-  for a correction; rollback subtracts the exact recorded `points` (wash); reject
-  `−2`; bulk zeroes; supersede leaves trust intact. Tracked on a new
-  `NetworkMembership.edits_speakers` counter, surfaced on the profile page.
+- **Trust accounting** — *superseded by the unified model (Window 5/6); this line
+  is the original speaker-only decision, kept for history.* As built today:
+  **one scorer** (`score_contribution`, [edits.py](../pod_manager/services/edits.py))
+  drives every approval path (manual inbox **and** auto-approve, identically).
+  Per applied field: title/description **+1pt/+1ctr**; tags **+1pt / +N(added) ctr**;
+  chapters **+N pt/+N ctr**; season/episode#/type **+1pt/+1ctr each** (`edits_sequence`);
+  speaker **+N/+N** (`+1` per first-time naming, `+1` flat per correction);
+  first-responder **+1pt/+1ctr**; cross-publish **never scored**. Multi-field bonus
+  (trust only, banked in `points`): **+2** for ≥3 of fields 1–7, **+4** for all of
+  1–7. Every edit banks `points` (trust) + `counter_deltas` (the exact counters,
+  incl. first_responder) at approval; **rollback — single AND bulk — is a pure exact
+  wash** (`trust −= points`, `counter −= counter_deltas[*]`). Reject `−2`; supersede
+  leaves trust intact. Legacy pre-banking rows are reconciled by the one-time
+  `backfill_edit_points` command. The original speaker decision was `+1`/`+1`-flat
+  on a new `NetworkMembership.edits_speakers` counter, surfaced on the profile.
 - **Edit-pipeline cleanup (§8a)** — track the currently-untracked
   `season/episode/type` community edits, grouped as `edits_sequence` (decided);
   **lock `cross_publish` to owner/admin** (remove from the community suggestion

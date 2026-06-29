@@ -68,7 +68,10 @@ def snapshot_episode(ep) -> dict:
         'title': ep.title,
         'description': ep.clean_description,
         'tags': ep.tags or [],
-        'chapters': ep.chapters_public or [],
+        # Capture the EFFECTIVE chapters (what the editor saw + what approve will
+        # overwrite onto both columns), so rollback restores the meaningful
+        # pre-edit chapters instead of the usually-blank public column.
+        'chapters': ep.chapters_private or ep.chapters_public or [],
         'season_number': ep.season_number,
         'episode_number': ep.episode_number,
         'episode_type': ep.episode_type,
@@ -110,31 +113,111 @@ def apply_approved_edit(ep, suggested_data, user=None):
     ep.save()
 
 
-def update_contribution_stats(membership, suggested_data, original_data, *, is_first: bool):
-    """Awards +5 trust and increments the appropriate edit counters on the
-    NetworkMembership for an auto-approved submission."""
-    membership.trust_score += 5
+# iTunes / Sequence Metadata fields (§8a) — grouped into one edits_sequence counter.
+SEQUENCE_FIELDS = ('season_number', 'episode_number', 'episode_type')
+# Fields 1-7 that count toward the multi-field bonus. Cross-publish (#8) is never
+# scored; speaker labels (#9) are always a separate single-field edit.
+SWEEP_CORE_FIELDS = ('title', 'description', 'tags', 'chapters',
+                     'season_number', 'episode_number', 'episode_type')
 
-    if suggested_data.get('title') != original_data.get('title'):
-        membership.edits_title += 1
 
-    # Count each individual tag added or removed, not just whether tags changed.
-    orig_tags = set(original_data.get('tags') or [])
-    new_tags = set(suggested_data.get('tags') or [])
-    tag_delta = len(new_tags.symmetric_difference(orig_tags))
-    if tag_delta:
-        membership.edits_tags += tag_delta
+def score_contribution(changes, *, is_first=False):
+    """Single source of truth for the trust + counter award of one approved edit
+    (transcript_rollback.md trust model). Returns ``(points, counter_deltas)``.
 
-    if chapter_items(suggested_data.get('chapters')) != chapter_items(original_data.get('chapters')):
-        chap_data = suggested_data.get('chapters', [])
-        membership.edits_chapters += (
-            len(chap_data.get('chapters', [])) if isinstance(chap_data, dict) else len(chap_data)
-        )
+    ``changes`` carries the fields actually APPLIED; a key's PRESENCE means the
+    field changed, its value carries the quantity:
 
-    if suggested_data.get('description') != original_data.get('description'):
-        membership.edits_descriptions += 1
+        title / description / season_number / episode_number / episode_type -> any
+        tags     -> # tags added              (point is flat +1 if the key is present)
+        chapters -> # chapters                (points = that count)
+        speaker  -> # speaker points (already computed upstream)
 
+    Cross-publish is intentionally never a key here — it is not scored. ``points``
+    is the trust delta (banked on ``edit.points``); ``counter_deltas`` are the exact
+    NetworkMembership counter increments (banked on ``edit.counter_deltas``), so
+    rollback reverses both exactly. first_responder rides in ``counter_deltas`` too.
+    """
+    points = 0
+    deltas = {}
+    applied = set()  # fields 1-7 that landed, for the bonus
+
+    if 'title' in changes:
+        points += 1; deltas['edits_title'] = 1; applied.add('title')
+    if 'description' in changes:
+        points += 1; deltas['edits_descriptions'] = 1; applied.add('description')
+    if 'tags' in changes:                          # +1 pt flat, +N counter
+        points += 1; applied.add('tags')
+        n = int(changes.get('tags') or 0)
+        if n:
+            deltas['edits_tags'] = n
+    if 'chapters' in changes:                      # +N pt, +N counter
+        n = int(changes.get('chapters') or 0)
+        points += n; applied.add('chapters')
+        if n:
+            deltas['edits_chapters'] = n
+    seq = [k for k in SEQUENCE_FIELDS if k in changes]
+    if seq:
+        points += len(seq); deltas['edits_sequence'] = len(seq); applied.update(seq)
+    if 'speaker' in changes:                        # +N pt, +N counter
+        n = int(changes.get('speaker') or 0)
+        points += n
+        if n:
+            deltas['edits_speakers'] = n
+
+    # Multi-field bonus (no counter): all of fields 1-7 -> +4, else 3+ -> +2.
+    # Banked into points so rollback removes it exactly.
+    if set(SWEEP_CORE_FIELDS) <= applied:
+        points += 4
+    elif len(applied) >= 3:
+        points += 2
+
+    # First responder: +1 trust + its own counter (reversed via counter_deltas).
     if is_first:
-        membership.first_responder_count += 1
+        points += 1; deltas['first_responder_count'] = 1
 
+    return points, deltas
+
+
+def _chapter_count(value):
+    items = chapter_items(value)
+    return len(items)
+
+
+def metadata_changes(suggested_data, original_data):
+    """Build the score_contribution `changes` map for a metadata edit by comparing
+    the applied (suggested) values against the pre-edit snapshot (original).
+    A key is present only when it actually differs; tags carry the ADDED count and
+    chapters the chapter count. Cross-publish is intentionally never scored. Shared
+    by the trusted-submit award and the legacy edit-points backfill.
+    """
+    changes = {}
+    if 'title' in suggested_data and suggested_data['title'] != original_data.get('title'):
+        changes['title'] = True
+    if 'description' in suggested_data and suggested_data['description'] != original_data.get('description'):
+        changes['description'] = True
+    if 'tags' in suggested_data and set(suggested_data.get('tags') or []) != set(original_data.get('tags') or []):
+        # Counter credits tags ADDED (removals score the point but add no counter).
+        changes['tags'] = len(set(suggested_data.get('tags') or []) - set(original_data.get('tags') or []))
+    if 'chapters' in suggested_data and chapter_items(suggested_data.get('chapters')) != chapter_items(original_data.get('chapters')):
+        changes['chapters'] = _chapter_count(suggested_data.get('chapters'))
+    for k in SEQUENCE_FIELDS:
+        if k in suggested_data and suggested_data[k] != original_data.get(k):
+            changes[k] = True
+    return changes
+
+
+def update_contribution_stats(membership, suggested_data, original_data, *, is_first: bool):
+    """Apply the trust + counter award for an auto-approved submission, using the
+    SAME scorer as the inbox approve handler (auto == manual). Returns
+    ``(points, counter_deltas)`` so the caller banks them on the edit for an exact
+    rollback wash. ``suggested_data`` already holds only the changed keys (the view
+    drops unchanged ones), so a present key means a real change.
+    """
+    changes = metadata_changes(suggested_data, original_data)
+    points, deltas = score_contribution(changes, is_first=is_first)
+    membership.trust_score += points
+    for attr, amt in deltas.items():
+        setattr(membership, attr, getattr(membership, attr) + amt)
     membership.save()
+    return points, deltas

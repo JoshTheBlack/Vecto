@@ -45,7 +45,7 @@ from pod_manager.models import (
     R2OrphanedObject, LogEntry,
 )
 from pod_manager.services.edits import (
-    apply_approved_edit, parse_chapter_payload, snapshot_episode,
+    apply_approved_edit, chapter_items, parse_chapter_payload, snapshot_episode,
     update_contribution_stats,
 )
 from pod_manager.services.transcription import (
@@ -1024,6 +1024,7 @@ class CreatorInboxActionTests(TestCase):
         edit.refresh_from_db()
         self.assertEqual(edit.status, 'approved')
         self.assertEqual(edit.points, 2)
+        self.assertEqual(edit.counter_deltas, {'edits_speakers': 2})  # banked for rollback
         self.membership.refresh_from_db()
         self.assertEqual(self.membership.trust_score, 7)       # 5 + 2
         self.assertEqual(self.membership.edits_speakers, 2)
@@ -1038,7 +1039,7 @@ class CreatorInboxActionTests(TestCase):
             status=EpisodeEditSuggestion.Status.APPROVED,
             original_data={'speaker_mappings': {}},
             suggested_data={'speaker_mappings': {'SPEAKER_00': 'Jim', 'SPEAKER_01': 'Aron'}},
-            points=2, resolved_at=timezone.now(),
+            points=2, counter_deltas={'edits_speakers': 2}, resolved_at=timezone.now(),
         )
         self.membership.trust_score = 7
         self.membership.edits_speakers = 2
@@ -1047,8 +1048,8 @@ class CreatorInboxActionTests(TestCase):
         edit.refresh_from_db()
         self.assertEqual(edit.status, 'rolled_back')
         self.membership.refresh_from_db()
-        self.assertEqual(self.membership.trust_score, 5)
-        self.assertEqual(self.membership.edits_speakers, 0)
+        self.assertEqual(self.membership.trust_score, 5)   # -points (trust)
+        self.assertEqual(self.membership.edits_speakers, 0)  # -counter_deltas
 
     # --- Phase 5 / §8a: sequence counter ----------------------------------------
 
@@ -1085,6 +1086,7 @@ class CreatorInboxActionTests(TestCase):
             suggested_data={'title': self.episode.title,
                             'season_number': 2, 'episode_number': 5,
                             'episode_type': 'bonus'},
+            counter_deltas={'edits_sequence': 3},
             resolved_at=timezone.now(),
         )
         self.membership.edits_sequence = 3
@@ -1129,6 +1131,127 @@ class CreatorInboxActionTests(TestCase):
         self.membership.refresh_from_db()
         self.assertEqual(self.membership.edits_sequence, 0)
 
+    def test_rollback_tags_is_exact_wash(self):
+        """A multi-tag add credits +N at approval and rollback reverses exactly
+        −N (via counter_deltas), not the old flat −1 that left the counter high."""
+        import json as _json
+        self.episode.tags = ['tag1']
+        self.episode.save()
+        edit = EpisodeEditSuggestion.objects.create(
+            episode=self.episode, user=self.submitter,
+            status=EpisodeEditSuggestion.Status.PENDING,
+            original_data={'title': self.episode.title,
+                           'description': self.episode.clean_description,
+                           'tags': ['tag1'], 'chapters': []},
+            suggested_data={'tags': ['tag1', 'tag2', 'tag3']},
+        )
+        self._post({'action': 'approve_edit', 'edit_id': edit.id,
+                    'approve_tags': 'on', 'edited_tags': _json.dumps(['tag1', 'tag2', 'tag3'])})
+        edit.refresh_from_db()
+        self.assertEqual(edit.counter_deltas, {'edits_tags': 2})
+        self.membership.refresh_from_db()
+        self.assertEqual(self.membership.edits_tags, 2)
+
+        self._post({'action': 'rollback_single_edit', 'edit_id': edit.id})
+        self.membership.refresh_from_db()
+        self.assertEqual(self.membership.edits_tags, 0)  # exact wash, not 1
+
+    def test_rollback_legacy_edit_skips_counter_decrement(self):
+        """A pre-feature edit (no counter_deltas) reverses trust but leaves the
+        counters untouched — the agreed behaviour for historical rows."""
+        self.membership.edits_title = 5
+        self.membership.save()
+        edit = EpisodeEditSuggestion.objects.create(
+            episode=self.episode, user=self.submitter,
+            status=EpisodeEditSuggestion.Status.APPROVED,
+            original_data={'title': 'Original Title', 'description': self.episode.clean_description,
+                           'tags': [], 'chapters': []},
+            suggested_data={'title': 'New Title'},  # no counter_deltas banked
+            resolved_at=timezone.now(),
+        )
+        self._post({'action': 'rollback_single_edit', 'edit_id': edit.id})
+        self.membership.refresh_from_db()
+        self.assertEqual(self.membership.edits_title, 5)  # skipped (legacy row)
+
+    def test_rollback_unlocks_metadata_when_no_approved_remain(self):
+        edit = self._make_pending_edit()
+        self._post({'action': 'approve_edit', 'edit_id': edit.id,
+                    'approve_title': 'on', 'edited_title': 'New Title'})
+        self.episode.refresh_from_db()
+        self.assertTrue(self.episode.is_metadata_locked)
+        self._post({'action': 'rollback_single_edit', 'edit_id': edit.id})
+        self.episode.refresh_from_db()
+        self.assertFalse(self.episode.is_metadata_locked)  # editable again
+
+    def test_rollback_keeps_lock_when_another_approved_remains(self):
+        e1 = self._make_pending_edit()
+        self._post({'action': 'approve_edit', 'edit_id': e1.id,
+                    'approve_title': 'on', 'edited_title': 'New Title'})
+        e2 = EpisodeEditSuggestion.objects.create(
+            episode=self.episode, user=self.submitter, status=EpisodeEditSuggestion.Status.APPROVED,
+            original_data={'description': 'x'}, suggested_data={'description': '<p>z</p>'},
+            points=1, counter_deltas={'edits_descriptions': 1}, resolved_at=timezone.now(),
+        )
+        self._post({'action': 'rollback_single_edit', 'edit_id': e1.id})
+        self.episode.refresh_from_db()
+        self.assertTrue(self.episode.is_metadata_locked)  # e2 still approved
+
+    def test_rollback_restores_private_chapters_via_effective_snapshot(self):
+        import json as _json
+        orig_priv = {'version': '1.2.0', 'chapters': [{'startTime': 0, 'title': 'Orig'}]}
+        self.episode.chapters_private = orig_priv
+        self.episode.chapters_public = None   # typical: blank public, private has chapters
+        self.episode.save()
+        edit = EpisodeEditSuggestion.objects.create(
+            episode=self.episode, user=self.submitter, status=EpisodeEditSuggestion.Status.PENDING,
+            original_data={'title': self.episode.title, 'description': self.episode.clean_description,
+                           'tags': [], 'chapters': []},
+            suggested_data={},
+        )
+        new_ch = {'version': '1.2.0', 'chapters': [{'startTime': 0, 'title': 'A'}, {'startTime': 60, 'title': 'B'}]}
+        self._post({'action': 'approve_edit', 'edit_id': edit.id,
+                    'approve_chapters': 'on', 'edited_chapters': _json.dumps(new_ch)})
+        self.episode.refresh_from_db()
+        self.assertEqual(len(chapter_items(self.episode.chapters_private)), 2)
+
+        self._post({'action': 'rollback_single_edit', 'edit_id': edit.id})
+        self.episode.refresh_from_db()
+        # Private chapters restored to the pre-edit value (not wiped to blank public).
+        self.assertEqual(chapter_items(self.episode.chapters_private), chapter_items(orig_priv))
+
+    def test_rollback_chapters_restores_both_columns_and_counts_inner(self):
+        """Approve mirrors new chapters onto BOTH columns, so rollback must
+        restore both — and decrement edits_chapters by the inner chapter count
+        (chapter_items), not the v1.2 dict's key count."""
+        chapters_dict = {'version': '1.2.0', 'chapters': [{'startTime': 0, 'title': 'Intro'}]}
+        self.episode.chapters_public = chapters_dict
+        self.episode.chapters_private = chapters_dict
+        self.episode.save()
+        edit = EpisodeEditSuggestion.objects.create(
+            episode=self.episode, user=self.submitter,
+            status=EpisodeEditSuggestion.Status.APPROVED,
+            original_data={'title': self.episode.title,
+                           'description': self.episode.clean_description,
+                           'tags': [], 'chapters': []},
+            suggested_data={'chapters': chapters_dict},
+            counter_deltas={'edits_chapters': 1},
+            resolved_at=timezone.now(),
+        )
+        # Pre-existing chapter credit + this edit's single chapter.
+        self.membership.edits_chapters = 6
+        self.membership.save()
+
+        self._post({'action': 'rollback_single_edit', 'edit_id': edit.id})
+        self.episode.refresh_from_db()
+        # BOTH columns reverted to "no chapters" (private would otherwise keep the
+        # edited dict). Empty chapters normalize to None on save.
+        self.assertEqual(chapter_items(self.episode.chapters_public), [])
+        self.assertEqual(chapter_items(self.episode.chapters_private), [])
+        self.assertEqual(self.episode.chapters_private, self.episode.chapters_public)
+        self.membership.refresh_from_db()
+        # -1 (one inner chapter), not -2 (dict keys 'version'+'chapters').
+        self.assertEqual(self.membership.edits_chapters, 5)
+
 
 # ---------------------------------------------------------------------------
 # Creator settings: rollback handlers
@@ -1166,6 +1289,7 @@ class CreatorRollbackTests(TestCase):
             episode=episode, user=self.spammer, status=EpisodeEditSuggestion.Status.APPROVED,
             original_data={'title': original_title, 'description': 'x', 'tags': [], 'chapters': []},
             suggested_data={'title': 'Vandalized', 'description': 'x', 'tags': [], 'chapters': []},
+            points=1, counter_deltas={'edits_title': 1},  # a title edit's exact award
             resolved_at=resolved_at or timezone.now(),
         )
 
@@ -1190,9 +1314,10 @@ class CreatorRollbackTests(TestCase):
         edit.refresh_from_db()
         self.assertEqual(edit.status, 'rolled_back')
         self.membership.refresh_from_db()
-        self.assertEqual(self.membership.trust_score, 15)  # -5
+        self.assertEqual(self.membership.trust_score, 19)   # -1 (exact banked points)
+        self.assertEqual(self.membership.edits_title, 0)    # -1 (exact banked counter)
 
-    def test_bulk_rollback_reverts_all_edits_and_zeros_stats(self):
+    def test_bulk_rollback_reverses_exact_awards(self):
         for i in range(3):
             ep = Episode.objects.create(
                 podcast=self.podcast, title=f'Ep{i}', pub_date=timezone.now(),
@@ -1200,12 +1325,16 @@ class CreatorRollbackTests(TestCase):
                 audio_url_public='https://cdn.example.com/a.mp3',
             )
             self._approved_edit(ep, f'Clean {i}')
+        # Membership reflecting exactly what those 3 title edits awarded.
+        self.membership.trust_score = 3
+        self.membership.edits_title = 3
+        self.membership.save()
 
         self._post({'action': 'bulk_rollback', 'spammer_id': self.spammer.id})
 
         self.membership.refresh_from_db()
-        self.assertEqual(self.membership.trust_score, 0)
-        self.assertEqual(self.membership.edits_chapters, 0)
+        self.assertEqual(self.membership.trust_score, 0)   # exact reversal, not blanket zero
+        self.assertEqual(self.membership.edits_title, 0)
         reverted = EpisodeEditSuggestion.objects.filter(
             user=self.spammer, status=EpisodeEditSuggestion.Status.ROLLED_BACK
         ).count()
@@ -1248,6 +1377,73 @@ class CreatorRollbackTests(TestCase):
                 user=self.spammer, status=EpisodeEditSuggestion.Status.ROLLED_BACK
             ).count(), 2)
         mock_apply.assert_called_once_with(self.episode.id)
+
+
+@override_settings(CACHES=TEST_CACHES)
+class BackfillEditPointsTests(TestCase):
+    """backfill_edit_points: reconstruct points + counter_deltas onto legacy
+    APPROVED edits so they become exactly reversible."""
+
+    def setUp(self):
+        self.net = Network.objects.create(name='N', slug='bep')
+        self.pod = Podcast.objects.create(network=self.net, title='S', slug='s')
+        self.ep = Episode.objects.create(
+            podcast=self.pod, title='New T', pub_date=timezone.now(),
+            raw_description='x', clean_description='x', audio_url_public='https://x/a.mp3',
+        )
+        self.user = User.objects.create_user(username='bep-u')
+
+    def _run(self, *args):
+        from django.core.management import call_command
+        from io import StringIO
+        out = StringIO()
+        call_command('backfill_edit_points', '--network=bep', *args, stdout=out, stderr=StringIO())
+        return out.getvalue()
+
+    def _legacy_metadata(self):
+        return EpisodeEditSuggestion.objects.create(
+            episode=self.ep, user=self.user, status=EpisodeEditSuggestion.Status.APPROVED,
+            original_data={'title': 'Old T', 'description': 'x', 'tags': [], 'chapters': []},
+            suggested_data={'title': 'New T'}, resolved_at=timezone.now(),
+        )  # points=0, counter_deltas={} (legacy)
+
+    def test_metadata_edit_gets_points_and_counter_deltas(self):
+        edit = self._legacy_metadata()
+        self._run('--apply')
+        edit.refresh_from_db()
+        self.assertEqual(edit.points, 1)
+        self.assertEqual(edit.counter_deltas, {'edits_title': 1})
+
+    def test_preview_changes_nothing(self):
+        edit = self._legacy_metadata()
+        out = self._run()
+        self.assertIn('edit #', out)
+        edit.refresh_from_db()
+        self.assertEqual(edit.points, 0)
+        self.assertEqual(edit.counter_deltas, {})
+
+    def test_idempotent_second_run_is_noop(self):
+        self._legacy_metadata()
+        self._run('--apply')
+        out = self._run('--apply')
+        self.assertIn('updated 0 edit', out)
+
+    def test_speaker_chain_points_folded_in_resolved_order(self):
+        t0 = timezone.now()
+        e1 = EpisodeEditSuggestion.objects.create(
+            episode=self.ep, user=self.user, status=EpisodeEditSuggestion.Status.APPROVED,
+            suggested_data={'speaker_mappings': {'SPEAKER_00': 'Jim'}},
+            original_data={'speaker_mappings': {}}, resolved_at=t0)
+        e2 = EpisodeEditSuggestion.objects.create(
+            episode=self.ep, user=self.user, status=EpisodeEditSuggestion.Status.APPROVED,
+            suggested_data={'speaker_mappings': {'SPEAKER_00': 'A.Ron'}},
+            original_data={'speaker_mappings': {}}, resolved_at=t0 + timedelta(minutes=1))
+        self._run('--apply')
+        e1.refresh_from_db(); e2.refresh_from_db()
+        self.assertEqual(e1.points, 1)                          # first-time naming
+        self.assertEqual(e1.counter_deltas, {'edits_speakers': 1})
+        self.assertEqual(e2.points, 1)                          # correction
+        self.assertEqual(e2.counter_deltas, {'edits_speakers': 1})
 
 
 # ---------------------------------------------------------------------------
@@ -1918,13 +2114,15 @@ class UpdateContributionStatsTests(TestCase):
         update_contribution_stats(self.membership, suggested, self.original, is_first=is_first)
         self.membership.refresh_from_db()
 
-    def test_trust_always_incremented_by_five(self):
+    def test_no_change_awards_nothing(self):
+        # No flat +5 anymore — an all-unchanged payload scores zero.
         self._call({'title': 'Old', 'description': '<p>old</p>', 'tags': ['a'], 'chapters': []})
-        self.assertEqual(self.membership.trust_score, 15)
+        self.assertEqual(self.membership.trust_score, 10)
 
-    def test_title_change_increments_edits_title(self):
+    def test_title_change_awards_one_point_and_counter(self):
         self._call({'title': 'New', 'description': '<p>old</p>', 'tags': ['a'], 'chapters': []})
         self.assertEqual(self.membership.edits_title, 1)
+        self.assertEqual(self.membership.trust_score, 11)  # +1
 
     def test_no_title_change_leaves_edits_title_unchanged(self):
         self._call({'title': 'Old', 'description': '<p>old</p>', 'tags': ['a'], 'chapters': []})
@@ -1934,14 +2132,22 @@ class UpdateContributionStatsTests(TestCase):
         self._call({'title': 'Old', 'description': '<p>old</p>', 'tags': ['a', 'b'], 'chapters': []})
         self.assertEqual(self.membership.edits_tags, 1)
 
-    def test_tag_removed_counts_one(self):
+    def test_tag_removal_scores_point_but_no_counter(self):
+        # Counter credits tags ADDED only; a pure removal adds 0 to the counter.
         self._call({'title': 'Old', 'description': '<p>old</p>', 'tags': [], 'chapters': []})
-        self.assertEqual(self.membership.edits_tags, 1)
+        self.assertEqual(self.membership.edits_tags, 0)
 
-    def test_two_tags_added_one_removed_counts_three(self):
-        # original=['a'], new=['b','c'] → removed={'a'}, added={'b','c'} → delta=3
+    def test_two_tags_added_one_removed_counts_added_only(self):
+        # original=['a'], new=['b','c'] → added={'b','c'} → counter 2 (removal not counted)
         self._call({'title': 'Old', 'description': '<p>old</p>', 'tags': ['b', 'c'], 'chapters': []})
-        self.assertEqual(self.membership.edits_tags, 3)
+        self.assertEqual(self.membership.edits_tags, 2)
+
+    def test_three_fields_award_sweep_bonus(self):
+        # title + description + tags = 3 core fields → +1+1+1 +2 bonus = 5.
+        points, _ = update_contribution_stats(
+            self.membership, {'title': 'New', 'description': '<p>new</p>', 'tags': ['a', 'b']},
+            self.original, is_first=False)
+        self.assertEqual(points, 5)
 
     def test_chapter_change_counts_chapter_items(self):
         new_chaps = {'version': '1.2.0', 'chapters': [{'startTime': 0, 'title': 'A'}, {'startTime': 60, 'title': 'B'}]}
@@ -1951,6 +2157,17 @@ class UpdateContributionStatsTests(TestCase):
     def test_description_change_increments_edits_descriptions(self):
         self._call({'title': 'Old', 'description': '<p>new</p>', 'tags': ['a'], 'chapters': []})
         self.assertEqual(self.membership.edits_descriptions, 1)
+
+    def test_sequence_fields_credit_edits_sequence(self):
+        # Trusted-path sequence edits must credit edits_sequence (one per present
+        # field) so a later rollback's decrement is a wash, not a clamp at 0.
+        self._call({'title': 'Old', 'description': '<p>old</p>', 'tags': ['a'],
+                    'chapters': [], 'season_number': 2, 'episode_type': 'bonus'})
+        self.assertEqual(self.membership.edits_sequence, 2)
+
+    def test_no_sequence_fields_leaves_edits_sequence_unchanged(self):
+        self._call({'title': 'New', 'description': '<p>old</p>', 'tags': ['a'], 'chapters': []})
+        self.assertEqual(self.membership.edits_sequence, 0)
 
     def test_first_responder_flag_increments_count(self):
         self._call({'title': 'Old', 'description': '<p>old</p>', 'tags': ['a'], 'chapters': []}, is_first=True)
@@ -2006,7 +2223,9 @@ class SubmitEpisodeEditTrustedPathTests(TestCase):
     def test_trusted_edit_awards_trust_and_increments_title_counter(self):
         self._submit({'title': 'Updated', 'description': '<p>hi</p>', 'tags': ['old'], 'chapters': []})
         mem = NetworkMembership.objects.get(user=self.user, network=self.network)
-        self.assertEqual(mem.trust_score, 55)
+        # Only title changed (desc/tags/chapters match) on a first edit:
+        # +1 title +1 first-responder = +2 → 52.
+        self.assertEqual(mem.trust_score, 52)
         self.assertEqual(mem.edits_title, 1)
 
     def test_trusted_edit_counts_tag_delta_not_just_one(self):
@@ -2967,6 +3186,194 @@ class SupersedeSpeakerEditsTests(TestCase):
         self.assertEqual(fold_speaker_mappings(self.ep.id), {})
 
 
+# ── 8c. backfill_speaker_ids command (Phase 6, §6) ───────────────────────────
+
+@override_settings(**TRANSCRIPTION_SETTINGS)
+class BackfillSpeakerIdsTests(TestCase):
+    """One-time conversion: recover the speaker_id base for the existing catalogue
+    (lossless from whisper_raw, degraded fallback otherwise) + retroactive
+    edits_speakers recompute."""
+
+    def setUp(self):
+        from django.core.management import call_command
+        from io import StringIO
+        self._call = call_command
+        self._StringIO = StringIO
+        self.tmp = tempfile.mkdtemp()
+        self._media = override_settings(MEDIA_ROOT=self.tmp)
+        self._media.enable()
+        self.net, self.pod, self.ep = _make_fixture()
+        self.user = User.objects.create_user(username=f'bf-{self.ep.id}')
+        self.transcript = Transcript.objects.create(
+            episode=self.ep, status=Transcript.Status.COMPLETED, language='en',
+        )
+
+    def tearDown(self):
+        self._media.disable()
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    # -- helpers ------------------------------------------------------------
+    def _write_legacy_words(self, segments, *, version='1.0.0', header=None):
+        """Write a pre-1.1.0 .words file (no speaker_id) + stub sibling formats."""
+        for ext in ('vtt', 'srt', 'json', 'html'):
+            p = transcript_path(self.ep.id, ext)
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_bytes(b'stub')
+        doc = {'version': version}
+        doc.update(header or {'language': 'en', 'model': 'medium.en',
+                              'transcribed_at': '2026-01-01T00:00:00'})
+        doc['segments'] = segments
+        wp = transcript_path(self.ep.id, 'words')
+        wp.write_bytes(json.dumps(doc).encode('utf-8'))
+
+    def _write_raw(self, asr_json):
+        raw = transcript_path(self.ep.id, 'vtt').parent / f'{self.ep.id}.whisper_raw.txt'
+        raw.parent.mkdir(parents=True, exist_ok=True)
+        raw.write_text(asr_json, encoding='utf-8')
+
+    def _read_words(self):
+        return json.loads(transcript_path(self.ep.id, 'words').read_bytes().decode('utf-8'))
+
+    def _approve(self, mappings, *, resolved_at=None):
+        return EpisodeEditSuggestion.objects.create(
+            episode=self.ep, user=self.user,
+            suggested_data={'speaker_mappings': mappings},
+            original_data={'speaker_mappings': {}},
+            status=EpisodeEditSuggestion.Status.APPROVED,
+            resolved_at=resolved_at or timezone.now(),
+        )
+
+    def _run(self, *args, scope=None):
+        out = self._StringIO()
+        scope = scope or f'--episode={self.ep.id}'
+        self._call('backfill_speaker_ids', scope, *args, stdout=out, stderr=self._StringIO())
+        return out.getvalue()
+
+    # -- tests --------------------------------------------------------------
+    def test_skips_already_110(self):
+        self._write_legacy_words(
+            [{'startTime': 0, 'endTime': 1, 'body': 'Hi', 'speaker_id': 'SPEAKER_00', 'speaker': 'Jim'}],
+            version='1.1.0',
+        )
+        before = transcript_path(self.ep.id, 'words').read_bytes()
+        out = self._run('--apply', '--skip-recompute')
+        self.assertIn('skipped', out)
+        self.assertEqual(transcript_path(self.ep.id, 'words').read_bytes(), before)
+
+    def test_whisper_raw_recovers_id_and_folds_names(self):
+        self._write_legacy_words(
+            [{'startTime': 0, 'endTime': 2, 'body': 'Hello', 'speaker': 'SPEAKER_00'}],
+        )
+        self._write_raw(_MOCK_ASR_JSON)  # two SPEAKER_XX segments
+        self._approve({'SPEAKER_00': 'Jim'})
+        self._run('--apply', '--skip-recompute')
+        doc = self._read_words()
+        self.assertEqual(doc['version'], '1.1.0')
+        # Pristine speaker_id recovered from the raw dump; name resolved via fold.
+        self.assertEqual(doc['segments'][0]['speaker_id'], 'SPEAKER_00')
+        self.assertEqual(doc['segments'][0]['speaker'], 'Jim')
+        # The unmapped second speaker keeps its raw label.
+        self.assertEqual(doc['segments'][1]['speaker_id'], 'SPEAKER_01')
+        self.assertEqual(doc['segments'][1]['speaker'], 'SPEAKER_01')
+
+    def test_preserves_existing_header_metadata(self):
+        self._write_legacy_words(
+            [{'startTime': 0, 'endTime': 2, 'body': 'Hello', 'speaker': 'SPEAKER_00'}],
+            header={'language': 'es', 'model': 'large-v3', 'transcribed_at': '2025-05-05T05:05:05',
+                    'title': 'Recovery Title', 'audio_url': 'https://x/a.mp3'},
+        )
+        self._write_raw(_MOCK_ASR_JSON)
+        self._run('--apply', '--skip-recompute')
+        doc = self._read_words()
+        self.assertEqual(doc['model'], 'large-v3')
+        self.assertEqual(doc['transcribed_at'], '2025-05-05T05:05:05')
+        self.assertEqual(doc['language'], 'es')
+        self.assertEqual(doc['title'], 'Recovery Title')
+
+    def test_rolled_back_edit_reconciles_and_logs_name_change(self):
+        # File still bakes in 'Jim' (old broken rollback), but the edit is
+        # ROLLED_BACK so the fold drops it → name reverts to the raw label.
+        self._write_legacy_words(
+            [{'startTime': 0, 'endTime': 2, 'body': 'Hello', 'speaker': 'Jim'}],
+        )
+        self._write_raw(_MOCK_ASR_JSON)
+        edit = self._approve({'SPEAKER_00': 'Jim'})
+        edit.status = EpisodeEditSuggestion.Status.ROLLED_BACK
+        edit.save()
+        out = self._run('--apply', '--skip-recompute')
+        self.assertIn('names', out)
+        doc = self._read_words()
+        self.assertEqual(doc['segments'][0]['speaker'], 'SPEAKER_00')
+
+    def test_fallback_seeds_id_from_speaker_when_raw_missing(self):
+        self._write_legacy_words(
+            [{'startTime': 0, 'endTime': 2, 'body': 'Hello', 'speaker': 'Aron'}],
+        )
+        out = self._run('--apply', '--skip-recompute')
+        self.assertIn('seeded', out)
+        doc = self._read_words()
+        self.assertEqual(doc['version'], '1.1.0')
+        self.assertEqual(doc['segments'][0]['speaker_id'], 'Aron')
+        self.assertEqual(doc['segments'][0]['speaker'], 'Aron')
+
+    def test_preview_writes_nothing(self):
+        self._write_legacy_words(
+            [{'startTime': 0, 'endTime': 2, 'body': 'Hello', 'speaker': 'SPEAKER_00'}],
+        )
+        self._write_raw(_MOCK_ASR_JSON)
+        before = transcript_path(self.ep.id, 'words').read_bytes()
+        out = self._run('--skip-recompute')  # no --apply
+        self.assertIn('would', out)
+        self.assertEqual(transcript_path(self.ep.id, 'words').read_bytes(), before)
+
+    def test_r2_resident_hash_checks_and_bumps_version(self):
+        # version>=1 + R2 enabled → write via the §4 hash-check path, bump version.
+        self.transcript.version = 3
+        self.transcript.save()
+        legacy = json.dumps({
+            'version': '1.0.0', 'language': 'en', 'model': 'm', 'transcribed_at': 't',
+            'segments': [{'startTime': 0, 'endTime': 1, 'body': 'Hi', 'speaker': 'Aron'}],
+        }).encode('utf-8')
+        puts = []
+        with override_settings(R2_MEDIA_ENABLED=True), \
+             mock.patch('pod_manager.management.commands.backfill_speaker_ids.read_transcript_bytes',
+                        return_value=legacy), \
+             mock.patch('pod_manager.services.r2_storage.media_object_etag', return_value=None), \
+             mock.patch('pod_manager.services.r2_storage.put_media_object',
+                        side_effect=lambda k, c, ct: puts.append(k)):
+            self._run('--apply', '--skip-recompute')
+        self.transcript.refresh_from_db()
+        self.assertEqual(self.transcript.version, 4)  # bumped (all 5 formats "changed")
+        self.assertEqual(len(puts), 5)
+
+    def test_recompute_sets_edits_speakers_idempotently(self):
+        from datetime import timedelta
+        # A migrated .words so the per-transcript loop cleanly skips this episode.
+        self._write_legacy_words(
+            [{'startTime': 0, 'endTime': 1, 'body': 'Hi', 'speaker_id': 'SPEAKER_00', 'speaker': 'A.Ron'}],
+            version='1.1.0',
+        )
+        m = NetworkMembership.objects.create(user=self.user, network=self.net,
+                                             edits_speakers=99, trust_score=42)
+        t0 = timezone.now()
+        self._approve({'SPEAKER_00': 'Jim'}, resolved_at=t0)                       # +1 naming
+        self._approve({'SPEAKER_00': 'A.Ron'}, resolved_at=t0 + timedelta(minutes=1))  # +1 correction
+        # A rolled-back edit must not count.
+        rb = self._approve({'SPEAKER_01': 'Bob'}, resolved_at=t0 + timedelta(minutes=2))
+        rb.status = EpisodeEditSuggestion.Status.ROLLED_BACK
+        rb.save()
+
+        self._run('--apply', scope=f'--network={self.net.slug}')
+        m.refresh_from_db()
+        self.assertEqual(m.edits_speakers, 2)
+        self.assertEqual(m.trust_score, 42)  # trust never re-credited
+
+        # Idempotent: a second run leaves it at 2.
+        self._run('--apply', scope=f'--network={self.net.slug}')
+        m.refresh_from_db()
+        self.assertEqual(m.edits_speakers, 2)
+
+
 # ── 9. serve_transcript view ─────────────────────────────────────────────────
 
 @override_settings(**TRANSCRIPTION_SETTINGS)
@@ -3797,7 +4204,8 @@ class CrossPublishSuggestionTests(TestCase):
         edit.refresh_from_db()
         self.assertEqual(edit.status, 'approved')
         self.membership.refresh_from_db()
-        self.assertEqual(self.membership.trust_score, 6)  # +1
+        # Cross-publish is no longer scored (owner/admin-only, not a contribution).
+        self.assertEqual(self.membership.trust_score, 5)
 
     def test_rollback_restores_previous_link_set(self):
         edit = self._pending_edit([self.target.id])

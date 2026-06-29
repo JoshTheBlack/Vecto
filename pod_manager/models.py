@@ -808,9 +808,16 @@ class EpisodeEditSuggestion(models.Model):
 
     status = models.CharField(max_length=20, choices=Status.choices, default=Status.PENDING)
     is_first_responder = models.BooleanField(default=False)
-    # Trust/counter delta banked at approval so rollback reverses the exact amount
+    # Trust delta banked at approval so rollback reverses the exact amount
     # without recomputation (transcript_rollback.md §3.4 — speaker edits).
     points = models.IntegerField(default=0)
+    # Per-counter NetworkMembership deltas this edit credited at approval, e.g.
+    # {"edits_tags": 3, "edits_chapters": 2, "edits_sequence": 1}. Rollback
+    # decrements exactly these, so a multi-tag/chapter edit is an exact wash
+    # (points stays the TRUST delta). Empty for pre-feature rows → rollback skips
+    # the counter decrement; a future counter just appears here and is reversed
+    # generically, with edits missing the key left untouched.
+    counter_deltas = models.JSONField(default=dict, blank=True)
     
     created_at = models.DateTimeField(auto_now_add=True)
     resolved_at = models.DateTimeField(null=True, blank=True)

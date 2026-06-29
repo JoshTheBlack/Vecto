@@ -197,6 +197,69 @@ def write_transcript_file(episode_id: int, ext: str, content: bytes) -> str:
     return str(p.relative_to(settings.MEDIA_ROOT))
 
 
+def _is_plain_md5(etag: str) -> bool:
+    """True if an R2 ETag is a bare 32-char MD5 hex (a single, non-multipart
+    PUT) rather than a multipart marker like ``<md5>-<part-count>``."""
+    return len(etag) == 32 and all(c in '0123456789abcdef' for c in etag.lower())
+
+
+def _r2_format_matches(key: str, new_bytes: bytes) -> bool:
+    """True if the R2 object at `key` already holds exactly `new_bytes`, so the
+    PUT can be skipped (§4). Compares md5(new_bytes) to the object's ETag (a
+    cheap Class B HEAD). For a single-PUT object the ETag IS the body's md5 hex,
+    so the compare is exact; if it isn't a plain md5 (multipart), fall back to a
+    GET (edge-cached, Class B) and hash the body. A missing object → no match
+    (must PUT)."""
+    from pod_manager.services.r2_storage import get_media_object, media_object_etag
+
+    etag = media_object_etag(key)
+    if etag is None:
+        return False
+    if _is_plain_md5(etag):
+        return etag.lower() == hashlib.md5(new_bytes).hexdigest()
+    # Multipart / non-md5 ETag — compare the actual bytes.
+    try:
+        existing, _ = get_media_object(key)
+    except Exception:
+        return False
+    return existing == new_bytes
+
+
+def write_transcript_formats(
+    episode_id: int, rendered: list[tuple[str, bytes]],
+) -> tuple[dict[str, str], list[str]]:
+    """Idempotently write rendered transcript formats; return ({ext: marker},
+    changed_exts).
+
+    On R2 (R2_MEDIA_ENABLED) each format is hash-checked against the live object
+    and only changed formats are PUT (§4) — a HEAD is Class B (cheap), a PUT is
+    Class A, so unchanged formats cost only a HEAD. Locally (R2 disabled) every
+    format is written to MEDIA_ROOT (disk writes are free) and reported changed.
+
+    The marker (R2 key or MEDIA_ROOT-relative path) is deterministic from id+ext,
+    so it is returned for every format whether or not its bytes changed; callers
+    persist the markers and bump Transcript.version only when changed_exts is
+    non-empty — and only after this call returns (all writes succeeded), so a
+    mid-write failure can't leave a version-advanced, partially-updated set.
+    """
+    markers: dict[str, str] = {}
+    changed: list[str] = []
+    if settings.R2_MEDIA_ENABLED:
+        from pod_manager.services.r2_storage import put_media_object
+        for ext, content in rendered:
+            key = transcript_r2_key(episode_id, ext)
+            markers[ext] = key
+            if _r2_format_matches(key, content):
+                continue
+            put_media_object(key, content, CONTENT_TYPES[ext])
+            changed.append(ext)
+    else:
+        for ext, content in rendered:
+            markers[ext] = write_transcript_file(episode_id, ext, content)
+            changed.append(ext)
+    return markers, changed
+
+
 def read_transcript_bytes(episode_id: int, ext: str, version: int) -> bytes:
     """Read one transcript format's bytes.
 
@@ -446,22 +509,29 @@ def _to_words_json(segments: list, *, metadata: dict | None = None) -> bytes:
             "endTime":   seg["end"],
             "body":      seg["text"].strip(),
         }
+        # speaker_id is the immutable diarization anchor (written once at parse
+        # time); speaker is the current resolved name. .words carries BOTH — the
+        # feed formats (vtt/srt/json/html) keep emitting `speaker` only, so
+        # speaker_id never reaches an external client. (schema >= 1.1.0)
+        if seg.get("speaker_id"):
+            entry["speaker_id"] = seg["speaker_id"]
         if seg.get("speaker"):
             entry["speaker"] = seg["speaker"]
         if seg.get("words"):
             entry["words"] = [
                 {k: v for k, v in {
-                    "word":      w.get("word"),
-                    "startTime": w.get("start"),
-                    "endTime":   w.get("end"),
-                    "score":     w.get("score"),
-                    "speaker":   w.get("speaker"),
+                    "word":       w.get("word"),
+                    "startTime":  w.get("start"),
+                    "endTime":    w.get("end"),
+                    "score":      w.get("score"),
+                    "speaker_id": w.get("speaker_id"),
+                    "speaker":    w.get("speaker"),
                 }.items() if v is not None}
                 for w in seg["words"]
                 if w.get("start") is not None and w.get("end") is not None
             ]
         out_segments.append(entry)
-    doc = {"version": "1.0.0"}
+    doc = {"version": "1.1.0"}
     if metadata:
         doc.update(metadata)
     doc["segments"] = out_segments
@@ -484,11 +554,33 @@ def _parse_srt_timestamp(ts: str) -> float:
     return int(h) * 3600 + int(m) * 60 + int(s) + int(ms) / 1000
 
 
+def _stamp_speaker_ids(segments: list) -> list:
+    """Seed the write-once `speaker_id` from the raw diarization label carried in
+    `speaker`, at segment and word level. Called at parse time so every freshly
+    parsed transcript is born with its immutable SPEAKER_XX anchor — the base the
+    speaker-label edit chain replays over (see transcript_rollback.md §3).
+
+    Idempotent: only sets `speaker_id` where it is not already present, so a
+    re-parse never rewrites the anchor. Segments/words with no diarization label
+    (e.g. the SRT fallback) get no speaker_id. Mutates and returns `segments`.
+    """
+    for seg in segments:
+        if seg.get('speaker') is not None and seg.get('speaker_id') is None:
+            seg['speaker_id'] = seg['speaker']
+        for w in seg.get('words', None) or []:
+            if w.get('speaker') is not None and w.get('speaker_id') is None:
+                w['speaker_id'] = w['speaker']
+    return segments
+
+
 def _parse_whisper_response(text: str, fallback_language: str) -> tuple[list, str]:
     """Parse whisper ASR response text into (segments, language).
 
     Primary format: SRT (what this whisper build returns for output=srt).
     Fallback: single JSON object with a top-level "segments" key.
+
+    Each parsed segment/word is stamped with a write-once `speaker_id` (the raw
+    diarization label) — the immutable base for speaker-label replay (§3.5).
 
     SRT block structure:
         <index>
@@ -502,7 +594,7 @@ def _parse_whisper_response(text: str, fallback_language: str) -> tuple[list, st
     # --- attempt 1: JSON object with top-level "segments" key (primary format) ---
     try:
         data = json.loads(text)
-        return data.get('segments', []), data.get('language', fallback_language)
+        return _stamp_speaker_ids(data.get('segments', [])), data.get('language', fallback_language)
     except json.JSONDecodeError:
         pass
 
@@ -510,7 +602,7 @@ def _parse_whisper_response(text: str, fallback_language: str) -> tuple[list, st
     srt_segments = _parse_srt(text)
     if srt_segments:
         logger.debug("transcribe: parsed response as SRT (%d segments)", len(srt_segments))
-        return srt_segments, fallback_language
+        return _stamp_speaker_ids(srt_segments), fallback_language
 
     # --- attempt 3: strip a non-JSON prefix line and retry ---
     lines = text.splitlines()
@@ -521,7 +613,7 @@ def _parse_whisper_response(text: str, fallback_language: str) -> tuple[list, st
         try:
             data = json.loads(candidate)
             logger.debug("transcribe: parsed JSON after skipping %d line(s)", skip)
-            return data.get('segments', []), data.get('language', fallback_language)
+            return _stamp_speaker_ids(data.get('segments', [])), data.get('language', fallback_language)
         except json.JSONDecodeError:
             continue
 
@@ -955,23 +1047,26 @@ def run_transcription(
             # title / GUIDs / audio_url for post-DB-rebuild recovery matching.
             **episode_recovery_metadata(episode),
         }
-        written = {}
-        for ext, content in [
+        # Idempotent write: hash-check every format and PUT only those that
+        # changed (§4). All writes complete here before the version bump below,
+        # so a mid-write failure raises and leaves version untouched.
+        written, changed_formats = write_transcript_formats(episode_id, [
             ('vtt',   _to_vtt(segments)),
             ('json',  _to_podcast_index_json(segments)),
             ('srt',   _to_srt(segments)),
             ('html',  _to_html(segments)),
             ('words', _to_words_json(segments, metadata=words_metadata)),
-        ]:
-            written[ext] = write_transcript_file(episode_id, ext, content)
+        ])
 
-        # 7. Mark completed. Bump the cache-bust version so a re-transcribe busts
-        # the immutable cdn cache (?v=N) without a hard refresh.
+        # 7. Mark completed. Bump the cache-bust version only when ≥1 format
+        # actually changed, so a re-transcribe that produces identical bytes
+        # doesn't needlessly bust the immutable cdn cache (?v=N).
         transcript.status = Transcript.Status.COMPLETED
         transcript.completed_at = timezone.now()
         transcript.language = detected_language
         transcript.whisper_model_used = eff_model
-        transcript.version = (transcript.version or 0) + 1
+        if changed_formats:
+            transcript.version = (transcript.version or 0) + 1
         transcript.vtt_file        = written['vtt']
         transcript.json_file       = written['json']
         transcript.srt_file        = written['srt']

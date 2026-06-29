@@ -92,6 +92,23 @@ def media_object_exists(key: str) -> bool:
         return False
 
 
+def media_object_etag(key: str) -> str | None:
+    """The object's ETag with surrounding quotes stripped, or None if absent (404).
+
+    A HEAD (Class B, no body) — used by the idempotent transcript-write path to
+    skip unchanged PUTs (Class A). For a single, non-multipart PUT R2's ETag is
+    the MD5 hex of the body, so callers compare it to md5(new_bytes); a multipart
+    ETag (``<md5>-<n>``) isn't a plain md5, so the caller falls back to GET+hash.
+    """
+    from botocore.exceptions import ClientError
+    try:
+        resp = get_r2_client().head_object(Bucket=settings.R2_MEDIA_BUCKET, Key=media_object_key(key))
+    except ClientError:
+        return None
+    etag = resp.get("ETag")
+    return etag.strip('"') if etag else None
+
+
 class R2MediaStorage(S3Boto3Storage):
     """S3 backend for the vecto-cdn bucket (public, edge-cached).
 

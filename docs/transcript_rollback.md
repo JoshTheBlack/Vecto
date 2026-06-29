@@ -1,0 +1,650 @@
+# Transcript Speaker Labels — Rollback & Immutable Base (Design)
+
+> **Status:** Approved plan — implementation in progress across consecutive chat
+> windows. This document is the source of truth; each window updates it.
+
+## Implementation progress
+
+_Each implementation window appends its entry below (window, phases, what changed,
+any deviations from the plan) and ticks the phase in §10. Read this before starting._
+
+- **Window 1 — Phases 1 & 2 (§3.5, §4).** Foundational write-path changes only;
+  the replay engine (Phase 3) is untouched, so `apply_speaker_labels` keeps its
+  current mappings-argument signature and write logic for now.
+  - **Phase 1 (§3.5)** — `_parse_whisper_response` now stamps a write-once
+    `speaker_id` on every segment **and** word via a new `_stamp_speaker_ids`
+    helper (idempotent: only sets where absent; SRT-fallback / undiarized
+    segments get none). At initial transcription `speaker == speaker_id == the
+    raw SPEAKER_XX label`. `_to_words_json` emits **both** `speaker_id` and
+    `speaker` (segment + word) and the `.words` schema version is bumped
+    `1.0.0 → 1.1.0`. `_to_vtt` / `_to_srt` / `_to_podcast_index_json` / `_to_html`
+    are **unchanged** — they still emit resolved `speaker` only, so `speaker_id`
+    never reaches a feed format. (The podcast-index `json` keeps its own separate
+    `version: "1.0.0"`.)
+  - **Phase 2 (§4)** — added `media_object_etag(key)` to
+    [r2_storage.py](../pod_manager/services/r2_storage.py) (unquoted ETag via a
+    Class B HEAD, `None` on 404). New `write_transcript_formats(episode_id,
+    rendered)` in [transcription.py](../pod_manager/services/transcription.py)
+    hash-checks each format before PUT: on R2 it compares `md5(new_bytes)` to the
+    object's ETag and PUTs only changed formats, falling back to GET+hash when the
+    ETag isn't a plain 32-char md5 (multipart). Local (R2-disabled) path always
+    writes (free) and reports all formats changed. `run_transcription` now calls
+    it and bumps `Transcript.version` **only when ≥1 format changed**, after all
+    writes succeed (partial-write safety). A brand-new transcript writes all five
+    (all "changed") so version still goes 0→1 as before.
+  - **Deviations:** none from the plan. `apply_speaker_labels` deliberately left
+    on the old write path (unconditional bump, no hash-check) — it converges onto
+    `write_transcript_formats` in Phase 3 per the brief.
+  - **Tests:** added `_to_words_json` speaker_id + `1.1.0` schema assertions,
+    `_parse_whisper_response` speaker_id stamping, `MediaObjectEtagTests`, and
+    `WriteTranscriptFormatsR2Tests` (skip-unchanged / put-missing / multipart
+    fallback). Full suite (390 tests, incl. the new ones) green via
+    `./.venv/Scripts/python.exe manage.py test`.
+
+## 1. Problem
+
+Speaker name matching (the **Speaker Labels** form on the episode page) currently
+mutates transcripts **destructively**:
+
+- `apply_speaker_labels()` ([services/transcription.py](../pod_manager/services/transcription.py))
+  reads the *current* `.words` JSON, replaces `segment.speaker` / `word.speaker`
+  in place by key lookup, regenerates all five formats, and bumps
+  `Transcript.version`. The R2 key is version-independent
+  (`transcripts/{id//1000}/{id}.{ext}`) and is **overwritten in place**.
+- Submissions are keyed on whatever name is *currently displayed*, so once
+  `SPEAKER_00 → Aron` is applied, the label `SPEAKER_00` no longer exists in the
+  stored data.
+
+Consequences:
+
+1. **Rollback is documented but not implemented.** `_handle_rollback_single_edit`
+   and `_handle_bulk_rollback` ([views/creator/actions.py](../pod_manager/views/creator/actions.py))
+   only restore `title/description/tags/chapters/cross_publish` — they never
+   touch `speaker_mappings`. The `original_data={'speaker_mappings': …}` captured
+   at submit time is dead weight. A speaker-label rollback today resets the trust
+   score but leaves the griefed names baked into the files.
+2. **Griefing is unrecoverable.** A trusted (or compromised) account that maps
+   every speaker to one name collapses the diarization irreversibly — the
+   distinct `SPEAKER_XX` labels are gone, so even a hypothetical rollback can't
+   reconstruct them.
+
+## 2. Goals / Non-goals
+
+**Goals**
+- Make speaker-label edits fully reversible (single + bulk rollback).
+- Survive griefing — recover original distinct speakers even after a malicious
+  "collapse everything to one name."
+- Preserve the existing **merge** UX (two diarized speakers mapped to one name
+  render as one grouped block).
+- Add an **un-merge / split** capability the current model can't offer.
+- Keep podcast feeds and external clients **completely unaffected**.
+- Minimise R2 Class A (write) operations.
+
+**Non-goals**
+- No change to metadata-edit rollback (title/desc/tags/chapters) — that keeps its
+  existing `original_data` snapshot mechanism.
+- No change to the trust-score / auto-approve gating model.
+- No on-the-fly / per-request rendering. All formats stay pre-materialised on R2.
+
+## 3. Core design
+
+### 3.1 Immutable `speaker_id`, mutable `speaker`
+
+The `.words` JSON gains a **write-once** `speaker_id` field alongside the existing
+mutable `speaker`:
+
+| field        | meaning                              | mutated by edits? |
+|--------------|--------------------------------------|-------------------|
+| `speaker_id` | pristine diarization label (`SPEAKER_03`) | **never** |
+| `speaker`    | current resolved display name (`Aron`)    | every apply/rollback |
+
+`speaker_id` is written once at transcription time (segment **and** word level)
+and is **never** rewritten. It is the immutable base. There is **no separate
+`.words.base` / `.words.orig` file** — the anchor lives inline as a column we
+promise never to mutate.
+
+> `.words` is **not** served in podcast feeds. The `<podcast:transcript>` tags
+> emit only `vtt / json / srt / html` ([views/feeds.py](../pod_manager/views/feeds.py)).
+> `.words` is fetched only by our own episode page for word-level highlighting.
+> Therefore `speaker_id` is invisible to every external client, and the feed
+> formats are **not** changed (they keep `speaker` = resolved name only).
+
+Bump the `.words` schema version `1.0.0 → 1.1.0` to signal the new field.
+
+### 3.2 The edit chain is the source of truth
+
+Current applied state is a pure function of:
+
+```
+state = fold(approved speaker edits, ordered by resolved_at) over speaker_id base
+```
+
+Each `EpisodeEditSuggestion` with `suggested_data = {'speaker_mappings': {...}}`
+is one delta in the chain. The cumulative mapping is a last-writer-wins fold over
+the `APPROVED` (non-superseded) speaker edits for the episode, ordered by
+`resolved_at`. Submissions are **deltas** keyed on `speaker_id`; unmentioned keys
+keep their prior value.
+
+### 3.3 Apply / replay (single function)
+
+Replace the mappings-argument signature with a **recompute-from-base** function:
+
+```text
+apply_speaker_labels(episode_id):
+    1. load .words; take speaker_id per segment/word as the base
+       (ignore the current mutable `speaker`)
+    2. mapping = fold(APPROVED speaker edits for episode, by resolved_at)   # last-writer-wins per speaker_id
+    3. for each segment/word: speaker = mapping.get(speaker_id, speaker_id)
+    4. render vtt / json / srt / html / words   (words now carries speaker_id)
+    5. idempotent-write each format to R2 (see §4); store `speaker_mappings`
+       header as a cache; bump Transcript.version iff any format changed
+```
+
+- **Approve** an edit → set row `APPROVED`, then `apply_speaker_labels(episode_id)`.
+- **Rollback** an edit → set row `ROLLED_BACK`, then `apply_speaker_labels(episode_id)`.
+
+Same function rebuilds "current state from base + remaining chain" in every case.
+
+**Call sites to converge.** The new no-arg `apply_speaker_labels(episode_id)`
+replaces every current invocation that passed a mappings dict:
+`edits.apply_approved_edit` (the `speaker_mappings` branch), the trusted-submit
+path in `submit_speaker_labels` ([views/creator/main.py](../pod_manager/views/creator/main.py)),
+and the approve handler in `actions.py`. Speaker edits are always **speaker-only**
+(created exclusively via `submit_speaker_labels`, never mixed with metadata), so
+replay never has to reconcile with the partial-approval/points machinery.
+
+**Concurrency — per-episode lock (required).** Replay is a read-modify-write on
+`.words` + a non-atomic `Transcript.version` bump, so two concurrent approvals (or
+an approval racing a re-transcription) can interleave and clobber each other.
+**Solution:** run the whole replay inside a DB transaction and take
+`select_for_update()` on the episode's `Transcript` row at the top. The second
+writer blocks, then re-reads fresh state and recomputes; other episodes still run
+in parallel (per-row lock). **Re-transcription takes the same lock.** This is the
+correctness guarantee.
+
+This concerns the **live submit / approve / rollback path only**. The one-time
+backfill (§6) is a standalone batch job with no page-load interaction and no race,
+so it needs no lock.
+
+**Execution context (decided): synchronous / immediate.** The live apply runs
+synchronously in the request, exactly as today — the page gets the new `version`
+back right away and refetches `.words`. The per-episode lock is held only briefly
+and is invisible unless two people edit the *same* episode at the same instant.
+(No `admin`-queue indirection for the live path.)
+
+### 3.4 Rollback handlers
+
+- **Single rollback** (`_handle_rollback_single_edit`): for a speaker-only edit,
+  flip to `ROLLED_BACK` and call `apply_speaker_labels`. **The "newer approved
+  edits exist" blocker is not needed for speaker edits** — replay-from-base over
+  the remaining chain is deterministic and order-correct regardless of which edit
+  is removed. (The blocker stays for snapshot-based metadata edits.)
+- **Bulk rollback** (`_handle_bulk_rollback`): flip all the user's speaker edits
+  to `ROLLED_BACK`, then `apply_speaker_labels` once per affected episode (dedupe
+  episode ids). Trust zeroing unchanged.
+
+`original_data.speaker_mappings` is no longer load-bearing for **restore** (replay
+from base handles that), but it is **kept** — it's the audit log's before-state for
+the speaker diff (§8b). Don't drop it.
+
+**Trust accounting (decided).** Points are awarded **per speaker**, and a rollback
+is an exact wash. The award for one approved edit is:
+
+```
+prior   = cumulative mapping of already-APPROVED edits, before this one
+newly_named = # of speaker_ids in the edit whose prior value was the raw SPEAKER_XX
+              label (first-time identification)
+has_correction = any speaker_id whose prior value was already a real name and is
+                 now changed to a different name
+points  = newly_named + (1 if has_correction else 0)
+```
+
+- **First-time identification** → `+1` per speaker. Naming `SPEAKER_00 = Aron` and
+  `SPEAKER_03 = Aron` in one edit is **+2**.
+- **Correction** (renaming an already-named speaker, e.g. `Aron → Jim`) → **+1
+  flat** for the edit, regardless of how many `speaker_id`s share that name. (This
+  also discourages point-farming by re-toggling names.)
+- **Single rollback:** subtract the **exact `points` recorded on the edit** → wash.
+- **Reject** (creator rejects a still-pending, never-applied edit): existing flat
+  `−2`, unchanged.
+- **Bulk rollback** (griefer): existing behaviour — trust zeroed for the network.
+- **Supersede** (re-transcription, §7): **no** trust change — superseding isn't the
+  user's fault, so earned credit stays.
+
+Record `points` on the `EpisodeEditSuggestion` at approval so rollback reverses the
+exact amount without recomputation.
+
+**Counter on `NetworkMembership`.** Add an `edits_speakers` IntegerField alongside
+the existing `edits_title / edits_chapters / edits_tags / edits_descriptions`
+([models.py](../pod_manager/models.py)), incremented/decremented by the same
+`points` (mirrors how `update_contribution_stats` in
+[services/edits.py](../pod_manager/services/edits.py) and the rollback handlers
+adjust the other counters). Surface it on the profile page
+([profile_tabs/profile_content.html](../pod_manager/templates/pod_manager/profile_tabs/profile_content.html)):
+a counter row ("Voices Named") and a skill-tree badge branch with tiers
+(1 / 10 / 50 / 100 / 500) consistent with the existing Chapters/Tags/Descriptions
+trees.
+
+### 3.5 Transcription pipeline (new transcriptions)
+
+**This is the foundational change** — the live transcription path must populate
+`speaker_id` from the start so every new transcript is born with the immutable
+base and never needs backfill. In `run_transcription` →
+`_parse_whisper_response` → `_to_*`
+([services/transcription.py](../pod_manager/services/transcription.py)):
+
+- `_parse_whisper_response` already yields segments/words carrying the diarization
+  label in `speaker`. Carry that raw label into a **new `speaker_id`** field on
+  each segment and word (set once, here).
+- At initial transcription there are no mappings, so
+  `speaker == speaker_id == SPEAKER_XX`. The first speaker-label edit only ever
+  rewrites `speaker`; `speaker_id` is never touched again.
+- `_to_words_json` emits **both** `speaker_id` and `speaker` (segment + word
+  level). `_to_vtt` / `_to_srt` / `_to_podcast_index_json` / `_to_html` are
+  **unchanged** — they keep emitting the resolved `speaker` only, so `speaker_id`
+  never reaches the feed formats.
+- Bump the `.words` schema version to `1.1.0`.
+
+No change to ASR invocation, diarization parameters, source validation, or the
+file-write flow beyond the new field. Because new transcripts carry `speaker_id`
+natively, the §6 backfill is a **one-time** migration for the existing catalogue
+only.
+
+## 4. Idempotent R2 writes (Class A minimisation)
+
+Regeneration re-renders all five formats, but many writes are no-ops. We **never
+assume** which formats changed — we hash-check **all five** unconditionally and
+write only those that actually differ:
+
+- On **backfill**, `.words` always changes (it gains `speaker_id`). `vtt/json/srt/html`
+  are *expected* to match (they don't carry `speaker_id` and the resolved names
+  are unchanged) — but a mutation could legitimately shift them, so they are
+  verified per-format, not presumed unchanged.
+- On a **rollback to a prior state** or a **no-op edit**, some/all formats are
+  identical — again, determined by hashing, not assumption.
+
+So before each PUT, compare hashes and skip only objects that genuinely match:
+
+```text
+for ext, new_bytes in rendered:
+    existing_etag = head_object(key).ETag        # Class B (cheap, no body)
+    if existing_etag == md5_hex(new_bytes):
+        skip                                     # no Class A write
+    else:
+        put_media_object(key, new_bytes)         # Class A
+```
+
+- R2 ETag for a single (non-multipart) PUT is the MD5 hex of the body. Our
+  transcript objects are small single PUTs, so `ETag == md5(content)` holds.
+  Extend the existing `media_object_exists` HEAD helper
+  ([r2_storage.py](../pod_manager/services/r2_storage.py)) with a
+  `media_object_etag(key)` returning the unquoted ETag (or `None` on 404 → must PUT).
+- Fallback if an ETag is ever not a plain MD5 (e.g. multipart): GET the object
+  (edge-cached, Class B) and hash the body.
+- **Economics:** a HEAD is **Class B**; a PUT is **Class A**. R2's free tier gives
+  ~10× more Class B than Class A, so trading a skipped write for a HEAD is the
+  right call: across the catalog a typical backfill writes just `.words` and
+  HEAD-skips the rest — but every format is hash-verified, so any that did shift
+  is rewritten. No format is assumed unchanged.
+- **Version bump:** bump `Transcript.version` only when ≥1 format actually
+  changed. A `.words`-only change (backfill) still bumps the shared version so the
+  page re-fetches `.words`; the unchanged feed formats get a harmless edge
+  revalidation at the new `?v=N`. (A future enhancement could store per-format
+  hashes on `Transcript` to skip the HEADs entirely and/or decouple versions.)
+- **Local (R2-disabled) path:** dev without R2 writes to `MEDIA_ROOT` via
+  `write_transcript_file`. There's no ETag there — either hash the local file
+  bytes or just always write (local writes are free). The hash-check is an
+  R2-only optimisation.
+- **Partial-write safety:** render all formats and confirm all writes succeed
+  **before** bumping `version`, so a mid-write R2 failure can't leave a
+  version-advanced but partially-updated set.
+
+## 5. Front-end (episode page)
+
+Today the form derives its boxes from the distinct `seg.speaker` values
+([views/listener/main.py](../pod_manager/views/listener/main.py)) and submits
+keyed on the displayed name. Both change.
+
+### 5.1 Form data contract
+
+Each box **displays the current resolved name** but **carries the immutable
+`speaker_id`** as its hidden submit key:
+
+- box value (shown / editable) = current `speaker` (`"Aron"`)
+- `data-speaker="SPEAKER_03"` (stable)
+- submit payload = `{ "SPEAKER_03": "<typed name>" }` — always keyed on
+  `speaker_id`, never on display name.
+
+Server (`submit_speaker_labels`) validates that submitted keys are **known
+`speaker_id`s** for that episode (reject unknown keys) — also tightens grief
+resistance.
+
+**Server-side context must change too.** The page context built in
+[views/listener/main.py](../pod_manager/views/listener/main.py) currently exposes
+`transcript_speakers` (distinct `seg.speaker`) and `transcript_speaker_names`
+(the header map). The new form needs, per `speaker_id`: its current resolved name
+and its combined-group membership. Build that context from the `.words`
+`speaker_id` set + current `speaker` per id (and the header map as a convenience).
+
+### 5.2 Combined vs split toggle
+
+One **"Show individual diarized speakers"** switch drives both the form and the
+transcript display (default = combined; persist per-user in `localStorage` like
+the episode-type chips):
+
+| view | form boxes | transcript grouping ([episode_detail.html](../pod_manager/templates/pod_manager/episode_detail.html) `buildEnhancedTranscript`) | colour key |
+|------|-----------|-------------------------------|-----------|
+| **Combined** (default) | one per **distinct current name** (2) | group consecutive segments by `seg.speaker` (resolved name) → merged `ARON` block | `seg.speaker` → one colour per name |
+| **Split** | one per **`speaker_id`** (4) | group by `seg.speaker_id` → `ARON·0` / `ARON·3` as separate runs | `seg.speaker_id` → distinct shade + badge |
+
+```
+            ┌─ default (combined) ──────┐   ┌─ "Show diarized speakers" ─┐
+display     │ ▍ARON   (00+03, 1 colour) │   │ ▍ARON·0   (SPEAKER_00)     │
+            │ ▍JIM    (01+02, 1 colour) │   │ ▍ARON·3   (SPEAKER_03)     │
+            └───────────────────────────┘   │ ▍JIM·1 / ▍JIM·2            │
+form        [Aron] [Jim]   ← 2, grouped      [Aron][Aron][Jim][Jim] ← 4, per-id
+submit      fan-out to ids in group          one SPEAKER_XX each
+```
+
+- **Combined edit** fans the typed name across every `speaker_id` in the group:
+  renaming combined `Aron` → `A.Ron` submits `{SPEAKER_00:"A.Ron", SPEAKER_03:"A.Ron"}`.
+- **Split edit** targets one `speaker_id`: this is how a user **un-merges** —
+  setting `SPEAKER_03` to a different name than `SPEAKER_00`. The split view is
+  also the answer to "which paragraphs were `SPEAKER_03`?" — the merged `ARON`
+  block visually breaks apart by `speaker_id` so the user can see and target it.
+
+The merge UX is preserved verbatim: the served `.words` still carries resolved
+names in `seg.speaker`, so combined grouping/colouring is byte-for-byte what it is
+today; `speaker_id` only *adds* the split capability.
+
+## 6. Backfill (existing transcripts)
+
+Lossless reconstruction from the raw ASR dump — **no re-transcription**.
+
+`{episode_id}.whisper_raw.txt` is saved next to the transcript files (on the
+container's mounted `MEDIA_ROOT`) whenever `WHISPER_KEEP_SOURCE_AUDIO=True`
+([transcription.py](../pod_manager/services/transcription.py)). The **Unraid
+Docker deployment** — the primary environment where transcription runs — has this
+enabled, so the raw dumps exist on that storage for virtually all transcripts. It
+is the raw `asr.text`, re-parseable via `_parse_whisper_response` into pristine
+segments with word-level `SPEAKER_XX`.
+
+> **Local-first, mixed storage.** Most transcripts are **not yet in R2** (some
+> are). Backfill writes each transcript back to **wherever it currently lives**:
+> - **Local-only** (the majority): rewrite the local `MEDIA_ROOT` files in place —
+>   free disk writes, **no R2 I/O**. The existing `backfill_transcripts_to_r2`
+>   command later pushes the already-correct files up (one PUT each). Local-first
+>   avoids "push then rewrite" and saves a large number of Class A operations.
+> - **Already in R2**: update R2 in place with the §4 hash-check (typically only
+>   `.words` changes, so usually a single PUT).
+>
+> Either way `whisper_raw.txt` is read from local disk.
+
+**Idempotent / resumable (decided).** Check the existing `.words` schema version
+first and **skip anything already at `1.1.0`** (i.e. already carrying
+`speaker_id`), so re-runs don't redo finished transcripts. The check reads the
+`.words` `version` field (free for local; one Class B read for R2). Optionally
+record a per-`Transcript` flag once migrated to skip even that read on re-runs.
+
+Backfill management command (preview unless `--apply`), per episode:
+
+```text
+for each episode with a completed transcript:
+    if existing .words schema >= 1.1.0:               # already migrated
+        skip
+        continue
+    if {id}.whisper_raw.txt exists:
+        segments = _parse_whisper_response(raw)        # pristine SPEAKER_XX, word level
+        speaker_id = SPEAKER_XX from the raw parse     # write-once
+        mapping = fold(APPROVED speaker edits)         # re-apply existing names
+        speaker = mapping.get(speaker_id, speaker_id)
+        header = preserve existing .words metadata     # transcribed_at, model, language, anchors
+        if any name differs from the current file:     # excluded ROLLED_BACK edits
+            log {episode_id, before -> after}          # for post-run review
+        render 5 formats (words now carries speaker_id)
+        write back to wherever the transcript lives:
+            local -> plain local writes (free)
+            R2    -> §4 hash-check, PUT only changed
+    else:                                              # fallback: raw missing
+        speaker_id = current seg.speaker               # degraded: split == combined,
+                                                       # no un-merge until re-transcribed
+# local files are later pushed by backfill_transcripts_to_r2 (separate step)
+```
+
+- Where raw exists → fully lossless, distinct `SPEAKER_XX` recovered even for
+  already-mapped episodes.
+- Where raw is missing → `speaker_id` seeded from the current resolved name (note:
+  this seeds `speaker_id` with a *name*, not a `SPEAKER_XX` label, and collapses
+  any previously-merged speakers into one id); the episode works and is reversible
+  going forward but can't be split until a future re-transcription regenerates a
+  true base.
+
+**Gotchas the backfill command must handle:**
+
+- **Preserve original metadata.** Regenerating `.words` must keep the existing
+  header's `transcribed_at`, `model`, language, and recovery anchors (read from
+  the current `.words` header / `Transcript` row) — do **not** stamp "now" or the
+  current model. Only `speaker_id` is added.
+- **Runs local-first, before the R2 push** (see the note above) — no R2
+  prerequisite; it operates on the not-yet-mirrored local files.
+- **It reconciles historically-broken speaker rollbacks (accepted, logged).**
+  Because today's speaker "rollback" never un-applied names, a few test episodes'
+  files include the effect of edits now marked `ROLLED_BACK`. The chain fold
+  **excludes** `ROLLED_BACK` edits, so backfill retroactively completes those
+  rollbacks and changes the displayed names there. This is accepted; the command
+  **logs every episode whose names change** (`before -> after`) for post-run
+  review. Expected to be a handful (test rollbacks only).
+- **Idempotent / re-runnable.** Skips transcripts already at schema `1.1.0`, and
+  re-parses `whisper_raw.txt` (not the live `.words`) so repeated runs are stable.
+
+## 7. Re-transcription
+
+A fresh diarization renumbers speakers (`SPEAKER_00` in v2 ≠ v1), so the old edit
+chain no longer lines up. On re-transcription:
+
+1. Write the new `.words` with `speaker_id` from the fresh diarization.
+2. Mark all prior `APPROVED` / `PENDING` speaker edits for the episode
+   **`SUPERSEDED`** (new status) — retained for audit & trust history, excluded
+   from replay.
+3. Names reset to raw labels (empty chain); users re-label against the new base.
+
+## 8. Data-model changes
+
+- `EpisodeEditSuggestion.Status`: ensure `ROLLED_BACK` (already used by rollback
+  code) and add `SUPERSEDED`. Migration required.
+- `NetworkMembership`: add `edits_speakers` and `edits_sequence` IntegerFields
+  (default 0). One migration. (No cross-publish counter — §8a locks it to
+  owner/admin, out of the contribution system.)
+- `EpisodeEditSuggestion`: add `points` (IntegerField) recorded at approval so
+  rollback reverses the exact trust/counter delta (used by speaker edits; can also
+  simplify the metadata-edit reversal later).
+- `.words` schema: add `speaker_id` (segment + word), bump version to `1.1.0`
+  (also the backfill idempotency marker).
+- Optional later: per-format content hashes on `Transcript` to skip HEADs; and/or
+  a per-`Transcript` "speaker_id backfilled" flag to skip the re-run version read.
+- `r2_storage`: add `media_object_etag(key)`.
+
+## 8a. Edit-pipeline cleanup (adjacent scope)
+
+Audit of `submit_episode_edit` + the approve handler
+([views/creator/actions.py](../pod_manager/views/creator/actions.py)) found four
+**community-submittable** edit types (the form is **not** `is_owner`-gated:
+[episode_detail.html](../pod_manager/templates/pod_manager/episode_detail.html))
+that **award trust but have no `NetworkMembership` counter and no profile surface**.
+Two outcomes: track the sequence edits; **lock cross-publish to owner/admin.**
+
+| Field | Trust on approve | Decision |
+|-------|------------------|----------|
+| `season_number`  | `+1` | track via `edits_sequence` |
+| `episode_number` | `+1` | track via `edits_sequence` |
+| `episode_type`   | `+1` | track via `edits_sequence` |
+| `cross_publish_podcast_ids` | `+1` | **remove from community path — owner/admin only** |
+
+### Track the sequence edits
+
+- **`edits_sequence`** — one counter for the "iTunes / Sequence Metadata" section
+  (`season_number` + `episode_number` + `episode_type`), incremented per approved
+  field in that group (matches how the edit form groups them). Decrement on
+  rollback. Profile row: e.g. "Episodes Sequenced". (Granularity adjustable —
+  could be three counters; grouped recommended.) Skill-tree badges optional (the
+  `edits_title` "Titles Scribed" stat is counter-only today, a fine precedent.)
+
+### Lock down cross-publish (owner/admin only)
+
+Deciding which shows an episode appears in is a privileged action — a non-owner
+should not be able to suggest placing an episode in another show's feed. Owners
+already have a dedicated, owner-gated control (`manage_episode` →
+`update_cross_publish`, [publish.py:217-258](../pod_manager/views/creator/publish.py#L217-L258)),
+so cross-publish leaves the community-suggestion pipeline entirely:
+
+- **Template** — remove the `editCrossPublish` section from the community
+  suggestion form (the separate owner `ownerCrossPublishForm` stays).
+- **Client JS** — stop adding `cross_publish_podcast_ids` to the suggestion
+  payload.
+- **`submit_episode_edit`** — **server-side gate (authoritative):** drop
+  `cross_publish_podcast_ids` from the payload unless the user is owner/admin, so a
+  crafted POST can't bypass the hidden UI.
+- **Owner action covers admin** — extend `_require_owner` (or the
+  `update_cross_publish` gate) to also allow `is_staff` / `is_superuser`, so
+  "owner **and** admin" both manage cross-publish.
+- **No contribution counter** — cross-publish is no longer a community
+  contribution, so it earns no trust and gets no profile stat.
+- **Back-compat** — keep the existing cross-publish handling in
+  `apply_approved_edit` / `snapshot_episode` / the rollback handlers so any
+  **in-flight** suggestion rows still resolve; only *new* submissions are blocked.
+
+## 8b. Review surfaces (approval desk + audit log)
+
+Audit of the inbox ([tab_inbox.html](../pod_manager/templates/pod_manager/creator_tabs/tab_inbox.html))
+and audit log ([tab_audit_log.html](../pod_manager/templates/pod_manager/creator_tabs/tab_audit_log.html)),
+fed by `_annotate_edit_changes` / `gather_inbox`
+([views/creator/data.py](../pod_manager/views/creator/data.py)):
+
+| Field | Approval desk | Audit log |
+|-------|---------------|-----------|
+| title / description / tags / chapters | ✓ approve + diff | ✓ before→after |
+| season / episode# / type | ✓ approve (`metadata-scalars`) | ✓ before→after |
+| cross-publish | ✓ approve | ✓ before→after (legacy after §8a lockdown) |
+| **speaker labels** | ⚠ approve, but **suggested-only** (no before-state) | ✓ suggested + "Previous:" |
+
+Everything is surfaced; the only gap is the **inbox speaker block shows no
+current/before name**, so a *correction* (rename of an already-named speaker)
+isn't legible. Adds:
+
+- **`_annotate_edit_changes`** — add an `edit.speaker_changed` flag and a structured
+  per-speaker diff `[(speaker_id, before_name, after_name)]`, so both surfaces
+  render a consistent before→after instead of the templates reading the raw dicts.
+- **`gather_inbox`** — expose the **current** resolved name per `speaker_id` (like
+  the existing `current_title` / `current_tags`), since for a pending edit the live
+  name may differ from the submit-time snapshot. Optionally a `speaker_conflict`
+  flag mirroring the other `*_conflict` flags.
+- **Inbox template** — render `SPEAKER_03: Aron → Jim` (before→after) in the
+  speaker block, matching how the scalar fields show their diff.
+- **Audit template** — already shows "Previous:"; align it to the same
+  before→after formatting.
+
+> This is why `original_data.speaker_mappings` is **kept**, not dropped (see §3.4):
+> it is the audit log's before-state. The sequence fields need no display change —
+> grouping them into `edits_sequence` is a counter concern only; their per-field
+> diffs stay as-is.
+
+## 9. Feed & gating safety
+
+- Feeds: **no change.** `.words` is not advertised; `vtt/json/srt/html` bytes are
+  unchanged by this work (they never carry `speaker_id`).
+- Gating: **no change.** Auto-apply still gated on
+  `trust_score >= network.auto_approve_trust_threshold`; untrusted submissions
+  still queue to the creator inbox. Tightened only by validating submitted keys
+  against known `speaker_id`s.
+
+## 10. Implementation phases
+
+1. ~~**Schema & write-once base (§3.5)** — populate `speaker_id` in the live
+   transcription pipeline (`_parse_whisper_response` → `_to_words_json`); every
+   new transcription is born with the immutable base. Bump words schema version.
+   (`media_object_etag` helper.)~~ ✅ **Done (Window 1).**
+2. ~~**Idempotent R2 write** (§4) — hash-before-PUT in the format-write path;
+   version bump only on change.~~ ✅ **Done (Window 1).**
+3. **Replay engine** — rewrite `apply_speaker_labels` to recompute from
+   `speaker_id` base + approved chain; wire approve & rollback to call it.
+   Add `SUPERSEDED` status + migration.
+4. **Rollback handlers** — speaker-aware single + bulk rollback; relax the
+   newer-approved blocker for speaker-only edits.
+5. **Trust counters & edit-pipeline cleanup (§8a)** — add `edits_speakers` +
+   `edits_sequence` and `EpisodeEditSuggestion.points` (one migration); wire the
+   per-speaker `+1`/`−1` (newly-named) + `+1` correction award into
+   approve/rollback, and the sequence counter into the existing per-section blocks;
+   add counter rows ("Voices Named", "Episodes Sequenced") + speaker skill-tree on
+   the profile. **Lock cross-publish to owner/admin** — remove it from the
+   community suggestion form/payload, server-side gate it in `submit_episode_edit`,
+   and allow `is_staff` in the owner action.
+6. **Backfill command** (§6) — mixed local/R2 reconstruction with fallback;
+   `1.1.0` skip; name-change logging; preview/`--apply`.
+7. **Front-end & review surfaces** — form carries `speaker_id` / displays name;
+   combined↔split toggle for form boxes + transcript grouping + colour key. Add the
+   structured speaker diff (§8b): `speaker_changed` + per-speaker before→after in
+   `_annotate_edit_changes` / `gather_inbox`, and render before→after in the inbox
+   speaker block (audit log already shows "Previous:").
+8. **Re-transcription** — supersede prior speaker edits.
+9. **Docs** — fold the implemented behaviour back into
+   [transcription.md](transcription.md) (correct the current "one-click
+   reversal" claim) and remove the dead `original_data` speaker capture note.
+
+## 11. Testing
+
+- Apply → rollback restores prior names; griefing (collapse all → one name) is
+  fully recoverable from base.
+- Multi-edit chain: rollback of a middle edit replays correctly (order-correct,
+  last-writer-wins per `speaker_id`).
+- Merge preserved: two `speaker_id`s mapped to one name render as one combined
+  block, one colour.
+- Split: per-`speaker_id` rename un-merges; split view groups/colours by
+  `speaker_id`.
+- Idempotent write: all five formats are hash-checked; only those that differ are
+  PUT (typically just `.words` on backfill, but any shifted format is rewritten);
+  version bumps only on real change.
+- Backfill lossless from `whisper_raw.txt`; fallback path when raw is absent.
+- Re-transcription supersedes the prior chain; names reset to raw labels.
+- Feed regression: `vtt/json/srt/html` bytes and `<podcast:transcript>` tags
+  unchanged (sanity, since formats aren't touched).
+- Submit validation rejects unknown `speaker_id` keys.
+- Review surfaces (§8b): inbox shows speaker before→after (first-time naming vs
+  correction both legible); audit log shows the speaker diff; `speaker_changed`
+  drives `has_changes`.
+- Cross-publish lockdown (§8a): non-owner POST with `cross_publish_podcast_ids` is
+  dropped server-side; owner/admin direct action still works; no `edits_*` counter
+  moves for cross-publish.
+
+## 12. Decisions (all settled)
+
+- **Concurrency (§3.3)** — per-episode `select_for_update` lock on `Transcript`;
+  re-transcription takes the same lock. Applies to the live path only.
+- **Execution context (§3.3)** — live apply/rollback runs **synchronously /
+  immediately** in the request (page refetches the new version right away). No
+  `admin`-queue indirection.
+- **Trust accounting (§3.4)** — `+1` per **newly identified** speaker, `+1` flat
+  for a correction; rollback subtracts the exact recorded `points` (wash); reject
+  `−2`; bulk zeroes; supersede leaves trust intact. Tracked on a new
+  `NetworkMembership.edits_speakers` counter, surfaced on the profile page.
+- **Edit-pipeline cleanup (§8a)** — track the currently-untracked
+  `season/episode/type` community edits, grouped as `edits_sequence` (decided);
+  **lock `cross_publish` to owner/admin** (remove from the community suggestion
+  path, server-side gated, no contribution counter).
+- **Review surfaces (§8b)** — all fields already appear on the approval desk and
+  audit log; add a structured before→after speaker diff (the inbox currently shows
+  the suggested mapping only). `original_data.speaker_mappings` is retained as the
+  audit before-state.
+- **Backfill (§6)** — local-first, writing each transcript back to wherever it
+  lives (local or R2); skips schema `1.1.0`; logs name-change reconciliations.
+- **Backfill name reconciliation (§6)** — accepted; a handful of test-rollback
+  episodes may change names; all changes logged for review.
+- **Colour (§5.2)** — driven by the toggle: by name in combined, by `speaker_id`
+  in split (first-speaker-by-timeline keeps order stable).
+
+## 13. Future enhancements
+
+- Per-format content hashes stored on `Transcript` to skip HEADs entirely and/or
+  decouple per-format versions (avoid edge revalidation of unchanged feed formats
+  on a `.words`-only change).
+- Optional belt-and-suspenders immutable `.words.base` snapshot (rejected for now;
+  inline write-once `speaker_id` is the agreed anchor).

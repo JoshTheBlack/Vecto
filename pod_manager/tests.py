@@ -62,6 +62,8 @@ from pod_manager.services.transcription import (
     _vtt_timestamp,
     apply_speaker_labels,
     transcript_path,
+    transcript_r2_key,
+    write_transcript_formats,
 )
 
 
@@ -2087,6 +2089,29 @@ class ToWordsJsonTests(TestCase):
         doc = json.loads(_to_words_json(_SAMPLE_SEGMENTS).decode('utf-8'))
         self.assertIn('segments', doc)
 
+    def test_schema_version_is_1_1_0(self):
+        doc = json.loads(_to_words_json(_SAMPLE_SEGMENTS).decode('utf-8'))
+        self.assertEqual(doc['version'], '1.1.0')
+
+    def test_speaker_id_emitted_at_segment_and_word_level(self):
+        segs = [{
+            'start': 0.0, 'end': 2.5, 'text': 'Hello', 'speaker': 'Aron',
+            'speaker_id': 'SPEAKER_00',
+            'words': [{'word': 'Hello', 'start': 0.0, 'end': 1.0, 'score': 0.9,
+                       'speaker': 'Aron', 'speaker_id': 'SPEAKER_00'}],
+        }]
+        doc = json.loads(_to_words_json(segs).decode('utf-8'))
+        seg = doc['segments'][0]
+        self.assertEqual(seg['speaker_id'], 'SPEAKER_00')
+        self.assertEqual(seg['speaker'], 'Aron')
+        self.assertEqual(seg['words'][0]['speaker_id'], 'SPEAKER_00')
+        self.assertEqual(seg['words'][0]['speaker'], 'Aron')
+
+    def test_no_speaker_id_key_when_absent(self):
+        doc = json.loads(_to_words_json(
+            [{'start': 0, 'end': 1, 'text': 'Hi'}]).decode('utf-8'))
+        self.assertNotIn('speaker_id', doc['segments'][0])
+
 
 class PlainTextTests(TestCase):
 
@@ -2130,6 +2155,22 @@ class ParseWhisperResponseTests(TestCase):
     def test_completely_unparseable_raises_value_error(self):
         with self.assertRaises(ValueError):
             _parse_whisper_response('not json not srt at all', 'en')
+
+    def test_speaker_id_stamped_from_diarization_label(self):
+        payload = json.dumps({'language': 'en', 'segments': [{
+            'start': 0, 'end': 1, 'text': 'hi', 'speaker': 'SPEAKER_03',
+            'words': [{'word': 'hi', 'start': 0, 'end': 1, 'speaker': 'SPEAKER_03'}],
+        }]})
+        segs, _ = _parse_whisper_response(payload, 'en')
+        # At initial transcription speaker == speaker_id == the raw label.
+        self.assertEqual(segs[0]['speaker_id'], 'SPEAKER_03')
+        self.assertEqual(segs[0]['speaker'], 'SPEAKER_03')
+        self.assertEqual(segs[0]['words'][0]['speaker_id'], 'SPEAKER_03')
+
+    def test_no_speaker_id_when_no_diarization(self):
+        srt = "1\n00:00:00,000 --> 00:00:02,000\nHello world\n"
+        segs, _ = _parse_whisper_response(srt, 'en')
+        self.assertNotIn('speaker_id', segs[0])
 
 
 class ParseSrtTests(TestCase):
@@ -2467,6 +2508,81 @@ class RunTranscriptionTests(TestCase):
             run_transcription(self.ep.id)
         t = Transcript.objects.get(episode=self.ep)
         self.assertEqual(t.whisper_model_used, 'tiny')
+
+
+# ── 7b. Idempotent R2 transcript writes (§4) ─────────────────────────────────
+
+class MediaObjectEtagTests(TestCase):
+    """media_object_etag(): unquoted ETag from a HEAD, None on 404."""
+
+    def test_returns_unquoted_etag(self):
+        from pod_manager.services import r2_storage
+        client = mock.MagicMock()
+        client.head_object.return_value = {'ETag': '"abc123"'}
+        with mock.patch.object(r2_storage, 'get_r2_client', return_value=client):
+            self.assertEqual(r2_storage.media_object_etag('transcripts/0/1.words'), 'abc123')
+
+    def test_returns_none_on_404(self):
+        from pod_manager.services import r2_storage
+        client = mock.MagicMock()
+        client.head_object.side_effect = _not_found_error()
+        with mock.patch.object(r2_storage, 'get_r2_client', return_value=client):
+            self.assertIsNone(r2_storage.media_object_etag('transcripts/0/1.words'))
+
+
+@override_settings(R2_MEDIA_ENABLED=True)
+class WriteTranscriptFormatsR2Tests(TestCase):
+    """write_transcript_formats(): hash-before-PUT skips unchanged formats and
+    reports only changed exts (drives the version bump)."""
+
+    def _rendered(self):
+        return [
+            ('vtt',   b'WEBVTT vtt-bytes'),
+            ('json',  b'{"json": true}'),
+            ('srt',   b'1 srt-bytes'),
+            ('html',  b'<article></article>'),
+            ('words', b'{"words": true}'),
+        ]
+
+    def test_only_changed_formats_are_put(self):
+        from pod_manager.services import transcription as tx
+        rendered = self._rendered()
+        # 'words' differs (md5 mismatch); every other format already matches.
+        etags = {
+            tx.transcript_r2_key(7, ext): _hashlib.md5(content).hexdigest()
+            for ext, content in rendered
+        }
+        etags[tx.transcript_r2_key(7, 'words')] = 'deadbeef' * 4  # 32-char md5 that won't match
+        put_calls = []
+        with mock.patch('pod_manager.services.r2_storage.media_object_etag',
+                        side_effect=lambda key: etags.get(key)), \
+             mock.patch('pod_manager.services.r2_storage.put_media_object',
+                        side_effect=lambda key, content, ct: put_calls.append(key)):
+            markers, changed = write_transcript_formats(7, rendered)
+        self.assertEqual(changed, ['words'])
+        self.assertEqual(put_calls, [tx.transcript_r2_key(7, 'words')])
+        self.assertEqual(set(markers), {'vtt', 'json', 'srt', 'html', 'words'})
+
+    def test_missing_object_is_put(self):
+        put_calls = []
+        with mock.patch('pod_manager.services.r2_storage.media_object_etag',
+                        side_effect=lambda key: None), \
+             mock.patch('pod_manager.services.r2_storage.put_media_object',
+                        side_effect=lambda key, content, ct: put_calls.append(key)):
+            markers, changed = write_transcript_formats(7, self._rendered())
+        self.assertEqual(len(changed), 5)
+        self.assertEqual(len(put_calls), 5)
+
+    def test_multipart_etag_falls_back_to_get_and_hash(self):
+        rendered = [('words', b'{"words": true}')]
+        with mock.patch('pod_manager.services.r2_storage.media_object_etag',
+                        side_effect=lambda key: 'abc-2'), \
+             mock.patch('pod_manager.services.r2_storage.get_media_object',
+                        side_effect=lambda key: (b'{"words": true}', 'application/json')), \
+             mock.patch('pod_manager.services.r2_storage.put_media_object') as put:
+            markers, changed = write_transcript_formats(7, rendered)
+        self.assertEqual(changed, [])  # bytes matched via GET fallback
+        put.assert_not_called()
 
 
 # ── 8. apply_speaker_labels() ────────────────────────────────────────────────

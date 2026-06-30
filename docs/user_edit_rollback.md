@@ -130,8 +130,10 @@ any deviations from the plan) and ticks the phase in §10. Read this before star
     (all `IntegerField(default=0)`).
   - **Reusable helper (§3.4)** — new `speaker_edit_points(edit_mappings, prior_mapping)
     -> (points, newly_named)` in [transcription.py](../pod_manager/services/transcription.py)
-    beside `fold_speaker_mappings`. `+1` per first-time naming (prior resolved value
-    == the raw `SPEAKER_XX`), `+1` flat for any correction (already-named id renamed).
+    beside `fold_speaker_mappings`. `points` = the number of distinct
+    `(prior name → new name)` changes: a rename cascading to many ids scores once, a
+    split (one current name → several new names) scores per distinct target, and
+    first-time namings fall out for free (each raw `SPEAKER_XX` is a distinct prior).
     The caller owns the fold ordering and passes the prior cumulative mapping, so the
     Phase 6 backfill recompute reuses it unchanged.
   - **Approve handler** ([actions.py](../pod_manager/views/creator/actions.py)) —
@@ -182,7 +184,7 @@ any deviations from the plan) and ticks the phase in §10. Read this before star
     only at approval (not retroactively) — the §6 backfill recompute will set
     `edits_speakers` from the historical chain.
   - **Tests:** added `SpeakerEditPointsTests` (helper math: naming / correction /
-    mixed / no-op / multi-correction), approve+rollback speaker-trust cases, a
+    mixed / no-op / cascade / split / merge), approve+rollback speaker-trust cases, a
     sequence-counter approve case, a sequence rollback that asserts **both** the
     restored episode field values and the decremented counter, and an end-to-end
     approve→rollback round-trip of the sequence values — all in
@@ -571,23 +573,36 @@ the speaker diff (§8b). Don't drop it.
 > each edit so single **and** bulk rollback are a pure exact wash. §12 and the
 > Window 5/6 progress entries are the authoritative description.
 
-**Trust accounting (decided).** Points are awarded **per speaker**, and a rollback
-is an exact wash. The award for one approved edit is:
+**Trust accounting (decided).** Points are awarded **per distinct name change**, and
+a rollback is an exact wash. The award for one approved edit is:
 
 ```
-prior   = cumulative mapping of already-APPROVED edits, before this one
-newly_named = # of speaker_ids in the edit whose prior value was the raw SPEAKER_XX
-              label (first-time identification)
-has_correction = any speaker_id whose prior value was already a real name and is
-                 now changed to a different name
-points  = newly_named + (1 if has_correction else 0)
+prior  = cumulative mapping of already-APPROVED edits, before this one
+points = # of distinct (prior_value → new_name) pairs in the edit where
+         new_name != prior_value
+       = len({(prior.get(sid, sid), new_name)
+              for sid, new_name in edit if new_name != prior.get(sid, sid)})
 ```
 
-- **First-time identification** → `+1` per speaker. Naming `SPEAKER_00 = Aron` and
-  `SPEAKER_03 = Aron` in one edit is **+2**.
-- **Correction** (renaming an already-named speaker, e.g. `Aron → Jim`) → **+1
-  flat** for the edit, regardless of how many `speaker_id`s share that name. (This
-  also discourages point-farming by re-toggling names.)
+Group the edited `speaker_id`s by their **current** (prior) name and, within each
+group, count the distinct **new** names assigned (drop any id that maps to its own
+current name). The lossless `speaker_id` base makes this the natural unit: an id's
+prior value is either a real name or — if still unnamed — its own raw `SPEAKER_XX`
+label (unique per id), so naming and correcting fall under one rule.
+
+- **First-time identification** → `+1` per speaker (each raw label is a distinct
+  prior value). Naming `SPEAKER_00 = Aron` and `SPEAKER_03 = Aron` in one edit is
+  **+2**.
+- **Rename that cascades to several ids** (one current name → one new name across
+  many ids) → **+1**, regardless of how many `speaker_id`s share that name. Flipping
+  the *combined* view `Aron ⇆ Jim` is two changes → **+2**.
+- **Split** (one current name un-collapsed into several new names — what the old
+  in-place rename could not do) → **+1 per distinct target.** Toggling to the
+  original ids and mapping `Aron(01)→Jim, Aron(02)→Roy, Jim(03)→Aron, Jim(00)→Dan`
+  is four distinct changes → **+4**.
+- **Merge** (two different current names sent to the same new name, e.g. two diarized
+  speakers declared to be the same person) → **+1 per source name** (each name
+  changed) → typically **+2**.
 - **Single rollback:** subtract the **exact `points` recorded on the edit** → wash.
 - **Reject** (creator rejects a still-pending, never-applied edit): existing flat
   `−2`, unchanged.
@@ -601,8 +616,9 @@ exact amount without recomputation.
 **Expose this as a reusable helper** — e.g. `speaker_edit_points(edit_mappings,
 prior_mapping) -> (points, newly_named)` — used by both the live approve handler
 **and** the §6 backfill recompute. It needs the `prior_mapping` (the cumulative
-fold *before* the edit) to tell a first-time naming from a correction, so callers
-pass it in.
+fold *before* the edit) to resolve each id's current name and count distinct
+changes (`newly_named` is the subset that were first-time identifications), so
+callers pass it in.
 
 **Counter on `NetworkMembership`.** Add an `edits_speakers` IntegerField alongside
 the existing `edits_title / edits_chapters / edits_tags / edits_descriptions`
@@ -993,10 +1009,12 @@ isn't legible. Adds:
    newer-approved blocker for speaker-only edits.~~ ✅ **Done (Window 2).**
 5. ~~**Trust counters & edit-pipeline cleanup (§8a)** — add `edits_speakers` +
    `edits_sequence` and `EpisodeEditSuggestion.points` (one migration); wire the
-   per-speaker `+1`/`−1` (newly-named) + `+1` correction award into
+   per-speaker distinct-name-change award (§3.4) into
    approve/rollback, and the sequence counter into the existing per-section blocks;
    add counter rows ("Voices Named", "Episodes Sequenced") + speaker skill-tree on
-   the profile. **Factor the per-edit speaker-points calc into a reusable helper**
+   the profile. The per-speaker award is now **+1 per distinct name change** (rename
+   cascade = once, split = per target); see §3.4. **Factor the per-edit
+   speaker-points calc into a reusable helper**
    (§3.4) — the Phase 6 backfill recompute reuses it. **Lock cross-publish to
    owner/admin** — remove it from the community suggestion form/payload, server-side
    gate it in `submit_episode_edit`, and allow `is_staff` in the owner action.~~
@@ -1054,15 +1072,20 @@ isn't legible. Adds:
   drives every approval path (manual inbox **and** auto-approve, identically).
   Per applied field: title/description **+1pt/+1ctr**; tags **+1pt / +N(added) ctr**;
   chapters **+N pt/+N ctr**; season/episode#/type **+1pt/+1ctr each** (`edits_sequence`);
-  speaker **+N/+N** (`+1` per first-time naming, `+1` flat per correction);
+  speaker **+N/+N** (`+1` per distinct `prior name → new name` change — rename
+  cascade scores once, split scores per target; §3.4);
   first-responder **+1pt/+1ctr**; cross-publish **never scored**. Multi-field bonus
   (trust only, banked in `points`): **+2** for ≥3 of fields 1–7, **+4** for all of
   1–7. Every edit banks `points` (trust) + `counter_deltas` (the exact counters,
   incl. first_responder) at approval; **rollback — single AND bulk — is a pure exact
   wash** (`trust −= points`, `counter −= counter_deltas[*]`). Reject `−2`; supersede
   leaves trust intact. Legacy pre-banking rows are reconciled by the one-time
-  `backfill_edit_points` command. The original speaker decision was `+1`/`+1`-flat
-  on a new `NetworkMembership.edits_speakers` counter, surfaced on the profile.
+  `backfill_edit_points` command. The original speaker decision was `+1` per
+  first-time naming / `+1`-flat per correction; it was later refined to `+1` per
+  distinct `prior name → new name` change (§3.4) so a *split* (un-collapsing a
+  wrongly-merged speaker) is rewarded per target while a rename cascade still scores
+  once. Banked on a new `NetworkMembership.edits_speakers` counter, surfaced on the
+  profile.
 - **Edit-pipeline cleanup (§8a)** — track the currently-untracked
   `season/episode/type` community edits, grouped as `edits_sequence` (decided);
   **lock `cross_publish` to owner/admin** (remove from the community suggestion

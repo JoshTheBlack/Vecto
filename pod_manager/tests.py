@@ -3396,7 +3396,9 @@ class TrustBreakdownTallyTests(TestCase):
 # ── 8a. speaker_edit_points() helper (§3.4) ──────────────────────────────────
 
 class SpeakerEditPointsTests(SimpleTestCase):
-    """Per-speaker award math: +1 per first-time naming, +1 flat for a correction."""
+    """Per-speaker award math: +1 per distinct (prior name → new name) change. A
+    rename cascading to many ids scores once; a split (one name → several names)
+    scores per distinct target."""
 
     def _points(self, edit_mappings, prior):
         from pod_manager.services.transcription import speaker_edit_points
@@ -3406,23 +3408,52 @@ class SpeakerEditPointsTests(SimpleTestCase):
         self.assertEqual(self._points({'SPEAKER_00': 'Jim', 'SPEAKER_01': 'Aron'}, {}), (2, 2))
 
     def test_two_ids_to_one_name_first_time_scores_two(self):
+        # Two distinct raw labels → Aron: distinct prior values, so two changes.
         self.assertEqual(self._points({'SPEAKER_00': 'Aron', 'SPEAKER_03': 'Aron'}, {}), (2, 2))
 
-    def test_correction_scores_one_flat(self):
-        # Already named Aron → renamed Jim: correction, no new naming.
+    def test_correction_scores_one(self):
+        # Already named Aron → renamed Jim: one change, no new naming.
         self.assertEqual(self._points({'SPEAKER_00': 'Jim'}, {'SPEAKER_00': 'Aron'}), (1, 0))
 
     def test_mixed_naming_and_correction(self):
         prior = {'SPEAKER_00': 'Aron'}
-        # SPEAKER_01 newly named (+1), SPEAKER_00 corrected (+1 flat) → points 2, newly 1.
+        # SPEAKER_01 newly named, SPEAKER_00 corrected → 2 changes, newly 1.
         self.assertEqual(self._points({'SPEAKER_00': 'Jim', 'SPEAKER_01': 'Bob'}, prior), (2, 1))
 
     def test_noop_rename_to_raw_label_scores_zero(self):
         self.assertEqual(self._points({'SPEAKER_00': 'SPEAKER_00'}, {}), (0, 0))
 
-    def test_multiple_corrections_score_one_flat(self):
+    def test_rename_cascade_to_many_ids_scores_once(self):
+        # Aron (00,02) → Jim, Jim (03,01) → Aron: two distinct changes regardless of
+        # how many ids each name spans → +2.
+        prior = {'SPEAKER_00': 'Aron', 'SPEAKER_02': 'Aron',
+                 'SPEAKER_03': 'Jim', 'SPEAKER_01': 'Jim'}
+        edit = {'SPEAKER_00': 'Jim', 'SPEAKER_02': 'Jim',
+                'SPEAKER_03': 'Aron', 'SPEAKER_01': 'Aron'}
+        self.assertEqual(self._points(edit, prior), (2, 0))
+
+    def test_split_one_name_into_several_scores_per_target(self):
+        # Aron (01) → Jim, Aron (02) → Roy, Jim (03) → Aron, Jim (00) → Dan:
+        # four distinct (prior → new) pairs → +4 (the lossless un-collapse).
+        prior = {'SPEAKER_01': 'Aron', 'SPEAKER_02': 'Aron',
+                 'SPEAKER_03': 'Jim', 'SPEAKER_00': 'Jim'}
+        edit = {'SPEAKER_01': 'Jim', 'SPEAKER_02': 'Roy',
+                'SPEAKER_03': 'Aron', 'SPEAKER_00': 'Dan'}
+        self.assertEqual(self._points(edit, prior), (4, 0))
+
+    def test_partial_split_skips_noops(self):
+        # Aron (01) → Roy, Aron (02) → Aron (no-op), Jim (03) → Jim (no-op),
+        # Jim (00) → Dan: only the two real changes score → +2.
+        prior = {'SPEAKER_01': 'Aron', 'SPEAKER_02': 'Aron',
+                 'SPEAKER_03': 'Jim', 'SPEAKER_00': 'Jim'}
+        edit = {'SPEAKER_01': 'Roy', 'SPEAKER_02': 'Aron',
+                'SPEAKER_03': 'Jim', 'SPEAKER_00': 'Dan'}
+        self.assertEqual(self._points(edit, prior), (2, 0))
+
+    def test_two_different_names_merged_to_one_scores_two(self):
+        # Two distinct people both declared to be Jim: each name changed → +2.
         prior = {'SPEAKER_00': 'Aron', 'SPEAKER_01': 'Bob'}
-        self.assertEqual(self._points({'SPEAKER_00': 'Jim', 'SPEAKER_01': 'Ben'}, prior), (1, 0))
+        self.assertEqual(self._points({'SPEAKER_00': 'Jim', 'SPEAKER_01': 'Jim'}, prior), (2, 0))
 
 
 # ── 8b. supersede_speaker_edits() (re-transcription, §7) ─────────────────────

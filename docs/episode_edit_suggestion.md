@@ -72,11 +72,17 @@ reverses the **exact** amounts.
 | Tags | **+1 flat** (any number of tags) | Tags (+1 per tag *added*) |
 | Chapters | **+1 per chapter** | Chapters (+1 per chapter) |
 | Season # / Episode # / Episode Type | +1 **each** | Episodes Sequenced (+1 per field) |
-| Speaker Labels | +1 per newly-named speaker, +1 flat for a correction | Voices Named |
+| Speaker Labels | +1 per distinct *name change* (rename cascade = once; split = per target) | Voices Named |
 
 Note the deliberate asymmetry on **Tags**: trust is a flat +1 (so you can't farm
 points by adding many low-value tags), but the contribution counter credits each
 tag actually added.
+
+**Speaker labels** score on the lossless `speaker_id` base, so the unit is a distinct
+`prior name → new name` change: renaming one speaker across several `speaker_id`s is
+**+1**, naming several previously-unnamed speakers is **+1 each**, and *splitting* a
+wrongly-merged speaker into multiple people (e.g. `Aron(01)→Jim, Aron(02)→Roy`) is
+**+1 per distinct target**. See `speaker_edit_points` and `user_edit_rollback.md` §3.4.
 
 ### Bonuses
 

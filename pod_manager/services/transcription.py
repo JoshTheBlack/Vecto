@@ -1170,31 +1170,41 @@ def speaker_edit_points(edit_mappings: dict, prior_mapping: dict) -> tuple:
 
     ``prior_mapping`` is the cumulative last-writer-wins fold of the already-APPROVED
     speaker edits *before* this one (e.g. ``fold_speaker_mappings`` excluding the
-    edit being scored), so a first-time naming is distinguished from a correction:
+    edit being scored), so each speaker_id's *current* (prior) name is known.
 
-    - ``newly_named`` — speaker_ids whose prior value was still the raw ``SPEAKER_XX``
-      label (i.e. unnamed) and are now given a real name → **+1 each**.
-    - a *correction* — any speaker_id whose prior value was already a real name and
-      is now changed to a different name → **+1 flat** for the whole edit.
+    **Score = the number of distinct ``(prior name → new name)`` changes.** Group the
+    edited speaker_ids by their current name and, within each group, count the
+    distinct new names assigned (ignoring any id that maps to its own current name).
+    Equivalently: ``len({(prior_value, new_name) : new_name != prior_value})``.
 
-    ``points = newly_named + (1 if has_correction else 0)``.
+    - A *rename that cascades to several speaker_ids* (all sharing one current name,
+      all going to one new name) is **one** change → **+1**.
+    - A *split* (one current name sent to several different new names — e.g. two
+      diarized speakers wrongly merged into ``Aron``, now ``Aron`` and ``Roy``) scores
+      **+1 per distinct target**, because the lossless ``speaker_id`` base lets you
+      un-collapse what the old in-place rename could not.
+    - First-time identification falls out for free: an unnamed id's prior value is its
+      own raw ``SPEAKER_XX`` label (unique per id), so naming N raw speakers is N
+      distinct changes → **+N**.
+
+    ``newly_named`` (second return value) is the count of those first-time
+    identifications — speaker_ids whose prior value was still the raw label.
 
     Reused by both the live approve handler and the §6 backfill recompute, so the
     caller owns the fold ordering and passes ``prior_mapping`` in.
     """
     prior_mapping = prior_mapping or {}
+    changed_pairs = set()
     newly_named = 0
-    has_correction = False
     for sid, new_name in (edit_mappings or {}).items():
         prior_value = prior_mapping.get(sid, sid)
+        if new_name == prior_value:
+            continue  # no-op (incl. a rename back to the raw label) → not scored
+        changed_pairs.add((prior_value, new_name))
         if prior_value == sid:
             # Unnamed before (resolved to its own raw label) → first identification.
-            if new_name != sid:
-                newly_named += 1
-        elif new_name != prior_value:
-            # Already had a real name, now renamed → correction (flat, scored once).
-            has_correction = True
-    points = newly_named + (1 if has_correction else 0)
+            newly_named += 1
+    points = len(changed_pairs)
     return points, newly_named
 
 

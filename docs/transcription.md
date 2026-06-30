@@ -389,7 +389,7 @@ Pre-backfill `.words` that predate `speaker_id` fall back to `seg.speaker` every
 
 ### Trust & review
 
-Approval banks per-speaker contribution points on the edit (`+1` per first-time naming, `+1` flat per correction) and increments `NetworkMembership.edits_speakers`; rollback reverses the exact banked amounts. The inbox and audit log render a structured **`speaker_id`: before → after** diff so a correction (renaming an already-named speaker) is legible, not just the suggested mapping.
+Approval banks per-speaker contribution points on the edit (`+1` per distinct `prior name → new name` change — a rename cascading to several `speaker_id`s scores once, a split that un-collapses one name into several scores per target, and a first-time naming is just a change from the raw label) and increments `NetworkMembership.edits_speakers`; rollback reverses the exact banked amounts. The inbox and audit log render a structured **`speaker_id`: before → after** diff so a correction (renaming an already-named speaker) is legible, not just the suggested mapping.
 
 ---
 

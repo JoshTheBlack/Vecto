@@ -54,6 +54,15 @@ _ASSET_SPECS = {
     'covers_network': (NetworkMix, 'image_upload', 500, 'covers/', 'network-mix cover'),
 }
 
+# Stable-key prefix -> the legacy LOCAL-key prefix it replaced (mirrors
+# models._LEGACY_IMAGE_PREFIXES). The re-key drops the old name from the DB, so
+# prune can't read it off the row; it reconstructs the legacy path from the
+# stable key's stem (the same UUID / id-pair) under this directory.
+_LEGACY_DIR_FOR = {
+    'avatars/': 'custom_avatars/',
+    'covers/': 'mix_covers/',
+}
+
 
 class Command(BaseCommand):
     help = "Backfill local avatars + mix covers to R2 (re-key to stable WebP keys)."
@@ -75,9 +84,10 @@ class Command(BaseCommand):
         parser.add_argument('--verify', action='store_true',
                             help='HEAD every migrated object in R2 and report any missing (read-only prune gate).')
         parser.add_argument('--prune', action='store_true',
-                            help='Delete the local copy of a stable-key image whose R2 object is confirmed '
-                                 'present (re-HEADs first). Skips legacy-keyed rows (still served from /media '
-                                 'via the transition branch). Previews unless --apply; deletion needs --apply --yes.')
+                            help='Delete the local copies (the new stable-key file AND the legacy file the '
+                                 're-key orphaned on disk) of an image whose R2 object is confirmed present '
+                                 '(re-HEADs first). Rows not yet migrated are skipped. Previews unless '
+                                 '--apply; deletion needs --apply --yes.')
 
     def handle(self, *args, **options):
         which = self._selected_specs(options)
@@ -195,9 +205,13 @@ class Command(BaseCommand):
 
     # ------------------------------------------------------------------
     def _prune(self, which, options):
-        """Delete the local copy of a stable-key image once its R2 object is
-        re-confirmed present. Legacy-keyed rows are skipped — they're still
-        served from /media via the transition branch until it's removed."""
+        """Delete every local copy of a migrated image once its R2 object is
+        re-confirmed present: both the new stable-key file (left only by an
+        R2-disabled rehearsal run) and the OLD legacy-key file the re-key
+        orphaned on disk. The row no longer names the legacy file, so it's
+        reconstructed from the stable key's stem (same UUID / id-pair) under the
+        mapped legacy dir. Rows still NAMED with a legacy key are skipped — not
+        yet migrated, still served from /media via the transition branch."""
         dry_run = not options['apply']
         pruned = refused = skipped = 0
         for model, field, _max_px, prefix, label in which:
@@ -212,14 +226,24 @@ class Command(BaseCommand):
                     self.stdout.write(self.style.ERROR(
                         f"  NOT in R2 — refusing to prune {instance!r} ({name})"))
                     continue
-                local = Path(settings.MEDIA_ROOT) / name
-                if not local.exists():
+                # R2 object confirmed -> drop every local copy this row left
+                # behind. stem is the key body sans .webp (e.g. <uuid>); the
+                # legacy file shares it under a different dir/extension.
+                stem = Path(name[len(prefix):]).stem
+                candidates = [Path(settings.MEDIA_ROOT) / name]
+                legacy_dir = _LEGACY_DIR_FOR.get(prefix)
+                if legacy_dir:
+                    candidates += sorted(
+                        (Path(settings.MEDIA_ROOT) / legacy_dir).glob(f"{stem}.*"))
+                hits = [c for c in candidates if c.exists()]
+                if not hits:
                     continue   # nothing local to prune (e.g. prod wrote straight to R2)
-                if dry_run:
-                    self.stdout.write(f"  would prune {local}")
-                else:
-                    local.unlink()
-                pruned += 1
+                for c in hits:
+                    if dry_run:
+                        self.stdout.write(f"  would prune {c}")
+                    else:
+                        c.unlink()
+                    pruned += 1
         verb = 'would prune' if dry_run else 'pruned'
         self.stdout.write(self.style.SUCCESS(
             f"\nPrune: {verb} {pruned} local file(s); {refused} refused (not in R2); "

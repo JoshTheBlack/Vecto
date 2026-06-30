@@ -106,6 +106,14 @@ REGISTRY = {
         # --episode / --network / --podcast auto-infer; --origins can't:
         field_widgets={"origins": "enum_multi:audio_origins"},
     ),
+    "audit_r2_audio": CommandSpec(
+        name="audit_r2_audio",
+        category="R2 / Storage",
+        # --network / --podcast auto-infer; --min-bytes is a plain int. Read-only
+        # audit by default; --fix re-mirrors flagged episodes (rewrites r2_url), so
+        # a run that checks --fix gets the typed-confirm gate (audit preview is gate-free).
+        danger_fields=frozenset({"fix"}),
+    ),
     "backfill_transcripts_to_r2": CommandSpec(
         name="backfill_transcripts_to_r2",
         category="R2 / Storage",

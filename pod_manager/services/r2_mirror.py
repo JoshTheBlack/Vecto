@@ -54,6 +54,13 @@ _CONTENT_TYPE_BY_EXT = {
 _CACHE_CONTROL = "public, max-age=31536000, immutable"
 _HASH_PREFIX_LEN = 16  # 64 bits — see section B birthday-bound rationale.
 
+# Content-Types that prove the body is NOT audio. Some hosts answer HTTP 200 with
+# an error page (GDrive quota/"file removed", Patreon login wall); raise_for_status
+# can't see those, so we'd otherwise store the HTML as a bogus .mp3.
+_NON_AUDIO_CONTENT_TYPES = {
+    'text/html', 'application/xhtml+xml', 'application/json', 'text/plain', 'text/xml',
+}
+
 
 class MirrorSkipped(Exception):
     """Raised when an episode cannot/should not be mirrored (not an error):
@@ -127,24 +134,81 @@ def _hash_file(path: Path) -> str:
     return h.hexdigest()
 
 
+def looks_like_audio(head: bytes) -> bool:
+    """Positive magic-byte detection for the audio containers we mirror.
+
+    Used by the R2 audit to confirm a stored object is really audio (vs. an HTML
+    error page that slipped in before the download guard existed). Intentionally
+    a whitelist — an unrecognized header is reported for review, never assumed OK.
+    """
+    if len(head) < 12:
+        return False
+    if head[:3] == b'ID3':                                    # ID3v2-tagged MP3
+        return True
+    if head[0] == 0xFF and (head[1] & 0xE0) == 0xE0:          # MPEG/AAC-ADTS frame sync
+        return True
+    if head[4:8] == b'ftyp':                                  # MP4/M4A/M4B box
+        return True
+    if head[:4] == b'OggS':                                   # Ogg / Opus
+        return True
+    if head[:4] == b'fLaC':                                   # FLAC
+        return True
+    if head[:4] == b'RIFF' and head[8:12] == b'WAVE':         # WAV
+        return True
+    return False
+
+
+def _assert_audio_body(content_type: str, head: bytes):
+    """Reject a downloaded body that is clearly not audio.
+
+    Guards the common silent-corruption case: a host returns HTTP 200 (so
+    raise_for_status passes) with an HTML error page (GDrive "file removed" /
+    quota, a Patreon login wall) that would otherwise be hashed and stored as a
+    bogus audio object. Raises MirrorSkipped — there's no fetchable audio right
+    now, so it behaves like the other not-applicable sources and a later re-run
+    (e.g. once a GDrive quota resets) can still succeed.
+    """
+    ctype = (content_type or '').split(';')[0].strip().lower()
+    if ctype in _NON_AUDIO_CONTENT_TYPES or ctype.startswith('text/'):
+        raise MirrorSkipped(f"source returned non-audio Content-Type '{ctype}'")
+    sniff = head[:512].lstrip().lower()
+    if sniff.startswith((b'<!doctype', b'<html', b'<head', b'<?xml')):
+        raise MirrorSkipped("source returned an HTML/XML body, not audio")
+
+
 def _download_to_temp(url: str) -> tuple[Path, str]:
     """Stream a URL to a temp file, hashing as we go. Returns (path, sha256).
 
-    SSRF-guarded with the same validator the chapter fetch uses. Caller owns the
-    returned temp file and must unlink it.
+    SSRF-guarded with the same validator the chapter fetch uses. The first chunk
+    is content-checked (Content-Type + magic bytes) so a 200-but-HTML error page
+    is never stored as audio. Caller owns the returned temp file and must unlink it.
     """
     ok, reason = validate_public_url(url)
     if not ok:
         raise MirrorSkipped(f"refusing to fetch unsafe URL: {reason}")
 
+    resp = requests.get(url, stream=True, timeout=300)
+    resp.raise_for_status()
+    content_type = resp.headers.get('Content-Type', '')
+
     h = hashlib.sha256()
-    with tempfile.NamedTemporaryFile(suffix='.mp3', delete=False) as tmp:
-        tmp_path = Path(tmp.name)
-        resp = requests.get(url, stream=True, timeout=300)
-        resp.raise_for_status()
+    tmp = tempfile.NamedTemporaryFile(suffix='.mp3', delete=False)
+    tmp_path = Path(tmp.name)
+    try:
+        checked = False
         for chunk in resp.iter_content(chunk_size=65536):
+            if not chunk:
+                continue
+            if not checked:
+                _assert_audio_body(content_type, chunk)  # raises before we keep bytes
+                checked = True
             tmp.write(chunk)
             h.update(chunk)
+        tmp.close()
+    except BaseException:
+        tmp.close()
+        tmp_path.unlink(missing_ok=True)
+        raise
     return tmp_path, h.hexdigest()
 
 

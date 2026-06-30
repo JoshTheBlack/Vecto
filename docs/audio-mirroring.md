@@ -136,6 +136,8 @@ mirror_episode_audio(episode_id, local_path=None, force=False)
 
 Subscriber URLs are publisher-controlled, so every fetch is SSRF-validated with `utils.validate_public_url` (the same guard the chapter fetch uses) before download or HEAD.
 
+**Non-audio body guard.** `raise_for_status()` only catches HTTP error codes; some hosts answer **HTTP 200 with an HTML error page** (Google Drive "file removed"/quota, a Patreon login wall) that would otherwise be hashed and stored as a bogus `.mp3`. The downloader checks the first chunk's `Content-Type` and magic bytes and raises `MirrorSkipped` on a non-audio body, so nothing garbage is ever uploaded. Objects mirrored before this guard existed can be swept with [`audit_r2_audio`](#audit-mirrored-objects--audit_r2_audio).
+
 ### Change Detection
 
 Ingest runs frequently, so unchanged audio must not be re-mirrored. Before re-mirroring an episode that already has an `r2_url`, the mirror issues an HTTP `HEAD` and compares a cheap signature `"{etag}:{content_length}"` to the stored `r2_source_signature`. Only a proven change triggers a re-download + re-upload. Hosts without usable HEAD/ETag (Google Drive) fall back to **mirror-once** — they only re-mirror via `--force`. (Libsyn does support HEAD/ETag, so change-detection works there.)
@@ -217,6 +219,7 @@ python manage.py mirror_audio_to_r2 --podcast=<slug> --stagger=5 --apply
 | `--limit=N` | **Sample latch** — process at most N (after filtering). Stops scanning early; for a small prod smoke test before a full run. |
 | `--apply` | Dispatch the mirror work. **Default is a preview** that lists targets and dispatches nothing. |
 | `--sync` | With `--apply`: mirror inline in this process, surfacing per-episode results. |
+| `--check-urls` | **Diagnostic (read-only).** HEAD each selected subscriber URL (ranged-GET fallback for hosts that reject HEAD) and report its HTTP status instead of mirroring. Confirms dead (404) sources in bulk — no downloads, ends with a `Dead episode ids: …` line. |
 
 > **GDrive backfill is quota-aware.** Drive throttles by per-file download quota, not just the account ceiling. The backfill is resumable (already-mirrored episodes are skipped), so a throttled run can simply be re-run. The task retries with back-off on transient errors.
 
@@ -232,7 +235,26 @@ python manage.py r2_gc [--apply] [--age-days=7]  # reconciliation sweep (records
 python manage.py r2_cleanup_orphans [--apply --yes]  # delete expired, unreferenced orphans
 python manage.py purge_r2_dev [--apply --yes]    # hard-delete everything under dev/
 python manage.py rename_source_audio_to_r2 [--apply]  # migrate local source-audio files to the R2 naming scheme (dev)
+python manage.py audit_r2_audio --all [--fix --apply]  # confirm mirrored objects are really audio; --fix re-mirrors flagged ones
 ```
+
+### Audit mirrored objects — `audit_r2_audio`
+
+Confirms every `Episode.r2_url` object in R2 is actually audio, not an HTML error
+page stored as a bogus `.mp3` (a 200-but-HTML GDrive/Patreon body — the failure the
+download guard now prevents, but that older mirrors may have stored). For each
+object it does a **ranged GET of the first bytes** (one Class B op) and flags it
+when the object is `MISSING`, `too small` (< `--min-bytes`, default 100 KB),
+starts with an HTML/XML signature, or fails the audio magic-byte whitelist. R2's
+stored `Content-Type` is always `audio/mpeg` (set from the key's extension), so the
+audit inspects the bytes — metadata can't tell. Read-only by default; ends with a
+`Flagged episode ids: …` line.
+
+`--fix --apply` re-downloads + re-mirrors each flagged episode (`force=True`): a
+recovered source lands a fresh content-hash key and repoints `r2_url` (the bogus
+object becomes a `reversion` orphan for the GC); a source that's **still** bad is
+caught by the [non-audio body guard](#subscriber-only-guarantee) and reported
+`UNFIXABLE` with `r2_url` left untouched.
 
 All default to **preview**; pass `--apply` to act. The irreversible deletions (`r2_cleanup_orphans`, `purge_r2_dev`) additionally require `--yes` — i.e. `--apply --yes`. See [management-command-conventions.md](management-command-conventions.md) for the uniform safety idiom.
 

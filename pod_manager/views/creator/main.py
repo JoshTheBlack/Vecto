@@ -97,7 +97,7 @@ def submit_episode_edit(request, episode_id):
         if 'episode_type' in suggested_data:
             suggested_data['episode_type'] = str(suggested_data['episode_type'])[:50]
         if 'cross_publish_podcast_ids' in suggested_data:
-            # Cross-publish is owner/admin only (transcript_rollback.md §8a). The
+            # Cross-publish is owner/admin only (user_edit_rollback.md §8a). The
             # community suggestion form no longer offers it; drop the key server-side
             # (authoritative) so a crafted POST can't bypass the hidden UI. Owners use
             # the dedicated manage_episode → update_cross_publish action instead.
@@ -228,7 +228,7 @@ def submit_speaker_labels(request, episode_id):
                 status=400,
             )
 
-    # Per-speaker award (transcript_rollback.md §3.4) replaces the old flat +5.
+    # Per-speaker award (user_edit_rollback.md §3.4) replaces the old flat +5.
     # existing_mappings is the .words header cache = the fold BEFORE this edit, so
     # it's the prior mapping the helper needs to tell naming from correction.
     speaker_points = 0

@@ -49,6 +49,13 @@
                                 <strong>{{ edit.episode.podcast.title }}</strong>: {{ edit.episode.title }}
                             </div>
                             <div class="text-end">
+                                {% if edit.audit_points < 0 %}
+                                    <span class="badge bg-danger bg-opacity-25 text-danger border border-danger me-2" title="Net trust impact">{{ edit.audit_points }}</span>
+                                {% elif edit.audit_points > 0 %}
+                                    <span class="badge bg-success bg-opacity-25 text-success border border-success me-2" title="Net trust impact">+{{ edit.audit_points }}</span>
+                                {% else %}
+                                    <span class="badge me-2" style="border:1px solid var(--bs-border-color); background-color: rgba(128,128,128,0.1); color: var(--vecto-surface-muted);" title="Net trust impact">+0</span>
+                                {% endif %}
                                 {% if edit.status == 'approved' %}
                                     <span class="badge bg-success bg-opacity-25 text-success border border-success me-2">Applied</span>
                                 {% elif edit.status == 'rejected' %}

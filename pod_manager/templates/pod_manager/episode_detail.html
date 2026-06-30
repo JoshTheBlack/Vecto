@@ -117,6 +117,13 @@
         border-radius: var(--vecto-radius-sm);
         opacity: 0.85;
     }
+    .section-box {
+        border: 1px solid var(--bs-border-color);
+        border-radius: var(--vecto-radius-md);
+        background-color: rgba(255, 255, 255, 0.03);
+        padding: 1.25rem 1.5rem;
+        margin: 0 0.25rem 1.5rem;
+    }
     .tx-word {
         cursor: pointer;
         border-radius: 2px;
@@ -611,8 +618,6 @@
                                     Show individual diarized speakers
                                 </label>
                             </div>
-                            {# Boxes are rendered by JS from transcript_speaker_data_json so the
-                               combined↔split toggle can rebuild them without a page reload. #}
                             <div class="row g-2 mb-3" id="speakerMappingRows"></div>
                             <div class="d-flex align-items-center gap-3">
                                 <button type="button" id="submitSpeakerLabelsBtn" class="btn btn-sm btn-primary fw-bold">
@@ -632,7 +637,8 @@
 
                 {% if request.user.is_authenticated %}
                 <div class="tab-pane fade" id="edit" role="tabpanel" aria-labelledby="edit-tab">
-                    
+
+                    <div class="section-box">
                     <div class="d-flex justify-content-between align-items-center mb-4 pb-3 border-bottom border-secondary">
                         <div>
                             <h4 class="text-warning mb-1"><i class="bi bi-journal-code"></i> The Archivist Desk</h4>
@@ -715,13 +721,14 @@
                             </div>
                         </div>
 
-                        <div class="d-grid gap-2 d-md-flex justify-content-md-end mt-5 pt-3 border-top border-secondary">
+                        <div class="d-grid gap-2 d-md-flex justify-content-md-end mt-5">
                             <button type="submit" class="btn btn-warning btn-lg"><i class="bi bi-send"></i> Submit Edit Suggestion</button>
                         </div>
                     </form>
+                    </div>
 
                     {% if is_owner %}
-                    <div class="mt-4 pt-3 border-top border-secondary">
+                    <div class="section-box">
                         <h6 class="text-muted text-uppercase small fw-bold mb-3">
                             <i class="bi bi-shield-lock me-1"></i>Owner Controls
                             {% if ep.is_published %}<span class="badge bg-success ms-2 fw-normal">Published</span>
@@ -1146,7 +1153,7 @@
                 };
 
                 // Cross-publish is no longer community-suggestible (owner/admin only,
-                // transcript_rollback.md §8a) — the payload never carries it.
+                // user_edit_rollback.md §8a) — the payload never carries it.
 
                 payloadInput.value = JSON.stringify(finalPayload);
             });

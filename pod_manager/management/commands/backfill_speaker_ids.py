@@ -1,6 +1,6 @@
 """Backfill the write-once ``speaker_id`` anchor onto existing transcripts.
 
-Phase 6 of transcript_rollback.md (§6). New transcriptions are born with
+Phase 6 of user_edit_rollback.md (§6). New transcriptions are born with
 ``speaker_id`` (Phase 1); this is the one-time migration for the existing
 catalogue. Lossless where the raw ASR dump survives, degraded-but-working where
 it doesn't — no re-transcription either way.

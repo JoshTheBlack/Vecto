@@ -157,8 +157,6 @@
 </style>
 
 <div class="tab-pane fade" id="list-inbox" role="tabpanel" aria-labelledby="list-inbox-list">
-    {# Scoring params for the live-points preview — driven from services/edits.py
-       scoring_config() so the JS never hardcodes the bonus math. #}
     {{ scoring_config|json_script:"vecto-scoring-config" }}
     <div class="d-flex justify-content-between align-items-center mb-4">
         <div>
@@ -566,15 +564,11 @@
 
                         </form>
 
-                        {# Trust breakdown: section badges sum to "Sections"; the sweep
-                           and first-responder bonuses aren't tied to a section, so they're
-                           itemised here to reconcile the badges with the approve total.
-                           JS keeps every value live as sections are toggled. #}
                         <div class="trust-breakdown d-flex justify-content-end align-items-center flex-wrap small mt-3 gap-2" style="color: var(--vecto-surface-muted);">
                             <span>Sections <strong class="bd-base" style="color: var(--vecto-surface-text);">+{{ edit.base_points }}</strong></span>
                             <span class="bd-sweep-wrap{% if not edit.sweep_bonus %} d-none{% endif %}">· Bonus <strong class="bd-sweep" style="color: var(--vecto-surface-text);">+{{ edit.sweep_bonus }}</strong></span>
                             <span class="bd-fr-wrap{% if not edit.fr_bonus %} d-none{% endif %}">· First responder <strong class="bd-fr" style="color: var(--vecto-surface-text);">+{{ edit.fr_bonus }}</strong></span>
-                            <span>= <strong style="color:#198754;">+<span class="bd-total">{{ edit.total_points_preview }}</span> Trust</strong></span>
+                            <span>= <strong><span class="bd-total" style="color:#198754;">+{{ edit.total_points_preview }}</span> Trust</strong></span>
                         </div>
 
                         {# Footer actions: the Approve form's submit lives outside the form via the form attribute, so Reject and Bulk Rollback can stay as their own forms (HTML disallows nested forms). #}
@@ -607,7 +601,7 @@
                                 {# Submit-button-outside-form, attached via HTML5 `form` attribute. #}
                                 <button type="submit" form="approveForm{{ edit.id }}" class="btn btn-success approve-submit-btn" data-edit-id="{{ edit.id }}">
                                     <i class="bi bi-check-lg"></i> Approve & Apply
-                                    (+<span class="approve-pts">{{ edit.total_points_preview }}</span> Trust)
+                                    (<span class="approve-pts">+{{ edit.total_points_preview }}</span> Trust)
                                 </button>
                             </div>
                         </div>
@@ -1252,15 +1246,17 @@
             const sweep = core >= SCORING.sweep_full_count ? SCORING.sweep_full_bonus
                         : (core >= SCORING.sweep_partial_min ? SCORING.sweep_partial_bonus : 0);
             const fr = (anyChecked && isFirst) ? SCORING.first_responder_bonus : 0;
-            const total = base + sweep + fr;
+            // Nothing selected => approving converts to a rejection (−penalty), not +0.
+            const total = anyChecked ? (base + sweep + fr) : -(SCORING.reject_penalty || 0);
+            const fmt = n => (n < 0 ? '−' : '+') + Math.abs(n);
             if (baseSpan) baseSpan.textContent = '+' + base;
             if (sweepSpan) sweepSpan.textContent = '+' + sweep;
             if (sweepWrap) sweepWrap.classList.toggle('d-none', sweep === 0);
             if (frSpan) frSpan.textContent = '+' + fr;
             if (frWrap) frWrap.classList.toggle('d-none', fr === 0);
-            if (totalSpan) totalSpan.textContent = total;
+            if (totalSpan) { totalSpan.textContent = fmt(total); totalSpan.style.color = total < 0 ? '#dc3545' : '#198754'; }
             const span = approveBtn && approveBtn.querySelector('.approve-pts');
-            if (span) span.textContent = total;
+            if (span) span.textContent = fmt(total);
         }
         ptsBoxes.forEach(cb => cb.addEventListener('change', recomputePoints));
         recomputePoints();

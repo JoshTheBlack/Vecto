@@ -20,7 +20,7 @@ from ...models import (
     EpisodeEditSuggestion,
 )
 from ...services.cross_publish import sync_cross_publications, validate_cross_targets
-from ...services.edits import chapter_items, score_contribution
+from ...services.edits import chapter_items, score_contribution, REJECT_PENALTY
 from ...services.patreon import sync_network_patrons
 from ...tasks import task_rebuild_episode_fragments, task_rebuild_podcast_fragments
 from ...utils import sanitize_user_html
@@ -45,7 +45,7 @@ def _check_scalar_approval(request, approve_key, value_key, snapshot_val, ep_fie
 
 def _restore_sequence_fields(ep, original_data):
     """Restore season/episode/type onto the episode from a rollback snapshot
-    (transcript_rollback.md §8a). Key-presence guarded so pre-feature edits — whose
+    (user_edit_rollback.md §8a). Key-presence guarded so pre-feature edits — whose
     original_data predates the sequence snapshot — don't wipe the current values."""
     original_data = original_data or {}
     if 'season_number' in original_data:
@@ -119,7 +119,7 @@ def _handle_approve_edit(request, current_network):
         # both columns), so rollback restores the meaningful pre-edit chapters.
         'chapters': ep.chapters_private or ep.chapters_public or [],
         # Sequence fields captured so rollback restores the pre-approval values,
-        # not just the edits_sequence counter (transcript_rollback.md §8a).
+        # not just the edits_sequence counter (user_edit_rollback.md §8a).
         'season_number': ep.season_number,
         'episode_number': ep.episode_number,
         'episode_type': ep.episode_type,
@@ -243,9 +243,9 @@ def _handle_approve_edit(request, current_network):
         edit.status = EpisodeEditSuggestion.Status.REJECTED
         edit.resolved_at = timezone.now()
         edit.save()
-        membership.trust_score = max(0, membership.trust_score - 2)
+        membership.trust_score = max(0, membership.trust_score - REJECT_PENALTY)
         membership.save()
-        messages.warning(request, "No sections selected for approval. Edit converted to rejection. User penalized -2 Trust.")
+        messages.warning(request, f"No sections selected for approval. Edit converted to rejection. User penalized -{REJECT_PENALTY} Trust.")
         return
 
     # Score once — same scorer the auto-approve path uses (auto == manual).
@@ -309,10 +309,10 @@ def _handle_reject_edit(request, current_network):
     edit.status = EpisodeEditSuggestion.Status.REJECTED
     edit.resolved_at = timezone.now()
     edit.save()
-    membership.trust_score = max(0, membership.trust_score - 2)
+    membership.trust_score = max(0, membership.trust_score - REJECT_PENALTY)
     membership.save()
-    logger.info(f"Edit #{edit.id} rejected for episode '{edit.episode.title}' — user {edit.user.username} penalized -2 trust")
-    messages.warning(request, "Edit rejected. User penalized -2 Trust.")
+    logger.info(f"Edit #{edit.id} rejected for episode '{edit.episode.title}' — user {edit.user.username} penalized -{REJECT_PENALTY} trust")
+    messages.warning(request, f"Edit rejected. User penalized -{REJECT_PENALTY} Trust.")
 
 
 def _handle_rollback_single_edit(request, current_network):
@@ -324,7 +324,7 @@ def _handle_rollback_single_edit(request, current_network):
     # Block when newer approved edits exist on the same episode — but ONLY for
     # snapshot-based metadata edits. Speaker edits replay from the immutable base
     # over the remaining approved chain, so removing one is order-correct
-    # regardless of which edit it is (transcript_rollback.md §3.4); no blocker.
+    # regardless of which edit it is (user_edit_rollback.md §3.4); no blocker.
     if not is_speaker:
         newer_approved = EpisodeEditSuggestion.objects.filter(
             episode=edit.episode,

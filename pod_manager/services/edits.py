@@ -85,7 +85,7 @@ def apply_approved_edit(ep, suggested_data, user=None):
     # recomputes state from the speaker_id base + the approved chain, so the edit
     # row must already be APPROVED before this runs (it is — submit_speaker_labels
     # creates it APPROVED on the trusted path). The mappings dict is no longer
-    # passed: apply_speaker_labels folds the chain itself (transcript_rollback.md §3.3).
+    # passed: apply_speaker_labels folds the chain itself (user_edit_rollback.md §3.3).
     if 'speaker_mappings' in suggested_data:
         from pod_manager.services.transcription import apply_speaker_labels
         apply_speaker_labels(ep.id)
@@ -127,6 +127,9 @@ SWEEP_PARTIAL_MIN = 3
 SWEEP_PARTIAL_BONUS = 2
 SWEEP_FULL_BONUS = 4
 FIRST_RESPONDER_BONUS = 1
+# Trust penalty for a rejection (explicit reject, or an approval with no sections
+# selected, which converts to a rejection).
+REJECT_PENALTY = 2
 
 
 def scoring_config() -> dict:
@@ -137,12 +140,13 @@ def scoring_config() -> dict:
         'sweep_partial_min': SWEEP_PARTIAL_MIN,
         'sweep_partial_bonus': SWEEP_PARTIAL_BONUS,
         'first_responder_bonus': FIRST_RESPONDER_BONUS,
+        'reject_penalty': REJECT_PENALTY,
     }
 
 
 def score_contribution(changes, *, is_first=False):
     """Single source of truth for the trust + counter award of one approved edit
-    (transcript_rollback.md trust model). Returns ``(points, counter_deltas)``.
+    (user_edit_rollback.md trust model). Returns ``(points, counter_deltas)``.
 
     ``changes`` carries the fields actually APPLIED; a key's PRESENCE means the
     field changed, its value carries the quantity:

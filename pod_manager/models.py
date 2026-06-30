@@ -622,7 +622,7 @@ class NetworkMembership(models.Model):
     edits_chapters = models.IntegerField(default=0)
     edits_tags = models.IntegerField(default=0)
     edits_descriptions = models.IntegerField(default=0)
-    # Speaker-label identifications (transcript_rollback.md §3.4) — moved by the
+    # Speaker-label identifications (user_edit_rollback.md §3.4) — moved by the
     # per-speaker points award at approval and the exact wash on rollback.
     edits_speakers = models.IntegerField(default=0)
     # iTunes / Sequence Metadata (season / episode # / episode type) edits (§8a).
@@ -797,7 +797,7 @@ class EpisodeEditSuggestion(models.Model):
         ROLLED_BACK = 'rolled_back', 'Rolled Back'
         # Re-transcription renumbers diarization, so prior speaker edits no longer
         # align with the fresh base — they are SUPERSEDED: retained for audit /
-        # trust history but excluded from the replay fold (see transcript_rollback.md §7).
+        # trust history but excluded from the replay fold (see user_edit_rollback.md §7).
         SUPERSEDED = 'superseded', 'Superseded'
 
     episode = models.ForeignKey(Episode, on_delete=models.CASCADE, related_name='edit_suggestions')
@@ -809,7 +809,7 @@ class EpisodeEditSuggestion(models.Model):
     status = models.CharField(max_length=20, choices=Status.choices, default=Status.PENDING)
     is_first_responder = models.BooleanField(default=False)
     # Trust delta banked at approval so rollback reverses the exact amount
-    # without recomputation (transcript_rollback.md §3.4 — speaker edits).
+    # without recomputation (user_edit_rollback.md §3.4 — speaker edits).
     points = models.IntegerField(default=0)
     # Per-counter NetworkMembership deltas this edit credited at approval, e.g.
     # {"edits_tags": 3, "edits_chapters": 2, "edits_sequence": 1}. Rollback

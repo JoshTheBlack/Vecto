@@ -3355,6 +3355,28 @@ class TrustBreakdownTallyTests(TestCase):
         self.assertEqual(edit.base_points + edit.sweep_bonus + edit.fr_bonus, edit.total_points)
         self.assertEqual(edit.trust_after_revert, 3)  # 10 - 7
 
+    def test_audit_points_badge_by_status(self):
+        """Collapsed-row net-trust badge: approved=+points, rejected=-penalty,
+        rolled_back=+0 (washes)."""
+        from pod_manager.services.edits import REJECT_PENALTY
+        NetworkMembership.objects.create(user=self.user, network=self.network, trust_score=20)
+        common = dict(episode=self.episode, user=self.user, resolved_at=timezone.now(),
+                      original_data={'title': 'Orig'}, suggested_data={'title': 'New'})
+        EpisodeEditSuggestion.objects.create(
+            status=EpisodeEditSuggestion.Status.APPROVED, points=7,
+            counter_deltas={'edits_title': 1}, **common)
+        EpisodeEditSuggestion.objects.create(
+            status=EpisodeEditSuggestion.Status.REJECTED, points=0, counter_deltas={}, **common)
+        EpisodeEditSuggestion.objects.create(
+            status=EpisodeEditSuggestion.Status.ROLLED_BACK, points=7,
+            counter_deltas={'edits_title': 1}, **common)
+        req = self.factory.get('/', {'network': self.network.slug})
+        by_status = {e.status: e.audit_points
+                     for e in self._gather_audit_log(req, self.network)['audit_page_obj']}
+        self.assertEqual(by_status[EpisodeEditSuggestion.Status.APPROVED], 7)
+        self.assertEqual(by_status[EpisodeEditSuggestion.Status.REJECTED], -REJECT_PENALTY)
+        self.assertEqual(by_status[EpisodeEditSuggestion.Status.ROLLED_BACK], 0)
+
     def test_audit_legacy_unbanked_edit_shows_no_phantom_points(self):
         EpisodeEditSuggestion.objects.create(
             episode=self.episode, user=self.user, status=EpisodeEditSuggestion.Status.APPROVED,

@@ -558,7 +558,7 @@ def _stamp_speaker_ids(segments: list) -> list:
     """Seed the write-once `speaker_id` from the raw diarization label carried in
     `speaker`, at segment and word level. Called at parse time so every freshly
     parsed transcript is born with its immutable SPEAKER_XX anchor — the base the
-    speaker-label edit chain replays over (see transcript_rollback.md §3).
+    speaker-label edit chain replays over (see user_edit_rollback.md §3).
 
     Idempotent: only sets `speaker_id` where it is not already present, so a
     re-parse never rewrites the anchor. Segments/words with no diarization label
@@ -1143,7 +1143,7 @@ def run_transcription(
 
 def fold_speaker_mappings(episode_id: int) -> dict:
     """The cumulative speaker mapping = last-writer-wins fold over the episode's
-    APPROVED speaker edits, ordered by resolved_at (transcript_rollback.md §3.2).
+    APPROVED speaker edits, ordered by resolved_at (user_edit_rollback.md §3.2).
 
     Each EpisodeEditSuggestion with suggested_data['speaker_mappings'] is one
     delta keyed on speaker_id; later edits overwrite earlier ones per key,
@@ -1166,7 +1166,7 @@ def fold_speaker_mappings(episode_id: int) -> dict:
 
 def speaker_edit_points(edit_mappings: dict, prior_mapping: dict) -> tuple:
     """Per-speaker contribution points for one approved speaker-label edit
-    (transcript_rollback.md §3.4). Returns ``(points, newly_named)``.
+    (user_edit_rollback.md §3.4). Returns ``(points, newly_named)``.
 
     ``prior_mapping`` is the cumulative last-writer-wins fold of the already-APPROVED
     speaker edits *before* this one (e.g. ``fold_speaker_mappings`` excluding the
@@ -1200,7 +1200,7 @@ def speaker_edit_points(edit_mappings: dict, prior_mapping: dict) -> tuple:
 
 def apply_speaker_labels(episode_id: int) -> None:
     """Recompute and re-materialise all transcript formats from the immutable
-    speaker_id base + the approved speaker-edit chain (transcript_rollback.md §3.3).
+    speaker_id base + the approved speaker-edit chain (user_edit_rollback.md §3.3).
 
     Replay, not in-place mutation: the current state is a pure function of the
     pristine speaker_id (written once at transcription) folded with the APPROVED,
@@ -1302,7 +1302,7 @@ def supersede_speaker_edits(episode_id: int) -> int:
     """On re-transcription the diarization is renumbered (SPEAKER_00 in v2 ≠ v1),
     so the prior speaker-edit chain no longer aligns with the fresh base. Mark all
     prior APPROVED / PENDING speaker edits SUPERSEDED — retained for audit & trust
-    history, excluded from the replay fold (transcript_rollback.md §7). Returns the
+    history, excluded from the replay fold (user_edit_rollback.md §7). Returns the
     number of edits superseded (0 for a brand-new transcript with no prior edits).
 
     Takes the same per-episode Transcript lock as apply_speaker_labels (§3.3) so a

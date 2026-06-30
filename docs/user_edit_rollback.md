@@ -1,4 +1,9 @@
-# Transcript Speaker Labels — Rollback & Immutable Base (Design)
+# User-Submitted Edits — Rollback & Reward Rework
+
+_Scope: immutable speaker-id base + replay rollback, exact-wash trust/counter
+reversal for every user-submitted edit field, a unified reward scorer, and the
+cross-publish lockdown. (Originally "Transcript Speaker Labels — Rollback &
+Immutable Base".)_
 
 > **Status:** Implemented. All phases (1–9) are complete; this document remains the
 > source of truth and the implementation-progress log of record.
@@ -558,6 +563,14 @@ and is invisible unless two people edit the *same* episode at the same instant.
 from base handles that), but it is **kept** — it's the audit log's before-state for
 the speaker diff (§8b). Don't drop it.
 
+> **⚠ As built (Windows 5–6) — superseded by the unified reward model.** The
+> speaker-only scheme below remains accurate for *speaker* scoring
+> (`speaker_edit_points`), but trust and counters are now driven by **one** scorer
+> (`score_contribution`, [edits.py](../pod_manager/services/edits.py)) across every
+> edit type, banking exact `points` (trust) + `counter_deltas` (per-counter) on
+> each edit so single **and** bulk rollback are a pure exact wash. §12 and the
+> Window 5/6 progress entries are the authoritative description.
+
 **Trust accounting (decided).** Points are awarded **per speaker**, and a rollback
 is an exact wash. The award for one approved edit is:
 
@@ -688,9 +701,10 @@ Each box **displays the current resolved name** but **carries the immutable
 `speaker_id`** as its hidden submit key:
 
 - box value (shown / editable) = current `speaker` (`"Aron"`)
-- `data-speaker="SPEAKER_03"` (stable)
-- submit payload = `{ "SPEAKER_03": "<typed name>" }` — always keyed on
-  `speaker_id`, never on display name.
+- carries the immutable id(s) in `data-speakers` (comma-joined — a combined-view
+  box fans its name across the whole group, a split-view box carries one id)
+- submit payload keyed on `speaker_id`, never on display name —
+  `{ "SPEAKER_00": "Aron", "SPEAKER_03": "Aron" }` for a combined "Aron" box.
 
 Server (`submit_speaker_labels`) validates that submitted keys are **known
 `speaker_id`s** for that episode (reject unknown keys) — also tightens grief
@@ -826,9 +840,11 @@ historical speaker identifications predate it. As part of the conversion,
   the prior fold.
 - **Set** the counter to that sum (don't increment) so the pass is **idempotent**
   and safe to re-run independently of the per-episode `1.1.0` skip.
-- **Scope: the counter only.** Trust score is **not** retroactively re-credited —
-  the historical flat `+5` per edit already banked at approval time stands;
-  re-crediting would double-count. (Confirm if you'd rather reconcile trust too.)
+- **Scope: the counter only.** This sets the `edits_speakers` aggregate; it does
+  **not** re-credit `trust_score`. (Per-edit `points` / `counter_deltas` for
+  historical rows are reconstructed separately by `backfill_edit_points` — Window 6
+  — so rollbacks are exact; the aggregate trust already banked stands, and
+  re-crediting it would double-count.)
 - Gated behind `--apply` like the rest of the command; logs the per-membership
   before → after.
 

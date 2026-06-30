@@ -13,7 +13,7 @@ from django.db.models import Q, Case, When, CharField, Max, Count
 from django.db.models.functions import Substr, Lower
 
 from ...models import EpisodeEditSuggestion, NetworkMembership, Episode
-from ...services.edits import chapter_items, score_contribution, scoring_config, FIRST_RESPONDER_BONUS
+from ...services.edits import chapter_items, score_contribution, scoring_config, FIRST_RESPONDER_BONUS, REJECT_PENALTY
 from ...utils import diagnostic_timer
 
 logger = logging.getLogger(__name__)
@@ -283,6 +283,14 @@ def gather_audit_log(request, current_network):
             edit.base_points = _section_base(edit)
             edit.fr_bonus = FIRST_RESPONDER_BONUS if 'first_responder_count' in cd else 0
             edit.sweep_bonus = max(0, edit.total_points - edit.base_points - edit.fr_bonus)
+        # Net trust impact shown in the collapsed row: rolled-back washes to 0,
+        # rejected is the penalty, approved/superseded keep their banked points.
+        if edit.status == EpisodeEditSuggestion.Status.ROLLED_BACK:
+            edit.audit_points = 0
+        elif edit.status == EpisodeEditSuggestion.Status.REJECTED:
+            edit.audit_points = -REJECT_PENALTY
+        else:
+            edit.audit_points = edit.total_points
         if edit.cross_publish_changed:
             _titles = lambda ids: [audit_podcast_titles.get(i, f'#{i}') for i in ids]
             edit.cross_publish_original_titles = _titles((edit.original_data or {}).get('cross_publish_podcast_ids') or [])

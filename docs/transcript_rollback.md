@@ -1,7 +1,7 @@
 # Transcript Speaker Labels — Rollback & Immutable Base (Design)
 
-> **Status:** Approved plan — implementation in progress across consecutive chat
-> windows. This document is the source of truth; each window updates it.
+> **Status:** Implemented. All phases (1–9) are complete; this document remains the
+> source of truth and the implementation-progress log of record.
 
 ## Implementation progress
 
@@ -349,6 +349,67 @@ any deviations from the plan) and ticks the phase in §10. Read this before star
     preview no-op, idempotent re-run), plus `CreatorInboxActionTests` cases for
     metadata unlock (and stays-locked when another approved edit remains) and the
     private-chapters effective-snapshot restore. Full suite **431 green** via
+    `./.venv/Scripts/python.exe manage.py test`.
+
+- **Window 7 — Phases 7 & 9 (§5, §8b, §3.1/§3.5 front-end, §9).** Front-end
+  speaker_id contract + combined↔split toggle, submit key validation, the structured
+  review-surface diff, and the docs fold. No model migration (read/display-only).
+  - **Listener context** ([views/listener/main.py](../pod_manager/views/listener/main.py)
+    `episode_detail`) — now exposes, per `speaker_id`, the **current resolved name**
+    derived from `fold_speaker_mappings(ep.id)` over the `.words` `speaker_id` set
+    (not from distinct `seg.speaker`), as `transcript_speaker_data` (`[{id, name}]`,
+    timeline order) serialised to `transcript_speaker_data_json`. `transcript_speakers`
+    is now the distinct `speaker_id` set (used only as the "any speakers?" guard) and
+    `transcript_speaker_names` is the fold mapping (authoritative). Pre-backfill
+    `.words` fall back to `seg.speaker` (`seg.get('speaker_id') or seg.get('speaker')`),
+    so split degrades to combined there.
+  - **Speaker Labels form** ([episode_detail.html](../pod_manager/templates/pod_manager/episode_detail.html))
+    — boxes are now **JS-rendered** from `transcript_speaker_data_json` so the toggle
+    can rebuild them without a reload. Each box **displays the resolved name** and
+    **carries the immutable `speaker_id`(s)** in `data-speakers` (comma-joined); submit
+    fans the typed name across every id the box carries, always keyed on `speaker_id`.
+    A **"Show individual diarized speakers"** switch (persisted in `localStorage` key
+    `vecto_speaker_split`, default combined, mirroring the episode-type chips) drives
+    both the form (combined = one box per distinct resolved name with fan-out; split =
+    one box per `speaker_id`, the un-merge path) and the transcript. `buildEnhancedTranscript`
+    grouping/colour key now keys on `seg.speaker` (combined) or `seg.speaker_id` (split,
+    with a `.speaker-id-badge` showing the trailing diarization index, radius from
+    `--vecto-radius-sm`); the cached doc re-renders in place on a `tx:splitchange`
+    event the form dispatches.
+  - **Key validation (§5.1)** ([views/creator/main.py](../pod_manager/views/creator/main.py)
+    `submit_speaker_labels`) — builds the known `speaker_id` set from the `.words`
+    (segment **and** word level, with the `seg.speaker` fallback) and **rejects** a
+    submission containing any unknown key (HTTP 400) **before** the existing
+    `speaker_edit_points` / `points` / `counter_deltas` banking, so scoring reflects
+    only valid keys. Enforced only when a non-empty known set is readable (an
+    unreadable `.words` can't validate and shouldn't lock out the feature).
+  - **Review surfaces (§8b)** ([views/creator/data.py](../pod_manager/views/creator/data.py))
+    — `_annotate_edit_changes` now sets `edit.speaker_changed` + a structured
+    `edit.speaker_diff = [(speaker_id, before, after)]` (before from
+    `original_data.speaker_mappings`, defaulting an unmentioned id to its raw label);
+    `speaker_changed` (not a bare `bool(speaker_mappings)`) now drives `has_changes`,
+    so a no-op rename reads as no change. `gather_inbox` **overrides** the diff with
+    the **current** `fold_speaker_mappings(ep.id)` as the before-state (a pending
+    edit's live name may differ from its submit-time snapshot). The inbox
+    ([tab_inbox.html](../pod_manager/templates/pod_manager/creator_tabs/tab_inbox.html))
+    and audit log ([tab_audit_log.html](../pod_manager/templates/pod_manager/creator_tabs/tab_audit_log.html))
+    both render `speaker_id` (before →) after from `edit.speaker_diff`, suppressing a
+    redundant before when it equals the raw id; the audit log's old separate
+    "Previous:" line is folded into the inline diff. `original_data.speaker_mappings`
+    is still kept as the audit before-state.
+  - **Docs (§9)** ([transcription.md](transcription.md)) — rewrote the Speaker
+    Identification section: corrected the obsolete "one-click reversal via
+    `original_data`" claim, and documented the immutable `speaker_id` vs mutable
+    `speaker`, replay-from-base on approve/rollback, supersede on re-transcription, the
+    `original_data` audit-only role, and the combined/split view.
+  - **Deviations:** none from the brief. The combined↔split toggle lives in the
+    (authenticated) Speaker Labels form; the transcript IIFE reads the same
+    `localStorage` pref at init, so a returning user's preference applies on load.
+  - **Tests:** `EpisodeDetailSpeakerContextTests` (resolved name from the fold not
+    `seg.speaker`; pre-backfill fallback), `SpeakerDiffAnnotationTests` (correction /
+    first-time-naming / no-op / `gather_inbox` current-fold override), and
+    `SubmitSpeakerLabelsValidationTests` (unknown rejected, known accepted, mixed
+    rejected atomically). Full suite **440 green** via
     `./.venv/Scripts/python.exe manage.py test`.
 
 ## 1. Problem
@@ -928,15 +989,16 @@ isn't legible. Adds:
    `1.1.0` skip; name-change logging; preview/`--apply`. Plus a **retroactive
    `edits_speakers` recompute** from the historical approved chain (idempotent
    set, using the Phase 5 helper).~~ ✅ **Done (Window 4).**
-7. **Front-end & review surfaces** — form carries `speaker_id` / displays name;
+7. ~~**Front-end & review surfaces** — form carries `speaker_id` / displays name;
    combined↔split toggle for form boxes + transcript grouping + colour key. Add the
    structured speaker diff (§8b): `speaker_changed` + per-speaker before→after in
    `_annotate_edit_changes` / `gather_inbox`, and render before→after in the inbox
-   speaker block (audit log already shows "Previous:").
+   speaker block (audit log already shows "Previous:").~~ ✅ **Done (Window 7).**
 8. ~~**Re-transcription** — supersede prior speaker edits.~~ ✅ **Done (Window 2).**
-9. **Docs** — fold the implemented behaviour back into
+9. ~~**Docs** — fold the implemented behaviour back into
    [transcription.md](transcription.md) (correct the current "one-click
-   reversal" claim) and remove the dead `original_data` speaker capture note.
+   reversal" claim) and remove the dead `original_data` speaker capture note.~~
+   ✅ **Done (Window 7).**
 
 ## 11. Testing
 

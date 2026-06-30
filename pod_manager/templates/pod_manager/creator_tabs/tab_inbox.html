@@ -1,5 +1,26 @@
 {% load static %}
 <style>
+    /* Per-section trust-point chip on the approve desk. */
+    .pts-badge {
+        display: inline-block;
+        margin-left: 0.4rem;
+        padding: 0 0.4rem;
+        font-size: 0.7rem;
+        font-weight: 700;
+        line-height: 1.5;
+        color: var(--vecto-surface-text);
+        background-color: rgba(25, 135, 84, 0.18);
+        border: 1px solid rgba(25, 135, 84, 0.45);
+        border-radius: var(--vecto-radius-sm);
+    }
+    /* Section toggled off — its points don't count toward the total. */
+    .pts-badge.pts-badge-off {
+        opacity: 0.4;
+        text-decoration: line-through;
+        background-color: transparent;
+        border-color: var(--vecto-surface-muted);
+        color: var(--vecto-surface-muted);
+    }
     /* ============================================================
        INBOX DIFF LAYOUT — section-based, conflict-aware
        Two columns by default; three (.conflicted) when the live
@@ -136,6 +157,9 @@
 </style>
 
 <div class="tab-pane fade" id="list-inbox" role="tabpanel" aria-labelledby="list-inbox-list">
+    {# Scoring params for the live-points preview — driven from services/edits.py
+       scoring_config() so the JS never hardcodes the bonus math. #}
+    {{ scoring_config|json_script:"vecto-scoring-config" }}
     <div class="d-flex justify-content-between align-items-center mb-4">
         <div>
             <h4 class="text-accent mb-1"><i class="bi bi-inbox-fill"></i> The Archivist Inbox</h4>
@@ -199,7 +223,7 @@
                         {% endwith %}
 
                         {# Single APPROVE form: wraps every editable field plus per-section toggles. The id is set so the submit button (which lives outside the form, see footer) can target it via the HTML5 form="..." attribute. #}
-                        <form method="POST" id="approveForm{{ edit.id }}" class="inbox-approve-form" data-edit-id="{{ edit.id }}">
+                        <form method="POST" id="approveForm{{ edit.id }}" class="inbox-approve-form" data-edit-id="{{ edit.id }}" data-is-first="{{ edit.is_first_responder|yesno:'1,0' }}">
                             {% csrf_token %}
                             <input type="hidden" name="action" value="approve_edit">
                             <input type="hidden" name="edit_id" value="{{ edit.id }}">
@@ -254,8 +278,9 @@
                                             <div class="form-check form-switch ms-auto">
                                                 <input class="form-check-input" type="checkbox" role="switch"
                                                     id="approveTitle{{ edit.id }}"
-                                                    name="approve_title" checked>
+                                                    name="approve_title" data-pts="{{ edit.pts_title }}" data-core="1" checked>
                                                 <label class="form-check-label small" for="approveTitle{{ edit.id }}">Approve</label>
+                                                <span class="pts-badge">+{{ edit.pts_title }}</span>
                                             </div>
                                         </div>
                                         <input type="text" class="form-control form-control-sm bg-dark text-light border-secondary diff-title-suggested" value="{{ edit.suggested_data.title|default:'' }}">
@@ -297,8 +322,9 @@
                                             <div class="form-check form-switch ms-auto">
                                                 <input class="form-check-input" type="checkbox" role="switch"
                                                        id="approveTags{{ edit.id }}"
-                                                       name="approve_tags" checked>
+                                                       name="approve_tags" data-pts="{{ edit.pts_tags }}" data-core="1" checked>
                                                 <label class="form-check-label small" for="approveTags{{ edit.id }}">Approve</label>
+                                                <span class="pts-badge">+{{ edit.pts_tags }}</span>
                                             </div>
                                         </div>
                                         <div class="tag-input-wrapper tags-suggested-input">
@@ -333,8 +359,9 @@
                                         <div class="form-check form-switch ms-auto">
                                             <input class="form-check-input" type="checkbox" role="switch"
                                                    id="approveChapters{{ edit.id }}"
-                                                   name="approve_chapters" checked>
+                                                   name="approve_chapters" data-pts="{{ edit.pts_chapters }}" data-core="1" checked>
                                             <label class="form-check-label small" for="approveChapters{{ edit.id }}">Approve</label>
+                                            <span class="pts-badge">+{{ edit.pts_chapters }}</span>
                                         </div>
                                     </div>
 
@@ -391,8 +418,9 @@
                                             <div class="form-check form-switch ms-auto">
                                                 <input class="form-check-input" type="checkbox" role="switch"
                                                        id="approveDesc{{ edit.id }}"
-                                                       name="approve_description" checked>
+                                                       name="approve_description" data-pts="{{ edit.pts_desc }}" data-core="1" checked>
                                                 <label class="form-check-label small" for="approveDesc{{ edit.id }}">Approve</label>
+                                                <span class="pts-badge">+{{ edit.pts_desc }}</span>
                                             </div>
                                         </div>
                                         <div class="diff-desc-suggested inbox-desc-editable" contenteditable="true">{{ edit.suggested_data.description|default:""|safe }}</div>
@@ -415,8 +443,10 @@
                                             <div class="form-check form-switch ms-auto">
                                                 <input class="form-check-input" type="checkbox" role="switch"
                                                        id="approveSeason{{ edit.id }}" name="approve_season_number"
+                                                       data-pts="{{ edit.pts_season }}" data-core="1"
                                                        {% if sugg_season != edit.current_season_number %}checked{% endif %}>
                                                 <label class="form-check-label small" for="approveSeason{{ edit.id }}">Approve</label>
+                                                <span class="pts-badge">+{{ edit.pts_season }}</span>
                                             </div>
                                         </div>
                                         <div class="d-flex gap-2 align-items-center">
@@ -437,8 +467,10 @@
                                             <div class="form-check form-switch ms-auto">
                                                 <input class="form-check-input" type="checkbox" role="switch"
                                                        id="approveEpisodeNum{{ edit.id }}" name="approve_episode_number"
+                                                       data-pts="{{ edit.pts_epnum }}" data-core="1"
                                                        {% if sugg_epnum != edit.current_episode_number %}checked{% endif %}>
                                                 <label class="form-check-label small" for="approveEpisodeNum{{ edit.id }}">Approve</label>
+                                                <span class="pts-badge">+{{ edit.pts_epnum }}</span>
                                             </div>
                                         </div>
                                         <div class="d-flex gap-2 align-items-center">
@@ -459,8 +491,10 @@
                                             <div class="form-check form-switch ms-auto">
                                                 <input class="form-check-input" type="checkbox" role="switch"
                                                        id="approveEpisodeType{{ edit.id }}" name="approve_episode_type"
+                                                       data-pts="{{ edit.pts_eptype }}" data-core="1"
                                                        {% if sugg_type != edit.current_episode_type %}checked{% endif %}>
                                                 <label class="form-check-label small" for="approveEpisodeType{{ edit.id }}">Approve</label>
+                                                <span class="pts-badge">+{{ edit.pts_eptype }}</span>
                                             </div>
                                         </div>
                                         <div class="d-flex gap-2 align-items-center">
@@ -485,17 +519,20 @@
                                 <div class="d-flex align-items-center gap-2 mb-2">
                                     <input type="checkbox" class="form-check-input mt-0"
                                            id="approveSpeakerLabels{{ edit.id }}"
-                                           name="approve_speaker_labels" value="on" checked>
+                                           name="approve_speaker_labels" value="on"
+                                           data-pts="{{ edit.pts_speaker }}" data-core="0" checked>
                                     <label class="form-check-label fw-semibold" style="color: var(--vecto-surface-text);" for="approveSpeakerLabels{{ edit.id }}">
                                         <i class="bi bi-person-badge me-1"></i>Speaker Labels
                                     </label>
+                                    <span class="pts-badge">+{{ edit.pts_speaker }}</span>
                                 </div>
                                 <div class="ps-4">
-                                    {% for speaker_id, name in edit.suggested_data.speaker_mappings.items %}
+                                    {% for sid, before, after in edit.speaker_diff %}
                                     <div class="small mb-1">
-                                        <span class="font-monospace" style="color: var(--vecto-primary);">{{ speaker_id }}</span>
+                                        <span class="font-monospace" style="color: var(--vecto-primary);">{{ sid }}</span>
+                                        {% if before and before != sid %}<span style="color: var(--vecto-surface-muted);">{{ before }}</span>{% endif %}
                                         <i class="bi bi-arrow-right mx-1" style="color: var(--vecto-surface-muted);"></i>
-                                        <span style="color: var(--vecto-surface-text);">{{ name }}</span>
+                                        <span style="color: var(--vecto-surface-text);">{{ after }}</span>
                                     </div>
                                     {% endfor %}
                                 </div>
@@ -507,7 +544,8 @@
                                 <div class="d-flex align-items-center gap-2 mb-2">
                                     <input type="checkbox" class="form-check-input mt-0"
                                            id="approveCrossPublish{{ edit.id }}"
-                                           name="approve_cross_publish" value="on" checked>
+                                           name="approve_cross_publish" value="on"
+                                           data-pts="0" data-core="0" checked>
                                     <label class="form-check-label fw-semibold" style="color: var(--vecto-surface-text);" for="approveCrossPublish{{ edit.id }}">
                                         <i class="bi bi-broadcast me-1"></i>Feed Placement
                                         {% if edit.cross_publish_conflict %}<span class="badge ms-2 conflict-badge" title="Feed placement changed since this edit was submitted">CHANGED</span>{% endif %}
@@ -527,6 +565,17 @@
                             {% endif %}
 
                         </form>
+
+                        {# Trust breakdown: section badges sum to "Sections"; the sweep
+                           and first-responder bonuses aren't tied to a section, so they're
+                           itemised here to reconcile the badges with the approve total.
+                           JS keeps every value live as sections are toggled. #}
+                        <div class="trust-breakdown d-flex justify-content-end align-items-center flex-wrap small mt-3 gap-2" style="color: var(--vecto-surface-muted);">
+                            <span>Sections <strong class="bd-base" style="color: var(--vecto-surface-text);">+{{ edit.base_points }}</strong></span>
+                            <span class="bd-sweep-wrap{% if not edit.sweep_bonus %} d-none{% endif %}">· Bonus <strong class="bd-sweep" style="color: var(--vecto-surface-text);">+{{ edit.sweep_bonus }}</strong></span>
+                            <span class="bd-fr-wrap{% if not edit.fr_bonus %} d-none{% endif %}">· First responder <strong class="bd-fr" style="color: var(--vecto-surface-text);">+{{ edit.fr_bonus }}</strong></span>
+                            <span>= <strong style="color:#198754;">+<span class="bd-total">{{ edit.total_points_preview }}</span> Trust</strong></span>
+                        </div>
 
                         {# Footer actions: the Approve form's submit lives outside the form via the form attribute, so Reject and Bulk Rollback can stay as their own forms (HTML disallows nested forms). #}
                         <div class="mt-4 pt-3 border-top d-flex justify-content-between align-items-center flex-wrap gap-2"
@@ -558,6 +607,7 @@
                                 {# Submit-button-outside-form, attached via HTML5 `form` attribute. #}
                                 <button type="submit" form="approveForm{{ edit.id }}" class="btn btn-success approve-submit-btn" data-edit-id="{{ edit.id }}">
                                     <i class="bi bi-check-lg"></i> Approve & Apply
+                                    (+<span class="approve-pts">{{ edit.total_points_preview }}</span> Trust)
                                 </button>
                             </div>
                         </div>
@@ -1168,6 +1218,52 @@
             const epTypeInput = wrapper.querySelector('.diff-episode-type-suggested');
             if (epTypeInput) wrapper.querySelector('.hidden-edited-episode-type').value = epTypeInput.value.trim();
         });
+
+        // ---- LIVE TRUST-POINTS PREVIEW ----
+        // Sum the CHECKED sections' base points, then apply the bonus rules from
+        // services/edits.py scoring_config() (passed via #vecto-scoring-config, so
+        // the bonus math is never hardcoded here). Updates the approve button and
+        // the breakdown so the reviewer sees the exact award.
+        const SCORING = (function () {
+            try { return JSON.parse(document.getElementById('vecto-scoring-config').textContent); }
+            catch (_) { return {sweep_full_count: 7, sweep_full_bonus: 4, sweep_partial_min: 3, sweep_partial_bonus: 2, first_responder_bonus: 1}; }
+        })();
+        const isFirst = form.dataset.isFirst === '1';
+        // editId is already declared above in initEdit (wrapper data-edit-id); reuse it.
+        const approveBtn = document.querySelector('.approve-submit-btn[data-edit-id="' + editId + '"]');
+        const ptsBoxes = Array.from(form.querySelectorAll('input[data-pts]'));
+        const baseSpan = wrapper.querySelector('.bd-base');
+        const sweepSpan = wrapper.querySelector('.bd-sweep');
+        const sweepWrap = wrapper.querySelector('.bd-sweep-wrap');
+        const frSpan = wrapper.querySelector('.bd-fr');
+        const frWrap = wrapper.querySelector('.bd-fr-wrap');
+        const totalSpan = wrapper.querySelector('.bd-total');
+        function recomputePoints() {
+            let base = 0, core = 0, anyChecked = false;
+            for (const cb of ptsBoxes) {
+                // Dim the section's own badge when it's unchecked (contributes 0).
+                const badge = cb.parentElement && cb.parentElement.querySelector('.pts-badge');
+                if (badge) badge.classList.toggle('pts-badge-off', !cb.checked);
+                if (!cb.checked) continue;
+                anyChecked = true;
+                base += parseInt(cb.dataset.pts || '0', 10) || 0;
+                if (cb.dataset.core === '1') core += 1;
+            }
+            const sweep = core >= SCORING.sweep_full_count ? SCORING.sweep_full_bonus
+                        : (core >= SCORING.sweep_partial_min ? SCORING.sweep_partial_bonus : 0);
+            const fr = (anyChecked && isFirst) ? SCORING.first_responder_bonus : 0;
+            const total = base + sweep + fr;
+            if (baseSpan) baseSpan.textContent = '+' + base;
+            if (sweepSpan) sweepSpan.textContent = '+' + sweep;
+            if (sweepWrap) sweepWrap.classList.toggle('d-none', sweep === 0);
+            if (frSpan) frSpan.textContent = '+' + fr;
+            if (frWrap) frWrap.classList.toggle('d-none', fr === 0);
+            if (totalSpan) totalSpan.textContent = total;
+            const span = approveBtn && approveBtn.querySelector('.approve-pts');
+            if (span) span.textContent = total;
+        }
+        ptsBoxes.forEach(cb => cb.addEventListener('change', recomputePoints));
+        recomputePoints();
     }
 
     // ============================================================

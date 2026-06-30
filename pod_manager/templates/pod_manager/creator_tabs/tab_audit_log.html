@@ -80,20 +80,16 @@
                         {% if edit.suggested_data.speaker_mappings and not edit.suggested_data.title and not edit.suggested_data.description and not edit.suggested_data.tags and not edit.suggested_data.chapters %}
                         <div class="mb-2 mt-2">
                             <strong class="small d-block mb-2" style="color: var(--vecto-surface-muted);">
-                                <i class="bi bi-person-badge me-1"></i>SPEAKER LABELS
+                                <i class="bi bi-person-badge me-1"></i>SPEAKER LABELS{% if edit.pts_speaker %}<span class="pts-badge">+{{ edit.pts_speaker }}</span>{% endif %}
                             </strong>
-                            {% for speaker_id, name in edit.suggested_data.speaker_mappings.items %}
+                            {% for sid, before, after in edit.speaker_diff %}
                             <div class="small mb-1">
-                                <span class="font-monospace" style="color: var(--vecto-primary);">{{ speaker_id }}</span>
+                                <span class="font-monospace" style="color: var(--vecto-primary);">{{ sid }}</span>
+                                {% if before and before != sid %}<span style="color: var(--vecto-surface-muted);">{{ before }}</span>{% endif %}
                                 <i class="bi bi-arrow-right mx-1" style="color: var(--vecto-surface-muted);"></i>
-                                <span style="color: var(--vecto-surface-text);">{{ name }}</span>
+                                <span style="color: var(--vecto-surface-text);">{{ after }}</span>
                             </div>
                             {% endfor %}
-                            {% if edit.original_data.speaker_mappings %}
-                            <div class="small mt-2" style="color: var(--vecto-surface-muted);">
-                                Previous: {% for k, v in edit.original_data.speaker_mappings.items %}{{ k }}→{{ v }}{% if not forloop.last %}, {% endif %}{% endfor %}
-                            </div>
-                            {% endif %}
                         </div>
                         {% else %}
                         <div class="diff-grid">
@@ -110,7 +106,7 @@
                                 <div class="diff-title-original fw-bold">{{ edit.original_data.title|default:"" }}</div>
                             </div>
                             <div class="diff-box">
-                                <strong class="small d-block mb-2" style="color: var(--vecto-surface-muted);">TITLE</strong>
+                                <strong class="small d-block mb-2" style="color: var(--vecto-surface-muted);">TITLE{% if edit.pts_title %}<span class="pts-badge">+{{ edit.pts_title }}</span>{% endif %}</strong>
                                 <div class="diff-title-suggested fw-bold">{{ edit.suggested_data.title|default:"" }}</div>
                             </div>
                             {% endif %}
@@ -127,7 +123,7 @@
                                 </div>
                             </div>
                             <div class="diff-box">
-                                <strong class="small d-block mb-2" style="color: var(--vecto-surface-muted);">TAGS</strong>
+                                <strong class="small d-block mb-2" style="color: var(--vecto-surface-muted);">TAGS{% if edit.pts_tags %}<span class="pts-badge">+{{ edit.pts_tags }}</span>{% endif %}</strong>
                                 <div class="diff-tags-suggested tag-pill-list">
                                     {% for tag in edit.suggested_data.tags %}
                                         <span class="tag-pill" data-tag="{{ tag }}">{{ tag }}</span>
@@ -199,7 +195,7 @@
                                 {% endfor %}
                             </div>
                             <div class="diff-box">
-                                <strong class="small d-block mb-2" style="color: var(--vecto-surface-muted);">CHAPTERS ({{ sugg_chap_list|length }})</strong>
+                                <strong class="small d-block mb-2" style="color: var(--vecto-surface-muted);">CHAPTERS ({{ sugg_chap_list|length }}){% if edit.pts_chapters %}<span class="pts-badge">+{{ edit.pts_chapters }}</span>{% endif %}</strong>
                                 {% for chap in sugg_chap_list %}
                                     <div class="chapter-row {% if chap not in orig_chap_list %}chapter-added{% endif %}">
                                         <div class="row g-2 align-items-center">
@@ -264,7 +260,7 @@
                                 <div class="diff-desc-original">{{ edit.original_data.description|safe }}</div>
                             </div>
                             <div class="diff-box">
-                                <strong class="small d-block mb-2" style="color: var(--vecto-surface-muted);">DESCRIPTION</strong>
+                                <strong class="small d-block mb-2" style="color: var(--vecto-surface-muted);">DESCRIPTION{% if edit.pts_desc %}<span class="pts-badge">+{{ edit.pts_desc }}</span>{% endif %}</strong>
                                 <div class="diff-desc-suggested">{{ edit.suggested_data.description|safe }}</div>
                             </div>
                             {% endif %}
@@ -285,19 +281,19 @@
                             <div class="diff-grid mt-2" style="grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: .75rem;">
                                 {% if edit.season_changed %}
                                 <div class="diff-box">
-                                    <strong class="small d-block mb-1" style="color: var(--vecto-surface-muted);">SEASON #</strong>
+                                    <strong class="small d-block mb-1" style="color: var(--vecto-surface-muted);">SEASON #{% if edit.pts_season %}<span class="pts-badge">+{{ edit.pts_season }}</span>{% endif %}</strong>
                                     <div>{{ edit.original_data.season_number|default:"—" }} → {{ sugg_season|default:"—" }}</div>
                                 </div>
                                 {% endif %}
                                 {% if edit.epnum_changed %}
                                 <div class="diff-box">
-                                    <strong class="small d-block mb-1" style="color: var(--vecto-surface-muted);">EPISODE #</strong>
+                                    <strong class="small d-block mb-1" style="color: var(--vecto-surface-muted);">EPISODE #{% if edit.pts_epnum %}<span class="pts-badge">+{{ edit.pts_epnum }}</span>{% endif %}</strong>
                                     <div>{{ edit.original_data.episode_number|default:"—" }} → {{ sugg_epnum|default:"—" }}</div>
                                 </div>
                                 {% endif %}
                                 {% if edit.eptype_changed %}
                                 <div class="diff-box">
-                                    <strong class="small d-block mb-1" style="color: var(--vecto-surface-muted);">EPISODE TYPE</strong>
+                                    <strong class="small d-block mb-1" style="color: var(--vecto-surface-muted);">EPISODE TYPE{% if edit.pts_eptype %}<span class="pts-badge">+{{ edit.pts_eptype }}</span>{% endif %}</strong>
                                     <div>{{ edit.original_data.episode_type|default:"—" }} → {{ sugg_type|default:"—" }}</div>
                                 </div>
                                 {% endif %}
@@ -309,6 +305,14 @@
                         {% endif %}{# end speaker-only guard #}
 
                         {% if edit.status == 'approved' %}
+                        {% if edit.total_points %}
+                        <div class="trust-breakdown d-flex justify-content-end align-items-center flex-wrap small mt-3 gap-2" style="color: var(--vecto-surface-muted);">
+                            <span>Sections <strong style="color: var(--vecto-surface-text);">+{{ edit.base_points }}</strong></span>
+                            {% if edit.sweep_bonus %}<span>· Bonus <strong style="color: var(--vecto-surface-text);">+{{ edit.sweep_bonus }}</strong></span>{% endif %}
+                            {% if edit.fr_bonus %}<span>· First responder <strong style="color: var(--vecto-surface-text);">+{{ edit.fr_bonus }}</strong></span>{% endif %}
+                            <span>= <strong style="color:#198754;">+{{ edit.total_points }} Trust</strong></span>
+                        </div>
+                        {% endif %}
                         <div class="mt-4 pt-3 border-top d-flex justify-content-between align-items-center" style="border-color: var(--bs-border-color) !important;">
                             <form method="POST" class="d-inline" onsubmit="return confirm('WARNING: This will revert EVERY approved edit this user has ever made on this network, and drop their trust score to 0. Proceed?');">
                                 {% csrf_token %}
@@ -325,7 +329,13 @@
                                 </button>
                             </form>
 
-                            <form method="POST" class="d-inline" onsubmit="return confirm('Are you sure you want to roll back this specific edit? The user will lose 5 trust points.');">
+                            <div class="d-flex align-items-center gap-2">
+                            {% if edit.membership %}
+                            <span class="small" style="color: var(--vecto-surface-muted);" title="Rollback reverses exactly the points this edit earned">
+                                Trust: {{ edit.membership.trust_score|default:0 }}<i class="bi bi-arrow-right mx-1"></i>{{ edit.trust_after_revert }}
+                            </span>
+                            {% endif %}
+                            <form method="POST" class="d-inline" onsubmit="return confirm('Are you sure you want to roll back this specific edit? The user will lose {{ edit.points|default:0 }} trust point{{ edit.points|default:0|pluralize }} (the exact amount this edit earned).');">
                                 {% csrf_token %}
                                 <input type="hidden" name="action" value="rollback_single_edit">
                                 <input type="hidden" name="edit_id" value="{{ edit.id }}">
@@ -335,10 +345,12 @@
                                 <input type="hidden" name="audit_q" value="{{ request.GET.audit_q }}">
                                 <input type="hidden" name="audit_status" value="{{ request.GET.audit_status }}">
                                 <input type="hidden" name="audit_user" value="{{ request.GET.audit_user }}">
-                                <button type="submit" class="btn btn-sm btn-outline-warning" title="Revert this specific edit">
-                                    <i class="bi bi-arrow-counterclockwise"></i> Revert Edit (-5 Trust)
+                                <button type="submit" class="btn btn-sm" title="Revert this specific edit"
+                                        style="background-color: transparent; border: 1px solid var(--vecto-surface-muted); color: var(--vecto-surface-muted); border-radius: var(--vecto-radius-md);">
+                                    <i class="bi bi-arrow-counterclockwise"></i> Revert Edit (-{{ edit.points|default:0 }} Trust)
                                 </button>
                             </form>
+                            </div>
                         </div>
                         {% endif %}
 

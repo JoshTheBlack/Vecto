@@ -347,19 +347,49 @@ When `diarize=True` is set (always on), the ASR service attempts to separate spe
 
 The number of speakers expected can be tuned via the min/default/max speaker settings at the network and podcast level.
 
+### Immutable base: `speaker_id` vs `speaker`
+
+Every `.words` segment **and** word carries two speaker fields (schema `1.1.0`):
+
+| field        | meaning                                   | mutated by edits? |
+|--------------|-------------------------------------------|-------------------|
+| `speaker_id` | pristine diarization label (`SPEAKER_03`) | **never** — written once at transcription |
+| `speaker`    | current resolved display name (`A.Ron`)   | every apply/rollback |
+
+`speaker_id` is the **immutable base**. At initial transcription `speaker == speaker_id == SPEAKER_XX`. There is no separate `.words.base` file — the anchor lives inline as a column we never rewrite. The base is what makes griefing recoverable (collapsing every speaker to one name never destroys the distinct `SPEAKER_XX` labels) and what powers the **un-merge / split** capability. `speaker_id` is **never** emitted into the feed formats (`vtt/json/srt/html`) — only `.words` (which is not advertised in `<podcast:transcript>`) carries it, so external clients are unaffected.
+
 ### Mapping Labels to Names
 
-After a transcript is complete, any authenticated user can submit speaker name assignments from the episode detail page → **Transcript** tab → **Speaker Labels** form. Entering `SPEAKER_00 → Jim` and `SPEAKER_01 → A.Ron` and submitting:
+After a transcript is complete, any authenticated user can submit speaker name assignments from the episode detail page → **Transcript** tab → **Speaker Labels** form. Each form box **displays the current resolved name** but **carries the immutable `speaker_id`** as its submit key, so the payload is always keyed on `speaker_id` (e.g. `{"SPEAKER_03": "A.Ron"}`), never on the displayed name. The server rejects keys that aren't known `speaker_id`s for the episode. Submitting:
 
 1. Creates an **Edit Suggestion** in the normal trust-score / approval workflow (same system used for episode metadata edits)
-2. **Trusted users** (above the network's auto-approve threshold): mapping is applied immediately, all transcript formats are regenerated, and the RSS fragment cache is busted
+2. **Trusted users** (above the network's auto-approve threshold): the edit is applied immediately, all transcript formats are regenerated, and the RSS fragment cache is busted
 3. **Standard users**: the suggestion goes to the creator inbox for review and approval
 
-When approved, `apply_speaker_labels()` updates `segment.speaker` and `word.speaker` fields in the `.words` JSON **by key lookup only** (not string replace), then regenerates all format files from the updated data. The ETag on served files changes automatically.
+### Replay from base (not in-place mutation)
 
-The approval appears in the audit log with a before/after diff of the speaker mapping.
+The current applied state is a pure function of the immutable base and the edit chain:
 
-> **Rollback:** Like all edit suggestions, speaker label approvals can be rolled back. The `original_data` field captures the previous speaker mapping, enabling one-click reversal.
+```
+state = fold(APPROVED speaker edits, ordered by resolved_at) over the speaker_id base
+```
+
+Each edit is a **delta** keyed on `speaker_id`; the fold is last-writer-wins per key (`fold_speaker_mappings`). On **approve** or **rollback**, the handler only sets the edit's status, then calls `apply_speaker_labels(episode_id)`, which: (1) loads `.words` and takes `speaker_id` per segment/word as the base; (2) folds the APPROVED chain; (3) sets `speaker = mapping.get(speaker_id, speaker_id)`; (4) re-renders all five formats and writes only those that actually changed (hash-check, §[Idempotent writes]); (5) bumps `Transcript.version` iff any format changed. The whole read→render→write runs under a per-episode `select_for_update()` lock on the `Transcript` row. `speaker_id` is preserved verbatim — only `speaker` ever changes.
+
+> **Rollback is real, not cosmetic.** Because state is replayed from the base over the *remaining* APPROVED chain, rolling an edit back (status → `ROLLED_BACK`) and re-folding restores the prior names exactly — even after a "collapse everything to one name" grief. The earlier claim of a *one-click reversal via an `original_data` snapshot* is obsolete: `original_data.speaker_mappings` is **kept only as the audit log's before-state**, not as the restore mechanism. Re-transcription renumbers the diarization, so prior speaker edits are marked `SUPERSEDED` (excluded from the fold) and names reset to the fresh raw labels.
+
+### Combined vs split view
+
+A **"Show individual diarized speakers"** toggle (persisted per-user in `localStorage`, default combined) drives both the form and the transcript display:
+
+- **Combined** (default): form boxes are grouped by distinct current name (two `speaker_id`s named the same render as one box; editing it fans the typed name across every id in the group — the **merge** UX). The transcript groups/colours consecutive segments by `seg.speaker`.
+- **Split**: one box per `speaker_id` (this is how a user **un-merges** — giving `SPEAKER_03` a different name than `SPEAKER_00`). The transcript groups/colours by `seg.speaker_id` and shows a badge (`A.Ron·0` / `A.Ron·3`).
+
+Pre-backfill `.words` that predate `speaker_id` fall back to `seg.speaker` everywhere, so split degrades to combined until the episode is backfilled or re-transcribed.
+
+### Trust & review
+
+Approval banks per-speaker contribution points on the edit (`+1` per first-time naming, `+1` flat per correction) and increments `NetworkMembership.edits_speakers`; rollback reverses the exact banked amounts. The inbox and audit log render a structured **`speaker_id`: before → after** diff so a correction (renaming an already-named speaker) is legible, not just the suggested mapping.
 
 ---
 

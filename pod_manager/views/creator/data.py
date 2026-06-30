@@ -13,7 +13,7 @@ from django.db.models import Q, Case, When, CharField, Max, Count
 from django.db.models.functions import Substr, Lower
 
 from ...models import EpisodeEditSuggestion, NetworkMembership, Episode
-from ...services.edits import chapter_items
+from ...services.edits import chapter_items, score_contribution, scoring_config, FIRST_RESPONDER_BONUS
 from ...utils import diagnostic_timer
 
 logger = logging.getLogger(__name__)
@@ -36,16 +36,45 @@ def _annotate_edit_changes(edit):
         'cross_publish_podcast_ids' in sugg
         and sorted(sugg.get('cross_publish_podcast_ids') or []) != sorted(orig.get('cross_publish_podcast_ids') or [])
     )
+    # Structured speaker diff (§8b): [(speaker_id, before, after)] so both the
+    # inbox and audit log render a consistent before→after instead of reading the
+    # raw dicts. The before-state is original_data.speaker_mappings (the submit-time
+    # fold); an unmentioned speaker_id resolves to its own raw label. gather_inbox
+    # overrides this with the *current* fold for pending edits.
+    sugg_speakers = sugg.get('speaker_mappings') or {}
+    orig_speakers = orig.get('speaker_mappings') or {}
+    edit.speaker_diff = [
+        (sid, orig_speakers.get(sid, sid), after) for sid, after in sugg_speakers.items()
+    ]
+    edit.speaker_changed = any(before != after for _, before, after in edit.speaker_diff)
     edit.has_changes = any([
         edit.title_changed, edit.desc_changed, edit.tags_changed, edit.chapters_changed,
         edit.season_changed, edit.epnum_changed, edit.eptype_changed,
-        edit.cross_publish_changed, bool(sugg.get('speaker_mappings')),
+        edit.cross_publish_changed, edit.speaker_changed,
     ])
     # Always lists of chapter dicts, never the raw v1.2 wrapper dict —
     # iterating the wrapper in a template yields its KEYS, and `key.title`
     # resolves to str.title() ("Version", "Chapters" at 0s).
     edit.orig_chapter_list = chapter_items(orig.get('chapters'))
     edit.sugg_chapter_list = chapter_items(sugg.get('chapters'))
+
+    # Per-section trust points (mirrors score_contribution's per-field values) so
+    # the inbox preview and the audit-log tally render the same badges. Speaker
+    # points are context-specific (preview vs banked) and set by each gather_*.
+    edit.pts_title = 1 if edit.title_changed else 0
+    edit.pts_desc = 1 if edit.desc_changed else 0
+    edit.pts_tags = 1 if edit.tags_changed else 0          # flat +1 trust (+N is a counter)
+    edit.pts_chapters = len(edit.sugg_chapter_list) if edit.chapters_changed else 0
+    edit.pts_season = 1 if edit.season_changed else 0
+    edit.pts_epnum = 1 if edit.epnum_changed else 0
+    edit.pts_eptype = 1 if edit.eptype_changed else 0
+
+
+def _section_base(edit):
+    """Sum of the per-section trust points (the badge values), excluding the
+    multi-field / first-responder bonus."""
+    return (edit.pts_title + edit.pts_desc + edit.pts_tags + edit.pts_chapters
+            + edit.pts_season + edit.pts_epnum + edit.pts_eptype + edit.pts_speaker)
 
 
 #@diagnostic_timer("1. Gather Manage Podcasts")
@@ -100,6 +129,37 @@ def gather_inbox(current_network):
 
         _annotate_edit_changes(edit)
 
+        # For a pending speaker edit the live resolved name may differ from the
+        # submit-time snapshot, so rebuild the before→after against the *current*
+        # fold (§8b). Falls back to the raw speaker_id when unmapped.
+        sugg_speakers = (edit.suggested_data or {}).get('speaker_mappings') or {}
+        edit.pts_speaker = 0
+        if sugg_speakers:
+            from ...services.transcription import fold_speaker_mappings, speaker_edit_points
+            current_map = fold_speaker_mappings(ep.id)
+            edit.speaker_diff = [
+                (sid, current_map.get(sid, sid), after) for sid, after in sugg_speakers.items()
+            ]
+            edit.speaker_changed = any(before != after for _, before, after in edit.speaker_diff)
+            edit.pts_speaker, _ = speaker_edit_points(sugg_speakers, current_map)
+
+        # All-checked default the button shows on load; the JS recomputes the same
+        # way live as sections are toggled (driven by scoring_config, below).
+        preview_changes = {}
+        if edit.title_changed: preview_changes['title'] = True
+        if edit.desc_changed: preview_changes['description'] = True
+        if edit.tags_changed: preview_changes['tags'] = 1
+        if edit.chapters_changed: preview_changes['chapters'] = edit.pts_chapters
+        if edit.season_changed: preview_changes['season_number'] = True
+        if edit.epnum_changed: preview_changes['episode_number'] = True
+        if edit.eptype_changed: preview_changes['episode_type'] = True
+        if edit.pts_speaker: preview_changes['speaker'] = edit.pts_speaker
+        total, _ = score_contribution(preview_changes, is_first=edit.is_first_responder)
+        edit.base_points = _section_base(edit)
+        edit.fr_bonus = FIRST_RESPONDER_BONUS if edit.is_first_responder else 0
+        edit.sweep_bonus = max(0, total - edit.base_points - edit.fr_bonus)
+        edit.total_points_preview = total
+
         if 'cross_publish_podcast_ids' in (edit.suggested_data or {}):
             current_cross_ids = sorted(ep.cross_publications.values_list('podcast_id', flat=True))
             edit.current_cross_publish_ids = current_cross_ids
@@ -109,7 +169,11 @@ def gather_inbox(current_network):
             edit.cross_publish_original_titles = _titles(orig.get('cross_publish_podcast_ids') or [])
             edit.cross_publish_suggested_titles = _titles(edit.suggested_data.get('cross_publish_podcast_ids') or [])
 
-    return {'pending_edits': pending_edits, 'network_podcast_titles': network_podcast_titles}
+    return {
+        'pending_edits': pending_edits,
+        'network_podcast_titles': network_podcast_titles,
+        'scoring_config': scoring_config(),
+    }
 
 
 #@diagnostic_timer("3. Gather Merge Desk")
@@ -191,8 +255,34 @@ def gather_audit_log(request, current_network):
 
     audit_page_obj = Paginator(audit_query.order_by('-resolved_at'), 20).get_page(request.GET.get('audit_page', 1))
     audit_podcast_titles = dict(current_network.podcasts.values_list('id', 'title'))
+    # Current trust per author so the revert button can show the exact-wash math
+    # (current trust − this edit's points) right where the reviewer acts.
+    audit_user_ids = [e.user_id for e in audit_page_obj]
+    audit_memberships = {
+        m.user_id: m
+        for m in NetworkMembership.objects.filter(user_id__in=audit_user_ids, network=current_network)
+    }
     for edit in audit_page_obj:
+        edit.membership = audit_memberships.get(edit.user_id)
+        # Trust after an exact-wash rollback (clamped at 0, mirroring _reverse_award).
+        if edit.membership is not None:
+            edit.trust_after_revert = max(0, (edit.membership.trust_score or 0) - (edit.points or 0))
         _annotate_edit_changes(edit)
+        # Section + bonus tally derived from the BANKED award (counter_deltas +
+        # points) so it reconciles exactly with what Revert reverses (edit.points).
+        cd = edit.counter_deltas or {}
+        edit.pts_speaker = cd.get('edits_speakers') or 0
+        edit.total_points = edit.points or 0
+        if edit.total_points <= 0:
+            # Legacy/unbanked edits reverse nothing, so don't attribute phantom
+            # per-section points or a bonus (badges + breakdown are suppressed).
+            edit.pts_title = edit.pts_desc = edit.pts_tags = edit.pts_chapters = 0
+            edit.pts_season = edit.pts_epnum = edit.pts_eptype = edit.pts_speaker = 0
+            edit.base_points = edit.sweep_bonus = edit.fr_bonus = 0
+        else:
+            edit.base_points = _section_base(edit)
+            edit.fr_bonus = FIRST_RESPONDER_BONUS if 'first_responder_count' in cd else 0
+            edit.sweep_bonus = max(0, edit.total_points - edit.base_points - edit.fr_bonus)
         if edit.cross_publish_changed:
             _titles = lambda ids: [audit_podcast_titles.get(i, f'#{i}') for i in ids]
             edit.cross_publish_original_titles = _titles((edit.original_data or {}).get('cross_publish_podcast_ids') or [])

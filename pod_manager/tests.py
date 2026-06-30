@@ -965,6 +965,20 @@ class CreatorInboxActionTests(TestCase):
         self.membership.refresh_from_db()
         self.assertEqual(self.membership.trust_score, 3)  # -2
 
+    def test_unapproved_sections_pruned_from_suggested_data(self):
+        """A reviewer can uncheck sections; the unapproved ones must not survive in
+        suggested_data (else the audit log shows them as applied + scored)."""
+        edit = self._make_pending_edit()  # title + description + tags + chapters
+        self._post({
+            'action': 'approve_edit', 'edit_id': edit.id,
+            'approve_title': 'on', 'edited_title': 'New Title',
+            # description / tags / chapters intentionally left unchecked
+        })
+        edit.refresh_from_db()
+        self.assertEqual(set(edit.suggested_data.keys()), {'title'})
+        self.membership.refresh_from_db()
+        self.assertEqual(self.membership.trust_score, 6)  # +1 title only, no phantom
+
     def test_approve_three_fields_applies_perfect_sweep_bonus(self):
         import json as _json
         edit = self._make_pending_edit()
@@ -3098,6 +3112,263 @@ class ApplySpeakerLabelsTests(TestCase):
         self.transcript.save()
         with override_settings(MEDIA_ROOT=self.tmp):
             apply_speaker_labels(self.ep.id)
+
+
+# ── Phase 7: listener context, §8b review diff, submit key validation ─────────
+
+class EpisodeDetailSpeakerContextTests(TestCase):
+    """The episode page exposes, per speaker_id, the CURRENT resolved name derived
+    from fold_speaker_mappings over the .words speaker_id base (not seg.speaker)."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.factory = RequestFactory()
+        self.network = Network.objects.create(name='Net', slug='spk-ctx')
+        self.podcast = Podcast.objects.create(network=self.network, title='Show', slug='spk-ctx-show')
+        self.user = User.objects.create_user(username='spk-ctx-listener')
+        NetworkMembership.objects.create(user=self.user, network=self.network)
+        self.ep = Episode.objects.create(
+            podcast=self.podcast, title='Ep', pub_date=timezone.now(),
+            raw_description='hi', clean_description='hi',
+            audio_url_public='https://cdn.example.com/a.mp3', is_published=True,
+        )
+        self.transcript = Transcript.objects.create(
+            episode=self.ep, status=Transcript.Status.COMPLETED, version=1,
+        )
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _write_words(self, segments):
+        with override_settings(MEDIA_ROOT=self.tmp):
+            wp = transcript_path(self.ep.id, 'words')
+            wp.parent.mkdir(parents=True, exist_ok=True)
+            wp.write_bytes(_to_words_json(segments, metadata={'episode_id': self.ep.id}))
+        self.transcript.words_json_file = str(wp.relative_to(self.tmp))
+        self.transcript.html_file = ''
+        self.transcript.save()
+
+    def _render(self):
+        req = _make_tenant_request(self.factory, self.network,
+                                   path=f'/episode/{self.ep.id}/', user=self.user)
+        with override_settings(MEDIA_ROOT=self.tmp):
+            return views.episode_detail(req, self.ep.id).content.decode('utf-8')
+
+    def _speaker_data(self, body):
+        m = re.search(r'const speakerData = (\[.*?\]);', body)
+        self.assertIsNotNone(m, "speakerData JSON not found in page")
+        return json.loads(m.group(1))
+
+    def test_resolved_name_comes_from_fold_not_seg_speaker(self):
+        # .words still carries the raw label in seg.speaker (apply not run), but the
+        # context resolves names from the APPROVED fold → Aron.
+        segs = [
+            {'start': 0, 'end': 1, 'text': 'Hi', 'speaker_id': 'SPEAKER_00', 'speaker': 'SPEAKER_00', 'words': []},
+            {'start': 1, 'end': 2, 'text': 'Yo', 'speaker_id': 'SPEAKER_01', 'speaker': 'SPEAKER_01', 'words': []},
+        ]
+        self._write_words(segs)
+        EpisodeEditSuggestion.objects.create(
+            episode=self.ep, user=self.user,
+            suggested_data={'speaker_mappings': {'SPEAKER_00': 'Aron'}},
+            status=EpisodeEditSuggestion.Status.APPROVED, resolved_at=timezone.now(),
+        )
+        names = {d['id']: d['name'] for d in self._speaker_data(self._render())}
+        self.assertEqual(names['SPEAKER_00'], 'Aron')
+        self.assertEqual(names['SPEAKER_01'], 'SPEAKER_01')  # unmapped → raw label
+
+    def test_pre_backfill_falls_back_to_speaker(self):
+        segs = [{'start': 0, 'end': 1, 'text': 'Hi', 'speaker': 'SPEAKER_00', 'words': []}]
+        self._write_words(segs)
+        data = self._speaker_data(self._render())
+        self.assertEqual(data[0]['id'], 'SPEAKER_00')
+        self.assertEqual(data[0]['name'], 'SPEAKER_00')
+
+
+class SpeakerDiffAnnotationTests(TestCase):
+    """§8b: _annotate_edit_changes / gather_inbox build a structured per-speaker
+    before→after diff (and drive has_changes via speaker_changed)."""
+
+    def setUp(self):
+        from pod_manager.views.creator.data import _annotate_edit_changes, gather_inbox
+        self._annotate = _annotate_edit_changes
+        self._gather_inbox = gather_inbox
+        self.user = User.objects.create_user(username='diff-user')
+        self.network = Network.objects.create(name='Net', slug='diff-net')
+        self.podcast = Podcast.objects.create(network=self.network, title='Show', slug='diff-show')
+        self.ep = Episode.objects.create(
+            podcast=self.podcast, title='Ep', pub_date=timezone.now(),
+            raw_description='x', clean_description='x',
+            audio_url_public='https://cdn.example.com/a.mp3',
+        )
+
+    def _edit(self, suggested, original, **kw):
+        return EpisodeEditSuggestion(
+            episode=self.ep, user=self.user,
+            suggested_data={'speaker_mappings': suggested},
+            original_data={'speaker_mappings': original}, **kw,
+        )
+
+    def test_correction_before_after_from_original(self):
+        edit = self._edit({'SPEAKER_00': 'Jim'}, {'SPEAKER_00': 'Aron'})
+        self._annotate(edit)
+        self.assertEqual(edit.speaker_diff, [('SPEAKER_00', 'Aron', 'Jim')])
+        self.assertTrue(edit.speaker_changed)
+        self.assertTrue(edit.has_changes)
+
+    def test_first_time_naming_before_is_raw_label(self):
+        edit = self._edit({'SPEAKER_02': 'Aron'}, {})
+        self._annotate(edit)
+        self.assertEqual(edit.speaker_diff, [('SPEAKER_02', 'SPEAKER_02', 'Aron')])
+        self.assertTrue(edit.speaker_changed)
+
+    def test_noop_rename_is_not_a_change(self):
+        edit = self._edit({'SPEAKER_00': 'Aron'}, {'SPEAKER_00': 'Aron'})
+        self._annotate(edit)
+        self.assertFalse(edit.speaker_changed)
+        self.assertFalse(edit.has_changes)
+
+    def test_gather_inbox_diffs_against_current_fold(self):
+        # APPROVED edit made the live name Aron; the pending edit (with a stale,
+        # empty snapshot) renames to Jim. gather_inbox must show Aron → Jim.
+        EpisodeEditSuggestion.objects.create(
+            episode=self.ep, user=self.user,
+            suggested_data={'speaker_mappings': {'SPEAKER_00': 'Aron'}},
+            status=EpisodeEditSuggestion.Status.APPROVED, resolved_at=timezone.now(),
+        )
+        EpisodeEditSuggestion.objects.create(
+            episode=self.ep, user=self.user,
+            suggested_data={'speaker_mappings': {'SPEAKER_00': 'Jim'}},
+            original_data={'speaker_mappings': {}},
+            status=EpisodeEditSuggestion.Status.PENDING,
+        )
+        edit = list(self._gather_inbox(self.network)['pending_edits'])[0]
+        self.assertEqual(edit.speaker_diff, [('SPEAKER_00', 'Aron', 'Jim')])
+        self.assertTrue(edit.speaker_changed)
+
+
+class SubmitSpeakerLabelsValidationTests(TestCase):
+    """submit_speaker_labels rejects keys that aren't known speaker_ids for the
+    episode (§5.1), before any scoring/banking."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.factory = RequestFactory()
+        self.network = Network.objects.create(name='Net', slug='val-net', auto_approve_trust_threshold=100)
+        self.podcast = Podcast.objects.create(network=self.network, title='Show', slug='val-show')
+        self.user = User.objects.create_user(username='val-user')
+        NetworkMembership.objects.create(user=self.user, network=self.network, trust_score=0)
+        self.ep = Episode.objects.create(
+            podcast=self.podcast, title='Ep', pub_date=timezone.now(),
+            raw_description='x', clean_description='x',
+            audio_url_public='https://cdn.example.com/a.mp3',
+        )
+        self.transcript = Transcript.objects.create(
+            episode=self.ep, status=Transcript.Status.COMPLETED, version=1,
+        )
+        with override_settings(MEDIA_ROOT=self.tmp):
+            wp = transcript_path(self.ep.id, 'words')
+            wp.parent.mkdir(parents=True, exist_ok=True)
+            wp.write_bytes(_to_words_json([
+                {'start': 0, 'end': 1, 'text': 'Hi', 'speaker_id': 'SPEAKER_00', 'speaker': 'SPEAKER_00', 'words': []},
+                {'start': 1, 'end': 2, 'text': 'Yo', 'speaker_id': 'SPEAKER_01', 'speaker': 'SPEAKER_01', 'words': []},
+            ], metadata={'episode_id': self.ep.id}))
+        self.transcript.words_json_file = str(wp.relative_to(self.tmp))
+        self.transcript.save()
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _post(self, mappings):
+        req = self.factory.post(
+            reverse('submit_speaker_labels', args=[self.ep.id]),
+            data=json.dumps({'speaker_mappings': mappings}),
+            content_type='application/json',
+        )
+        req.user = self.user
+        req.network = self.network
+        with override_settings(MEDIA_ROOT=self.tmp):
+            return views.submit_speaker_labels(req, self.ep.id)
+
+    def test_unknown_key_rejected(self):
+        resp = self._post({'SPEAKER_99': 'Ghost'})
+        self.assertEqual(resp.status_code, 400)
+        self.assertFalse(EpisodeEditSuggestion.objects.filter(episode=self.ep).exists())
+
+    def test_known_key_accepted(self):
+        resp = self._post({'SPEAKER_00': 'Aron'})
+        self.assertEqual(resp.status_code, 200)
+        self.assertTrue(EpisodeEditSuggestion.objects.filter(episode=self.ep).exists())
+
+    def test_mixed_known_and_unknown_rejected_atomically(self):
+        resp = self._post({'SPEAKER_00': 'Aron', 'SPEAKER_77': 'X'})
+        self.assertEqual(resp.status_code, 400)
+        self.assertFalse(EpisodeEditSuggestion.objects.filter(episode=self.ep).exists())
+
+
+class TrustBreakdownTallyTests(TestCase):
+    """The approve-desk preview and the audit-log tally both split the award into
+    Sections + Sweep + First-responder; the parts must reconcile to the total the
+    Revert button reverses (edit.points for banked rows)."""
+
+    def setUp(self):
+        from pod_manager.views.creator.data import gather_inbox, gather_audit_log
+        self._gather_inbox = gather_inbox
+        self._gather_audit_log = gather_audit_log
+        self.factory = RequestFactory()
+        self.user = User.objects.create_user(username='tally-user')
+        self.network = Network.objects.create(name='Net', slug='tally-net')
+        self.podcast = Podcast.objects.create(network=self.network, title='Show', slug='tally-show')
+        self.episode = Episode.objects.create(
+            podcast=self.podcast, title='Orig', pub_date=timezone.now(),
+            raw_description='x', clean_description='x',
+            audio_url_public='https://cdn.example.com/a.mp3', tags=[], chapters_public=[],
+        )
+
+    def test_inbox_preview_sections_plus_bonus_equals_total(self):
+        EpisodeEditSuggestion.objects.create(
+            episode=self.episode, user=self.user, status=EpisodeEditSuggestion.Status.PENDING,
+            original_data={'title': 'Orig', 'tags': [], 'chapters': [], 'season_number': None},
+            suggested_data={
+                'title': 'New', 'tags': ['a', 'b'],
+                'chapters': [{'startTime': 0, 'title': 'c1'}, {'startTime': 5, 'title': 'c2'}],
+                'season_number': 2,
+            },
+        )
+        edit = list(self._gather_inbox(self.network)['pending_edits'])[0]
+        # title1 + tags1(flat) + chapters2 + season1 = base 5; 4 core fields -> sweep +2.
+        self.assertEqual(edit.base_points, 5)
+        self.assertEqual(edit.sweep_bonus, 2)
+        self.assertEqual(edit.fr_bonus, 0)
+        self.assertEqual(edit.base_points + edit.sweep_bonus + edit.fr_bonus, edit.total_points_preview)
+
+    def test_audit_breakdown_reconciles_to_banked_points(self):
+        EpisodeEditSuggestion.objects.create(
+            episode=self.episode, user=self.user, status=EpisodeEditSuggestion.Status.APPROVED,
+            resolved_at=timezone.now(),
+            original_data={'title': 'Orig'}, suggested_data={'title': 'New'},
+            points=7, counter_deltas={'edits_title': 1},
+        )
+        NetworkMembership.objects.create(user=self.user, network=self.network, trust_score=10)
+        req = self.factory.get('/', {'network': self.network.slug})
+        edit = list(self._gather_audit_log(req, self.network)['audit_page_obj'])[0]
+        self.assertEqual(edit.total_points, 7)
+        self.assertEqual(edit.base_points + edit.sweep_bonus + edit.fr_bonus, edit.total_points)
+        self.assertEqual(edit.trust_after_revert, 3)  # 10 - 7
+
+    def test_audit_legacy_unbanked_edit_shows_no_phantom_points(self):
+        EpisodeEditSuggestion.objects.create(
+            episode=self.episode, user=self.user, status=EpisodeEditSuggestion.Status.APPROVED,
+            resolved_at=timezone.now(),
+            original_data={'title': 'Orig'}, suggested_data={'title': 'New'},
+            points=0, counter_deltas={},
+        )
+        NetworkMembership.objects.create(user=self.user, network=self.network, trust_score=4)
+        req = self.factory.get('/', {'network': self.network.slug})
+        edit = list(self._gather_audit_log(req, self.network)['audit_page_obj'])[0]
+        self.assertEqual(edit.total_points, 0)
+        self.assertEqual(edit.base_points, 0)
+        self.assertEqual(edit.pts_title, 0)
+        self.assertEqual(edit.trust_after_revert, 4)  # nothing to reverse
 
 
 # ── 8a. speaker_edit_points() helper (§3.4) ──────────────────────────────────

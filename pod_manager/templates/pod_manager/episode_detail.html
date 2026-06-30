@@ -104,6 +104,19 @@
         opacity: 0.9;
     }
     .speaker-block p { margin-bottom: 0; line-height: 1.9; }
+    /* Split view (per-speaker_id) badge — the trailing diarization index so a
+       merged ARON block breaks apart legibly into ARON·0 / ARON·3. */
+    .speaker-id-badge {
+        display: inline-block;
+        margin-left: 0.4rem;
+        padding: 0 0.35rem;
+        font-size: 0.62rem;
+        font-weight: 700;
+        line-height: 1.4;
+        border: 1px solid currentColor;
+        border-radius: var(--vecto-radius-sm);
+        opacity: 0.85;
+    }
     .tx-word {
         cursor: pointer;
         border-radius: 2px;
@@ -592,16 +605,15 @@
                         </p>
                         <div id="speakerLabelForm">
                             {% if transcript_speakers %}
-                            <div class="row g-2 mb-3" id="speakerMappingRows">
-                                {% for speaker_id in transcript_speakers %}
-                                <div class="col-md-4">
-                                    <label class="form-label text-muted small mb-1">{{ speaker_id }}</label>
-                                    <input type="text" class="form-control form-control-sm bg-dark text-light border-secondary speaker-name-input"
-                                           data-speaker="{{ speaker_id }}"
-                                           placeholder="Enter name (optional)">
-                                </div>
-                                {% endfor %}
+                            <div class="form-check form-switch mb-3">
+                                <input class="form-check-input" type="checkbox" role="switch" id="speakerSplitToggle">
+                                <label class="form-check-label text-muted small" for="speakerSplitToggle">
+                                    Show individual diarized speakers
+                                </label>
                             </div>
+                            {# Boxes are rendered by JS from transcript_speaker_data_json so the
+                               combined↔split toggle can rebuild them without a page reload. #}
+                            <div class="row g-2 mb-3" id="speakerMappingRows"></div>
                             <div class="d-flex align-items-center gap-3">
                                 <button type="button" id="submitSpeakerLabelsBtn" class="btn btn-sm btn-primary fw-bold">
                                     <i class="bi bi-send me-1"></i>Submit Speaker Labels
@@ -702,10 +714,6 @@
                                 </div>
                             </div>
                         </div>
-
-                        {# Cross-publish (feed placement) is owner/admin only — see the
-                           Owner Controls block below. It was removed from the community
-                           suggestion form per transcript_rollback.md §8a. #}
 
                         <div class="d-grid gap-2 d-md-flex justify-content-md-end mt-5 pt-3 border-top border-secondary">
                             <button type="submit" class="btn btn-warning btn-lg"><i class="bi bi-send"></i> Submit Edit Suggestion</button>
@@ -1339,29 +1347,51 @@
         return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
     }
 
+    // Split view persists per-user in localStorage (like the episode-type chips).
+    // Combined (default) groups/colours by resolved name (seg.speaker); split groups
+    // by the immutable seg.speaker_id (fallback seg.speaker pre-backfill) so a merged
+    // ARON block breaks apart into ARON·0 / ARON·3 with distinct shades + a badge.
+    const SPLIT_KEY = 'vecto_speaker_split';
+    function loadSplit() { try { return localStorage.getItem(SPLIT_KEY) === '1'; } catch (_) { return false; } }
+    let splitView = loadSplit();
+    let lastDoc = null;
+
+    function idBadge(sid) {
+        const m = /(\d+)\s*$/.exec(sid || '');
+        return m ? m[1] : (sid || '');
+    }
+
     function buildEnhancedTranscript(doc) {
         const mappings   = doc.speaker_mappings || {};
         const segments   = doc.segments || [];
+        const keyOf      = seg => splitView ? (seg.speaker_id || seg.speaker || '') : (seg.speaker || '');
         const spIdx      = {};
         let   colorCount = 0;
         for (const seg of segments) {
-            const sp = seg.speaker || '';
-            if (sp && !(sp in spIdx)) spIdx[sp] = colorCount++;
+            const k = keyOf(seg);
+            if (k && !(k in spIdx)) spIdx[k] = colorCount++;
         }
         const blocks = [];
         let cur = null;
         for (const seg of segments) {
-            const sp = seg.speaker || '';
-            if (!cur || cur.speaker !== sp) { cur = { speaker: sp, segments: [] }; blocks.push(cur); }
+            const k = keyOf(seg);
+            if (!cur || cur.key !== k) {
+                cur = { key: k, speaker: seg.speaker || '', speaker_id: seg.speaker_id || '', segments: [] };
+                blocks.push(cur);
+            }
             cur.segments.push(seg);
         }
         let html = '<div class="transcript-enhanced">';
         for (const block of blocks) {
-            const sp    = block.speaker;
-            const color = sp ? PALETTE[spIdx[sp] % PALETTE.length] : '#adb5bd';
-            const name  = sp ? (mappings[sp] || sp) : '';
+            const k     = block.key;
+            const color = k ? PALETTE[spIdx[k] % PALETTE.length] : '#adb5bd';
+            const name  = block.speaker ? (mappings[block.speaker] || block.speaker) : '';
             html += `<div class="speaker-block" style="border-left:3px solid ${esc(color)}">`;
-            if (name) html += `<div class="speaker-label" style="color:${esc(color)}">${esc(name)}</div>`;
+            if (name) {
+                html += `<div class="speaker-label" style="color:${esc(color)}">${esc(name)}`;
+                if (splitView && block.speaker_id) html += `<span class="speaker-id-badge">${esc(idBadge(block.speaker_id))}</span>`;
+                html += '</div>';
+            }
             html += '<p>';
             for (const seg of block.segments) {
                 const words = seg.words || [];
@@ -1471,6 +1501,7 @@
             doc.speaker_mappings = serverMappings;
         }
 
+        lastDoc = doc;
         container.innerHTML = buildEnhancedTranscript(doc);
         rebuildWordSync();
         if (player && !player.paused) player.dispatchEvent(new Event('timeupdate'));
@@ -1480,8 +1511,15 @@
     container.addEventListener('tx:reload', e => {
         const doc = e.detail && e.detail.doc;
         if (!doc || !doc.segments) return;
+        lastDoc = doc;
         container.innerHTML = buildEnhancedTranscript(doc);
         rebuildWordSync();
+    });
+
+    // The Speaker Labels toggle (combined↔split) re-renders the cached doc in place.
+    document.addEventListener('tx:splitchange', e => {
+        splitView = !!(e.detail && e.detail.split);
+        if (lastDoc) { container.innerHTML = buildEnhancedTranscript(lastDoc); rebuildWordSync(); }
     });
 
     if (document.readyState === 'loading') {
@@ -1565,14 +1603,60 @@
 (function () {
     const submitBtn = document.getElementById('submitSpeakerLabelsBtn');
     const statusEl  = document.getElementById('speakerLabelStatus');
-    if (!submitBtn) return;
+    const rows      = document.getElementById('speakerMappingRows');
+    const toggle    = document.getElementById('speakerSplitToggle');
+    if (!submitBtn || !rows) return;
 
-    // Pre-populate any existing mappings
-    const existingMappings = {{ transcript_speaker_names_json|safe }};
-    document.querySelectorAll('.speaker-name-input').forEach(inp => {
-        const existing = existingMappings[inp.dataset.speaker];
-        if (existing) inp.value = existing;
-    });
+    // Per speaker_id: {id, name} in timeline order (resolved name = the fold).
+    const speakerData = {{ transcript_speaker_data_json|safe }};
+
+    const SPLIT_KEY = 'vecto_speaker_split';
+    function loadSplit() { try { return localStorage.getItem(SPLIT_KEY) === '1'; } catch (_) { return false; } }
+    function saveSplit(v) { try { localStorage.setItem(SPLIT_KEY, v ? '1' : '0'); } catch (_) {} }
+
+    function esc(s) {
+        return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+    }
+
+    // Combined: one box per distinct resolved name, fanning the typed value across
+    // every speaker_id in the group. Split: one box per speaker_id (the un-merge
+    // path). An unnamed id resolves to its own raw label, so it's its own group.
+    function buildGroups(split) {
+        if (split) return speakerData.map(s => ({ name: s.name, ids: [s.id] }));
+        const byName = new Map();
+        for (const s of speakerData) {
+            if (!byName.has(s.name)) byName.set(s.name, { name: s.name, ids: [] });
+            byName.get(s.name).ids.push(s.id);
+        }
+        return Array.from(byName.values());
+    }
+
+    function renderBoxes() {
+        const split = loadSplit();
+        rows.innerHTML = '';
+        for (const g of buildGroups(split)) {
+            const named = !g.ids.includes(g.name);   // name differs from raw label
+            const col = document.createElement('div');
+            col.className = 'col-md-4';
+            col.innerHTML =
+                `<label class="form-label text-muted small mb-1">${esc(g.ids.join(' + '))}</label>` +
+                `<input type="text" class="form-control form-control-sm bg-dark text-light border-secondary speaker-name-input" ` +
+                `data-speakers="${esc(g.ids.join(','))}" placeholder="Enter name (optional)" ` +
+                `value="${named ? esc(g.name) : ''}">`;
+            rows.appendChild(col);
+        }
+    }
+
+    renderBoxes();
+
+    if (toggle) {
+        toggle.checked = loadSplit();
+        toggle.addEventListener('change', () => {
+            saveSplit(toggle.checked);
+            renderBoxes();
+            document.dispatchEvent(new CustomEvent('tx:splitchange', { detail: { split: toggle.checked } }));
+        });
+    }
 
     function getCsrf() {
         const el = document.querySelector('[name=csrfmiddlewaretoken]');
@@ -1585,7 +1669,10 @@
         const mappings = {};
         document.querySelectorAll('.speaker-name-input').forEach(inp => {
             const name = inp.value.trim();
-            if (name) mappings[inp.dataset.speaker] = name;
+            if (!name) return;
+            // Fan the typed name across every speaker_id the box carries (combined
+            // groups carry several; split carries one). Always keyed on speaker_id.
+            (inp.dataset.speakers || '').split(',').filter(Boolean).forEach(id => { mappings[id] = name; });
         });
         if (!Object.keys(mappings).length) {
             statusEl.textContent = 'Enter at least one name.';

@@ -120,6 +120,25 @@ SEQUENCE_FIELDS = ('season_number', 'episode_number', 'episode_type')
 SWEEP_CORE_FIELDS = ('title', 'description', 'tags', 'chapters',
                      'season_number', 'episode_number', 'episode_type')
 
+# Multi-field + first-responder bonus values — the SINGLE source of truth. The
+# approve-desk live-points preview reads these via scoring_config() so the JS
+# never hardcodes the bonus math: change a number here and the desk follows.
+SWEEP_PARTIAL_MIN = 3
+SWEEP_PARTIAL_BONUS = 2
+SWEEP_FULL_BONUS = 4
+FIRST_RESPONDER_BONUS = 1
+
+
+def scoring_config() -> dict:
+    """Front-end scoring parameters for the inbox live-points preview."""
+    return {
+        'sweep_full_count': len(SWEEP_CORE_FIELDS),
+        'sweep_full_bonus': SWEEP_FULL_BONUS,
+        'sweep_partial_min': SWEEP_PARTIAL_MIN,
+        'sweep_partial_bonus': SWEEP_PARTIAL_BONUS,
+        'first_responder_bonus': FIRST_RESPONDER_BONUS,
+    }
+
 
 def score_contribution(changes, *, is_first=False):
     """Single source of truth for the trust + counter award of one approved edit
@@ -168,13 +187,13 @@ def score_contribution(changes, *, is_first=False):
     # Multi-field bonus (no counter): all of fields 1-7 -> +4, else 3+ -> +2.
     # Banked into points so rollback removes it exactly.
     if set(SWEEP_CORE_FIELDS) <= applied:
-        points += 4
-    elif len(applied) >= 3:
-        points += 2
+        points += SWEEP_FULL_BONUS
+    elif len(applied) >= SWEEP_PARTIAL_MIN:
+        points += SWEEP_PARTIAL_BONUS
 
     # First responder: +1 trust + its own counter (reversed via counter_deltas).
     if is_first:
-        points += 1; deltas['first_responder_count'] = 1
+        points += FIRST_RESPONDER_BONUS; deltas['first_responder_count'] = 1
 
     return points, deltas
 

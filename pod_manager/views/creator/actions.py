@@ -262,6 +262,18 @@ def _handle_approve_edit(request, current_network):
     # edits the original_data is already the prior mappings.
     if not is_speaker_only:
         edit.original_data = pre_approval_snapshot
+    # Prune suggested_data to only the sections that were actually applied, so the
+    # audit log reflects what was approved — not the full submission (a reviewer can
+    # uncheck sections, and those must not show as applied or scored). `changes`
+    # holds the applied fields; metadata rollback restores from original_data +
+    # counter_deltas and the speaker fold reads speaker_mappings, so this is safe.
+    keep = {k for k in ('title', 'description', 'tags', 'chapters',
+                        'season_number', 'episode_number', 'episode_type') if k in changes}
+    if apply_speaker:
+        keep.add('speaker_mappings')
+    if cross_published:
+        keep.add('cross_publish_podcast_ids')
+    edit.suggested_data = {k: v for k, v in (edit.suggested_data or {}).items() if k in keep}
     # Bank the trust delta + the per-counter deltas so rollback is an exact wash (§3.4).
     edit.points = total_points
     edit.counter_deltas = counter_deltas

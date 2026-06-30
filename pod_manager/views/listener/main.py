@@ -299,11 +299,18 @@ def episode_detail(request, episode_id):
 
     transcript = getattr(ep, 'transcript', None)
     transcript_html = None
+    # transcript_speakers: ordered distinct speaker_id set (timeline order) — used
+    # only as the "any speakers?" guard now that the form boxes are JS-rendered.
     transcript_speakers = []
+    # transcript_speaker_names: speaker_id -> current resolved name (the fold), the
+    # authoritative mapping buildEnhancedTranscript overrides doc.speaker_mappings with.
     transcript_speaker_names = {}
+    # transcript_speaker_data: per speaker_id {id, name} in timeline order — drives
+    # the combined/split form boxes (combined groups these by shared name).
+    transcript_speaker_data = []
     # Inline render reads the html + words FROM R2 (or local when not R2-backed)
     # via the transcript store, so the page no longer depends on local disk.
-    from pod_manager.services.transcription import read_transcript_bytes
+    from pod_manager.services.transcription import read_transcript_bytes, fold_speaker_mappings
     if transcript and transcript.status == Transcript.Status.COMPLETED and transcript.html_file:
         try:
             transcript_html = read_transcript_bytes(ep.id, 'html', transcript.version).decode('utf-8')
@@ -313,13 +320,19 @@ def episode_detail(request, episode_id):
     if transcript and transcript.status == Transcript.Status.COMPLETED and transcript.words_json_file:
         try:
             words_doc = _json.loads(read_transcript_bytes(ep.id, 'words', transcript.version).decode('utf-8'))
+            # Resolved names come from the approved-edit fold over the immutable
+            # speaker_id base (not from distinct seg.speaker), so the form reflects
+            # the same source of truth replay writes. Pre-backfill .words without a
+            # speaker_id fall back to seg.speaker (split degrades to combined there).
+            mapping = fold_speaker_mappings(ep.id)
             seen = set()
             for seg in words_doc.get('segments', []):
-                sp = seg.get('speaker', '')
-                if sp and sp not in seen:
-                    seen.add(sp)
-                    transcript_speakers.append(sp)
-            transcript_speaker_names = words_doc.get('speaker_mappings', {})
+                sid = seg.get('speaker_id') or seg.get('speaker') or ''
+                if sid and sid not in seen:
+                    seen.add(sid)
+                    transcript_speakers.append(sid)
+                    transcript_speaker_data.append({'id': sid, 'name': mapping.get(sid, sid)})
+            transcript_speaker_names = mapping or words_doc.get('speaker_mappings', {})
         except Exception:
             pass
 
@@ -344,6 +357,7 @@ def episode_detail(request, episode_id):
         'transcript_speakers': transcript_speakers,
         'transcript_speaker_names': transcript_speaker_names,
         'transcript_speaker_names_json': _json.dumps(transcript_speaker_names),
+        'transcript_speaker_data_json': _json.dumps(transcript_speaker_data),
     })
 
 

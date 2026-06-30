@@ -195,15 +195,38 @@ def submit_speaker_labels(request, episode_id):
     membership, _ = NetworkMembership.objects.get_or_create(user=request.user, network=network)
     is_trusted = membership.trust_score >= network.auto_approve_trust_threshold
 
-    # Capture existing mappings as original_data so rollback is meaningful
+    # Capture existing mappings as original_data so rollback is meaningful, and the
+    # known speaker_id set so we can reject keys that aren't real diarization labels
+    # for this episode (§5.1 grief resistance). speaker_id is the immutable base;
+    # pre-backfill .words fall back to seg.speaker (mirrors apply_speaker_labels).
     existing_mappings = {}
+    known_ids = set()
     try:
         from pod_manager.services.transcription import read_transcript_bytes
         if hasattr(ep, 'transcript') and ep.transcript.words_json_file:
             doc = _json.loads(read_transcript_bytes(ep.id, 'words', ep.transcript.version).decode('utf-8'))
             existing_mappings = doc.get('speaker_mappings', {})
+            for seg in doc.get('segments', []):
+                sid = seg.get('speaker_id') or seg.get('speaker')
+                if sid:
+                    known_ids.add(sid)
+                for w in seg.get('words', []):
+                    wid = w.get('speaker_id') or w.get('speaker')
+                    if wid:
+                        known_ids.add(wid)
     except Exception:
         pass
+
+    # Reject unknown keys before any scoring/banking so trust reflects only valid
+    # speaker_ids. Only enforce when we actually have a known set — an unreadable
+    # .words can't validate, and degrading shouldn't lock out the feature.
+    if known_ids:
+        unknown = [k for k in safe_mappings if k not in known_ids]
+        if unknown:
+            return JsonResponse(
+                {'error': f'Unknown speaker id(s): {", ".join(sorted(unknown))}'},
+                status=400,
+            )
 
     # Per-speaker award (transcript_rollback.md §3.4) replaces the old flat +5.
     # existing_mappings is the .words header cache = the fold BEFORE this edit, so

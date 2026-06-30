@@ -7,7 +7,7 @@ from django.contrib.auth.models import User
 from django.db.models import Q, F, BooleanField, ExpressionWrapper
 from django.utils.html import format_html, mark_safe
 from django.urls import reverse
-from .models import Network, PatreonTier, Podcast, Episode, EpisodeCrossPublication, UserMix, PatronProfile, EpisodeEditSuggestion, NetworkMembership, LogEntry, Transcript, R2OrphanedObject
+from .models import Network, PatreonTier, Podcast, Episode, EpisodeCrossPublication, UserMix, NetworkMix, PatronProfile, EpisodeEditSuggestion, NetworkMembership, LogEntry, Transcript, R2OrphanedObject
 
 class S3SubscriberAudioFilter(SimpleListFilter):
     title = 'S3 Hosted Audio (Affected)'
@@ -319,7 +319,45 @@ class PodcastAdmin(admin.ModelAdmin):
     list_filter = ('network', 'required_tier')
     search_fields = ('title', 'slug')
 
-admin.site.register(UserMix)
+class _MixCoverAdminMixin:
+    """Shared inspection columns for the two mix types. Surfaces the exact
+    image state that drives cover rendering — the stored R2/local key, the
+    optional custom URL, and the resolved display_image — so the R2 re-key
+    can be eyeballed from the admin."""
+
+    @admin.display(description='Stored key (image_upload)')
+    def cover_key(self, obj):
+        return obj.image_upload.name or '—'
+
+    @admin.display(description='Custom URL (image_url)')
+    def custom_url(self, obj):
+        return obj.image_url or '—'
+
+    @admin.display(description='Resolved (display_image)')
+    def resolved_image(self, obj):
+        url = obj.display_image
+        if not url:
+            return '—'
+        return format_html('<a href="{}" target="_blank" rel="noopener">{}</a>', url, url)
+
+
+@admin.register(NetworkMix)
+class NetworkMixAdmin(_MixCoverAdminMixin, admin.ModelAdmin):
+    list_display = ('name', 'network', 'required_tier', 'image_version', 'cover_key', 'custom_url', 'resolved_image')
+    list_filter = ('network', 'required_tier')
+    search_fields = ('name', 'slug', 'network__name')
+    filter_horizontal = ('selected_podcasts',)
+    readonly_fields = ('unique_id', 'resolved_image')
+
+
+@admin.register(UserMix)
+class UserMixAdmin(_MixCoverAdminMixin, admin.ModelAdmin):
+    list_display = ('name', 'user', 'network', 'is_active', 'image_version', 'cover_key', 'custom_url', 'resolved_image')
+    list_filter = ('network', 'is_active')
+    search_fields = ('name', 'user__username', 'user__email', 'network__name')
+    raw_id_fields = ('user',)
+    filter_horizontal = ('selected_podcasts',)
+    readonly_fields = ('unique_id', 'last_accessed', 'resolved_image')
 
 
 

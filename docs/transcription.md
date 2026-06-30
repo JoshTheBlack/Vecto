@@ -407,11 +407,13 @@ Transcript search uses a SQL `LIKE` query on the `transcript_text` field. This i
 
 When the Whisper ASR call fails, the service raises a FastAPI `HTTPException` whose JSON body is `{"detail": "<the engine's own error>"}` — out-of-memory, diarization failure, unreadable audio, `413` (file too large), `400` (bad parameters), and so on. Vecto extracts that `detail` and stores it on `Transcript.error_message` (prefixed with the HTTP status), so the admin shows the **real** reason a run failed instead of a bare `500 Server Error for url: …`. Non-HTTP failures (download errors, parse errors) fall back to the exception text.
 
-### HTML-instead-of-audio guard
+### Non-audio guard (one shared detector)
 
-Some hosts — Google Drive most of all — hand back an HTML page (a download interstitial or a quota wall) instead of the MP3. Sending that to the ASR engine wastes a GPU run. So **before every ASR call** the audio file is validated: any file under ~1 MB whose first bytes look like HTML (`<!doctype html>`, `<html>`, `<head>`, …) is discarded and re-downloaded, up to **5 download attempts** with a short back-off between them. If all five still return HTML, the transcription **fails without ever calling ASR** (`error_message` records the HTML source) and the normal Celery retry/back-off applies.
+Some hosts — Google Drive most of all — hand back an HTML page (a download interstitial or a quota wall) instead of the MP3. Sending that to the ASR engine wastes a GPU run. So **before every ASR call** the audio file is validated by the single shared detector in `services/audio_sniff.py` — `is_audio_file()`, which **positively** confirms an audio-container signature (MP3 ID3 / MPEG sync, MP4/M4A, Ogg/Opus, FLAC, WAV) rather than merely looking for HTML. A candidate that isn't recognized audio is discarded and re-downloaded, up to **5 download attempts** with a short back-off. If all five still come back non-audio, the transcription **fails without ever calling ASR** (`error_message` records it) and the normal Celery retry/back-off applies.
 
-The cached file (when `WHISPER_KEEP_SOURCE_AUDIO=True`) is checked first and deleted if it is HTML, without consuming a download attempt. The guard runs on every source/host, not just Google Drive.
+The same `audio_sniff` detector guards the [R2 mirror](audio-mirroring.md) (its upload chokepoint) and powers the `audit_r2_audio` sweep, so "is this really audio?" is answered identically everywhere. The cached file (when `WHISPER_KEEP_SOURCE_AUDIO=True`) is checked first and deleted if it isn't audio, without consuming a download attempt.
+
+> **Google Drive "couldn't scan for viruses" click-through.** Drive serves files over ~100 MB from behind an HTTP-200 HTML confirmation page. The downloader (`services/gdrive_download.py`) detects that page and follows the confirmation — the modern `<form id="download-form">` token+uuid, or the older `download_warning*` cookie token — so the real bytes stream instead of the warning HTML. It only ever follows `*.google.com` targets (SSRF guard). Both the transcription downloader and the R2 mirror use it.
 
 ---
 

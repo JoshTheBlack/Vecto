@@ -136,7 +136,9 @@ mirror_episode_audio(episode_id, local_path=None, force=False)
 
 Subscriber URLs are publisher-controlled, so every fetch is SSRF-validated with `utils.validate_public_url` (the same guard the chapter fetch uses) before download or HEAD.
 
-**Non-audio body guard.** `raise_for_status()` only catches HTTP error codes; some hosts answer **HTTP 200 with an HTML error page** (Google Drive "file removed"/quota, a Patreon login wall) that would otherwise be hashed and stored as a bogus `.mp3`. The downloader checks the first chunk's `Content-Type` and magic bytes and raises `MirrorSkipped` on a non-audio body, so nothing garbage is ever uploaded. Objects mirrored before this guard existed can be swept with [`audit_r2_audio`](#audit-mirrored-objects--audit_r2_audio).
+**Non-audio body guard.** `raise_for_status()` only catches HTTP error codes; some hosts answer **HTTP 200 with an HTML error page** (Google Drive "file removed"/quota, a Patreon login wall) that would otherwise be hashed and stored as a bogus `.mp3`. A single chokepoint in `mirror_episode_audio` validates the bytes — whether freshly downloaded **or** handed in as a `local_path` (transcription's temp MP3) — with the shared `services/audio_sniff.is_audio_file()` detector (a positive audio-signature whitelist, the same one transcription and `audit_r2_audio` use). A non-audio body raises `MirrorSkipped`, so nothing garbage is ever uploaded. Objects mirrored before this guard existed can be swept with [`audit_r2_audio`](#audit-mirrored-objects--audit_r2_audio).
+
+**Google Drive virus-scan click-through.** Drive serves files over ~100 MB from behind an HTTP-200 "couldn't scan for viruses" HTML page. The downloader (`services/gdrive_download.py`, shared with transcription) detects it and follows the confirmation token (modern `<form id="download-form">` or the older `download_warning*` cookie) so the real audio downloads instead of the warning page. It only follows `*.google.com` targets (SSRF guard).
 
 ### Change Detection
 
@@ -250,7 +252,7 @@ stored `Content-Type` is always `audio/mpeg` (set from the key's extension), so 
 audit inspects the bytes — metadata can't tell. Read-only by default; ends with a
 `Flagged episode ids: …` line.
 
-`--fix --apply` re-downloads + re-mirrors each flagged episode (`force=True`): a
+Scope it with `--all`, `--network=`, `--podcast=`, or **`--episodes=2490,2492,…`** — the last re-checks a known repair list without re-issuing a Class B request for every object in the bucket (ids that have no `r2_url` are reported as skipped). `--fix --apply` re-downloads + re-mirrors each flagged episode (`force=True`): a
 recovered source lands a fresh content-hash key and repoints `r2_url` (the bogus
 object becomes a `reversion` orphan for the GC); a source that's **still** bad is
 caught by the [non-audio body guard](#subscriber-only-guarantee) and reported

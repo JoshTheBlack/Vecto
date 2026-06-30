@@ -28,14 +28,14 @@ from django.core.management.base import BaseCommand, CommandError
 from django.db.models import Q
 
 from pod_manager.models import Episode
+from pod_manager.services.audio_sniff import SNIFF_BYTES, looks_like_audio
 from pod_manager.services.r2_client import (get_r2_client, key_from_public_url)
-from pod_manager.services.r2_mirror import (MirrorSkipped, looks_like_audio,
-                                            mirror_episode_audio)
+from pod_manager.services.r2_mirror import MirrorSkipped, mirror_episode_audio
 
 # HTML/XML document signatures — an object starting with one of these is an error
-# page stored as audio, the high-signal bad case.
+# page stored as audio, the high-signal bad case (reported distinctly from the
+# generic "no audio signature" for operator clarity).
 _HTML_SNIFFS = (b'<!doctype', b'<html', b'<head', b'<?xml')
-_SNIFF_BYTES = 512
 
 
 class Command(BaseCommand):
@@ -44,6 +44,10 @@ class Command(BaseCommand):
 
     def add_arguments(self, parser):
         parser.add_argument("--all", action="store_true", help="Every episode that has an r2_url.")
+        parser.add_argument("--episodes",
+                            help="Comma-separated episode ids to audit (e.g. 2490,2492,2507). "
+                                 "Targets just these — re-checks a known repair list without "
+                                 "re-scanning (Class B) the whole bucket.")
         parser.add_argument("--network", help="Restrict to a network slug.")
         parser.add_argument("--podcast", help="Restrict to a podcast slug.")
         parser.add_argument("--limit", type=int, default=None, help="Inspect at most N (sample latch).")
@@ -55,10 +59,18 @@ class Command(BaseCommand):
                             help="With --fix: actually re-mirror (default previews the fix list).")
 
     def handle(self, *args, **options):
-        if not (options["all"] or options["network"] or options["podcast"]):
-            raise CommandError("Specify a scope: --all / --network=<slug> / --podcast=<slug>.")
+        requested_ids = self._parse_ids(options["episodes"]) if options["episodes"] else None
+        if not (options["all"] or requested_ids or options["network"] or options["podcast"]):
+            raise CommandError("Specify a scope: --all / --episodes=<ids> / --network=<slug> / --podcast=<slug>.")
 
-        targets = self._select(options)
+        targets = self._select(options, requested_ids)
+        if requested_ids:
+            found = {ep.id for ep in targets}
+            missing = [i for i in requested_ids if i not in found]
+            if missing:
+                self.stdout.write(self.style.WARNING(
+                    "  requested but not eligible (no r2_url / not found): "
+                    + ",".join(map(str, missing))))
         min_bytes = options["min_bytes"]
         self.stdout.write(f"Auditing {len(targets)} R2 audio object(s) (min-bytes={min_bytes})...")
 
@@ -96,7 +108,7 @@ class Command(BaseCommand):
 
         key = key_from_public_url(ep.r2_url)
         try:
-            obj = client.get_object(Bucket=bucket, Key=key, Range=f"bytes=0-{_SNIFF_BYTES - 1}")
+            obj = client.get_object(Bucket=bucket, Key=key, Range=f"bytes=0-{SNIFF_BYTES - 1}")
         except ClientError as exc:
             code = exc.response.get("Error", {}).get("Code", "")
             if code in ("404", "NoSuchKey", "NotFound"):
@@ -108,7 +120,7 @@ class Command(BaseCommand):
 
         if total is not None and total < min_bytes:
             return f"too small ({total} B)"
-        sniff = head[:_SNIFF_BYTES].lstrip().lower()
+        sniff = head[:SNIFF_BYTES].lstrip().lower()
         if sniff.startswith(_HTML_SNIFFS):
             return "HTML body, not audio"
         if not looks_like_audio(head):
@@ -152,10 +164,28 @@ class Command(BaseCommand):
             f"Fix: {fixed} re-mirrored, {unfixable} unfixable (source still bad), {errored} errored."))
 
     # ------------------------------------------------------------------
-    def _select(self, options):
+    @staticmethod
+    def _parse_ids(raw):
+        ids = []
+        for part in raw.split(","):
+            part = part.strip()
+            if not part:
+                continue
+            try:
+                ids.append(int(part))
+            except ValueError:
+                raise CommandError(f"--episodes: '{part}' is not a valid episode id.")
+        if not ids:
+            raise CommandError("--episodes was given but held no ids.")
+        return ids
+
+    # ------------------------------------------------------------------
+    def _select(self, options, requested_ids=None):
         qs = (Episode.objects
               .select_related("podcast", "podcast__network")
               .exclude(Q(r2_url__isnull=True) | Q(r2_url="")))
+        if requested_ids:
+            qs = qs.filter(id__in=requested_ids)
         if options["network"]:
             qs = qs.filter(podcast__network__slug=options["network"])
         if options["podcast"]:

@@ -13,6 +13,9 @@ import requests
 from django.conf import settings
 from django.utils import timezone
 
+from pod_manager.services import gdrive_download
+from pod_manager.services.audio_sniff import is_audio_file
+
 logger = logging.getLogger(__name__)
 
 ALLOWED_EXTENSIONS = {'vtt', 'json', 'srt', 'html', 'words'}
@@ -20,10 +23,9 @@ ALLOWED_EXTENSIONS = {'vtt', 'json', 'srt', 'html', 'words'}
 # HTTP statuses that mean the source audio is gone for good, not a blip.
 _PERMANENT_SOURCE_STATUSES = {401, 403, 404, 410}
 
-# HTML-source guard (Google Drive et al. hand back an HTML interstitial instead
-# of the MP3). We only sniff files below this size — a real episode MP3 is far
-# larger, so we never read a whole episode into memory just to classify it.
-_HTML_SNIFF_MAX_BYTES = 1_000_000
+# Non-audio-source guard (Google Drive et al. hand back an HTML interstitial
+# instead of the MP3). A candidate is accepted only when its header positively
+# matches an audio container (see services/audio_sniff.is_audio_file).
 _MAX_AUDIO_DOWNLOAD_ATTEMPTS = 5
 # Short pause between redownload attempts — a Drive quota interstitial won't
 # clear instantly, and we don't want to hammer the source.
@@ -42,31 +44,6 @@ class HtmlSourceError(Exception):
     download interstitial or quota wall) instead of audio, after exhausting all
     download attempts. The transcript fails WITHOUT ever being sent to the ASR
     endpoint, so we never waste a GPU run on a web page."""
-
-
-def _looks_like_html(path: Path) -> bool:
-    """True if a small file looks like an HTML page rather than audio.
-
-    Only files under _HTML_SNIFF_MAX_BYTES are inspected; anything larger is
-    assumed to be real audio (sniffing it would mean reading a whole episode).
-    """
-    try:
-        if path.stat().st_size >= _HTML_SNIFF_MAX_BYTES:
-            return False
-    except OSError:
-        return False
-    try:
-        with path.open('rb') as fp:
-            head = fp.read(2048)
-    except OSError:
-        return False
-    sniff = head.lstrip().lower()
-    return (
-        sniff.startswith(b'<!doctype html')
-        or sniff.startswith(b'<html')
-        or sniff.startswith(b'<head')
-        or b'<title>' in sniff[:1024]
-    )
 
 
 def _error_detail(exc: Exception) -> str:
@@ -409,8 +386,15 @@ def _download_audio_to_temp(url: str) -> Path:
     try:
         with tempfile.NamedTemporaryFile(suffix='.mp3', delete=False) as tmp:
             tmp_path = Path(tmp.name)
-            dl = requests.get(url, stream=True, timeout=300)
+            session = requests.Session()
+            session.headers['User-Agent'] = gdrive_download.USER_AGENT
+            dl = session.get(url, stream=True, timeout=300)
             dl.raise_for_status()
+            # Click through GDrive's "couldn't scan for viruses" interstitial (a
+            # 200 HTML page) so large recovered files download as real audio.
+            if gdrive_download.is_gdrive_url(url) and gdrive_download.looks_like_interstitial(dl):
+                dl = gdrive_download.follow_confirmation(session, url, dl, 300)
+                dl.raise_for_status()
             for chunk in dl.iter_content(chunk_size=65536):
                 tmp.write(chunk)
         return tmp_path
@@ -915,13 +899,14 @@ def run_transcription(
                 candidate = tmp_path
                 candidate_is_cache = False
 
-            if not _looks_like_html(candidate):
+            if is_audio_file(candidate):
                 audio_fp_path = candidate
                 break
 
-            # HTML where audio should be — discard this copy and try again.
+            # A non-audio body where audio should be (HTML interstitial / quota
+            # wall) — discard this copy and try again.
             logger.warning(
-                "transcribe: episode %d source returned HTML, not audio (%s) — discarding",
+                "transcribe: episode %d source returned a non-audio body (%s) — discarding",
                 episode_id, 'cached file' if candidate_is_cache else f'download attempt {downloads}',
             )
             candidate.unlink(missing_ok=True)
@@ -929,7 +914,7 @@ def run_transcription(
                 tmp_path = None
             if downloads >= _MAX_AUDIO_DOWNLOAD_ATTEMPTS:
                 raise HtmlSourceError(
-                    f"source returned HTML (not audio) after {downloads} download "
+                    f"source returned a non-audio body after {downloads} download "
                     f"attempt(s) at {download_url}"
                 )
             time.sleep(_HTML_RETRY_BACKOFF_SECONDS)

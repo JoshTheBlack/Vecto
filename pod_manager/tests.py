@@ -4748,16 +4748,21 @@ class R2MirrorServiceTests(TestCase):
             audio_url_subscriber='https://traffic.libsyn.com/x/myep.mp3',
         )
 
+    # 12-byte valid ID3 header so the mirror's is_audio_file() chokepoint accepts
+    # the fixture without needing a real MP3 (tests stay offline). Prepended to
+    # BOTH the temp file and the expected-key hash so the content hash matches.
+    _AUDIO_MAGIC = b'ID3\x04\x00\x00\x00\x00\x00\x00\x00\x00'
+
     def _temp_audio(self, content=b'fake-audio-bytes'):
         f = tempfile.NamedTemporaryFile(suffix='.mp3', delete=False)
-        f.write(content)
+        f.write(self._AUDIO_MAGIC + content)
         f.close()
         p = Path(f.name)
         self.addCleanup(lambda: p.unlink(missing_ok=True))
         return p
 
     def _expected_key_and_url(self, content):
-        h = _hashlib.sha256(content).hexdigest()
+        h = _hashlib.sha256(self._AUDIO_MAGIC + content).hexdigest()
         key = f"{self.network.id}/{self.podcast.id}/myep-{h[:16]}.mp3"
         return key, f"https://audio.test/{key}"
 
@@ -4888,6 +4893,74 @@ class R2MirrorServiceTests(TestCase):
              mock.patch.object(r2_mirror, '_head_signature', return_value=''):
             mirror_episode_audio(self.episode.id, local_path=self._temp_audio(content))
         self.assertFalse(R2OrphanedObject.objects.filter(key=key).exists())
+
+
+class GDriveConfirmationTests(TestCase):
+    """gdrive_download.follow_confirmation(): click through Drive's large-file
+    'couldn't scan for viruses' interstitial to the real download."""
+
+    def _resp(self, *, ctype='text/html', text=''):
+        r = mock.Mock()
+        r.headers = {'Content-Type': ctype}
+        r.text = text
+        r.raise_for_status = mock.Mock()
+        return r
+
+    def test_looks_like_interstitial(self):
+        from pod_manager.services import gdrive_download as g
+        self.assertTrue(g.looks_like_interstitial(self._resp(ctype='text/html; charset=utf-8')))
+        self.assertFalse(g.looks_like_interstitial(self._resp(ctype='audio/mpeg')))
+
+    def test_modern_download_form(self):
+        from pod_manager.services import gdrive_download as g
+        html = (
+            '<form id="download-form" action="https://drive.usercontent.google.com/download" method="get">'
+            '<input type="hidden" name="id" value="FILEID">'
+            '<input type="hidden" name="export" value="download">'
+            '<input type="hidden" name="confirm" value="t">'
+            '<input type="hidden" name="uuid" value="UUID-123"></form>'
+        )
+        file_resp = self._resp(ctype='audio/mpeg')
+        session = mock.Mock(cookies={})
+        session.get = mock.Mock(return_value=file_resp)
+        out = g.follow_confirmation(
+            session, 'https://docs.google.com/uc?export=download&id=FILEID', self._resp(text=html), 300)
+        self.assertIs(out, file_resp)
+        args, kwargs = session.get.call_args
+        self.assertEqual(args[0], 'https://drive.usercontent.google.com/download')
+        self.assertEqual(kwargs['params']['confirm'], 't')
+        self.assertEqual(kwargs['params']['uuid'], 'UUID-123')
+
+    def test_cookie_token_flow(self):
+        from pod_manager.services import gdrive_download as g
+        file_resp = self._resp(ctype='audio/mpeg')
+        session = mock.Mock(cookies={'download_warning_abc': 'TOKEN9'})
+        session.get = mock.Mock(return_value=file_resp)
+        out = g.follow_confirmation(
+            session, 'https://drive.google.com/uc?export=download&id=X',
+            self._resp(text='<html><body>can&#39;t scan</body></html>'), 300)
+        self.assertIs(out, file_resp)
+        self.assertIn('confirm=TOKEN9', session.get.call_args[0][0])
+
+    def test_unresolvable_returns_original(self):
+        from pod_manager.services import gdrive_download as g
+        first = self._resp(text='<html>nothing useful</html>')
+        session = mock.Mock(cookies={})
+        session.get = mock.Mock()
+        out = g.follow_confirmation(session, 'https://docs.google.com/uc?id=X', first, 300)
+        self.assertIs(out, first)
+        session.get.assert_not_called()
+
+    def test_offsite_form_action_refused(self):
+        from pod_manager.services import gdrive_download as g
+        html = ('<form id="download-form" action="https://evil.example.com/steal" method="get">'
+                '<input type="hidden" name="id" value="X"></form>')
+        session = mock.Mock(cookies={})
+        session.get = mock.Mock()
+        first = self._resp(text=html)
+        out = g.follow_confirmation(session, 'https://docs.google.com/uc?id=X', first, 300)
+        self.assertIs(out, first)  # non-google action ignored (SSRF guard)
+        session.get.assert_not_called()
 
 
 class R2BackfillCommandTests(TestCase):

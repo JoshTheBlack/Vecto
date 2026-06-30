@@ -5919,17 +5919,102 @@ class AdminConsoleViewTests(TestCase):
         self.assertEqual(delay.call_count, 2)  # plain + confirmed-prune dispatched; blocked did not
 
     def test_run_soft_blocks_identical_in_flight_run(self):
-        # §14 (resolved): a second identical invocation while one is queued/running is
-        # rejected (409); a *different* invocation of the same command still dispatches.
+        # §14 (resolved): a second identical invocation while one is queued/running and
+        # CONFIRMED ALIVE is rejected (409); a *different* invocation still dispatches.
         self.client.force_login(self.superuser)
         with mock.patch('pod_manager.tasks.task_run_management_command.delay') as delay:
+            delay.return_value.id = 'live-task-1'
             first = self._run('ingest_feed', {'fields': {'podcast_id': '7'}})
             self.assertEqual(first.status_code, 200)
-            dup = self._run('ingest_feed', {'fields': {'podcast_id': '7'}})
-            self.assertEqual(dup.status_code, 409)
+            # The blocker's task id shows up as live -> the duplicate is rejected.
+            with mock.patch('pod_manager.views.admin_console._live_task_ids',
+                            return_value=({'live-task-1'}, True)):
+                dup = self._run('ingest_feed', {'fields': {'podcast_id': '7'}})
+                self.assertEqual(dup.status_code, 409)
             other = self._run('ingest_feed', {'fields': {'podcast_id': '8'}})
             self.assertEqual(other.status_code, 200)
         self.assertEqual(delay.call_count, 2)  # first + other; the duplicate never dispatched
+
+    def test_run_self_heals_stale_run(self):
+        # A queued/running row whose worker died (task id not among live tasks) is
+        # auto-cleared so the command isn't blocked forever; the new run dispatches.
+        from pod_manager.models import CommandRun
+        self.client.force_login(self.superuser)
+        with mock.patch('pod_manager.tasks.task_run_management_command.delay') as delay:
+            delay.return_value.id = 'dead-task'
+            first = self._run('ingest_feed', {'fields': {'podcast_id': '7'}})
+            self.assertEqual(first.status_code, 200)
+            stale = CommandRun.objects.get(run_id=first.json()['run_id'])
+            # inspect responds but the task isn't running anywhere -> stale.
+            with mock.patch('pod_manager.views.admin_console._live_task_ids',
+                            return_value=(set(), True)):
+                again = self._run('ingest_feed', {'fields': {'podcast_id': '7'}})
+            self.assertEqual(again.status_code, 200)
+        stale.refresh_from_db()
+        self.assertEqual(stale.status, CommandRun.Status.FAILED)
+        self.assertIn('auto-cleared', stale.error)
+        # The fresh run exists and is distinct from the cleared one.
+        live = CommandRun.objects.get(run_id=again.json()['run_id'])
+        self.assertEqual(live.status, CommandRun.Status.QUEUED)
+
+    def test_run_blocks_when_worker_unreachable(self):
+        # If no worker answers inspect we can't prove the blocker is dead, so we stay
+        # conservative and block (the operator can Cancel to force-clear).
+        self.client.force_login(self.superuser)
+        with mock.patch('pod_manager.tasks.task_run_management_command.delay') as delay:
+            delay.return_value.id = 'unknown-task'
+            self.assertEqual(self._run('ingest_feed', {'fields': {'podcast_id': '7'}}).status_code, 200)
+            with mock.patch('pod_manager.views.admin_console._live_task_ids',
+                            return_value=(set(), False)):
+                dup = self._run('ingest_feed', {'fields': {'podcast_id': '7'}})
+            self.assertEqual(dup.status_code, 409)
+
+    # -- cancel -------------------------------------------------------------
+    def _cancel(self, run_id):
+        return self.client.post(reverse('admin_console_run_cancel', args=[str(run_id)]))
+
+    def test_cancel_revokes_live_task_and_clears_row(self):
+        from pod_manager.models import CommandRun
+        run = CommandRun.objects.create(
+            command='backfill_transcripts_to_r2', status=CommandRun.Status.RUNNING,
+            celery_task_id='task-xyz',
+        )
+        self.client.force_login(self.superuser)
+        with mock.patch('celery.app.control.Control.revoke') as revoke:
+            resp = self._cancel(run.run_id)
+        self.assertEqual(resp.status_code, 200)
+        self.assertTrue(resp.json()['revoked'])
+        revoke.assert_called_once_with('task-xyz', terminate=True)
+        run.refresh_from_db()
+        self.assertEqual(run.status, CommandRun.Status.FAILED)
+        self.assertIn('cancelled by', run.error)
+
+    def test_cancel_zombie_row_without_task_clears_without_revoke(self):
+        from pod_manager.models import CommandRun
+        run = CommandRun.objects.create(command='ingest_feed', status=CommandRun.Status.RUNNING)
+        self.client.force_login(self.superuser)
+        resp = self._cancel(run.run_id)
+        self.assertEqual(resp.status_code, 200)
+        self.assertFalse(resp.json()['revoked'])
+        run.refresh_from_db()
+        self.assertEqual(run.status, CommandRun.Status.FAILED)
+
+    def test_cancel_terminal_run_is_409(self):
+        from pod_manager.models import CommandRun
+        run = CommandRun.objects.create(command='ingest_feed', status=CommandRun.Status.COMPLETED)
+        self.client.force_login(self.superuser)
+        self.assertEqual(self._cancel(run.run_id).status_code, 409)
+
+    def test_cancel_missing_run_is_404(self):
+        import uuid as _uuid
+        self.client.force_login(self.superuser)
+        self.assertEqual(self._cancel(_uuid.uuid4()).status_code, 404)
+
+    def test_cancel_requires_superuser(self):
+        from pod_manager.models import CommandRun
+        run = CommandRun.objects.create(command='ingest_feed', status=CommandRun.Status.RUNNING)
+        resp = self._cancel(run.run_id)
+        self.assertIn(resp.status_code, (302, 403))
 
     def test_run_503_and_drops_row_when_broker_down(self):
         # If `.delay()` raises (broker unreachable), the run degrades to a 503 and leaves

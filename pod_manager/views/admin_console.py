@@ -40,6 +40,43 @@ logger = logging.getLogger(__name__)
 # How many recent runs to surface per command / globally without an explicit page.
 RECENT_RUNS_LIMIT = 25
 
+# How long to wait for workers to answer a control inspect (seconds). Only paid
+# when a queued/running row is found blocking a new dispatch — i.e. rarely.
+_INSPECT_TIMEOUT = 1.5
+
+
+def _live_task_ids():
+    """Return ``(set_of_task_ids, responded)`` for everything Celery is currently
+    holding (active + reserved). ``responded`` is False when no worker answered the
+    inspect at all — we then can't tell live from dead and stay conservative.
+
+    Used to decide whether a queued/running CommandRun is genuinely still executing
+    or is a zombie left behind by a worker that died before its ``finally`` block.
+    """
+    try:
+        from config.celery import app
+        insp = app.control.inspect(timeout=_INSPECT_TIMEOUT)
+    except Exception:  # noqa: BLE001 — broker/import failure → "couldn't tell"
+        return set(), False
+
+    ids, responded = set(), False
+    for getter in ("active", "reserved"):
+        try:
+            data = getattr(insp, getter)()
+        except Exception:  # noqa: BLE001
+            data = None
+        if data is None:
+            continue
+        responded = True
+        for tasks in data.values():
+            for t in (tasks or []):
+                tid = None
+                if isinstance(t, dict):
+                    tid = t.get("id") or (t.get("request") or {}).get("id")
+                if tid:
+                    ids.add(tid)
+    return ids, responded
+
 
 def _run_to_dict(run, include_log=False):
     data = {
@@ -178,16 +215,35 @@ def run(request, name):
     # running (§14 — resolved: soft-block duplicates). Identity is the command plus its
     # redacted command line, so two genuinely different invocations of the same command
     # (e.g. two podcasts) never collide — only an accidental repeat does.
-    if CommandRun.objects.filter(
+    #
+    # Self-healing: a worker that dies mid-run never reaches its `finally`, so the row
+    # is stuck at running and would block this command forever. So before blocking, we
+    # confirm the blocker is actually alive via Celery inspect; rows with no live task
+    # are auto-cleared (marked failed) and the dispatch proceeds.
+    blockers = list(CommandRun.objects.filter(
         command=name,
         command_line=invocation["command_line"],
         status__in=(CommandRun.Status.QUEUED, CommandRun.Status.RUNNING),
-    ).exists():
-        return JsonResponse(
-            {"error": f"An identical {name!r} run is already in progress — wait for it to "
-                      "finish or check Recent Runs."},
-            status=409,
-        )
+    ))
+    if blockers:
+        live_ids, responded = _live_task_ids()
+        if any(b.celery_task_id and b.celery_task_id in live_ids for b in blockers):
+            return JsonResponse(
+                {"error": f"An identical {name!r} run is already in progress — wait for it to "
+                          "finish or cancel it from Recent Runs."},
+                status=409,
+            )
+        if not responded:
+            # Couldn't reach any worker to confirm — stay safe and block, but point the
+            # operator at Cancel (which force-clears) in case the run really is dead.
+            return JsonResponse(
+                {"error": f"An identical {name!r} run appears in progress but no worker answered "
+                          "to confirm it. If you know it's dead, cancel it from Recent Runs, then retry."},
+                status=409,
+            )
+        for b in blockers:
+            b.mark_finished(CommandRun.Status.FAILED, error="auto-cleared: no live worker task (stale run)")
+        logger.info("Admin console: auto-cleared %d stale %r run(s) before dispatch", len(blockers), name)
 
     # Degrade gracefully when the worker/broker is unavailable (§7), and only create
     # the history row once we know we can dispatch.
@@ -218,7 +274,7 @@ def run(request, name):
     # so the operator gets a clean 503 instead of a 500, and drop the row we just
     # created so no orphan `queued` record lingers in history (§7).
     try:
-        task_run_management_command.delay(
+        async_result = task_run_management_command.delay(
             str(run_id), name, invocation["args"], invocation["options"],
         )
     except Exception as exc:  # noqa: BLE001 — broker/connection failure → graceful 503
@@ -231,11 +287,49 @@ def run(request, name):
                       "Is the worker / Redis running?"},
             status=503,
         )
+    # Record the Celery task id so the run can later be liveness-checked / revoked.
+    cmd_run.celery_task_id = str(getattr(async_result, "id", "") or "")
+    cmd_run.save(update_fields=["celery_task_id"])
     return JsonResponse({
         "run_id": str(run_id),
         "status": cmd_run.status,
         "command_line": cmd_run.command_line,
     })
+
+
+@superuser_required
+@require_POST
+def run_cancel(request, run_id):
+    """Cancel a queued/running console run: revoke the live Celery task (terminate)
+    if there is one, and mark the row failed so the console unblocks immediately.
+
+    Doubles as the manual escape hatch for a zombie row whose worker already died —
+    there's no live task to revoke, but the row still gets cleared."""
+    try:
+        cmd_run = CommandRun.objects.get(run_id=run_id)
+    except CommandRun.DoesNotExist:
+        return JsonResponse({"error": "Run not found."}, status=404)
+    if cmd_run.status not in (CommandRun.Status.QUEUED, CommandRun.Status.RUNNING):
+        return JsonResponse(
+            {"error": f"Run is already {cmd_run.status}; nothing to cancel."}, status=409,
+        )
+
+    revoked = False
+    if cmd_run.celery_task_id:
+        try:
+            from config.celery import app
+            app.control.revoke(cmd_run.celery_task_id, terminate=True)
+            revoked = True
+        except Exception as exc:  # noqa: BLE001 — best-effort; we still clear the row
+            logger.warning(
+                "Admin console: revoke failed for run %s (task %s): %s",
+                run_id, cmd_run.celery_task_id, exc,
+            )
+
+    note = f"cancelled by {request.user}" + ("" if revoked else " (no live task to revoke)")
+    cmd_run.mark_finished(CommandRun.Status.FAILED, error=note)
+    logger.info("Admin console: %s cancelled run %s (revoked=%s)", request.user, run_id, revoked)
+    return JsonResponse({"run_id": str(run_id), "status": cmd_run.status, "revoked": revoked})
 
 
 @superuser_required

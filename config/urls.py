@@ -75,6 +75,7 @@ urlpatterns = [
     path('admin-console/command/<str:name>/build/', views.admin_console_build, name='admin_console_build'),
     path('admin-console/command/<str:name>/run/', views.admin_console_run, name='admin_console_run'),
     path('admin-console/run/<uuid:run_id>/poll/', views.admin_console_run_poll, name='admin_console_run_poll'),
+    path('admin-console/run/<uuid:run_id>/cancel/', views.admin_console_run_cancel, name='admin_console_run_cancel'),
     path('admin-console/runs/', views.admin_console_history, name='admin_console_history'),
     path('admin-console/run/<uuid:run_id>/', views.admin_console_run_detail, name='admin_console_run_detail'),
     path('admin-console/lookup/episodes/', views.admin_console_episode_search, name='admin_console_episode_search'),

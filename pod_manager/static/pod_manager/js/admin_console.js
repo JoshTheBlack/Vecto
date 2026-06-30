@@ -17,6 +17,7 @@
         build: (name) => `${BASE}command/${encodeURIComponent(name)}/build/`,
         run: (name) => `${BASE}command/${encodeURIComponent(name)}/run/`,
         poll: (id) => `${BASE}run/${id}/poll/`,
+        cancel: (id) => `${BASE}run/${id}/cancel/`,
         runDetail: (id) => `${BASE}run/${id}/`,
         history: () => `${BASE}runs/`,
         episodes: () => `${BASE}lookup/episodes/`,
@@ -490,8 +491,12 @@
     const logCmd = $("#ac-log-cmd");
     const logStatusEl = $("#ac-log-status");
     const logFollow = $("#ac-log-follow");
+    const logCancel = $("#ac-log-cancel");
     $("#ac-log-copy").addEventListener("click", () => {
         if (navigator.clipboard) navigator.clipboard.writeText(logBody.textContent || "");
+    });
+    logCancel.addEventListener("click", () => {
+        if (poll.id) cancelRun(poll.id, logCancel);
     });
     $("#ac-log-dismiss").addEventListener("click", () => {
         stopPolling();
@@ -509,6 +514,7 @@
     function setLogStatus(status) {
         logStatusEl.className = "ac-status-badge ac-status-" + status;
         logStatusEl.textContent = status;
+        if (logCancel) logCancel.hidden = !(status === "queued" || status === "running" || status === "stalled");
     }
 
     function appendRawLine(line, kind) {
@@ -586,6 +592,22 @@
         });
     }
 
+    // Cancel a queued/running run: revoke the live task and clear the row (also the
+    // manual escape hatch for a zombie row whose worker already died).
+    function cancelRun(runId, btn) {
+        if (btn) { btn.disabled = true; btn.textContent = "Cancelling…"; }
+        postJSON(url.cancel(runId), {}).then(({ ok, data }) => {
+            if (!ok) {
+                if (btn) { btn.disabled = false; btn.textContent = "Cancel"; }
+                window.alert((data && data.error) || "Cancel failed.");
+                return;
+            }
+            if (poll.id === runId) { stopPolling(); setLogStatus("failed"); }
+            refreshRecentRuns();
+            if (histModalEl && histModalEl.classList.contains("show")) loadHistory();
+        });
+    }
+
     function renderRunList(container, runs, showCommand) {
         container.innerHTML = "";
         if (!runs.length) {
@@ -631,6 +653,15 @@
         const rerun = el("button", "btn btn-sm ac-link-btn ac-run-rerun", "Re-run");
         rerun.addEventListener("click", (e) => { e.stopPropagation(); rerunFrom(run); });
         summary.appendChild(rerun);
+
+        if (run.status === "queued" || run.status === "running") {
+            const cancel = el("button", "btn btn-sm ac-link-btn ac-run-cancel", "Cancel");
+            cancel.addEventListener("click", (e) => {
+                e.stopPropagation();
+                cancelRun(run.run_id, cancel);
+            });
+            summary.appendChild(cancel);
+        }
 
         const detail = el("div", "ac-run-detail");
         detail.hidden = true;

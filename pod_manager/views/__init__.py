@@ -94,6 +94,7 @@ from .admin_console import (
     build as admin_console_build,
     run as admin_console_run,
     run_poll as admin_console_run_poll,
+    run_cancel as admin_console_run_cancel,
     run_detail as admin_console_run_detail,
     history as admin_console_history,
     episode_search as admin_console_episode_search,

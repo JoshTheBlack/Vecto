@@ -193,6 +193,18 @@ shared log buffer) · `CommandRun` model in [`models.py`](../pod_manager/models.
 
 - **Identical in-flight runs are soft-blocked** (HTTP 409) to stop accidental
   double-runs. Genuinely different invocations of the same command don't collide.
+  The block is **self-healing**: a worker that dies mid-run never reaches its `finally`,
+  so the row stays `running` and would block that command forever. Before blocking, the
+  `run` view confirms the blocker is actually alive via Celery `inspect` (matching the
+  stored `CommandRun.celery_task_id` against active/reserved tasks); a row with no live
+  task is auto-cleared (marked `failed`) and the dispatch proceeds. If no worker answers
+  inspect at all, it stays conservative and blocks — use **Cancel** to force-clear.
+
+- **Cancel a run** (`POST run/<id>/cancel/`, superuser-only). Revokes the live Celery
+  task (`terminate=True`) and marks the row `failed`, unblocking the command immediately.
+  It also clears a zombie row whose worker already died (nothing to revoke, but the row
+  still clears). Surfaced as a Cancel button on queued/running rows in Recent Runs and in
+  the live log pane.
 
 - **Command-emitted summaries**, not console-side parsing — each command owns its own
   numbers via `emit_summary`, so a wording change never breaks the console.

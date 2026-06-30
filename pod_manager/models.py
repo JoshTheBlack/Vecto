@@ -1104,6 +1104,10 @@ class CommandRun(models.Model):
     error = models.TextField(blank=True)
     log = models.TextField(blank=True, help_text="Full captured stdout/stderr.")
     result_summary = models.JSONField(null=True, blank=True)
+    # Celery task id of the dispatched worker job. Lets the console (a) confirm via
+    # inspect whether a queued/running row is actually still alive — self-healing a
+    # row left stuck after a worker died — and (b) revoke a live task on Cancel.
+    celery_task_id = models.CharField(max_length=255, blank=True, db_index=True)
 
     class Meta:
         ordering = ['-created_at']

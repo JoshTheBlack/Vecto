@@ -43,6 +43,9 @@ from pod_manager.services.transcription import (episode_recovery_metadata,
 _FORMATS = ['vtt', 'json', 'srt', 'html', 'words']
 # Transcript.*_file field name per extension.
 _MARKER = {ext: ('words_json_file' if ext == 'words' else f'{ext}_file') for ext in _FORMATS}
+# How often to emit a progress heartbeat on the long (mostly-silent) scans —
+# verify HEADs ~5 objects per row, so a clean run is otherwise output-less.
+_PROGRESS_EVERY = 200
 
 
 class Command(BaseCommand):
@@ -89,14 +92,23 @@ class Command(BaseCommand):
             return self._prune(qs, options)
 
         force, dry_run, limit = options['force'], not apply, options['limit']
+        total = qs.count()
+        if limit is not None:
+            total = min(total, limit)
+        self.stdout.write(
+            f"{total} transcript(s) selected (mode={'preview' if dry_run else 'apply'}, force={force}).")
         totals = {'migrated': 0, 'skipped': 0, 'failed': 0}
         count = 0
-        for t in qs:
+        for t in qs.iterator():
             if limit is not None and count >= limit:
                 break
             count += 1
             res = self._migrate_one(t, force, dry_run)
             totals[res] = totals.get(res, 0) + 1
+            if count % _PROGRESS_EVERY == 0:
+                self.stdout.write(
+                    f"  …{count}/{total} ({totals['migrated']} migrated, "
+                    f"{totals['skipped']} skipped, {totals['failed']} failed)")
 
         self.stdout.write(self.style.SUCCESS(
             f"\nDone: {totals['migrated']} migrated, {totals['skipped']} skipped, "
@@ -169,19 +181,25 @@ class Command(BaseCommand):
     # ------------------------------------------------------------------
     def _verify(self, qs):
         from pod_manager.services.r2_storage import media_object_exists
+        total = qs.count()
+        self.stdout.write(f"Verifying {total} transcript(s) against R2 (HEAD per format)...")
         present = missing = unmigrated = 0
-        for t in qs:
+        for i, t in enumerate(qs.iterator(), start=1):
             exts = [e for e in _FORMATS if getattr(t, _MARKER[e], None)]
             if (t.version or 0) < 1:
                 unmigrated += 1
                 self.stdout.write(self.style.WARNING(f"  not yet migrated: ep {t.episode_id} (version 0)"))
-                continue
-            for ext in exts:
-                if media_object_exists(transcript_r2_key(t.episode_id, ext)):
-                    present += 1
-                else:
-                    missing += 1
-                    self.stdout.write(self.style.ERROR(f"  MISSING in R2: ep {t.episode_id}.{ext}"))
+            else:
+                for ext in exts:
+                    if media_object_exists(transcript_r2_key(t.episode_id, ext)):
+                        present += 1
+                    else:
+                        missing += 1
+                        self.stdout.write(self.style.ERROR(f"  MISSING in R2: ep {t.episode_id}.{ext}"))
+            if i % _PROGRESS_EVERY == 0:
+                self.stdout.write(
+                    f"  …{i}/{total} checked ({present} present, {missing} missing, "
+                    f"{unmigrated} not-yet-migrated)")
         style = self.style.SUCCESS if (missing == 0 and unmigrated == 0) else self.style.ERROR
         self.stdout.write(style(f"\nVerify: {present} present, {missing} missing, {unmigrated} not-yet-migrated."))
         from pod_manager.admin_console.summary import emit_summary
@@ -202,12 +220,20 @@ class Command(BaseCommand):
         from pod_manager.services.r2_storage import media_object_exists
         dry_run = not options['apply']
         limit = options['limit']
+        total = qs.count()
+        if limit is not None:
+            total = min(total, limit)
+        self.stdout.write(f"Pruning against {total} transcript(s) (mode={'preview' if dry_run else 'apply'})...")
         pruned = refused = skipped = 0
         count = 0
-        for t in qs:
+        for t in qs.iterator():
             if limit is not None and count >= limit:
                 break
             count += 1
+            if count % _PROGRESS_EVERY == 0:
+                self.stdout.write(
+                    f"  …{count}/{total} ({pruned} file(s) {'would prune' if dry_run else 'pruned'}, "
+                    f"{refused} refused, {skipped} not-migrated)")
             exts = [e for e in _FORMATS if getattr(t, _MARKER[e], None)]
             if (t.version or 0) < 1:
                 skipped += 1

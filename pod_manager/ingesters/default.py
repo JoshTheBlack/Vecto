@@ -36,6 +36,51 @@ def extract_season_episode(entry):
         (_get('itunes_episodetype', '') or '').strip()[:50],
     )
 
+def extract_explicit(entry):
+    """Read itunes:explicit off a parsed feedparser entry. Returns True/False,
+    or None when the feed doesn't specify it (so callers can leave a manual
+    value untouched rather than clobbering it). Accepts the modern true/false
+    and the legacy yes/no/clean/explicit spellings; feedparser may also hand
+    back a real bool."""
+    def _get(key, default=None):
+        return entry.get(key, default) if hasattr(entry, 'get') else getattr(entry, key, default)
+
+    raw = _get('itunes_explicit')
+    if isinstance(raw, bool):
+        return raw
+    if raw is None:
+        return None
+    val = str(raw).strip().lower()
+    if val in ('yes', 'true', 'explicit'):
+        return True
+    if val in ('no', 'false', 'clean'):
+        return False
+    return None
+
+
+def extract_feed_tags(entry):
+    """Category/keyword tags from a parsed feedparser entry. feedparser folds
+    <category>, <itunes:keywords>, and <media:keyword> into entry.tags as
+    {term: ...} dicts. Returns a de-duplicated list preserving first-seen order
+    and casing."""
+    if not entry or not hasattr(entry, 'tags'):
+        return []
+    terms = [t.get('term').strip() for t in entry.tags if t.get('term') and t.get('term').strip()]
+    return merge_tags(terms)
+
+
+def merge_tags(*tag_lists):
+    """Concatenate tag lists into one, de-duplicated case-insensitively while
+    preserving first-seen order and the first casing encountered."""
+    merged = {}
+    for tags in tag_lists:
+        for t in tags or []:
+            key = t.lower()
+            if key not in merged:
+                merged[key] = t
+    return list(merged.values())
+
+
 def extract_rss_chapters(entry):
     """Attempts to extract chapters from Podcast Index namespace or Podlove Simple Chapters."""
     
@@ -307,11 +352,18 @@ def commit_episode(podcast, pub_entry, sub_entry, match_reason, stdout, enhancer
             episode.episode_type = new_episode_type
     elif (new_season or new_episode_num) and (new_season, new_episode_num) != (episode.season_number, episode.episode_number):
         logger.info(
-            f"[ingest] episode {episode.id} '{episode.title}' is metadata-locked; feed has "
-            f"season={new_season} episode={new_episode_num} (current: season={episode.season_number} "
-            f"episode={episode.episode_number}) — not applied. Use "
+            f"[ingest] episode {episode.id} '{episode.title}' is metadata-locked; "
+            f"season {episode.season_number}->{new_season}, episode {episode.episode_number}->{new_episode_num} "
+            f"— not applied. Use "
             f"'manage.py backfill_season_episode_tags --bypass-lock --episode={episode.id}' to force."
         )
+
+    # itunes:explicit is a content-rating fact, not curated metadata — it applies
+    # even on a locked episode. Only overwrite when the feed actually states it,
+    # so an unset feed value can't wipe a manually-set rating.
+    new_explicit = extract_explicit(pub_entry if pub_entry else sub_entry)
+    if new_explicit is not None:
+        episode.explicit = new_explicit
 
     if not episode.is_metadata_locked:
         source_entry = pub_entry if pub_entry else sub_entry
@@ -344,6 +396,12 @@ def commit_episode(podcast, pub_entry, sub_entry, match_reason, stdout, enhancer
             episode.chapters_public = extract_rss_chapters(pub_entry)
         if sub_entry:
             episode.chapters_private = extract_rss_chapters(sub_entry)
+
+        # Category/keyword tags straight from the feed. Enhancers (e.g. baldmove)
+        # merge additional scraped tags onto these — see baldmove_enhancer.
+        pub_tags = extract_feed_tags(pub_entry) if pub_entry else []
+        priv_tags = extract_feed_tags(sub_entry) if sub_entry else []
+        episode.tags = merge_tags(pub_tags, priv_tags)
 
     # 6. Execute custom network enhancements (like HTML chapters or WP scraping)
     if enhancer:

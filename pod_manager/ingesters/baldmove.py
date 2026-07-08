@@ -6,6 +6,7 @@ import logging
 from bs4 import BeautifulSoup
 
 from .default import run_ingest as default_run_ingest
+from .default import extract_feed_tags as get_feed_tags, merge_tags
 
 logger = logging.getLogger(__name__)
 
@@ -110,10 +111,6 @@ def scrape_tags_from_wp(url, stdout):
     if rewritten_url: return _fetch_and_extract(rewritten_url) or []
     return []
 
-def get_feed_tags(entry):
-    if hasattr(entry, 'tags'): return [t.get('term').strip() for t in entry.tags if t.get('term')]
-    return []
-
 def parse_html_chapters(html_description):
     if not html_description: return None
     soup = BeautifulSoup(html_description, 'html.parser')
@@ -192,36 +189,37 @@ def baldmove_enhancer(episode, pub_entry, sub_entry, is_new, stdout):
             episode.chapters_private = html_chaps
             stdout.write("  -> Scraped HTML Chapters (Private)")
             
-    pub_tags = get_feed_tags(pub_entry) if pub_entry else []
-    priv_tags = get_feed_tags(sub_entry) if sub_entry else []
-    
-    combined_tags = pub_tags + priv_tags
-    merged_tags = list({t.lower(): t for t in combined_tags}.values())
-    
+    # The default ingester already populated episode.tags from the RSS feed;
+    # start from those (falling back to a fresh feed read for safety) and merge
+    # any scraped tags on top with case-insensitive dedup.
+    merged_tags = merge_tags(episode.tags or [], get_feed_tags(pub_entry), get_feed_tags(sub_entry))
+
     if merged_tags:
-        stdout.write(f"  -> Initial RSS Tags Extracted: {merged_tags}")
+        stdout.write(f"  -> RSS Tags: {merged_tags}")
     else:
         stdout.write("  -> No tags found natively in RSS feeds.")
 
-    # CHANGED: Gather all possible links and try them in order until tags are found
+    # Web-scrape ONLY as a fallback when the feeds yielded nothing — scraping is
+    # rate-limited and can trip Cloudflare/WP blocks, so we don't hit the site
+    # for every episode on a full re-sync. Scraped tags merge+dedup onto RSS ones.
     if not merged_tags:
         possible_links = []
-        
+
         # 1. Grab the raw public link
         if pub_entry and hasattr(pub_entry, 'link') and pub_entry.link:
             possible_links.append(pub_entry.link)
-            
+
         # 2. Grab the raw private link
         if sub_entry and hasattr(sub_entry, 'link') and sub_entry.link:
             possible_links.append(sub_entry.link)
-            
+
         # 3. Include the finalized episode link just in case
         if episode.link:
             possible_links.append(episode.link)
-            
+
         # Remove duplicates while preserving order
         unique_links = list(dict.fromkeys(possible_links))
-        
+
         for url in unique_links:
             scraped = []
             if "patreon.com" in url:
@@ -230,14 +228,14 @@ def baldmove_enhancer(episode, pub_entry, sub_entry, is_new, stdout):
                 scraped = scrape_tags_from_wp(url, stdout)
             else:
                 stdout.write(f"  -> Link domain not recognized for scraping: {url}")
-                
+
             if scraped:
-                merged_tags = scraped
+                merged_tags = merge_tags(merged_tags, scraped)
                 stdout.write(f"  -> Successfully Web Scraped Tags from {url}. Final list: {merged_tags}")
                 break  # Stop checking URLs once we find tags!
-                
+
         time.sleep(0.5) # Gentle rate limit
-        
+
     if merged_tags:
         episode.tags = merged_tags
 

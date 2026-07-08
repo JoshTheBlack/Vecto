@@ -112,8 +112,9 @@ class Command(BaseCommand):
 
                 if ep.is_metadata_locked and not bypass_lock:
                     self.stdout.write(
-                        f"  [LOCKED] ep {ep.id} '{ep.title[:50]}' — feed has "
-                        f"season={season} episode={episode_num}, skipped (--bypass-lock to force)"
+                        f"  [LOCKED] ep {ep.id} '{ep.title[:50]}' — "
+                        f"season {ep.season_number}->{season}, episode {ep.episode_number}->{episode_num}, "
+                        f"skipped (--bypass-lock to force)"
                     )
                     skipped_locked += 1
                     continue

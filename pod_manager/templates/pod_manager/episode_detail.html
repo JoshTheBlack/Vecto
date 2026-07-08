@@ -778,6 +778,23 @@
                             <div class="form-text text-muted">Attaches to the Premium / Ad-Free slot and mirrors to R2. Overwrites any existing premium audio and re-queues transcription.</div>
                         </form>
 
+                        <form method="POST" action="{% url 'manage_episode' ep.id %}" class="mb-4">
+                            {% csrf_token %}
+                            <input type="hidden" name="action" value="update_explicit">
+                            <label class="form-label text-light">Content Rating</label>
+                            <div class="input-group">
+                                <select name="explicit" class="form-select bg-dark text-light border-secondary">
+                                    <option value="" {% if ep.explicit is None %}selected{% endif %}>Inherit from show</option>
+                                    <option value="true" {% if ep.explicit is True %}selected{% endif %}>Explicit</option>
+                                    <option value="false" {% if ep.explicit is False %}selected{% endif %}>Clean</option>
+                                </select>
+                                <button type="submit" class="btn btn-outline-warning btn-sm">
+                                    <i class="bi bi-save me-1"></i>Save
+                                </button>
+                            </div>
+                            <div class="form-text text-muted">Sets <code>itunes:explicit</code> on this episode.</div>
+                        </form>
+
                         {% if network_podcasts %}
                         <form method="POST" action="{% url 'manage_episode' ep.id %}" class="mb-4" id="ownerCrossPublishForm">
                             {% csrf_token %}

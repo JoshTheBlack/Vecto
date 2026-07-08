@@ -172,6 +172,10 @@ class RSSFeedBuilder:
                 etree.SubElement(item, f'{{{itunes_ns}}}episode').text = str(ep.episode_number)
             if ep.episode_type and ep.episode_type != 'full':
                 etree.SubElement(item, f'{{{itunes_ns}}}episodeType').text = ep.episode_type
+            # None inherits the channel-level rating (emit nothing); True/False
+            # override it per-episode.
+            if ep.explicit is not None:
+                etree.SubElement(item, f'{{{itunes_ns}}}explicit').text = 'true' if ep.explicit else 'false'
 
             if ep.id in transcript_map:
                 # ?v=N so the on-platform URL (which 302s to the immutable cdn

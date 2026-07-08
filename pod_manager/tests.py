@@ -1979,6 +1979,31 @@ class FinalizeXmlTests(TestCase):
         result = builder._finalize_xml(self._rss(guid='ep-1'), {'ep-1': ep}, None)
         self.assertNotIn('<category>', result)
 
+    def _explicit_ep(self, value):
+        from unittest.mock import MagicMock
+        ep = MagicMock()
+        ep.tags = []
+        ep.podcast_id = 1
+        ep.chapters_public = None
+        ep.chapters_private = None
+        ep.episode_type = 'full'
+        ep.season_number = None
+        ep.episode_number = None
+        ep.explicit = value
+        return ep
+
+    def test_explicit_true_emitted(self):
+        result = self._builder()._finalize_xml(self._rss(guid='ep-1'), {'ep-1': self._explicit_ep(True)}, None)
+        self.assertIn('<itunes:explicit>true</itunes:explicit>', result)
+
+    def test_explicit_false_emitted(self):
+        result = self._builder()._finalize_xml(self._rss(guid='ep-1'), {'ep-1': self._explicit_ep(False)}, None)
+        self.assertIn('<itunes:explicit>false</itunes:explicit>', result)
+
+    def test_explicit_none_omits_item_tag(self):
+        result = self._builder()._finalize_xml(self._rss(guid='ep-1'), {'ep-1': self._explicit_ep(None)}, None)
+        self.assertNotIn('itunes:explicit', result)
+
     def test_chapter_url_added_when_chapters_exist(self):
         from unittest.mock import MagicMock
         ep = MagicMock()
@@ -6390,6 +6415,54 @@ class ExtractSeasonEpisodeTests(SimpleTestCase):
         self.assertEqual(len(etype), 50)
 
 
+class ExtractExplicitTests(SimpleTestCase):
+    """extract_explicit(): tri-state parse of itunes:explicit."""
+
+    def test_modern_true_false(self):
+        from pod_manager.ingesters.default import extract_explicit
+        self.assertIs(extract_explicit(_FakeEntry(itunes_explicit='true')), True)
+        self.assertIs(extract_explicit(_FakeEntry(itunes_explicit='false')), False)
+
+    def test_legacy_spellings(self):
+        from pod_manager.ingesters.default import extract_explicit
+        self.assertIs(extract_explicit(_FakeEntry(itunes_explicit='yes')), True)
+        self.assertIs(extract_explicit(_FakeEntry(itunes_explicit='explicit')), True)
+        self.assertIs(extract_explicit(_FakeEntry(itunes_explicit='clean')), False)
+        self.assertIs(extract_explicit(_FakeEntry(itunes_explicit='no')), False)
+
+    def test_real_bool_passthrough(self):
+        from pod_manager.ingesters.default import extract_explicit
+        self.assertIs(extract_explicit(_FakeEntry(itunes_explicit=True)), True)
+        self.assertIs(extract_explicit(_FakeEntry(itunes_explicit=False)), False)
+
+    def test_missing_or_unknown_returns_none(self):
+        from pod_manager.ingesters.default import extract_explicit
+        self.assertIsNone(extract_explicit(_FakeEntry()))
+        self.assertIsNone(extract_explicit(_FakeEntry(itunes_explicit='')))
+        self.assertIsNone(extract_explicit(_FakeEntry(itunes_explicit='maybe')))
+
+
+class FeedTagExtractionTests(SimpleTestCase):
+    """extract_feed_tags() + merge_tags(): dedup and ordering."""
+
+    def test_extracts_and_dedupes_terms(self):
+        from pod_manager.ingesters.default import extract_feed_tags
+        entry = _FakeEntry(tags=[{'term': 'Drama'}, {'term': ' Comedy '}, {'term': 'drama'}, {'term': ''}])
+        self.assertEqual(extract_feed_tags(entry), ['Drama', 'Comedy'])
+
+    def test_no_tags_attr_returns_empty(self):
+        from pod_manager.ingesters.default import extract_feed_tags
+        self.assertEqual(extract_feed_tags(_FakeEntry()), [])
+        self.assertEqual(extract_feed_tags(None), [])
+
+    def test_merge_tags_case_insensitive_first_wins(self):
+        from pod_manager.ingesters.default import merge_tags
+        self.assertEqual(
+            merge_tags(['Drama', 'Comedy'], ['comedy', 'Sci-Fi'], None),
+            ['Drama', 'Comedy', 'Sci-Fi'],
+        )
+
+
 class ManageEpisodeUploadAudioTests(TestCase):
     """manage_episode's upload_audio action: owner gate, validation, R2 mirror
     call shape, transcript reset, and transcription dispatch."""
@@ -6490,6 +6563,30 @@ class ManageEpisodeUploadAudioTests(TestCase):
         msgs = [str(m) for m in get_messages(resp.wsgi_request)]
         self.assertTrue(any('Upload rejected' in m for m in msgs))
 
+    def _post_explicit(self, user, value):
+        self.client.force_login(user)
+        with mock.patch('pod_manager.views.creator.publish.task_rebuild_episode_fragments'):
+            return self.client.post(self.url, {'action': 'update_explicit', 'explicit': value})
+
+    def test_update_explicit_true_false_inherit(self):
+        self._post_explicit(self.owner, 'true')
+        self.episode.refresh_from_db()
+        self.assertIs(self.episode.explicit, True)
+
+        self._post_explicit(self.owner, 'false')
+        self.episode.refresh_from_db()
+        self.assertIs(self.episode.explicit, False)
+
+        self._post_explicit(self.owner, '')
+        self.episode.refresh_from_db()
+        self.assertIsNone(self.episode.explicit)
+
+    def test_update_explicit_forbidden_for_non_owner(self):
+        resp = self._post_explicit(self.other, 'true')
+        self.assertEqual(resp.status_code, 403)
+        self.episode.refresh_from_db()
+        self.assertIsNone(self.episode.explicit)
+
 
 class CommitEpisodeSeasonNumberTests(TestCase):
     """commit_episode(): season/episode/type applied when unlocked, left alone
@@ -6536,7 +6633,83 @@ class CommitEpisodeSeasonNumberTests(TestCase):
         with mock.patch('pod_manager.ingesters.default.task_rebuild_episode_fragments'), \
              self.assertLogs('pod_manager.ingesters.default', level='INFO') as cm:
             commit_episode(self.podcast, self._entry(), None, 'Test', mock.Mock())
-        self.assertTrue(any(f'episode {self.episode.id}' in line and 'season=5' in line for line in cm.output))
+        # New format shows current->feed, e.g. "season None->5, episode None->3".
+        self.assertTrue(any(
+            f'episode {self.episode.id}' in line and 'season None->5' in line and 'episode None->3' in line
+            for line in cm.output
+        ))
+
+    def test_explicit_ingested_even_when_locked(self):
+        self.episode.is_metadata_locked = True
+        self.episode.save(update_fields=['is_metadata_locked'])
+        from pod_manager.ingesters.default import commit_episode
+        with mock.patch('pod_manager.ingesters.default.task_rebuild_episode_fragments'):
+            commit_episode(self.podcast, self._entry(itunes_explicit='true'), None, 'Test', mock.Mock())
+        self.episode.refresh_from_db()
+        self.assertIs(self.episode.explicit, True)
+
+    def test_explicit_not_clobbered_when_feed_omits_it(self):
+        self.episode.explicit = True
+        self.episode.save(update_fields=['explicit'])
+        from pod_manager.ingesters.default import commit_episode
+        with mock.patch('pod_manager.ingesters.default.task_rebuild_episode_fragments'):
+            commit_episode(self.podcast, self._entry(), None, 'Test', mock.Mock())  # no itunes_explicit
+        self.episode.refresh_from_db()
+        self.assertIs(self.episode.explicit, True)
+
+    def test_tags_ingested_from_feed_when_unlocked(self):
+        from pod_manager.ingesters.default import commit_episode
+        entry = self._entry(tags=[{'term': 'Drama'}, {'term': 'drama'}, {'term': 'Comedy'}])
+        with mock.patch('pod_manager.ingesters.default.task_rebuild_episode_fragments'):
+            commit_episode(self.podcast, entry, None, 'Test', mock.Mock())
+        self.episode.refresh_from_db()
+        self.assertEqual(self.episode.tags, ['Drama', 'Comedy'])
+
+    def test_tags_not_overwritten_when_locked(self):
+        self.episode.is_metadata_locked = True
+        self.episode.tags = ['Curated']
+        self.episode.save(update_fields=['is_metadata_locked', 'tags'])
+        from pod_manager.ingesters.default import commit_episode
+        entry = self._entry(tags=[{'term': 'Drama'}])
+        with mock.patch('pod_manager.ingesters.default.task_rebuild_episode_fragments'):
+            commit_episode(self.podcast, entry, None, 'Test', mock.Mock())
+        self.episode.refresh_from_db()
+        self.assertEqual(self.episode.tags, ['Curated'])
+
+
+class BaldmoveEnhancerTagTests(TestCase):
+    """baldmove_enhancer(): merges scraped tags onto the RSS tags the default
+    ingester already set, and only web-scrapes when the feed had none."""
+
+    def setUp(self):
+        self.network = Network.objects.create(name='BM', slug='bm')
+        self.podcast = Podcast.objects.create(network=self.network, title='Show', slug='bm-show')
+        self.episode = Episode.objects.create(
+            podcast=self.podcast, title='Ep', pub_date=timezone.now(),
+            raw_description='x', clean_description='x',
+        )
+
+    def test_merges_feed_tags_without_scraping_when_present(self):
+        from pod_manager.ingesters.baldmove import baldmove_enhancer
+        self.episode.tags = ['Existing']  # as set by the default ingester
+        pub = _FakeEntry(tags=[{'term': 'Drama'}, {'term': 'existing'}])
+        with mock.patch('pod_manager.ingesters.baldmove.scrape_tags_from_patreon') as sp, \
+             mock.patch('pod_manager.ingesters.baldmove.scrape_tags_from_wp') as sw:
+            baldmove_enhancer(self.episode, pub, None, False, mock.Mock())
+        self.assertEqual(self.episode.tags, ['Existing', 'Drama'])  # 'existing' deduped
+        sp.assert_not_called()
+        sw.assert_not_called()
+
+    def test_scrapes_and_merges_only_when_feed_empty(self):
+        from pod_manager.ingesters.baldmove import baldmove_enhancer
+        self.episode.tags = []
+        self.episode.link = 'https://patreon.com/posts/123'
+        pub = _FakeEntry(link='https://patreon.com/posts/123')  # no tags
+        with mock.patch('pod_manager.ingesters.baldmove.scrape_tags_from_patreon',
+                         return_value=['Scraped', 'Drama']) as sp:
+            baldmove_enhancer(self.episode, pub, None, False, mock.Mock())
+        sp.assert_called_once()
+        self.assertEqual(self.episode.tags, ['Scraped', 'Drama'])
 
 
 @override_settings(CACHES=TEST_CACHES)

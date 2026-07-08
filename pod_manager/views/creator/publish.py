@@ -32,6 +32,14 @@ def _get_owner_networks(user):
     return user.owned_networks.all()
 
 
+def _parse_explicit(raw):
+    """Map the Content Rating form value to the tri-state explicit field:
+    '' / None -> None (inherit show), 'true' -> True, 'false' -> False."""
+    if raw is None or raw == '':
+        return None
+    return str(raw).strip().lower() == 'true'
+
+
 def _require_owner(user, network):
     # Admins (staff / superuser) manage cross-publish alongside owners
     # (user_edit_rollback.md §8a — cross-publish is owner/admin only).
@@ -140,6 +148,7 @@ def _handle_publish_post(request, current_network, podcasts, networks):
         episode_number = None
 
     episode_type = request.POST.get('episode_type', '').strip()[:50]
+    explicit = _parse_explicit(request.POST.get('explicit'))
 
     # Resolve existing episode (update) or create new
     episode_id = request.POST.get('episode_id')
@@ -162,6 +171,7 @@ def _handle_publish_post(request, current_network, podcasts, networks):
     ep.season_number      = season_number
     ep.episode_number     = episode_number
     ep.episode_type       = episode_type
+    ep.explicit           = explicit
 
     def _sync_cross(saved_ep):
         targets = validate_cross_targets(saved_ep, request.POST.getlist('cross_publish_ids'), current_network)
@@ -256,6 +266,14 @@ def manage_episode(request, episode_id):
         cache.delete(f"ep_frag_public_{ep.id}")
         cache.delete(f"ep_frag_private_{ep.id}")
         messages.success(request, "Episode metadata updated.")
+
+    elif action == 'update_explicit':
+        ep.explicit = _parse_explicit(request.POST.get('explicit'))
+        ep.save(update_fields=['explicit'])
+        from django.core.cache import cache
+        cache.delete(f"ep_frag_public_{ep.id}")
+        cache.delete(f"ep_frag_private_{ep.id}")
+        messages.success(request, "Content rating updated.")
 
     elif action == 'update_cross_publish':
         targets = validate_cross_targets(

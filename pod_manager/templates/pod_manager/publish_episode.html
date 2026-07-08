@@ -232,7 +232,7 @@
                     </div>
                     <input type="hidden" name="duration" id="durationHidden">
                 </div>
-                <div class="col-12">
+                <div class="col-sm-6">
                     <label class="form-label text-light">Type <small class="text-muted fw-normal">(blank is valid — Enter to add custom)</small></label>
                     <div id="typeChipGroup" class="type-chip-group"
                          data-init="{% if edit_ep %}{{ edit_ep.episode_type|default:'' }}{% endif %}"
@@ -241,6 +241,15 @@
                         <!-- user-defined types injected from localStorage by JS -->
                         <input type="text" id="typeAddInput" class="type-add-input" placeholder="+ Add type…" maxlength="50">
                     </div>
+                </div>
+                <div class="col-sm-6">
+                    <label class="form-label text-light">Content Rating</label>
+                    <select name="explicit" class="form-select bg-dark text-light border-secondary">
+                        <option value="" {% if not edit_ep or edit_ep.explicit is None %}selected{% endif %}>Inherit from show</option>
+                        <option value="true" {% if edit_ep and edit_ep.explicit is True %}selected{% endif %}>Explicit</option>
+                        <option value="false" {% if edit_ep and edit_ep.explicit is False %}selected{% endif %}>Clean</option>
+                    </select>
+                    <div class="form-text text-muted">Sets <code>itunes:explicit</code> on this episode.</div>
                 </div>
             </div>
         </div>

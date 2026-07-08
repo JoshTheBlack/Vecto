@@ -311,6 +311,10 @@ class Episode(models.Model):
     season_number  = models.PositiveSmallIntegerField(null=True, blank=True)
     episode_number = models.PositiveSmallIntegerField(null=True, blank=True)
     episode_type   = models.CharField(max_length=50, default='', blank=True)
+    # Per-episode iTunes explicit flag. Null = inherit the channel-level rating
+    # (feeds emit no item-level tag); True/False emit <itunes:explicit>true|false.
+    # Ingested from the feed even when metadata is locked (see commit_episode).
+    explicit       = models.BooleanField(null=True, blank=True)
 
     # Publication status
     is_published = models.BooleanField(default=True, db_index=True,

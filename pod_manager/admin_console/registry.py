@@ -65,6 +65,14 @@ REGISTRY = {
         name="backfill_baldmove_tags",
         category="Feeds",
     ),
+    "backfill_season_episode_tags": CommandSpec(
+        name="backfill_season_episode_tags",
+        category="Feeds",
+        # Benign backfill of season/episode/type; --bypass-lock deliberately
+        # overrides an owner's is_metadata_locked, so a run that checks it gets
+        # the typed-confirm gate (default locked-skip run is gate-free).
+        danger_fields=frozenset({"bypass_lock"}),
+    ),
     "extract_description_chapters": CommandSpec(
         name="extract_description_chapters",
         category="Feeds",

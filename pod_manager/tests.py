@@ -33,7 +33,9 @@ from pathlib import Path
 from unittest import mock
 
 from django.contrib.auth.models import User
+from django.contrib.messages import get_messages
 from django.core.cache import cache
+from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import Client, SimpleTestCase, TestCase, RequestFactory, override_settings
 from django.urls import reverse
 from django.utils import timezone
@@ -6291,4 +6293,301 @@ class GdriveRecoveryPollTests(TestCase):
         self.assertIn('working', data['chunk'])
         self.assertFalse(data['done'])
         self.assertEqual(gdrive_recovery_poll(req, 'not-a-uuid').status_code, 400)
+
+
+class _FakeEntry(dict):
+    """Minimal feedparser-FeedParserDict stand-in: dict (so .get() works) plus
+    attribute access (so getattr(entry, 'id', None) works, as the real ingester
+    code paths use both depending on the field)."""
+    def __getattr__(self, name):
+        try:
+            return self[name]
+        except KeyError:
+            raise AttributeError(name)
+
+
+class ExtractSeasonEpisodeTests(SimpleTestCase):
+    """extract_season_episode(): pure parsing, no DB needed."""
+
+    def test_reads_season_episode_type(self):
+        from pod_manager.ingesters.default import extract_season_episode
+        entry = _FakeEntry(itunes_season='5', itunes_episode='3', itunes_episodetype='full')
+        self.assertEqual(extract_season_episode(entry), (5, 3, 'full'))
+
+    def test_missing_fields_return_none_and_empty_string(self):
+        from pod_manager.ingesters.default import extract_season_episode
+        self.assertEqual(extract_season_episode(_FakeEntry()), (None, None, ''))
+
+    def test_non_numeric_values_become_none(self):
+        from pod_manager.ingesters.default import extract_season_episode
+        entry = _FakeEntry(itunes_season='S5', itunes_episode='')
+        self.assertEqual(extract_season_episode(entry), (None, None, ''))
+
+    def test_type_is_truncated_to_50_chars(self):
+        from pod_manager.ingesters.default import extract_season_episode
+        entry = _FakeEntry(itunes_episodetype='x' * 60)
+        _, _, etype = extract_season_episode(entry)
+        self.assertEqual(len(etype), 50)
+
+
+class ManageEpisodeUploadAudioTests(TestCase):
+    """manage_episode's upload_audio action: owner gate, validation, R2 mirror
+    call shape, transcript reset, and transcription dispatch."""
+
+    def setUp(self):
+        self.network = Network.objects.create(name='Net', slug='netupload')
+        self.podcast = Podcast.objects.create(network=self.network, title='Show', slug='showupload')
+        self.episode = Episode.objects.create(
+            podcast=self.podcast, title='Ep 1', pub_date=timezone.now(),
+            raw_description='x', clean_description='x',
+        )
+        self.owner = User.objects.create_user('owner', password='x')
+        self.network.owners.add(self.owner)
+        self.other = User.objects.create_user('other', password='x')
+        self.url = reverse('manage_episode', args=[self.episode.id])
+
+    def _upload(self, user, filename='ep.mp3', content=b'fake-bytes'):
+        self.client.force_login(user)
+        f = SimpleUploadedFile(filename, content, content_type='audio/mpeg')
+        return self.client.post(self.url, {'action': 'upload_audio', 'audio_file': f})
+
+    def test_non_owner_forbidden(self):
+        resp = self._upload(self.other)
+        self.assertEqual(resp.status_code, 403)
+        self.episode.refresh_from_db()
+        self.assertIsNone(self.episode.audio_url_subscriber)
+
+    def test_no_file_shows_error(self):
+        self.client.force_login(self.owner)
+        resp = self.client.post(self.url, {'action': 'upload_audio'})
+        msgs = [str(m) for m in get_messages(resp.wsgi_request)]
+        self.assertTrue(any('No audio file' in m for m in msgs))
+
+    def test_bad_extension_rejected_before_mirroring(self):
+        with mock.patch('pod_manager.services.r2_mirror.mirror_episode_audio') as mocked:
+            self._upload(self.owner, filename='ep.txt')
+        mocked.assert_not_called()
+
+    def test_success_sets_subscriber_url_and_queues_transcription(self):
+        with mock.patch(
+            'pod_manager.services.r2_mirror.mirror_episode_audio',
+            return_value={'status': 'mirrored', 'r2_url': 'https://r2.example.com/ep.mp3', 'key': 'k', 'reason': ''},
+        ) as mocked_mirror, \
+             mock.patch('pod_manager.services.transcription.dispatch_transcription') as mocked_dispatch, \
+             mock.patch('pod_manager.views.creator.publish.task_rebuild_episode_fragments'):
+            resp = self._upload(self.owner)
+
+        self.assertEqual(resp.status_code, 302)
+        self.episode.refresh_from_db()
+        self.assertEqual(self.episode.audio_url_subscriber, 'https://r2.example.com/ep.mp3')
+
+        args, kwargs = mocked_mirror.call_args
+        self.assertEqual(args[0], self.episode.id)
+        self.assertTrue(kwargs.get('manual'))
+        self.assertTrue(kwargs.get('force'))
+
+        mocked_dispatch.assert_called_once_with(self.episode.id)
+        transcript = Transcript.objects.get(episode=self.episode)
+        self.assertEqual(transcript.status, Transcript.Status.PENDING)
+
+    def test_resets_failed_transcript_instead_of_orphaning(self):
+        transcript = Transcript.objects.create(
+            episode=self.episode, status=Transcript.Status.FAILED, error_message='boom',
+        )
+        with mock.patch(
+            'pod_manager.services.r2_mirror.mirror_episode_audio',
+            return_value={'status': 'mirrored', 'r2_url': 'https://r2.example.com/ep.mp3', 'key': 'k', 'reason': ''},
+        ), mock.patch('pod_manager.services.transcription.dispatch_transcription'), \
+             mock.patch('pod_manager.views.creator.publish.task_rebuild_episode_fragments'):
+            self._upload(self.owner)
+
+        transcript.refresh_from_db()
+        self.assertEqual(transcript.status, Transcript.Status.PENDING)
+        self.assertIsNone(transcript.error_message)
+
+    def test_awaiting_recovery_transcript_also_reset(self):
+        transcript = Transcript.objects.create(
+            episode=self.episode, status=Transcript.Status.AWAITING_RECOVERY,
+        )
+        with mock.patch(
+            'pod_manager.services.r2_mirror.mirror_episode_audio',
+            return_value={'status': 'mirrored', 'r2_url': 'https://r2.example.com/ep.mp3', 'key': 'k', 'reason': ''},
+        ), mock.patch('pod_manager.services.transcription.dispatch_transcription'), \
+             mock.patch('pod_manager.views.creator.publish.task_rebuild_episode_fragments'):
+            self._upload(self.owner)
+
+        transcript.refresh_from_db()
+        self.assertEqual(transcript.status, Transcript.Status.PENDING)
+
+    def test_mirror_skipped_shows_error_and_leaves_episode_untouched(self):
+        from pod_manager.services.r2_mirror import MirrorSkipped
+        with mock.patch(
+            'pod_manager.services.r2_mirror.mirror_episode_audio', side_effect=MirrorSkipped('nope'),
+        ):
+            resp = self._upload(self.owner)
+        self.episode.refresh_from_db()
+        self.assertIsNone(self.episode.audio_url_subscriber)
+        msgs = [str(m) for m in get_messages(resp.wsgi_request)]
+        self.assertTrue(any('Upload rejected' in m for m in msgs))
+
+
+class CommitEpisodeSeasonNumberTests(TestCase):
+    """commit_episode(): season/episode/type applied when unlocked, left alone
+    (and logged) when locked."""
+
+    def setUp(self):
+        self.network = Network.objects.create(name='Net', slug='net2')
+        self.podcast = Podcast.objects.create(network=self.network, title='Show', slug='show2')
+        self.episode = Episode.objects.create(
+            podcast=self.podcast, title='Ep 1', pub_date=timezone.now(),
+            raw_description='x', clean_description='x', guid_public='guid-1',
+        )
+
+    def _entry(self, **kw):
+        base = dict(id='guid-1', title='Ep 1', itunes_season='5', itunes_episode='3', itunes_episodetype='full')
+        base.update(kw)
+        return _FakeEntry(**base)
+
+    def test_unlocked_episode_gets_season_episode(self):
+        from pod_manager.ingesters.default import commit_episode
+        with mock.patch('pod_manager.ingesters.default.task_rebuild_episode_fragments'):
+            commit_episode(self.podcast, self._entry(), None, 'Test', mock.Mock())
+        self.episode.refresh_from_db()
+        self.assertEqual(self.episode.season_number, 5)
+        self.assertEqual(self.episode.episode_number, 3)
+        self.assertEqual(self.episode.episode_type, 'full')
+
+    def test_locked_episode_not_overwritten(self):
+        self.episode.is_metadata_locked = True
+        self.episode.season_number = 1
+        self.episode.episode_number = 1
+        self.episode.save(update_fields=['is_metadata_locked', 'season_number', 'episode_number'])
+        from pod_manager.ingesters.default import commit_episode
+        with mock.patch('pod_manager.ingesters.default.task_rebuild_episode_fragments'):
+            commit_episode(self.podcast, self._entry(), None, 'Test', mock.Mock())
+        self.episode.refresh_from_db()
+        self.assertEqual(self.episode.season_number, 1)
+        self.assertEqual(self.episode.episode_number, 1)
+
+    def test_locked_episode_logs_would_be_values(self):
+        self.episode.is_metadata_locked = True
+        self.episode.save(update_fields=['is_metadata_locked'])
+        from pod_manager.ingesters.default import commit_episode
+        with mock.patch('pod_manager.ingesters.default.task_rebuild_episode_fragments'), \
+             self.assertLogs('pod_manager.ingesters.default', level='INFO') as cm:
+            commit_episode(self.podcast, self._entry(), None, 'Test', mock.Mock())
+        self.assertTrue(any(f'episode {self.episode.id}' in line and 'season=5' in line for line in cm.output))
+
+
+@override_settings(CACHES=TEST_CACHES)
+class BackfillSeasonEpisodeTagsCommandTests(TestCase):
+    """backfill_season_episode_tags: preview-by-default, --force, --bypass-lock,
+    --episode scoping. get_feed() is mocked — no real network I/O."""
+
+    def setUp(self):
+        cache.clear()
+        self.network = Network.objects.create(name='Net', slug='net')
+        self.podcast = Podcast.objects.create(
+            network=self.network, title='Show', slug='show',
+            public_feed_url='https://feeds.example.com/pub.xml',
+        )
+        self.episode = Episode.objects.create(
+            podcast=self.podcast, title='Ep 1', pub_date=timezone.now(),
+            raw_description='x', clean_description='x',
+            guid_public='guid-1',
+        )
+
+    def _fake_feed(self, itunes_season='5', itunes_episode='3'):
+        entry = _FakeEntry(id='guid-1', itunes_season=itunes_season, itunes_episode=itunes_episode,
+                            itunes_episodetype='full')
+        feed = mock.Mock()
+        feed.entries = [entry]
+        return feed
+
+    def test_requires_a_scope(self):
+        from django.core.management import call_command
+        from django.core.management.base import CommandError
+        with self.assertRaises(CommandError):
+            call_command('backfill_season_episode_tags')
+
+    def test_preview_is_the_default(self):
+        from django.core.management import call_command
+        with mock.patch('pod_manager.management.commands.backfill_season_episode_tags.get_feed',
+                         return_value=self._fake_feed()):
+            call_command('backfill_season_episode_tags', network='net')
+        self.episode.refresh_from_db()
+        self.assertIsNone(self.episode.season_number)
+        self.assertIsNone(self.episode.episode_number)
+
+    def test_apply_updates_missing_values(self):
+        from django.core.management import call_command
+        with mock.patch('pod_manager.management.commands.backfill_season_episode_tags.get_feed',
+                         return_value=self._fake_feed()):
+            call_command('backfill_season_episode_tags', network='net', apply=True)
+        self.episode.refresh_from_db()
+        self.assertEqual(self.episode.season_number, 5)
+        self.assertEqual(self.episode.episode_number, 3)
+        self.assertEqual(self.episode.episode_type, 'full')
+
+    def test_apply_skips_already_set_without_force(self):
+        self.episode.season_number = 1
+        self.episode.episode_number = 1
+        self.episode.save(update_fields=['season_number', 'episode_number'])
+        from django.core.management import call_command
+        with mock.patch('pod_manager.management.commands.backfill_season_episode_tags.get_feed',
+                         return_value=self._fake_feed()):
+            call_command('backfill_season_episode_tags', network='net', apply=True)
+        self.episode.refresh_from_db()
+        self.assertEqual(self.episode.season_number, 1)  # unchanged
+
+    def test_apply_with_force_overwrites_existing_values(self):
+        self.episode.season_number = 1
+        self.episode.episode_number = 1
+        self.episode.save(update_fields=['season_number', 'episode_number'])
+        from django.core.management import call_command
+        with mock.patch('pod_manager.management.commands.backfill_season_episode_tags.get_feed',
+                         return_value=self._fake_feed()):
+            call_command('backfill_season_episode_tags', network='net', apply=True, force=True)
+        self.episode.refresh_from_db()
+        self.assertEqual(self.episode.season_number, 5)
+        self.assertEqual(self.episode.episode_number, 3)
+
+    def test_locked_episode_skipped_by_default(self):
+        self.episode.is_metadata_locked = True
+        self.episode.save(update_fields=['is_metadata_locked'])
+        from django.core.management import call_command
+        with mock.patch('pod_manager.management.commands.backfill_season_episode_tags.get_feed',
+                         return_value=self._fake_feed()):
+            call_command('backfill_season_episode_tags', network='net', apply=True)
+        self.episode.refresh_from_db()
+        self.assertIsNone(self.episode.season_number)
+
+    def test_bypass_lock_forces_locked_episode(self):
+        self.episode.is_metadata_locked = True
+        self.episode.save(update_fields=['is_metadata_locked'])
+        from django.core.management import call_command
+        with mock.patch('pod_manager.management.commands.backfill_season_episode_tags.get_feed',
+                         return_value=self._fake_feed()):
+            call_command('backfill_season_episode_tags', episode=self.episode.id,
+                         apply=True, bypass_lock=True)
+        self.episode.refresh_from_db()
+        self.assertEqual(self.episode.season_number, 5)
+        self.assertEqual(self.episode.episode_number, 3)
+
+    def test_episode_scope_ignores_other_episodes_in_same_podcast(self):
+        other = Episode.objects.create(
+            podcast=self.podcast, title='Ep 2', pub_date=timezone.now(),
+            raw_description='x', clean_description='x', guid_public='guid-2',
+        )
+        entry2 = _FakeEntry(id='guid-2', itunes_season='9', itunes_episode='9', itunes_episodetype='full')
+        feed = mock.Mock()
+        feed.entries = [self._fake_feed().entries[0], entry2]
+        from django.core.management import call_command
+        with mock.patch('pod_manager.management.commands.backfill_season_episode_tags.get_feed',
+                         return_value=feed):
+            call_command('backfill_season_episode_tags', episode=self.episode.id, apply=True)
+        self.episode.refresh_from_db()
+        other.refresh_from_db()
+        self.assertEqual(self.episode.season_number, 5)
+        self.assertIsNone(other.season_number)  # out of scope, untouched
 

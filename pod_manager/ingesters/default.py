@@ -16,6 +16,26 @@ from bs4 import BeautifulSoup
 
 logger = logging.getLogger(__name__)
 
+def extract_season_episode(entry):
+    """Read itunes:season / itunes:episode / itunes:episodeType off a parsed
+    feedparser entry. Returns (season: int|None, episode: int|None, type: str).
+    Shared by commit_episode() and the backfill_season_episode_tags command so
+    both apply feed values the same way."""
+    def _get(key, default=None):
+        return entry.get(key, default) if hasattr(entry, 'get') else getattr(entry, key, default)
+
+    def _int_or_none(val):
+        try:
+            return int(val)
+        except (TypeError, ValueError):
+            return None
+
+    return (
+        _int_or_none(_get('itunes_season')),
+        _int_or_none(_get('itunes_episode')),
+        (_get('itunes_episodetype', '') or '').strip()[:50],
+    )
+
 def extract_rss_chapters(entry):
     """Attempts to extract chapters from Podcast Index namespace or Podlove Simple Chapters."""
     
@@ -274,9 +294,28 @@ def commit_episode(podcast, pub_entry, sub_entry, match_reason, stdout, enhancer
             episode.audio_url_subscriber = get_enclosure(sub_entry)
 
     # 5. THE METADATA LOCK
+    # Season/episode/type are read from the feed regardless of the lock, purely
+    # so a locked episode's would-be values can be logged below (with the
+    # episode ID) for later targeting via backfill_season_episode_tags
+    # --bypass-lock. Everything else in this section stays lock-gated as before.
+    new_season, new_episode_num, new_episode_type = extract_season_episode(pub_entry if pub_entry else sub_entry)
+
+    if not episode.is_metadata_locked:
+        episode.season_number = new_season
+        episode.episode_number = new_episode_num
+        if new_episode_type:
+            episode.episode_type = new_episode_type
+    elif (new_season or new_episode_num) and (new_season, new_episode_num) != (episode.season_number, episode.episode_number):
+        logger.info(
+            f"[ingest] episode {episode.id} '{episode.title}' is metadata-locked; feed has "
+            f"season={new_season} episode={new_episode_num} (current: season={episode.season_number} "
+            f"episode={episode.episode_number}) — not applied. Use "
+            f"'manage.py backfill_season_episode_tags --bypass-lock --episode={episode.id}' to force."
+        )
+
     if not episode.is_metadata_locked:
         source_entry = pub_entry if pub_entry else sub_entry
-        
+
         episode.title = getattr(source_entry, 'title', 'Untitled Episode')
         raw_desc = ""
         if hasattr(source_entry, 'content') and source_entry.content:

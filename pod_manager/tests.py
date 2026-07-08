@@ -382,6 +382,66 @@ def _make_tenant_request(factory, network, *, method='get', path='/feed/',
     return req
 
 
+class PendingApprovalsContextProcessorTests(TestCase):
+    """pending_approvals(): badge count aggregated across owned networks, not
+    scoped to request.network (which is often None on the admin console)."""
+
+    def setUp(self):
+        self.factory = RequestFactory()
+        self.owner = User.objects.create_user('owner', password='x')
+        self.other_owner = User.objects.create_user('other_owner', password='x')
+        self.superuser = User.objects.create_superuser('root', password='x')
+
+        self.network_a = Network.objects.create(name='A', slug='a')
+        self.network_b = Network.objects.create(name='B', slug='b')
+        self.network_a.owners.add(self.owner)
+        self.network_b.owners.add(self.owner)
+        self.other_network = Network.objects.create(name='Other', slug='other')
+        self.other_network.owners.add(self.other_owner)
+
+        podcast_a = Podcast.objects.create(network=self.network_a, title='A Show', slug='a-show')
+        podcast_b = Podcast.objects.create(network=self.network_b, title='B Show', slug='b-show')
+        other_podcast = Podcast.objects.create(network=self.other_network, title='O Show', slug='o-show')
+
+        def _ep(podcast, n):
+            return Episode.objects.create(
+                podcast=podcast, title=f'Ep {n}', pub_date=timezone.now(),
+                raw_description='x', clean_description='x',
+            )
+
+        for ep, status in (
+            (_ep(podcast_a, 1), EpisodeEditSuggestion.Status.PENDING),
+            (_ep(podcast_b, 2), EpisodeEditSuggestion.Status.PENDING),
+            (_ep(podcast_a, 3), EpisodeEditSuggestion.Status.APPROVED),
+            (_ep(other_podcast, 4), EpisodeEditSuggestion.Status.PENDING),
+        ):
+            EpisodeEditSuggestion.objects.create(episode=ep, user=self.owner, status=status)
+
+    def _ctx(self, user):
+        from pod_manager.context_processors import pending_approvals
+        req = _make_tenant_request(self.factory, None, user=user)
+        return pending_approvals(req)
+
+    def test_anonymous_gets_no_key(self):
+        from django.contrib.auth.models import AnonymousUser
+        self.assertEqual(self._ctx(AnonymousUser()), {})
+
+    def test_owner_count_aggregates_across_owned_networks_only(self):
+        # 2 pending across network_a + network_b; the 4th (other_network) must
+        # NOT be counted even though request.network is None here.
+        self.assertEqual(self._ctx(self.owner), {'pending_approval_count': 2})
+
+    def test_owner_with_no_networks_gets_no_key(self):
+        bystander = User.objects.create_user('bystander', password='x')
+        self.assertEqual(self._ctx(bystander), {})
+
+    def test_superuser_counts_every_network(self):
+        self.assertEqual(self._ctx(self.superuser), {'pending_approval_count': 3})
+
+    def test_other_owner_only_sees_their_own_network(self):
+        self.assertEqual(self._ctx(self.other_owner), {'pending_approval_count': 1})
+
+
 @override_settings(CACHES=TEST_CACHES)
 class FeedEtagStabilityTests(TestCase):
     """generate_custom_feed and generate_public_feed must produce the same

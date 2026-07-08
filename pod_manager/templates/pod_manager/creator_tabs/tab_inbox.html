@@ -156,7 +156,7 @@
     }
 </style>
 
-<div class="tab-pane fade" id="list-inbox" role="tabpanel" aria-labelledby="list-inbox-list">
+<div class="tab-pane fade {% if request.GET.tab == 'inbox' %}show active{% endif %}" id="list-inbox" role="tabpanel" aria-labelledby="list-inbox-list">
     {{ scoring_config|json_script:"vecto-scoring-config" }}
     <div class="d-flex justify-content-between align-items-center mb-4">
         <div>

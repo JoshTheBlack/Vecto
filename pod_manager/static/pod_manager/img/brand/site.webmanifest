@@ -1,0 +1,14 @@
+{
+    "name": "Vecto",
+    "short_name": "Vecto",
+    "icons": [
+        {
+            "src": "icon-512.png",
+            "sizes": "512x512",
+            "type": "image/png"
+        }
+    ],
+    "theme_color": "#2f8fff",
+    "background_color": "#121212",
+    "display": "standalone"
+}

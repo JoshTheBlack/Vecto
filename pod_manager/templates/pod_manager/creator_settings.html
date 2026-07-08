@@ -47,7 +47,7 @@
             <a class="list-group-item list-group-item-action border-secondary {% if request.GET.tab == 'crosspub' %}active{% endif %}" id="list-crosspub-list" data-bs-toggle="list" href="#list-crosspub" role="tab">
                 <i class="bi bi-broadcast me-2"></i> Cross-Publish
             </a>
-            <a class="list-group-item list-group-item-action border-secondary" id="list-inbox-list" data-bs-toggle="list" href="#list-inbox" role="tab">
+            <a class="list-group-item list-group-item-action border-secondary {% if request.GET.tab == 'inbox' %}active{% endif %}" id="list-inbox-list" data-bs-toggle="list" href="#list-inbox" role="tab">
                 <i class="bi bi-inbox me-2"></i> Community Edits
             </a>
             <a class="list-group-item list-group-item-action border-secondary {% if request.GET.tab == 'audit' %}active{% endif %}" id="list-audit-list" data-bs-toggle="list" href="#list-audit" role="tab">

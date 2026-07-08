@@ -5,6 +5,11 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{{ current_network.name|default:"Vecto" }} | Podcast Manager</title>
+    <link rel="icon" href="{% static 'pod_manager/img/brand/vecto-favicon.svg' %}" type="image/svg+xml">
+    <link rel="icon" href="{% static 'pod_manager/img/brand/favicon-32.png' %}" sizes="32x32" type="image/png">
+    <link rel="icon" href="{% static 'pod_manager/img/brand/favicon-16.png' %}" sizes="16x16" type="image/png">
+    <link rel="apple-touch-icon" href="{% static 'pod_manager/img/brand/apple-touch-icon.png' %}">
+    <link rel="manifest" href="{% static 'pod_manager/img/brand/site.webmanifest' %}">
     <link href="{% static 'pod_manager/css/bootstrap.min.css' %}" rel="stylesheet">
     <link href="{% static 'pod_manager/css/bootstrap-icons.css' %}" rel="stylesheet">
     <link rel="stylesheet" href="{% static 'pod_manager/css/plyr.css' %}" />
@@ -259,7 +264,14 @@
                 {% elif current_network.logo_url %}
                     <img src="{{ current_network.logo_url }}" alt="Logo" class="d-inline-block align-text-top rounded shadow-sm me-2" style="height: 32px; width: auto;">
                 {% else %}
-                    <i class="bi bi-broadcast me-2 text-warning"></i>
+                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" fill="none" role="img" aria-label="Vecto" class="me-2" style="height: 28px; width: 28px;">
+                        <defs>
+                            <clipPath id="navbrand-vt"><rect x="0" y="0" width="100" height="45"></rect></clipPath>
+                            <clipPath id="navbrand-vb"><rect x="0" y="55" width="100" height="45"></rect></clipPath>
+                        </defs>
+                        <g clip-path="url(#navbrand-vt)"><polyline points="27,26 57,74 87,26" stroke="currentColor" stroke-width="15" stroke-linecap="round" stroke-linejoin="round"></polyline></g>
+                        <g clip-path="url(#navbrand-vb)"><polyline points="13,26 43,74 73,26" stroke="currentColor" stroke-width="15" stroke-linecap="round" stroke-linejoin="round"></polyline></g>
+                    </svg>
                 {% endif %}
 
                 <div class="d-flex flex-column justify-content-center">
@@ -770,6 +782,51 @@
     };
 })();
 </script>
+
+{% if pending_approval_count %}
+<style>
+    #approvalBadge {
+        position: fixed;
+        right: 20px; bottom: 20px;
+        z-index: 1050;
+        width: 52px; height: 52px;
+        border-radius: 50%;
+        display: flex; align-items: center; justify-content: center;
+        background: rgba(8, 8, 10, 0.92);
+        backdrop-filter: blur(24px);
+        -webkit-backdrop-filter: blur(24px);
+        border: 1px solid color-mix(in srgb, var(--vecto-primary) 30%, transparent);
+        box-shadow: 0 4px 20px rgba(0,0,0,0.5);
+        color: #f8f9fa;
+        font-size: 1.3rem;
+        text-decoration: none;
+        transition: transform 0.15s, border-color 0.15s;
+    }
+    #approvalBadge:hover {
+        color: var(--vecto-primary);
+        border-color: color-mix(in srgb, var(--vecto-primary) 60%, transparent);
+        transform: scale(1.06);
+    }
+    #approvalBadge .approval-badge-count {
+        position: absolute;
+        top: -4px; right: -4px;
+        min-width: 20px; height: 20px;
+        padding: 0 5px;
+        border-radius: 10px;
+        background: var(--vecto-primary, #ffc107);
+        color: var(--vecto-primary-text, #000);
+        font-size: 0.7rem;
+        font-weight: 700;
+        display: flex; align-items: center; justify-content: center;
+        line-height: 1;
+        border: 2px solid rgba(8, 8, 10, 0.92);
+    }
+</style>
+<a href="{% url 'creator_settings' %}?tab=inbox" id="approvalBadge" title="{{ pending_approval_count }} edit{{ pending_approval_count|pluralize }} awaiting approval">
+    <i class="bi bi-chat-square-text-fill"></i>
+    <span class="approval-badge-count">{{ pending_approval_count }}</span>
+</a>
+{% endif %}
 
 {% if request.is_impersonating %}
     <div class="fixed-bottom bg-danger text-white text-center py-2 shadow-lg fw-bold" style="z-index: 10000; border-top: 3px solid #ffc107;">

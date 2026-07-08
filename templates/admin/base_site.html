@@ -1,0 +1,21 @@
+{% extends "admin/base.html" %}
+{% load static %}
+
+{% block extrahead %}
+{{ block.super }}
+<link rel="icon" href="{% static 'pod_manager/img/brand/vecto-favicon.svg' %}" type="image/svg+xml">
+<link rel="icon" href="{% static 'pod_manager/img/brand/favicon-32.png' %}" sizes="32x32" type="image/png">
+<link rel="icon" href="{% static 'pod_manager/img/brand/favicon-16.png' %}" sizes="16x16" type="image/png">
+<link rel="apple-touch-icon" href="{% static 'pod_manager/img/brand/apple-touch-icon.png' %}">
+{% endblock %}
+
+{% block title %}{% if subtitle %}{{ subtitle }} | {% endif %}{{ title }} | {{ site_title|default:_('Django site admin') }}{% endblock %}
+
+{% block branding %}
+<div id="site-name"><a href="{% url 'admin:index' %}">{{ site_header|default:_('Django administration') }}</a></div>
+{% if user.is_anonymous %}
+  {% include "admin/color_theme_toggle.html" %}
+{% endif %}
+{% endblock %}
+
+{% block nav-global %}{% endblock %}

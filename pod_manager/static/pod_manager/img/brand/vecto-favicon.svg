@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
+  <defs>
+    <clipPath id="ft"><rect x="0" y="0" width="100" height="47"></rect></clipPath>
+    <clipPath id="fb"><rect x="0" y="53" width="100" height="47"></rect></clipPath>
+  </defs>
+  <rect width="100" height="100" rx="22" fill="#2f8fff"></rect>
+  <g fill="none" stroke="#ffffff" stroke-width="12" stroke-linecap="round" stroke-linejoin="round">
+    <g clip-path="url(#ft)"><polyline points="34,32 55,68 76,32"></polyline></g>
+    <g clip-path="url(#fb)"><polyline points="24,32 45,68 66,32"></polyline></g>
+  </g>
+</svg>

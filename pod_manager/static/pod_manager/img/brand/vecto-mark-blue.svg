@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" fill="none" role="img" aria-label="Vecto">
+  <defs>
+    <clipPath id="vt"><rect x="0" y="0" width="100" height="45"></rect></clipPath>
+    <clipPath id="vb"><rect x="0" y="55" width="100" height="45"></rect></clipPath>
+  </defs>
+  <g clip-path="url(#vt)"><polyline points="27,26 57,74 87,26" stroke="#2f8fff" stroke-width="15" stroke-linecap="round" stroke-linejoin="round"></polyline></g>
+  <g clip-path="url(#vb)"><polyline points="13,26 43,74 73,26" stroke="#2f8fff" stroke-width="15" stroke-linecap="round" stroke-linejoin="round"></polyline></g>
+</svg>

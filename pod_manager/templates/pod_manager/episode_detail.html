@@ -764,6 +764,20 @@
                             </div>
                         </form>
 
+                        <form method="POST" action="{% url 'manage_episode' ep.id %}" class="mb-4" enctype="multipart/form-data">
+                            {% csrf_token %}
+                            <input type="hidden" name="action" value="upload_audio">
+                            <label class="form-label text-light">Upload Audio File</label>
+                            <div class="input-group">
+                                <input type="file" name="audio_file" accept=".mp3,.m4a,.wav,.aac,.ogg,audio/*"
+                                       class="form-control bg-dark text-light border-secondary" required>
+                                <button type="submit" class="btn btn-outline-warning btn-sm">
+                                    <i class="bi bi-cloud-upload me-1"></i>Upload &amp; Mirror
+                                </button>
+                            </div>
+                            <div class="form-text text-muted">Attaches to the Premium / Ad-Free slot and mirrors to R2. Overwrites any existing premium audio and re-queues transcription.</div>
+                        </form>
+
                         {% if network_podcasts %}
                         <form method="POST" action="{% url 'manage_episode' ep.id %}" class="mb-4" id="ownerCrossPublishForm">
                             {% csrf_token %}

@@ -4790,6 +4790,49 @@ class R2MirrorServiceTests(TestCase):
             with self.assertRaises(MirrorSkipped):
                 mirror_episode_audio(self.episode.id, local_path=self._temp_audio())
 
+    def test_manual_requires_local_path(self):
+        with self.assertRaises(ValueError):
+            mirror_episode_audio(self.episode.id, manual=True)
+
+    # -- manual owner upload (bypasses subscriber-URL gates) ------------------
+    # Object-key naming isn't under test here (R2MirrorServiceTests above
+    # already covers that) — these just confirm manual=True proceeds to a real
+    # upload despite subscriber-URL states that would otherwise raise
+    # MirrorSkipped.
+    def test_manual_upload_succeeds_with_no_subscriber_audio(self):
+        self.episode.audio_url_subscriber = None
+        self.episode.save(update_fields=['audio_url_subscriber'])
+        path = self._temp_audio(b'manual-upload-bytes')
+        client = _fake_r2_client([_not_found_error(), {}])
+        with mock.patch.object(r2_mirror, 'get_r2_client', return_value=client):
+            result = mirror_episode_audio(self.episode.id, local_path=path, force=True, manual=True)
+        self.assertEqual(result['status'], 'mirrored')
+        self.assertTrue(result['r2_url'])
+
+    def test_manual_upload_succeeds_when_existing_subscriber_url_is_dead(self):
+        # e.g. a private feed link that's since 404'd — manual upload must not
+        # care, since it never fetches that URL.
+        self.episode.audio_url_subscriber = 'https://dead-host.example.com/gone.mp3'
+        self.episode.save(update_fields=['audio_url_subscriber'])
+        path = self._temp_audio(b'manual-upload-over-dead-url')
+        client = _fake_r2_client([_not_found_error(), {}])
+        with mock.patch.object(r2_mirror, 'get_r2_client', return_value=client):
+            result = mirror_episode_audio(self.episode.id, local_path=path, force=True, manual=True)
+        self.assertEqual(result['status'], 'mirrored')
+        self.assertTrue(result['r2_url'])
+
+    def test_manual_upload_succeeds_over_dead_s3_source(self):
+        # normal ingestion refuses to mirror from the dead S3 bucket — manual
+        # upload bypasses that check too, same reasoning as above.
+        self.episode.audio_url_subscriber = 'https://bucket.s3.amazonaws.com/ep.mp3'
+        self.episode.save(update_fields=['audio_url_subscriber'])
+        path = self._temp_audio(b'manual-upload-over-s3-dead')
+        client = _fake_r2_client([_not_found_error(), {}])
+        with mock.patch.object(r2_mirror, 'get_r2_client', return_value=client):
+            result = mirror_episode_audio(self.episode.id, local_path=path, force=True, manual=True)
+        self.assertEqual(result['status'], 'mirrored')
+        self.assertTrue(result['r2_url'])
+
     # -- upload + persist ----------------------------------------------------
     def test_mirror_uploads_and_persists(self):
         content = b'hello-audio'

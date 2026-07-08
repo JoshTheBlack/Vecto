@@ -235,18 +235,28 @@ def _record_orphan(key: str, episode, reason: str):
 # Public entry point
 # ---------------------------------------------------------------------------
 
-def mirror_episode_audio(episode_id: int, local_path=None, force: bool = False) -> dict:
+def mirror_episode_audio(episode_id: int, local_path=None, force: bool = False, manual: bool = False) -> dict:
     """Mirror one episode's subscriber audio to R2.
 
-    local_path : if given (e.g. transcription's temp MP3), upload it directly
-                 with NO re-download. Only READ; never moved or deleted here.
+    local_path : if given (e.g. transcription's temp MP3, or a manual owner
+                 upload), upload it directly with NO re-download. Only READ;
+                 never moved or deleted here.
     force      : re-mirror even if r2_url is already set / source unchanged.
+    manual     : True for an owner-initiated upload (episode_detail's "Upload
+                 Audio File"). Skips every check that depends on the episode's
+                 EXISTING audio_url_subscriber being present/fetchable/premium —
+                 that URL may be unset, or set but dead (e.g. a private feed
+                 link that's since gone 404), and neither should block
+                 attaching a freshly-supplied file. Requires local_path.
 
     Returns a small result dict: {'status': 'mirrored'|'deduped'|'skipped',
     'r2_url': ..., 'key': ..., 'reason': ...}. Raises MirrorSkipped for
     not-applicable episodes so callers can log-and-continue.
     """
     from pod_manager.models import Episode
+
+    if manual and local_path is None:
+        raise ValueError("manual=True requires local_path")
 
     if not getattr(settings, 'R2_MIRROR_ENABLED', True):
         raise MirrorSkipped("R2_MIRROR_ENABLED is False")
@@ -255,26 +265,33 @@ def mirror_episode_audio(episode_id: int, local_path=None, force: bool = False) 
 
     # SUBSCRIBER ONLY — never mirror public/Megaphone; dead-S3 has no source.
     audio_url = episode.audio_url_subscriber
-    if not audio_url:
-        raise MirrorSkipped(f"episode {episode_id} has no subscriber audio")
-    if not episode.is_premium:
-        raise MirrorSkipped(f"episode {episode_id} subscriber audio is the public URL")
-    origin = episode.audio_origin()
-    if origin == 's3_dead':
-        raise MirrorSkipped(f"episode {episode_id} source is the dead S3 bucket (unfetchable)")
+
+    if not manual:
+        if not audio_url:
+            raise MirrorSkipped(f"episode {episode_id} has no subscriber audio")
+        if not episode.is_premium:
+            raise MirrorSkipped(f"episode {episode_id} subscriber audio is the public URL")
+        origin = episode.audio_origin()
+        if origin == 's3_dead':
+            raise MirrorSkipped(f"episode {episode_id} source is the dead S3 bucket (unfetchable)")
 
     old_key = key_from_public_url(episode.r2_url) if episode.r2_url else None
 
     # Idempotency gate: only re-mirror when forced or when HEAD proves the source
     # changed. If we can't tell (no usable signature), mirror-once -> skip.
-    if episode.r2_url and not force:
+    # Manual uploads bypass this entirely — the existing audio_url (if any) may
+    # be dead, so there's nothing to HEAD, and a fresh owner-supplied file
+    # should always win.
+    if manual:
+        signature = None
+    elif episode.r2_url and not force:
         fresh_sig = _head_signature(audio_url)
         if not (fresh_sig and episode.r2_source_signature and fresh_sig != episode.r2_source_signature):
             return {'status': 'skipped', 'r2_url': episode.r2_url, 'key': old_key,
                     'reason': 'r2_url set and source unchanged'}
         signature = fresh_sig
     else:
-        signature = _head_signature(audio_url)
+        signature = _head_signature(audio_url) if audio_url else None
 
     # Acquire bytes + content hash.
     tmp_path = None

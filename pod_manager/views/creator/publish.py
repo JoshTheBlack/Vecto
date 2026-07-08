@@ -300,6 +300,59 @@ def manage_episode(request, episode_id):
         cache.delete(f"ep_frag_private_{ep.id}")
         messages.success(request, f'"{ep.title}" unpublished.')
 
+    elif action == 'upload_audio':
+        audio_file = request.FILES.get('audio_file')
+        if not audio_file:
+            messages.error(request, "No audio file selected.")
+        elif not audio_file.name.lower().endswith(('.mp3', '.m4a', '.wav', '.aac', '.ogg')):
+            messages.error(request, "Unsupported file type — please upload an audio file.")
+        elif audio_file.size > 500 * 1024 * 1024:
+            messages.error(request, "File too large (max 500MB).")
+        else:
+            import tempfile
+            from pathlib import Path
+            from django.core.cache import cache
+            from ...models import Transcript
+            from ...services.r2_mirror import mirror_episode_audio, MirrorSkipped
+            from ...services.transcription import dispatch_transcription
+
+            suffix = Path(audio_file.name).suffix or '.mp3'
+            tmp = tempfile.NamedTemporaryFile(suffix=suffix, delete=False)
+            try:
+                for chunk in audio_file.chunks():
+                    tmp.write(chunk)
+                tmp.close()
+                try:
+                    result = mirror_episode_audio(ep.id, local_path=tmp.name, force=True, manual=True)
+                except MirrorSkipped as exc:
+                    messages.error(request, f"Upload rejected: {exc}")
+                else:
+                    if ep.audio_url_subscriber != result['r2_url']:
+                        ep.audio_url_subscriber = result['r2_url']
+                        ep.save(update_fields=['audio_url_subscriber'])
+                    cache.delete(f"ep_frag_public_{ep.id}")
+                    cache.delete(f"ep_frag_private_{ep.id}")
+                    base_url = request.build_absolute_uri('/')
+                    task_rebuild_episode_fragments.delay(ep.id, base_url)
+
+                    # Reset (or create) the transcript row so a prior failed/
+                    # awaiting-recovery record doesn't linger orphaned now that
+                    # real audio exists — same reset the manual re-transcribe
+                    # button uses.
+                    transcript, _ = Transcript.objects.get_or_create(episode=ep)
+                    transcript.status = Transcript.Status.PENDING
+                    transcript.error_message = None
+                    transcript.save(update_fields=['status', 'error_message'])
+                    dispatch_transcription(ep.id)
+
+                    logger.info(
+                        f"[manage] Episode {ep.id} '{ep.title}' audio manually uploaded by "
+                        f"{request.user.username} -> {result['r2_url']} (status={result['status']})"
+                    )
+                    messages.success(request, "Audio uploaded and mirrored to R2. Transcription queued.")
+            finally:
+                Path(tmp.name).unlink(missing_ok=True)
+
     elif action == 'schedule':
         scheduled_str = request.POST.get('scheduled_at', '').strip()
         scheduled_dt  = parse_datetime(scheduled_str)

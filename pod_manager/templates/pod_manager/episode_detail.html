@@ -269,6 +269,12 @@
     .episode-chapters .chapter-time { color: var(--vecto-surface-muted); font-variant-numeric: tabular-nums; flex-shrink: 0; }
     .episode-chapters .chapter-link:hover .chapter-time { color: var(--vecto-primary); }
 
+    /* The media row's content column must be allowed to shrink below its
+       content's intrinsic width — flex items default to min-width:auto, so a
+       long nowrap source URL otherwise propagates its full width up and wraps
+       the whole column beneath the cover art. */
+    .row.align-items-stretch > .col-md { min-width: 0; }
+
     /* Owner-only source URL — truncates with an ellipsis, scrolls to reveal the
        full URL on hover when it overflows (wired in JS). */
     .src-url {

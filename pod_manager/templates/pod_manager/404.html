@@ -7,8 +7,8 @@
     <h1 class="fw-bold text-warning mb-2" style="font-size: 4rem;">404</h1>
 
     {% if entry %}
+        <p class="fs-4 fw-bold mb-3">{{ entry.caption }}</p>
         <img src="{{ entry.display_image }}" alt="{{ entry.caption }}" class="img-fluid rounded border border-secondary shadow-sm mb-3" style="max-height: 360px;">
-        <p class="fs-4 fw-bold mb-2">{{ entry.caption }}</p>
     {% else %}
         {% if current_network.theme_config.logo_url %}
             <img src="{{ current_network.theme_config.logo_url }}" alt="{{ current_network.name }}" class="rounded border border-secondary shadow-sm mb-3" style="height: 120px; width: auto;">

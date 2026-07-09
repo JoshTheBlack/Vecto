@@ -19,6 +19,7 @@ db.sqlite3-shm
 mix_covers/
 invoices/
 media/
+staticfiles/
 
 # IDE settings
 .vscode/

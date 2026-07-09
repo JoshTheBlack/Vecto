@@ -111,59 +111,35 @@ DEBUG = (RAW_DEBUG in ['True', 'IDE'])
 OTP_TOTP_ISSUER = 'Vecto'
 
 # ==========================================
-# ALLOWED HOSTS (Dynamic Multi-Tenant)
+# ALLOWED HOSTS
 # ==========================================
-class DynamicTenantHosts(list):
-    def __contains__(self, host):
-        # 1. Global Wildcard Bypass
-        if '*' in self:
-            return True
+# Networks are onboarded with arbitrary customer-owned custom_domain values
+# (see Network.custom_domain), and an unconfigured *.joshtheblack.com
+# subdomain still needs to reach pod_manager.middleware.NetworkMiddleware to
+# get routed to the Vecto landing page rather than a bare 400 -- so there's
+# no static host list that could work here; ALLOWED_HOSTS has to stay wide
+# open. The real gate is NetworkMiddleware: it looks up request.get_host()
+# against Network.custom_domain on every request (cached via
+# pod_manager.services.tenant_hosts.live_tenant_domains) and raises Http404
+# for anything unmatched outside its small whitelist of operator-facing
+# paths (/admin, /creator, /login, etc).
+#
+# (This used to be a custom list subclass that tried to do the same DB
+# lookup inside __contains__, on the theory that Django's Host validation
+# calls `host in ALLOWED_HOSTS`. It doesn't -- django.http.request.
+# validate_host() iterates ALLOWED_HOSTS directly and never invokes
+# __contains__, so that lookup never actually ran. It's also gone from
+# CSRF_TRUSTED_ORIGINS below for a related reason: CsrfViewMiddleware reads
+# it into a @cached_property once per worker process at startup, so a "live"
+# version would never see a domain added after that.)
+ALLOWED_HOSTS = ['*']
 
-        clean_host = host.split(':')[0].lower()
-
-        # 2. Check explicitly defined .env hosts
-        for base in self:
-            base = base.lower()
-            if base.startswith('.') and clean_host.endswith(base): 
-                return True
-            if clean_host == base: 
-                return True
-
-        # 3. Check database for dynamic client domains
-        try:
-            from pod_manager.models import Network
-            return Network.objects.filter(custom_domain__iexact=clean_host).exists()
-        except Exception:
-            return False
-# ==========================================
-# CSRF ORIGINS (Linked to Allowed Hosts)
-# ==========================================
-class DynamicTenantCSRF(list):
-    def __init__(self, allowed_hosts_instance):
-        self.allowed_hosts = allowed_hosts_instance
-
-    def __contains__(self, origin):
-        # The origin looks like 'https://vecto.joshtheblack.com'
-        try:
-            # Strip the scheme (http:// or https://) to isolate the domain
-            host = origin.split('://')[1].lower()
-            # Feed the domain directly into our Allowed Hosts checker!
-            return host in self.allowed_hosts
-        except IndexError:
-            return False
-            
-    def __iter__(self):
-        # Django's CSRF middleware tries to iterate over this list to check
-        # for strict wildcards if __contains__ fails. We just return empty.
-        return iter([])
-    
-# Grab raw strings from .env
-env_hosts_string = os.getenv('ALLOWED_HOSTS', 'localhost,127.0.0.1')
-base_hosts_list = [h.strip() for h in env_hosts_string.split(',') if h.strip()]
-
-# Assign dynamic host validator
-ALLOWED_HOSTS = DynamicTenantHosts(base_hosts_list)
-CSRF_TRUSTED_ORIGINS = DynamicTenantCSRF(ALLOWED_HOSTS)
+# Cross-origin CSRF trust. Rarely needed -- a form on a tenant's own
+# custom_domain posting back to itself is same-origin, which Django's CSRF
+# check already allows without consulting this setting at all. Only for a
+# genuinely cross-origin trusted origin (e.g. an admin-access domain).
+# Comma-separated full origins, e.g. "https://admin.example.com".
+CSRF_TRUSTED_ORIGINS = [o.strip() for o in os.getenv('CSRF_TRUSTED_ORIGINS', '').split(',') if o.strip()]
 
 SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
 
@@ -310,6 +286,12 @@ STORAGES = {
         "BACKEND": "whitenoise.storage.CompressedStaticFilesStorage",
     },
 }
+# In IDE mode, serve static files straight from STATICFILES_DIRS via Django's
+# finders instead of requiring `collectstatic` into STATIC_ROOT first -- lets
+# DEBUG=False (needed to exercise handler404 etc. locally) work without a
+# manual build step every time a static file changes. Off everywhere else so
+# prod keeps using the collected/compressed staticfiles/ set.
+WHITENOISE_USE_FINDERS = IS_IDE
 
 # ==========================================
 # MEDIA SETTINGS (For User Uploads)

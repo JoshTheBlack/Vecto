@@ -6,6 +6,7 @@ from django.contrib.auth.models import User
 from django.utils import timezone
 from django.utils.deprecation import MiddlewareMixin
 from .models import Network, NetworkMembership
+from .services.tenant_hosts import live_tenant_domains
 
 logger = logging.getLogger(__name__)
 
@@ -24,8 +25,11 @@ class NetworkMiddleware:
             client_ip = request.META.get('REMOTE_ADDR', 'unknown')
         logger.debug(f"Incoming request for host: '{host}' | Path: {request.path}")
         
-        # 1. Attempt to find a network by custom domain
-        network = Network.objects.filter(custom_domain=host).first()
+        # 1. Attempt to find a network by custom domain. The cached domain
+        # set lets us skip the DB round-trip entirely for hosts that aren't
+        # a known tenant (bots, typos, unconfigured subdomains) -- a match
+        # still does a live query so the Network row is never stale.
+        network = Network.objects.filter(custom_domain=host).first() if host in live_tenant_domains() else None
         request.network = network
         request.tenant_profile = None
         

@@ -56,7 +56,10 @@ def task_smart_poll_feeds():
             
         if is_active or now.minute < 15:
             logger.info(f"Queuing update for {podcast.title} (Active: {is_active})")
-            task_ingest_feed.delay(podcast.id)
+            if podcast.is_low_priority:
+                task_ingest_feed.apply_async(args=[podcast.id], countdown=600)
+            else:
+                task_ingest_feed.delay(podcast.id)
 
 @shared_task
 def task_ingest_feed(show_id):

@@ -193,9 +193,26 @@
                                                 </label>
                                             </div>
 
+                                            <h6 class="fw-semibold mb-2 mt-3 text-warning border-bottom border-secondary pb-1">
+                                                <i class="bi bi-rss me-1"></i>Feed Ingest
+                                            </h6>
+                                            <div class="form-check form-switch mb-4">
+                                                <input class="form-check-input" type="checkbox" role="switch"
+                                                       id="is_low_priority_{{ show.id }}" name="is_low_priority"
+                                                       {% if show.is_low_priority %}checked{% endif %}>
+                                                <label class="form-check-label text-light small fw-bold" for="is_low_priority_{{ show.id }}">
+                                                    Low-priority feed
+                                                    <span class="d-block text-muted fw-normal">
+                                                        On = this feed is polled slightly after normal feeds, and any
+                                                        episode it picks up first is auto-migrated to its real home
+                                                        feed once that feed ingests the same GUID.
+                                                    </span>
+                                                </label>
+                                            </div>
+
                                             <button type="submit" class="btn btn-outline-warning btn-sm fw-bold"><i class="bi bi-floppy"></i> Save Show Settings</button>
                                         </form>
-                                        
+
                                     </div>
                                 </div>
                             </div>

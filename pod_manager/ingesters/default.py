@@ -281,6 +281,13 @@ def get_feed(url, feed_type, podcast_id, stdout, force_fetch=False):
         logger.error(f"HTTP Error fetching {feed_type} feed from {clean_url}: {e}", exc_info=True)
         raise
 
+def _network_base_url(network):
+    """Absolute base URL for a network — custom domain when set, else the
+    SITE_URL fallback for local dev / networks without one."""
+    if network.custom_domain:
+        return f"https://{network.custom_domain}".rstrip('/')
+    return getattr(settings, 'SITE_URL', 'http://localhost:8000').rstrip('/')
+
 def commit_episode(podcast, pub_entry, sub_entry, match_reason, stdout, enhancer=None):
     """
     Intelligently creates or updates an episode.
@@ -320,7 +327,51 @@ def commit_episode(podcast, pub_entry, sub_entry, match_reason, stdout, enhancer
     if not episode:
         episode = Episode(podcast=podcast)
         is_new = True
-        
+
+    # GUID auto-migration: an episode parented to a low-priority feed moves to
+    # a normal-priority feed that ingests the same GUID — exactly as if someone
+    # had used the bulk mover, minus the pin (a null pin is what lets this fire
+    # at all; a manual move permanently opts an episode out).
+    if not is_new and episode.podcast_id != podcast.id:
+        existing_owner = episode.podcast
+        if (existing_owner.is_low_priority and not podcast.is_low_priority
+                and not episode.podcast_pinned_at):
+            guids_diverge = bool(ep_pub and ep_priv and ep_pub.pk != ep_priv.pk)
+            if guids_diverge:
+                # The pub/priv lookups landed on two DIFFERENT rows — the fuzzy
+                # matcher attempting an algorithmic cross-row merge. Ownership
+                # of the pair is genuinely ambiguous; never gamble a move on
+                # it. After a Merge Desk resolution the next ingest sees a
+                # clean single-row match and migrates normally.
+                logger.info(
+                    f"[ingest] Skipping auto-migration: pub/priv GUIDs resolve "
+                    f"to different episodes (ids {ep_pub.id}/{ep_priv.id}) — "
+                    f"resolve via Merge Desk"
+                )
+                stdout.write(
+                    f"  [SKIP MIGRATE] pub/priv GUIDs resolve to different "
+                    f"episodes (ids {ep_pub.id}/{ep_priv.id}) — resolve via "
+                    f"Merge Desk"
+                )
+            else:
+                from pod_manager.services.episode_move import move_episodes
+                move_episodes([episode.id], podcast,
+                              base_url=_network_base_url(podcast.network),
+                              pin=False, rebuild_fragments=False)
+                episode.podcast = podcast  # keep the in-memory object
+                                           # consistent for the rest of this
+                                           # function
+                logger.info(
+                    f"[ingest] Auto-migrated episode {episode.id} '{episode.title}' "
+                    f"from low-priority '{existing_owner.title}' (id={existing_owner.id}) "
+                    f"to '{podcast.title}' (id={podcast.id})"
+                )
+                stdout.write(
+                    f"  [AUTO-MIGRATE] '{episode.title}': "
+                    f"{existing_owner.title} -> {podcast.title}"
+                )  # logger alone never reaches the creator-facing import log —
+                   # CommandLogStream only sees stdout
+
     # 3. Always update the routing identifiers
     if pub_guid: episode.guid_public = pub_guid
     if sub_guid: episode.guid_private = sub_guid
@@ -329,94 +380,95 @@ def commit_episode(podcast, pub_entry, sub_entry, match_reason, stdout, enhancer
     protected_reasons = ['Manually Unpaired', 'Manual Merge (Merge Desk)']
     if episode.match_reason not in protected_reasons:
         episode.match_reason = match_reason
-        
-    # 4. Always update audio URLs (Hosts frequently rotate CDNs or ad-tracking prefixes)
-    # Skip if audio_locked (e.g. set by GDrive recovery to protect manually mapped URLs)
-    if not episode.audio_locked:
-        if pub_entry:
-            episode.audio_url_public = get_enclosure(pub_entry)
-        if sub_entry:
-            episode.audio_url_subscriber = get_enclosure(sub_entry)
 
-    # 5. THE METADATA LOCK
-    # Season/episode/type are read from the feed regardless of the lock, purely
-    # so a locked episode's would-be values can be logged below (with the
-    # episode ID) for later targeting via backfill_season_episode_tags
-    # --bypass-lock. Everything else in this section stays lock-gated as before.
-    new_season, new_episode_num, new_episode_type = extract_season_episode(pub_entry if pub_entry else sub_entry)
+    # A low-priority ingester never owns metadata for an episode parented to
+    # another feed — the poll stagger makes it ingest LAST each cycle, so
+    # without this its copy would systematically overwrite the owning feed's
+    # fields. GUIDs above are the only thing it may update; the audio,
+    # metadata, and enhancer sections below are all skipped.
+    guid_update_only = podcast.is_low_priority and episode.podcast_id != podcast.id
 
-    if not episode.is_metadata_locked:
-        episode.season_number = new_season
-        episode.episode_number = new_episode_num
-        if new_episode_type:
-            episode.episode_type = new_episode_type
-    elif (new_season or new_episode_num) and (new_season, new_episode_num) != (episode.season_number, episode.episode_number):
-        logger.info(
-            f"[ingest] episode {episode.id} '{episode.title}' is metadata-locked; "
-            f"season {episode.season_number}->{new_season}, episode {episode.episode_number}->{new_episode_num} "
-            f"— not applied. Use "
-            f"'manage.py backfill_season_episode_tags --bypass-lock --episode={episode.id}' to force."
-        )
+    if not guid_update_only:
+        # 4. Always update audio URLs (Hosts frequently rotate CDNs or ad-tracking prefixes)
+        # Skip if audio_locked (e.g. set by GDrive recovery to protect manually mapped URLs)
+        if not episode.audio_locked:
+            if pub_entry:
+                episode.audio_url_public = get_enclosure(pub_entry)
+            if sub_entry:
+                episode.audio_url_subscriber = get_enclosure(sub_entry)
 
-    # itunes:explicit is a content-rating fact, not curated metadata — it applies
-    # even on a locked episode. Only overwrite when the feed actually states it,
-    # so an unset feed value can't wipe a manually-set rating.
-    new_explicit = extract_explicit(pub_entry if pub_entry else sub_entry)
-    if new_explicit is not None:
-        episode.explicit = new_explicit
+        # 5. THE METADATA LOCK
+        # Season/episode/type are read from the feed regardless of the lock, purely
+        # so a locked episode's would-be values can be logged below (with the
+        # episode ID) for later targeting via backfill_season_episode_tags
+        # --bypass-lock. Everything else in this section stays lock-gated as before.
+        new_season, new_episode_num, new_episode_type = extract_season_episode(pub_entry if pub_entry else sub_entry)
 
-    if not episode.is_metadata_locked:
-        source_entry = pub_entry if pub_entry else sub_entry
+        if not episode.is_metadata_locked:
+            episode.season_number = new_season
+            episode.episode_number = new_episode_num
+            if new_episode_type:
+                episode.episode_type = new_episode_type
+        elif (new_season or new_episode_num) and (new_season, new_episode_num) != (episode.season_number, episode.episode_number):
+            logger.info(
+                f"[ingest] episode {episode.id} '{episode.title}' is metadata-locked; "
+                f"season {episode.season_number}->{new_season}, episode {episode.episode_number}->{new_episode_num} "
+                f"— not applied. Use "
+                f"'manage.py backfill_season_episode_tags --bypass-lock --episode={episode.id}' to force."
+            )
 
-        episode.title = getattr(source_entry, 'title', 'Untitled Episode')
-        raw_desc = ""
-        if hasattr(source_entry, 'content') and source_entry.content:
-            raw_desc = source_entry.content[0].get('value', '')
-        if not raw_desc:
-            raw_desc = getattr(source_entry, 'description', '')
-        if not raw_desc:
-            raw_desc = getattr(source_entry, 'summary', '')
-            
-        episode.raw_description = raw_desc
-        episode.clean_description = clean_html_description(raw_desc, podcast.network)
-        
-        # Prefer private link, fallback to public
-        priv_link = getattr(sub_entry, 'link', '') if sub_entry else ''
-        pub_link = getattr(pub_entry, 'link', '') if pub_entry else ''
-        episode.link = priv_link if priv_link else pub_link
-        
-        episode.duration = source_entry.get('itunes_duration', '') if hasattr(source_entry, 'get') else getattr(source_entry, 'itunes_duration', '')
-        
-        if hasattr(source_entry, 'published_parsed') and source_entry.published_parsed:
-            episode.pub_date = make_aware(datetime.fromtimestamp(time.mktime(source_entry.published_parsed)))
-        elif is_new:
-            episode.pub_date = make_aware(datetime.now())
-        
-        if pub_entry:
-            episode.chapters_public = extract_rss_chapters(pub_entry)
-        if sub_entry:
-            episode.chapters_private = extract_rss_chapters(sub_entry)
+        # itunes:explicit is a content-rating fact, not curated metadata — it applies
+        # even on a locked episode. Only overwrite when the feed actually states it,
+        # so an unset feed value can't wipe a manually-set rating.
+        new_explicit = extract_explicit(pub_entry if pub_entry else sub_entry)
+        if new_explicit is not None:
+            episode.explicit = new_explicit
 
-        # Category/keyword tags straight from the feed. Enhancers (e.g. baldmove)
-        # merge additional scraped tags onto these — see baldmove_enhancer.
-        pub_tags = extract_feed_tags(pub_entry) if pub_entry else []
-        priv_tags = extract_feed_tags(sub_entry) if sub_entry else []
-        episode.tags = merge_tags(pub_tags, priv_tags)
+        if not episode.is_metadata_locked:
+            source_entry = pub_entry if pub_entry else sub_entry
 
-    # 6. Execute custom network enhancements (like HTML chapters or WP scraping)
-    if enhancer:
-        enhancer(episode, pub_entry, sub_entry, is_new, stdout)
+            episode.title = getattr(source_entry, 'title', 'Untitled Episode')
+            raw_desc = ""
+            if hasattr(source_entry, 'content') and source_entry.content:
+                raw_desc = source_entry.content[0].get('value', '')
+            if not raw_desc:
+                raw_desc = getattr(source_entry, 'description', '')
+            if not raw_desc:
+                raw_desc = getattr(source_entry, 'summary', '')
+
+            episode.raw_description = raw_desc
+            episode.clean_description = clean_html_description(raw_desc, podcast.network)
+
+            # Prefer private link, fallback to public
+            priv_link = getattr(sub_entry, 'link', '') if sub_entry else ''
+            pub_link = getattr(pub_entry, 'link', '') if pub_entry else ''
+            episode.link = priv_link if priv_link else pub_link
+
+            episode.duration = source_entry.get('itunes_duration', '') if hasattr(source_entry, 'get') else getattr(source_entry, 'itunes_duration', '')
+
+            if hasattr(source_entry, 'published_parsed') and source_entry.published_parsed:
+                episode.pub_date = make_aware(datetime.fromtimestamp(time.mktime(source_entry.published_parsed)))
+            elif is_new:
+                episode.pub_date = make_aware(datetime.now())
+
+            if pub_entry:
+                episode.chapters_public = extract_rss_chapters(pub_entry)
+            if sub_entry:
+                episode.chapters_private = extract_rss_chapters(sub_entry)
+
+            # Category/keyword tags straight from the feed. Enhancers (e.g. baldmove)
+            # merge additional scraped tags onto these — see baldmove_enhancer.
+            pub_tags = extract_feed_tags(pub_entry) if pub_entry else []
+            priv_tags = extract_feed_tags(sub_entry) if sub_entry else []
+            episode.tags = merge_tags(pub_tags, priv_tags)
+
+        # 6. Execute custom network enhancements (like HTML chapters or WP scraping)
+        if enhancer:
+            enhancer(episode, pub_entry, sub_entry, is_new, stdout)
 
     episode.save()
 
-    network = podcast.network
-    if network.custom_domain:
-        base_url = f"https://{network.custom_domain}".rstrip('/')
-    else:
-        # Fallback for local dev or networks without a custom domain
-        base_url = getattr(settings, 'SITE_URL', 'http://localhost:8000').rstrip('/')
-
-    task_rebuild_episode_fragments.delay(episode.id, base_url)
+    task_rebuild_episode_fragments.delay(episode.id, _network_base_url(podcast.network))
     
     status = "Created" if is_new else ("Updated [LOCKED]" if episode.is_metadata_locked else "Updated")
     stdout.write(f"  -> [{status}] {episode.title}")
@@ -521,13 +573,7 @@ def run_ingest(podcast, stdout, enhancer=None):
     # Save the database record only once if anything changed
     if needs_save:
         podcast.save()
-        network = podcast.network
-        if network.custom_domain:
-            base_url = f"https://{network.custom_domain}".rstrip('/')
-        else:
-            base_url = getattr(settings, 'SITE_URL', 'http://localhost:8000').rstrip('/')
-            
-        task_rebuild_podcast_shell.delay(podcast.id, base_url)
+        task_rebuild_podcast_shell.delay(podcast.id, _network_base_url(podcast.network))
 
     private_pool = {}
     unmatched_private_audios = set()

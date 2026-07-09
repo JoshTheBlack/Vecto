@@ -1,0 +1,33 @@
+{% extends 'pod_manager/base.html' %}
+
+{% load static %}
+
+{% block content %}
+<div class="text-center py-5">
+    <h1 class="fw-bold text-warning mb-2" style="font-size: 4rem;">404</h1>
+
+    {% if entry %}
+        <img src="{{ entry.display_image }}" alt="{{ entry.caption }}" class="img-fluid rounded border border-secondary shadow-sm mb-3" style="max-height: 360px;">
+        <p class="fs-4 fw-bold mb-2">{{ entry.caption }}</p>
+    {% else %}
+        {% if current_network.theme_config.logo_url %}
+            <img src="{{ current_network.theme_config.logo_url }}" alt="{{ current_network.name }}" class="rounded border border-secondary shadow-sm mb-3" style="height: 120px; width: auto;">
+        {% elif current_network.logo_url %}
+            <img src="{{ current_network.logo_url }}" alt="{{ current_network.name }}" class="rounded border border-secondary shadow-sm mb-3" style="height: 120px; width: auto;">
+        {% else %}
+            <img src="{% static 'pod_manager/img/brand/vecto-favicon.svg' %}" alt="Vecto" class="mb-3" style="height: 120px; width: auto;">
+        {% endif %}
+    {% endif %}
+
+    <p class="text-muted mb-4">This episode was never recorded.</p>
+
+    {% if current_network %}
+    <form method="GET" action="{% url 'home' %}" class="d-flex justify-content-center">
+        <div class="input-group" style="max-width: 400px;">
+            <input type="text" name="q" class="form-control bg-dark text-light border-secondary" placeholder="Search episodes...">
+            <button type="submit" class="btn btn-outline-warning"><i class="bi bi-search"></i></button>
+        </div>
+    </form>
+    {% endif %}
+</div>
+{% endblock %}

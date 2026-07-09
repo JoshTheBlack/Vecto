@@ -17,10 +17,11 @@ from django.utils import timezone
 
 from ...models import (
     NetworkMembership, Podcast, Episode, EpisodeCrossPublication, PatreonTier, NetworkMix,
-    EpisodeEditSuggestion,
+    EpisodeEditSuggestion, NotFoundEntry,
 )
 from ...services.cross_publish import sync_cross_publications, validate_cross_targets
 from ...services.edits import chapter_items, score_contribution, REJECT_PENALTY
+from ...services.episode_move import move_episodes
 from ...services.patreon import sync_network_patrons
 from ...tasks import task_rebuild_episode_fragments, task_rebuild_podcast_fragments
 from ...utils import sanitize_user_html
@@ -516,6 +517,9 @@ def handle_update_show(request, current_network):
     # Per-feed R2 serving override (checkbox — absent in POST means unchecked).
     show.force_r2_serve = bool(request.POST.get('force_r2_serve'))
 
+    # Ingest priority (checkbox — absent in POST means unchecked).
+    show.is_low_priority = bool(request.POST.get('is_low_priority'))
+
     show.save()
     messages.success(request, f"{show.title} updated successfully!")
 
@@ -615,28 +619,13 @@ def handle_move_episodes(request, current_network):
     else:
         target_pod = get_object_or_404(Podcast, id=target_podcast_id, network=current_network)
 
-    eps = Episode.objects.filter(id__in=episode_ids, podcast__network=current_network)
-    count = eps.update(podcast=target_pod)
-    # An episode moved into a podcast it was cross-published to would now
-    # self-reference — drop the redundant links.
-    EpisodeCrossPublication.objects.filter(episode_id__in=episode_ids, podcast=target_pod).delete()
-
-    # Re-key any mirrored episodes so their R2 object lands under the new parent's
-    # network_id/podcast_id (backup accuracy — section J). Async; idempotent.
-    from django.conf import settings as _settings
-    if getattr(_settings, 'R2_MIRROR_ENABLED', True):
-        from ...tasks import task_rekey_episode_audio
-        moved_mirrored = (Episode.objects.filter(id__in=episode_ids)
-                          .exclude(r2_url__isnull=True).exclude(r2_url='')
-                          .values_list('id', flat=True))
-        for ep_id in moved_mirrored:
-            task_rekey_episode_audio.delay(ep_id)
-    logger.info(f"Moved {count} episodes to '{target_pod.title}' (id={target_pod.id}) by {request.user.username}")
-    messages.success(request, f"Successfully moved and locked {count} episodes to '{target_pod.title}'.")
-
-    base_url = request.build_absolute_uri('/')[:-1]
-    for ep_id in episode_ids:
-        task_rebuild_episode_fragments.delay(int(ep_id), base_url)
+    scoped_ids = list(Episode.objects.filter(
+        id__in=episode_ids, podcast__network=current_network
+    ).values_list('id', flat=True))
+    result = move_episodes(scoped_ids, target_pod,
+                           base_url=request.build_absolute_uri('/'),
+                           moved_by=request.user)
+    messages.success(request, f"Successfully moved {result['count']} episode(s) to '{target_pod.title}'.")
 
 
 def handle_cross_publish_episodes(request, current_network):
@@ -736,6 +725,28 @@ def handle_delete_network_mix(request, current_network):
     messages.warning(request, f"Network mix '{name}' deleted.")
 
 
+def handle_add_notfound_entry(request, current_network):
+    try:
+        entry = NotFoundEntry.objects.create(
+            network=current_network,
+            caption=request.POST.get('caption', '').strip(),
+            image_upload=request.FILES['image_upload'],
+        )
+        messages.success(request, f"404 pool entry '{entry.caption}' added.")
+    except Exception as e:
+        logger.error(f"Failed to add notfound entry: {e}", exc_info=True)
+        messages.error(request, f"Failed to add 404 pool entry: {e}")
+
+
+def handle_delete_notfound_entry(request, current_network):
+    entry = get_object_or_404(NotFoundEntry, id=request.POST.get('entry_id'), network=current_network)
+    if entry.image_upload:
+        entry.image_upload.delete(save=False)
+    caption = entry.caption
+    entry.delete()
+    messages.warning(request, f"404 pool entry '{caption}' deleted.")
+
+
 def handle_generate_s3_report(request, current_network):
     logger.info("=======================================================")
     logger.info("[DIAGNOSTIC] ACTION CAUGHT: generate_s3_report")
@@ -769,5 +780,7 @@ ACTION_HANDLERS = {
     'add_network_mix':      handle_add_network_mix,
     'edit_network_mix':     handle_edit_network_mix,
     'delete_network_mix':   handle_delete_network_mix,
+    'add_notfound_entry':   handle_add_notfound_entry,
+    'delete_notfound_entry': handle_delete_notfound_entry,
     'generate_s3_report':   handle_generate_s3_report,
 }

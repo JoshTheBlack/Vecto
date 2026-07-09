@@ -327,6 +327,11 @@ def gather_cross_publish_context(request, current_network):
     }
 
 
+#@diagnostic_timer("5c. Gather 404 Page Context")
+def gather_notfound_context(current_network):
+    return {'notfound_entries': current_network.notfound_entries.order_by('-created_at')}
+
+
 #@diagnostic_timer("6. Gather S3 Reports")
 def gather_reports_data():
     txt_path = os.path.join(settings.MEDIA_ROOT, 's3_hosting_report.txt')

@@ -257,6 +257,13 @@ class Podcast(models.Model):
                   "instead of the original host.",
     )
 
+    is_low_priority = models.BooleanField(
+        default=False,
+        help_text="Episodes that arrive here first via GUID match will be "
+                  "auto-migrated to a normal-priority feed that later ingests "
+                  "the same episode. Also polled slightly after normal feeds.",
+    )
+
     class Meta:
         unique_together = ('network', 'slug')
 
@@ -267,6 +274,13 @@ class Podcast(models.Model):
 class Episode(models.Model):
     """An individual episode harvested from a feed."""
     podcast = models.ForeignKey(Podcast, on_delete=models.CASCADE, related_name='episodes')
+    podcast_pinned_at = models.DateTimeField(null=True, blank=True,
+        help_text="Set whenever an episode's podcast is manually changed (single or bulk "
+                  "move). GUID-based ingest auto-migration skips pinned episodes so they "
+                  "aren't moved back to a prior feed. Never blocks manual moves.")
+    podcast_pinned_by = models.ForeignKey(User, null=True, blank=True,
+        on_delete=models.SET_NULL, related_name='+',
+        help_text="Who performed the most recent manual move (audit trail).")
     guid_public = models.TextField(blank=True, null=True, db_index=True)
     guid_private = models.TextField(blank=True, null=True, db_index=True)
     is_metadata_locked = models.BooleanField(default=False, help_text="If checked, future feed ingests will ONLY update the audio URLs. Title, Description, and Dates will not be overwritten.")
@@ -791,6 +805,41 @@ class NetworkMix(models.Model):
                 self.image_version = (self.image_version or 0) + 1
             except Exception as e:
                 logger.error(f"Image processing failed for network mix {self.unique_id}: {e}", exc_info=True)
+        super().save(*args, **kwargs)
+
+def notfound_image_path(instance, filename):
+    """Stable R2 key for a 404-pool image: notfound/<UUID>.webp.
+
+    Matches mix_cover_path — the extension is always .webp (process_image_field
+    normalizes output), so a re-upload overwrites the same key rather than
+    orphaning the old object. The passed filename is ignored.
+    """
+    return f"notfound/{instance.unique_id}.webp"
+
+class NotFoundEntry(models.Model):
+    """One image+caption pair in a network's curated 404-page pool."""
+    network = models.ForeignKey(Network, on_delete=models.CASCADE, related_name='notfound_entries')
+    unique_id = models.UUIDField(default=uuid.uuid4, editable=False, unique=True)
+    image_upload = models.ImageField(upload_to=notfound_image_path, storage=select_media_storage)
+    image_version = models.IntegerField(default=0)
+    caption = models.CharField(max_length=200)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return f"{self.network.name} 404 - {self.caption}"
+
+    @property
+    def display_image(self):
+        return _versioned_image_url(self.image_upload, self.image_version)
+
+    def save(self, *args, **kwargs):
+        if self.image_upload and not self.image_upload._committed:
+            try:
+                data = process_image_field(self.image_upload, 800)
+                self.image_upload.save('notfound.webp', ContentFile(data), save=False)
+                self.image_version = (self.image_version or 0) + 1
+            except Exception as e:
+                logger.error(f"Image processing failed for notfound entry {self.unique_id}: {e}", exc_info=True)
         super().save(*args, **kwargs)
 
 class EpisodeEditSuggestion(models.Model):

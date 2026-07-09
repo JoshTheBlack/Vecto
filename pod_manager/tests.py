@@ -36,6 +36,7 @@ from django.contrib.auth.models import User
 from django.contrib.messages import get_messages
 from django.core.cache import cache
 from django.core.files.uploadedfile import SimpleUploadedFile
+from django.http import Http404
 from django.test import Client, SimpleTestCase, TestCase, RequestFactory, override_settings
 from django.urls import reverse
 from django.utils import timezone
@@ -44,12 +45,13 @@ from pod_manager import views
 from pod_manager.models import (
     Network, PatronProfile, PatreonTier, Podcast, Episode, EpisodeCrossPublication,
     NetworkMembership, NetworkMix, UserMix, EpisodeEditSuggestion, Transcript,
-    R2OrphanedObject, LogEntry,
+    R2OrphanedObject, LogEntry, NotFoundEntry,
 )
 from pod_manager.services.edits import (
     apply_approved_edit, chapter_items, parse_chapter_payload, snapshot_episode,
     update_contribution_stats,
 )
+from pod_manager.services.episode_move import move_episodes
 from pod_manager.services.transcription import (
     _parse_srt,
     _parse_srt_timestamp,
@@ -382,6 +384,16 @@ def _make_tenant_request(factory, network, *, method='get', path='/feed/',
     return req
 
 
+def _tiny_image_upload(name='pic.png'):
+    """A minimal real PNG, so ImageField/Pillow-backed save() paths (which
+    open() the upload with Pillow) don't choke on garbage bytes."""
+    import io
+    from PIL import Image
+    buf = io.BytesIO()
+    Image.new('RGB', (10, 10), color='red').save(buf, format='PNG')
+    return SimpleUploadedFile(name, buf.getvalue(), content_type='image/png')
+
+
 class PendingApprovalsContextProcessorTests(TestCase):
     """pending_approvals(): badge count aggregated across owned networks, not
     scoped to request.network (which is often None on the admin console)."""
@@ -669,6 +681,98 @@ class NetworkMixCrudTests(TestCase):
         mix = NetworkMix.objects.create(network=self.network, name='X', slug='x')
         self._post({'action': 'delete_network_mix', 'mix_id': mix.id})
         self.assertFalse(NetworkMix.objects.filter(id=mix.id).exists())
+
+
+class NotFoundEntryCrudTests(TestCase):
+    """creator_settings add/delete handlers for the 404-page image+caption
+    pool: owner-gated (via the standard allowed_networks check) and scoped
+    to the acting owner's network."""
+
+    def setUp(self):
+        self.factory = RequestFactory()
+        self.owner = User.objects.create_user(username='owner', email='owner@example.com')
+        self.network = Network.objects.create(name='Net', slug='n')
+        self.network.owners.add(self.owner)
+
+        self.other_owner = User.objects.create_user(username='other', email='other@example.com')
+        self.other_network = Network.objects.create(name='Other', slug='o')
+        self.other_network.owners.add(self.other_owner)
+
+    def _post(self, data, user=None):
+        req = _make_tenant_request(self.factory, self.network,
+                                   method='post', path='/creator/',
+                                   data=data, user=user or self.owner)
+        return views.creator_settings(req)
+
+    def test_add_notfound_entry_creates_row(self):
+        self._post({
+            'action': 'add_notfound_entry',
+            'caption': "I'm sorry Dave, I'm afraid I can't do that.",
+            'image_upload': _tiny_image_upload(),
+        })
+        entry = NotFoundEntry.objects.get(network=self.network)
+        self.assertEqual(entry.caption, "I'm sorry Dave, I'm afraid I can't do that.")
+        self.assertTrue(entry.image_upload)
+        self.assertEqual(entry.image_version, 1)
+
+    def test_delete_notfound_entry_removes_row(self):
+        entry = NotFoundEntry.objects.create(
+            network=self.network, caption='Oh Snap!', image_upload=_tiny_image_upload(),
+        )
+        self._post({'action': 'delete_notfound_entry', 'entry_id': entry.id})
+        self.assertFalse(NotFoundEntry.objects.filter(id=entry.id).exists())
+
+    def test_delete_notfound_entry_scoped_to_network(self):
+        foreign_entry = NotFoundEntry.objects.create(
+            network=self.other_network, caption='Not yours', image_upload=_tiny_image_upload(),
+        )
+        with self.assertRaises(Http404):
+            self._post({'action': 'delete_notfound_entry', 'entry_id': foreign_entry.id})
+        self.assertTrue(NotFoundEntry.objects.filter(id=foreign_entry.id).exists())
+
+    def test_non_owner_cannot_reach_creator_settings(self):
+        outsider = User.objects.create_user(username='outsider', email='outsider@example.com')
+        req = self.factory.post('/creator/', data={
+            'action': 'add_notfound_entry', 'caption': 'x', 'image_upload': _tiny_image_upload(),
+        })
+        req.user = outsider
+        resp = views.creator_settings(req)
+        self.assertEqual(resp.status_code, 403)
+        self.assertFalse(NotFoundEntry.objects.filter(caption='x').exists())
+
+
+@override_settings(DEBUG=False, ALLOWED_HOSTS=['*'])
+class Custom404ViewTests(TestCase):
+    """handler404 -> pod_manager.views.errors.custom_404: themed pool pick,
+    imageless themed fallback, and the no-network fallback (Feature 3
+    amendment A5: themed cases route through NetworkMiddleware via a real
+    HTTP_HOST matching Network.custom_domain)."""
+
+    def setUp(self):
+        self.network = Network.objects.create(
+            name='Themed Net', slug='themed', custom_domain='themed.example.test',
+        )
+
+    def test_renders_random_pool_entry_for_known_network(self):
+        entry = NotFoundEntry.objects.create(
+            network=self.network, caption='Oh Snap!', image_upload=_tiny_image_upload(),
+        )
+        resp = self.client.get('/this-path-does-not-exist/', HTTP_HOST='themed.example.test')
+        self.assertEqual(resp.status_code, 404)
+        self.assertContains(resp, 'Oh Snap!', status_code=404)
+        self.assertContains(resp, entry.display_image, status_code=404)
+
+    def test_renders_imageless_fallback_when_pool_empty(self):
+        resp = self.client.get('/this-path-does-not-exist/', HTTP_HOST='themed.example.test')
+        self.assertEqual(resp.status_code, 404)
+        self.assertContains(resp, 'Themed Net', status_code=404)
+        self.assertContains(resp, 'This episode was never recorded.', status_code=404)
+
+    def test_renders_no_network_fallback_for_unmatched_domain(self):
+        resp = self.client.get('/some/bogus/path/', HTTP_HOST='totally-unknown.example.test')
+        self.assertEqual(resp.status_code, 404)
+        self.assertContains(resp, 'Vecto', status_code=404)
+        self.assertNotContains(resp, 'name="q"', status_code=404)
 
 
 class EpisodeChapterMirrorTests(TestCase):
@@ -1716,6 +1820,105 @@ class CreatorMergeAndMoveTests(TestCase):
         self.assertIn('tab=move', resp['Location'])
         ep.refresh_from_db()
         self.assertEqual(ep.podcast_id, self.podcast.id)  # Unchanged
+
+    def test_move_episodes_stamps_pin_fields(self):
+        target = Podcast.objects.create(network=self.network, title='Pin Target', slug='pin-target')
+        ep = self._ep(title='Pinned Traveller')
+        self._post({
+            'action': 'move_episodes',
+            'episode_ids': [ep.id],
+            'target_podcast_id': target.id,
+            'new_podcast_title': '', 'new_podcast_slug': '', 'new_podcast_tier_id': '',
+        })
+        ep.refresh_from_db()
+        self.assertIsNotNone(ep.podcast_pinned_at)
+        self.assertEqual(ep.podcast_pinned_by, self.owner)
+
+
+@override_settings(CACHES=TEST_CACHES, WHISPER_ENABLED=False)
+class EpisodeMoveServiceTests(TestCase):
+    """services/episode_move.move_episodes(): parent reassignment, pin
+    stamping, cross-pub cleanup, rekey gating, fragment dispatch, base_url
+    normalization."""
+
+    def setUp(self):
+        self.user = User.objects.create_user(username='mover')
+        self.network = Network.objects.create(name='Net', slug='n')
+        self.source = Podcast.objects.create(network=self.network, title='Source', slug='src')
+        self.target = Podcast.objects.create(network=self.network, title='Target', slug='tgt')
+
+    def _ep(self, **kwargs):
+        defaults = dict(
+            podcast=self.source, title='Ep', pub_date=timezone.now(),
+            raw_description='x', clean_description='x',
+        )
+        defaults.update(kwargs)
+        return Episode.objects.create(**defaults)
+
+    def test_moves_episodes_and_returns_count_and_target(self):
+        eps = [self._ep(title='A'), self._ep(title='B')]
+        result = move_episodes([e.id for e in eps], self.target, base_url='http://n.test')
+        self.assertEqual(result, {'count': 2, 'target': self.target})
+        for e in eps:
+            e.refresh_from_db()
+            self.assertEqual(e.podcast_id, self.target.id)
+
+    def test_drops_only_self_referencing_cross_publications(self):
+        other = Podcast.objects.create(network=self.network, title='Other', slug='other')
+        ep = self._ep()
+        EpisodeCrossPublication.objects.create(episode=ep, podcast=self.target)
+        keep = EpisodeCrossPublication.objects.create(episode=ep, podcast=other)
+        move_episodes([ep.id], self.target, base_url='http://n.test', moved_by=self.user)
+        self.assertFalse(
+            EpisodeCrossPublication.objects.filter(episode=ep, podcast=self.target).exists())
+        self.assertTrue(EpisodeCrossPublication.objects.filter(id=keep.id).exists())
+
+    @override_settings(R2_MIRROR_ENABLED=True)
+    def test_rekey_dispatched_for_mirrored_episodes_only(self):
+        mirrored = self._ep(title='m', r2_url='https://audio.test/1/1/m-aaaaaaaaaaaaaaaa.mp3')
+        plain = self._ep(title='p')
+        with mock.patch('pod_manager.tasks.task_rekey_episode_audio.delay') as rekey:
+            move_episodes([mirrored.id, plain.id], self.target,
+                          base_url='http://n.test', moved_by=self.user)
+        self.assertEqual({c.args[0] for c in rekey.call_args_list}, {mirrored.id})
+
+    @override_settings(R2_MIRROR_ENABLED=False)
+    def test_rekey_skipped_when_mirror_disabled(self):
+        mirrored = self._ep(title='m', r2_url='https://audio.test/1/1/m-aaaaaaaaaaaaaaaa.mp3')
+        with mock.patch('pod_manager.tasks.task_rekey_episode_audio.delay') as rekey:
+            move_episodes([mirrored.id], self.target,
+                          base_url='http://n.test', moved_by=self.user)
+        rekey.assert_not_called()
+
+    def test_pin_stamps_fields_with_moved_by(self):
+        ep = self._ep()
+        move_episodes([ep.id], self.target, base_url='http://n.test', moved_by=self.user)
+        ep.refresh_from_db()
+        self.assertIsNotNone(ep.podcast_pinned_at)
+        self.assertEqual(ep.podcast_pinned_by, self.user)
+
+    def test_pin_false_stamps_neither_field(self):
+        ep = self._ep()
+        move_episodes([ep.id], self.target, base_url='http://n.test',
+                      moved_by=self.user, pin=False)
+        ep.refresh_from_db()
+        self.assertEqual(ep.podcast_id, self.target.id)
+        self.assertIsNone(ep.podcast_pinned_at)
+        self.assertIsNone(ep.podcast_pinned_by)
+
+    def test_rebuild_fragments_false_dispatches_no_fragment_task(self):
+        ep = self._ep()
+        with mock.patch('pod_manager.tasks.task_rebuild_episode_fragments.delay') as rebuild:
+            move_episodes([ep.id], self.target, base_url='http://n.test',
+                          moved_by=self.user, rebuild_fragments=False)
+        rebuild.assert_not_called()
+
+    def test_base_url_normalized_regardless_of_caller_format(self):
+        for raw in ('http://n.test/', 'http://n.test'):
+            ep = self._ep(title=f'norm {raw}')
+            with mock.patch('pod_manager.tasks.task_rebuild_episode_fragments.delay') as rebuild:
+                move_episodes([ep.id], self.target, base_url=raw, moved_by=self.user)
+            rebuild.assert_called_once_with(ep.id, 'http://n.test')
 
 
 # ---------------------------------------------------------------------------
@@ -4276,6 +4479,16 @@ class HandleUpdateShowWhisperTests(TestCase):
         self._call({})  # checkbox not submitted == unchecked
         self.assertFalse(self.pod.force_r2_serve)
 
+    def test_is_low_priority_checkbox_enables(self):
+        self._call({'is_low_priority': 'on'})
+        self.assertTrue(self.pod.is_low_priority)
+
+    def test_is_low_priority_absent_checkbox_disables(self):
+        self.pod.is_low_priority = True
+        self.pod.save()
+        self._call({})  # checkbox not submitted == unchecked
+        self.assertFalse(self.pod.is_low_priority)
+
 
 # ---------------------------------------------------------------------------
 # Episode cross-publishing ("also appears in" other podcasts' feeds)
@@ -6361,6 +6574,44 @@ class LiveImportPollTests(TestCase):
         self.assertIn('[QUEUED]', cache.get(f"import_logs_{self.podcast.id}"))
 
 
+class TaskSmartPollFeedsTests(TestCase):
+    """task_smart_poll_feeds(): normal-priority podcasts dispatch immediately,
+    low-priority podcasts are staggered via a 10-minute countdown."""
+
+    def setUp(self):
+        self.network = Network.objects.create(name='Net', slug='netpoll')
+        self.normal = Podcast.objects.create(network=self.network, title='Normal', slug='normal-poll')
+        self.low = Podcast.objects.create(network=self.network, title='Low', slug='low-poll')
+        self.low.is_low_priority = True
+        self.low.save()
+        Episode.objects.create(
+            podcast=self.normal, title='Ep', pub_date=timezone.now(),
+            raw_description='x', clean_description='x',
+        )
+        Episode.objects.create(
+            podcast=self.low, title='Ep', pub_date=timezone.now(),
+            raw_description='x', clean_description='x',
+        )
+
+    def test_normal_priority_dispatched_immediately(self):
+        from pod_manager.tasks import task_smart_poll_feeds
+        with mock.patch('pod_manager.tasks.task_ingest_feed.delay') as delay, \
+             mock.patch('pod_manager.tasks.task_ingest_feed.apply_async') as apply_async:
+            task_smart_poll_feeds()
+        delay.assert_any_call(self.normal.id)
+        for call in apply_async.call_args_list:
+            self.assertNotEqual(call.kwargs.get('args'), [self.normal.id])
+
+    def test_low_priority_staggered_with_countdown(self):
+        from pod_manager.tasks import task_smart_poll_feeds
+        with mock.patch('pod_manager.tasks.task_ingest_feed.delay') as delay, \
+             mock.patch('pod_manager.tasks.task_ingest_feed.apply_async') as apply_async:
+            task_smart_poll_feeds()
+        apply_async.assert_any_call(args=[self.low.id], countdown=600)
+        for call in delay.call_args_list:
+            self.assertNotEqual(call.args, (self.low.id,))
+
+
 @override_settings(CACHES=TEST_CACHES)
 class GdriveRecoveryPollTests(TestCase):
     """The polled GDrive-recovery log endpoint (migrated from SSE → polling)."""
@@ -6590,6 +6841,53 @@ class ManageEpisodeUploadAudioTests(TestCase):
         self.assertIsNone(self.episode.explicit)
 
 
+class ManageEpisodeMoveEpisodeTests(TestCase):
+    """manage_episode's move_episode action: owner gate, successful move via
+    services.episode_move, no-op when target == current podcast."""
+
+    def setUp(self):
+        self.network = Network.objects.create(name='Net', slug='netmove')
+        self.podcast_a = Podcast.objects.create(network=self.network, title='Show A', slug='showa-move')
+        self.podcast_b = Podcast.objects.create(network=self.network, title='Show B', slug='showb-move')
+        self.episode = Episode.objects.create(
+            podcast=self.podcast_a, title='Ep 1', pub_date=timezone.now(),
+            raw_description='x', clean_description='x',
+        )
+        self.owner = User.objects.create_user('owner', password='x')
+        self.network.owners.add(self.owner)
+        self.other = User.objects.create_user('other', password='x')
+        self.url = reverse('manage_episode', args=[self.episode.id])
+
+    def _move(self, user, target_podcast_id):
+        self.client.force_login(user)
+        return self.client.post(self.url, {'action': 'move_episode', 'target_podcast_id': target_podcast_id})
+
+    def test_non_owner_forbidden(self):
+        resp = self._move(self.other, self.podcast_b.id)
+        self.assertEqual(resp.status_code, 403)
+        self.episode.refresh_from_db()
+        self.assertEqual(self.episode.podcast_id, self.podcast_a.id)
+
+    def test_successful_move(self):
+        resp = self._move(self.owner, self.podcast_b.id)
+        self.assertEqual(resp.status_code, 302)
+        self.episode.refresh_from_db()
+        self.assertEqual(self.episode.podcast_id, self.podcast_b.id)
+        self.assertIsNotNone(self.episode.podcast_pinned_at)
+        self.assertEqual(self.episode.podcast_pinned_by_id, self.owner.id)
+        msgs = [str(m) for m in get_messages(resp.wsgi_request)]
+        self.assertTrue(any('moved to "Show B"' in m for m in msgs))
+
+    def test_noop_when_target_is_current_podcast(self):
+        resp = self._move(self.owner, self.podcast_a.id)
+        self.assertEqual(resp.status_code, 302)
+        self.episode.refresh_from_db()
+        self.assertEqual(self.episode.podcast_id, self.podcast_a.id)
+        self.assertIsNone(self.episode.podcast_pinned_at)
+        msgs = [str(m) for m in get_messages(resp.wsgi_request)]
+        self.assertTrue(any('already in that feed' in m for m in msgs))
+
+
 class CommitEpisodeSeasonNumberTests(TestCase):
     """commit_episode(): season/episode/type applied when unlocked, left alone
     (and logged) when locked."""
@@ -6677,6 +6975,131 @@ class CommitEpisodeSeasonNumberTests(TestCase):
             commit_episode(self.podcast, entry, None, 'Test', mock.Mock())
         self.episode.refresh_from_db()
         self.assertEqual(self.episode.tags, ['Curated'])
+
+
+class CommitEpisodeAutoMigrationTests(TestCase):
+    """commit_episode()'s GUID auto-migration hook: episodes move off
+    low-priority feeds onto normal-priority ones (as if bulk-moved, minus the
+    pin), the pin and the divergence guard block it, and a low-priority
+    ingester updates only GUIDs on episodes it doesn't own."""
+
+    def setUp(self):
+        self.network = Network.objects.create(name='Net', slug='netmigrate')
+        self.low = Podcast.objects.create(
+            network=self.network, title='Overflow', slug='overflow-lp', is_low_priority=True)
+        self.home = Podcast.objects.create(network=self.network, title='Home', slug='home-np')
+        self.episode = Episode.objects.create(
+            podcast=self.low, title='Ep 1', pub_date=timezone.now(),
+            raw_description='x', clean_description='x', guid_public='guid-mig-1',
+        )
+
+    def _entry(self, **kw):
+        base = dict(id='guid-mig-1', title='Ep 1')
+        base.update(kw)
+        return _FakeEntry(**base)
+
+    def _commit(self, podcast, pub_entry=None, sub_entry=None, enhancer=None):
+        from pod_manager.ingesters.default import commit_episode
+        stdout = mock.Mock()
+        with mock.patch('pod_manager.ingesters.default.task_rebuild_episode_fragments'):
+            commit_episode(podcast, pub_entry, sub_entry, 'Test', stdout, enhancer)
+        return stdout
+
+    def _stdout_lines(self, stdout):
+        return [c.args[0] for c in stdout.write.call_args_list]
+
+    def test_migrates_from_low_priority_owner_to_normal_ingester(self):
+        with mock.patch('pod_manager.tasks.task_rebuild_episode_fragments.delay') as svc_rebuild, \
+             self.assertLogs('pod_manager.ingesters.default', level='INFO') as cm:
+            stdout = self._commit(self.home, pub_entry=self._entry())
+        self.episode.refresh_from_db()
+        self.assertEqual(self.episode.podcast_id, self.home.id)
+        self.assertIsNone(self.episode.podcast_pinned_at)
+        self.assertIsNone(self.episode.podcast_pinned_by)
+        self.assertTrue(any(
+            "[AUTO-MIGRATE] 'Ep 1': Overflow -> Home" in line
+            for line in self._stdout_lines(stdout)))
+        self.assertTrue(any('Auto-migrated episode' in line for line in cm.output))
+        # rebuild_fragments=False — only commit_episode's own dispatch (patched
+        # at the ingester module) runs, never a second one from the service.
+        svc_rebuild.assert_not_called()
+
+    def test_no_migration_when_owner_is_normal_priority(self):
+        self.low.is_low_priority = False
+        self.low.save(update_fields=['is_low_priority'])
+        self._commit(self.home, pub_entry=self._entry())
+        self.episode.refresh_from_db()
+        self.assertEqual(self.episode.podcast_id, self.low.id)
+
+    def test_no_migration_when_both_are_low_priority(self):
+        self.home.is_low_priority = True
+        self.home.save(update_fields=['is_low_priority'])
+        self._commit(self.home, pub_entry=self._entry())
+        self.episode.refresh_from_db()
+        self.assertEqual(self.episode.podcast_id, self.low.id)
+
+    def test_no_migration_when_episode_is_pinned(self):
+        self.episode.podcast_pinned_at = timezone.now()
+        self.episode.save(update_fields=['podcast_pinned_at'])
+        stdout = self._commit(self.home, pub_entry=self._entry())
+        self.episode.refresh_from_db()
+        self.assertEqual(self.episode.podcast_id, self.low.id)
+        self.assertFalse(any('[AUTO-MIGRATE]' in line for line in self._stdout_lines(stdout)))
+
+    def test_divergence_guard_skips_and_writes_skip_migrate(self):
+        other = Episode.objects.create(
+            podcast=self.low, title='Ep 1 priv', pub_date=timezone.now(),
+            raw_description='x', clean_description='x', guid_private='guid-mig-priv',
+        )
+        stdout = self._commit(self.home, pub_entry=self._entry(),
+                              sub_entry=self._entry(id='guid-mig-priv'))
+        self.episode.refresh_from_db()
+        other.refresh_from_db()
+        self.assertEqual(self.episode.podcast_id, self.low.id)
+        self.assertEqual(other.podcast_id, self.low.id)
+        self.assertTrue(any('[SKIP MIGRATE]' in line for line in self._stdout_lines(stdout)))
+
+    def test_low_priority_ingester_updates_only_guids_on_non_owned_episode(self):
+        self.episode.podcast = self.home
+        self.episode.audio_url_public = 'https://cdn.test/orig.mp3'
+        self.episode.season_number = 2
+        self.episode.save(update_fields=['podcast', 'audio_url_public', 'season_number'])
+        enhancer = mock.Mock()
+        entry = self._entry(
+            title='Stale Overflow Title', itunes_season='9',
+            enclosures=[_FakeEntry(href='https://cdn.test/stale.mp3')],
+        )
+        self._commit(self.low, pub_entry=entry,
+                     sub_entry=self._entry(id='guid-mig-priv'), enhancer=enhancer)
+        self.episode.refresh_from_db()
+        self.assertEqual(self.episode.podcast_id, self.home.id)
+        self.assertEqual(self.episode.title, 'Ep 1')
+        self.assertEqual(self.episode.audio_url_public, 'https://cdn.test/orig.mp3')
+        self.assertEqual(self.episode.season_number, 2)
+        self.assertEqual(self.episode.guid_private, 'guid-mig-priv')
+        enhancer.assert_not_called()
+
+    @override_settings(R2_MIRROR_ENABLED=True)
+    def test_migration_runs_cross_pub_cleanup_and_rekey(self):
+        self.episode.r2_url = 'https://audio.test/1/1/ep-aaaaaaaaaaaaaaaa.mp3'
+        self.episode.save(update_fields=['r2_url'])
+        EpisodeCrossPublication.objects.create(episode=self.episode, podcast=self.home)
+        with mock.patch('pod_manager.tasks.task_rekey_episode_audio.delay') as rekey:
+            self._commit(self.home, pub_entry=self._entry())
+        self.episode.refresh_from_db()
+        self.assertEqual(self.episode.podcast_id, self.home.id)
+        self.assertFalse(EpisodeCrossPublication.objects.filter(
+            episode=self.episode, podcast=self.home).exists())
+        rekey.assert_called_once_with(self.episode.id)
+
+    def test_metadata_locked_episode_still_migrates_fields_untouched(self):
+        self.episode.is_metadata_locked = True
+        self.episode.title = 'Curated'
+        self.episode.save(update_fields=['is_metadata_locked', 'title'])
+        self._commit(self.home, pub_entry=self._entry(title='Feed Title'))
+        self.episode.refresh_from_db()
+        self.assertEqual(self.episode.podcast_id, self.home.id)
+        self.assertEqual(self.episode.title, 'Curated')
 
 
 class BaldmoveEnhancerTagTests(TestCase):

@@ -62,6 +62,9 @@
             <a class="list-group-item list-group-item-action border-secondary {% if request.GET.tab == 'transcripts' %}active{% endif %}" id="list-transcripts-list" data-bs-toggle="list" href="#list-transcripts" role="tab">
                 <i class="bi bi-file-earmark-text me-2"></i> Transcripts
             </a>
+            <a class="list-group-item list-group-item-action border-secondary {% if request.GET.tab == 'notfound' %}active{% endif %}" id="list-notfound-list" data-bs-toggle="list" href="#list-notfound" role="tab">
+                <i class="bi bi-emoji-frown me-2"></i> 404 Page
+            </a>
         </div>
     </div>
 
@@ -89,6 +92,8 @@
             {% include 'pod_manager/creator_tabs/tab_gdrive_recovery.html' %}
 
             {% include 'pod_manager/creator_tabs/tab_transcripts.html' %}
+
+            {% include 'pod_manager/creator_tabs/tab_notfound.html' %}
 
         </div>
     </div>

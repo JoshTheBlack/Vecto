@@ -29,6 +29,7 @@ from .data import (
     gather_manage_podcasts,
     gather_merge_desk,
     gather_move_context,
+    gather_notfound_context,
     gather_reports_data,
 )
 
@@ -68,6 +69,7 @@ def creator_settings(request):
         **gather_audit_log(request, current_network),
         **gather_move_context(request, current_network),
         **gather_cross_publish_context(request, current_network),
+        **gather_notfound_context(current_network),
         **gather_reports_data(),
     }
 

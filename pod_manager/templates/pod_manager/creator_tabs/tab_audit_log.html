@@ -414,9 +414,8 @@
     }
 </style>
 
-<script src="{% static 'pod_manager/js/diff.min.js' %}"></script>
 <script>
-    document.addEventListener("DOMContentLoaded", function() {
+    (function () {
         if (typeof Diff === 'undefined') {
             console.error("Diff library failed to load.");
             return;
@@ -524,5 +523,5 @@
             // by template logic that toggles a Bootstrap class when a chapter
             // is missing from the other side's list. No JS needed here.
         });
-    });
+    })();
 </script>

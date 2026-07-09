@@ -327,6 +327,7 @@
     }
 
     function doPoll() {
+        if (!document.body.contains(feed)) return;
         const userParam = currentUser ? `&user=${encodeURIComponent(currentUser)}` : '';
         const url = `{% url 'log_poll' %}?level=${currentLevel}&last_id=${lastId}${userParam}`;
         fetch(url)
@@ -430,6 +431,7 @@
     }
 
     function refreshResources() {
+        if (!document.body.contains(resBody)) return;
         if (resPaused) return;
         fetch("{% url 'log_resources' %}")
             .then(r => r.json())

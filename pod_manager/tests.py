@@ -4720,6 +4720,8 @@ class VendoredAssetTests(SimpleTestCase):
         "pod_manager/js/diff.min.js": "diffWordsWithSpace",
         "pod_manager/css/quill.snow.css": "ql-snow",
         "pod_manager/js/quill.js": None,
+        "pod_manager/js/htmx.min.js": 'version:"2.0.8"',
+        "pod_manager/audio/blank.wav": None,
     }
 
     def _iter_templates(self):

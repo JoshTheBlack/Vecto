@@ -24,9 +24,6 @@
     .ql-snow .ql-picker { color: #f8f9fa; }
     .ql-snow .ql-picker-options { background-color: #212529; border-color: var(--bs-secondary); }
 
-    .plyr__menu__container { max-height: 250px; overflow-y: auto; }
-    .plyr__menu__container::-webkit-scrollbar { width: 6px; }
-    .plyr__menu__container::-webkit-scrollbar-thumb { background: var(--vecto-primary); border-radius: 3px; }
     
     /* Edit Mode Specific Styles */
     .nav-tabs .nav-link.active { border-bottom-color: transparent !important; }
@@ -169,23 +166,50 @@
     .type-add-input { background:transparent; border:none; outline:none; color:#f8f9fa; font-size:.875rem; min-width:70px; width:90px; padding:.3rem .2rem; }
     .type-add-input::placeholder { color:rgba(248,249,250,.3); }
 
-    /* Inline audio player — a raised, glossy 3D surface that stands out clearly
-       from the dark card. A top→bottom highlight gradient + inset top edge + drop
-       shadow give the depth; set directly on the controls (not via Plyr's custom
-       property) so it always applies. Squares its bottom when chapters attach. */
-    .plyr--audio .plyr__controls {
+    /* Inline audio card — a raised, glossy 3D surface that stands out clearly
+       from the dark card (top→bottom highlight gradient + inset top edge + drop
+       shadow). It is a remote control for the global now-playing bar, not its
+       own audio engine, so playback survives navigation. Squares its bottom
+       when chapters attach. */
+    .vecto-remote {
+        display: flex; align-items: center; gap: 10px;
+        padding: 8px 12px;
         background: linear-gradient(180deg,
             color-mix(in srgb, var(--vecto-surface-bg) 62%, #fff 38%),
-            color-mix(in srgb, var(--vecto-surface-bg) 82%, #fff 18%)) !important;
+            color-mix(in srgb, var(--vecto-surface-bg) 82%, #fff 18%));
         border: 1px solid var(--bs-border-color);
         border-radius: var(--bs-border-radius);
         box-shadow: 0 3px 7px rgba(0,0,0,0.45), inset 0 1px 0 rgba(255,255,255,0.18);
     }
-    .plyr--audio.has-chapters .plyr__controls {
+    .vecto-remote.has-chapters {
         border-bottom: 0;
         border-radius: var(--bs-border-radius) var(--bs-border-radius) 0 0;
     }
-    .plyr--audio.has-chapters { margin-bottom: 0; }
+    .vecto-remote-play {
+        background: rgba(0,0,0,0.22); border: 0; cursor: pointer;
+        width: 38px; height: 38px; flex-shrink: 0;
+        display: flex; align-items: center; justify-content: center;
+        border-radius: 50%;
+        color: var(--vecto-surface-text);
+        font-size: 1.3rem;
+        transition: background .12s, color .12s, transform .1s;
+    }
+    .vecto-remote-play:hover { background: rgba(0,0,0,0.4); color: var(--vecto-primary); }
+    .vecto-remote-play:active { transform: scale(0.9); }
+    .vecto-remote-time {
+        font-size: .74rem; color: var(--vecto-surface-text);
+        font-variant-numeric: tabular-nums; white-space: nowrap; flex-shrink: 0;
+    }
+    .vecto-remote-track {
+        flex: 1; height: 5px; border-radius: var(--vecto-radius-sm);
+        background: rgba(0,0,0,0.35); position: relative; cursor: pointer;
+        transition: height .12s;
+    }
+    .vecto-remote-track:hover { height: 8px; }
+    .vecto-remote-fill {
+        position: absolute; left: 0; top: 0; bottom: 0; width: 0%;
+        background: var(--vecto-primary); border-radius: inherit; pointer-events: none;
+    }
 
     /* Chapters — a collapsible package attached under the player. The toggle bar
        sits a few shades above the rows (between the player and the tag-coloured
@@ -370,14 +394,20 @@
                                         </a>
                                     </div>
                                     {% if ep.audio_url_public %}
-                                    <audio class="js-player" controls>
-                                        <source src="{{ ep.audio_url_public }}" type="audio/mpeg">
-                                    </audio>
+                                    <div class="vecto-remote js-episode-remote{% if chapters %} has-chapters{% endif %}" data-link="{% url 'episode_detail' ep.id %}" data-audio="{{ ep.audio_url_public }}" data-title="{{ ep.title }}" data-show="{{ ep.podcast.title }}" data-cover="{{ ep.podcast.image_url|default:ep.podcast.network.default_image_url|default:'' }}" data-chapters="1">
+                                        <button type="button" class="vecto-remote-play" title="Play"><i class="bi bi-play-fill"></i></button>
+                                        <span class="vecto-remote-time vecto-remote-cur">0:00</span>
+                                        <div class="vecto-remote-track"><div class="vecto-remote-fill"></div></div>
+                                        <span class="vecto-remote-time vecto-remote-total">{{ ep.duration|default:"0:00" }}</span>
+                                    </div>
                                     {% endif %}
                                 {% else %}
-                                <audio class="js-player" controls>
-                                    <source src="{{ ep.raw_audio_url }}" type="audio/mpeg">
-                                </audio>
+                                <div class="vecto-remote js-episode-remote{% if chapters %} has-chapters{% endif %}" data-link="{% url 'episode_detail' ep.id %}" data-audio="{{ ep.raw_audio_url }}" data-title="{{ ep.title }}" data-show="{{ ep.podcast.title }}" data-cover="{{ ep.podcast.image_url|default:ep.podcast.network.default_image_url|default:'' }}" data-chapters="1">
+                                    <button type="button" class="vecto-remote-play" title="Play"><i class="bi bi-play-fill"></i></button>
+                                    <span class="vecto-remote-time vecto-remote-cur">0:00</span>
+                                    <div class="vecto-remote-track"><div class="vecto-remote-fill"></div></div>
+                                    <span class="vecto-remote-time vecto-remote-total">{{ ep.duration|default:"0:00" }}</span>
+                                </div>
                                 {% endif %}
                                 {% if chapters %}
                                 <div id="episodeChapters" class="episode-chapters mb-3">
@@ -400,7 +430,7 @@
                             {% if is_owner or request.user.is_authenticated and ep.user_has_access %}
                             <div class="d-flex align-items-center gap-2 mb-3">
                                 {% if request.user.is_authenticated and ep.user_has_access %}
-                                <a href="{{ ep.raw_audio_url }}" class="btn btn-primary btn-sm flex-shrink-0" download>
+                                <a href="{{ ep.raw_audio_url }}" class="btn btn-primary btn-sm flex-shrink-0" download hx-boost="false">
                                     <i class="bi bi-cloud-download"></i> Download
                                 </a>
                                 {% endif %}
@@ -426,11 +456,14 @@
                                     <div class="collapse mt-3" id="publicAudioCollapse">
                                         <div class="card card-body bg-dark border-secondary">
                                             <p class="small text-muted mb-2">Public (Ad-Supported) Audio:</p>
-                                            <audio class="js-player" controls>
-                                                <source src="{{ ep.audio_url_public }}" type="audio/mpeg">
-                                            </audio>
+                                            <div class="vecto-remote js-episode-remote" data-link="{% url 'episode_detail' ep.id %}" data-audio="{{ ep.audio_url_public }}" data-title="{{ ep.title }} (Ad-Supported)" data-show="{{ ep.podcast.title }}" data-cover="{{ ep.podcast.image_url|default:ep.podcast.network.default_image_url|default:'' }}">
+                                                <button type="button" class="vecto-remote-play" title="Play"><i class="bi bi-play-fill"></i></button>
+                                                <span class="vecto-remote-time vecto-remote-cur">0:00</span>
+                                                <div class="vecto-remote-track"><div class="vecto-remote-fill"></div></div>
+                                                <span class="vecto-remote-time vecto-remote-total">{{ ep.duration|default:"0:00" }}</span>
+                                            </div>
                                             <div class="mt-2">
-                                                <a href="{{ ep.audio_url_public }}" class="text-muted small text-decoration-none" download>
+                                                <a href="{{ ep.audio_url_public }}" class="text-muted small text-decoration-none" download hx-boost="false">
                                                     <i class="bi bi-cloud-download"></i> Download Public MP3
                                                 </a>
                                             </div>
@@ -466,10 +499,10 @@
                         <h4 class="text-light mb-0"><i class="bi bi-file-text me-2"></i>Episode Transcript</h4>
                         <div class="d-flex gap-2 align-items-center flex-wrap">
                             {% if transcript.status == 'completed' %}
-                            <a href="{% url 'serve_transcript' ep.id 'vtt' %}?download=1" class="btn btn-subtle btn-sm" download>
+                            <a href="{% url 'serve_transcript' ep.id 'vtt' %}?download=1" class="btn btn-subtle btn-sm" download hx-boost="false">
                                 <i class="bi bi-download me-1"></i>VTT
                             </a>
-                            <a href="{% url 'serve_transcript' ep.id 'srt' %}?download=1" class="btn btn-subtle btn-sm" download>
+                            <a href="{% url 'serve_transcript' ep.id 'srt' %}?download=1" class="btn btn-subtle btn-sm" download hx-boost="false">
                                 <i class="bi bi-download me-1"></i>SRT
                             </a>
                             {% endif %}
@@ -764,7 +797,7 @@
                             </div>
                         </form>
 
-                        <form method="POST" action="{% url 'manage_episode' ep.id %}" class="mb-4" enctype="multipart/form-data">
+                        <form method="POST" action="{% url 'manage_episode' ep.id %}" class="mb-4" enctype="multipart/form-data" hx-boost="false">
                             {% csrf_token %}
                             <input type="hidden" name="action" value="upload_audio">
                             <label class="form-label text-light">Upload Audio File</label>
@@ -869,9 +902,8 @@
 
 {{ ep.chapters_public|default:"[]"|json_script:"existing-chapters" }}
 
-<script src="{% static 'pod_manager/js/quill.js' %}"></script>
 <script>
-    document.addEventListener('DOMContentLoaded', () => {
+    (() => {
         
         // --- 1. INITIALIZE QUILL RTE ---
         const quill = new Quill('#editDescContainer', {
@@ -887,30 +919,92 @@
             }
         });
 
-        // --- 2. INITIALIZE PLYR ---
-        const players = Plyr.setup('.js-player', {
-            controls: ['play', 'progress', 'current-time', 'duration', 'mute', 'volume', 'settings'],
-            settings: ['speed'],
-            speed: { selected: 1, options: [0.5, 0.75, 0.8, 0.9, 1, 1.1, 1.2, 1.25, 1.5, 1.75, 2, 2.5] },
-            iconUrl: "{% static 'pod_manager/img/plyr.svg' %}"
-        });
-        window._mainPlyr = players[0];
-
+        // --- 2. EPISODE REMOTE CARDS ---
+        // Each card drives and mirrors the global now-playing bar. It only
+        // reflects playback while the bar's loaded URL matches its own
+        // data-audio; otherwise it renders idle. Cards expose _playAt/_isCurrent
+        // as element expandos so the chapter/transcript handlers below can
+        // route through the same episode metadata.
         const episodeChapters = {{ chapters_json|safe }};
-        // Square the player's bottom so the attached chapters package reads as one unit.
-        if (players[0] && episodeChapters.length && players[0].elements?.container) {
-            players[0].elements.container.classList.add('has-chapters');
+
+        function fmtT(s) {
+            if (!s || isNaN(s) || !isFinite(s)) return '0:00';
+            const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), sec = Math.floor(s % 60);
+            return h > 0
+                ? `${h}:${String(m).padStart(2,'0')}:${String(sec).padStart(2,'0')}`
+                : `${m}:${String(sec).padStart(2,'0')}`;
+        }
+        function parseClock(str) {
+            const parts = String(str || '').trim().split(':').reverse();
+            let s = parseFloat(parts[0]) || 0;
+            if (parts[1]) s += (parseInt(parts[1], 10) || 0) * 60;
+            if (parts[2]) s += (parseInt(parts[2], 10) || 0) * 3600;
+            return s;
         }
 
-        // Surface the inline Listen player in the global now-playing bar.
-        if (players[0] && window.VectoPlayer) {
-            window.VectoPlayer.attach(players[0], {
-                title: "{{ ep.title|escapejs }}",
-                show:  "{{ ep.podcast.title|escapejs }}",
-                cover: "{{ ep.podcast.image_url|default:ep.podcast.network.default_image_url|default:''|escapejs }}",
-                chapters: episodeChapters,
+        document.querySelectorAll('.js-episode-remote').forEach(remote => {
+            const btn   = remote.querySelector('.vecto-remote-play');
+            const curEl = remote.querySelector('.vecto-remote-cur');
+            const totEl = remote.querySelector('.vecto-remote-total');
+            const track = remote.querySelector('.vecto-remote-track');
+            const fill  = remote.querySelector('.vecto-remote-fill');
+            const idleTotal = totEl.textContent;
+
+            const isCurrent = () => window.VectoPlayer.current()?.url === remote.dataset.audio;
+            remote._isCurrent = isCurrent;
+            remote._playAt = (seek) => {
+                window.VectoPlayer.play({
+                    url:   remote.dataset.audio,
+                    title: remote.dataset.title || '',
+                    show:  remote.dataset.show  || '',
+                    cover: remote.dataset.cover || '',
+                    link:  remote.dataset.link  || '',
+                    chapters: remote.dataset.chapters ? episodeChapters : [],
+                    seek:  seek || 0,
+                });
+            };
+
+            function setIcon(name) {
+                // rewrite only on change — replacing the <i> mid-click makes
+                // the browser drop the click event
+                if (btn.dataset.icon === name) return;
+                btn.dataset.icon = name;
+                btn.innerHTML = `<i class="bi ${name}"></i>`;
+            }
+            function render() {
+                const p = window._mainPlyr;
+                if (p && isCurrent()) {
+                    const d = p.duration || 0;
+                    fill.style.width = d ? Math.min(100, (p.currentTime / d) * 100) + '%' : '0%';
+                    curEl.textContent = fmtT(p.currentTime);
+                    if (d) totEl.textContent = fmtT(d);
+                    setIcon(p.paused ? 'bi-play-fill' : 'bi-pause-fill');
+                } else {
+                    fill.style.width = '0%';
+                    curEl.textContent = '0:00';
+                    totEl.textContent = idleTotal;
+                    setIcon('bi-play-fill');
+                }
+            }
+
+            btn.addEventListener('click', () => {
+                if (isCurrent()) window.VectoPlayer.toggle();
+                else remote._playAt(0);
             });
-        }
+            track.addEventListener('click', (e) => {
+                const r = track.getBoundingClientRect();
+                const pct = (e.clientX - r.left) / r.width;
+                const p = window._mainPlyr;
+                if (p && isCurrent()) {
+                    if (p.duration) p.currentTime = pct * p.duration;
+                } else {
+                    remote._playAt(pct * parseClock(idleTotal));
+                }
+            });
+
+            window.VectoPage.on(document, 'vecto:playerupdate', render);
+            render();
+        });
 
         // If arriving with #transcript (e.g. the dashboard Transcript button),
         // open the Transcript tab directly.
@@ -1112,7 +1206,7 @@
 
         // --- 4. PACKAGE DATA ON SUBMIT ---
         if (form) {
-            form.addEventListener('submit', (e) => {
+            const buildEditPayload = () => {
                 // Commit any pending typed-but-not-Enter'd tag before serializing
                 commitPendingTagInput();
                 const tagsArray = currentTags.slice();
@@ -1187,9 +1281,22 @@
                 // user_edit_rollback.md §8a) — the payload never carries it.
 
                 payloadInput.value = JSON.stringify(finalPayload);
+            };
+            form.addEventListener('submit', buildEditPayload);
+            // htmx serializes boosted forms in its own submit listener, whose
+            // order relative to ours isn't guaranteed — rebuild the payload at
+            // request-build time so the POST always carries the live values.
+            window.VectoPage.on(document.body, 'htmx:configRequest', (e) => {
+                if (e.detail.elt !== form) return;
+                buildEditPayload();
+                if (e.detail.parameters && typeof e.detail.parameters.set === 'function') {
+                    e.detail.parameters.set('payload', payloadInput.value);
+                } else {
+                    e.detail.parameters.payload = payloadInput.value;
+                }
             });
         }
-    });
+    })();
 
     // UTC clock + local equivalent for owner schedule input
     (function () {
@@ -1207,7 +1314,10 @@
                 `${padZ(n.getUTCHours())}:${padZ(n.getUTCMinutes())}:${padZ(n.getUTCSeconds())}`;
         }
         tick();
-        setInterval(tick, 1000);
+        const clockTimer = setInterval(() => {
+            if (!document.body.contains(clockEl)) { clearInterval(clockTimer); return; }
+            tick();
+        }, 1000);
 
         function showEquiv() {
             if (!inputEl || !equivEl) return;
@@ -1226,17 +1336,18 @@
 
     // Check MP3 reachability asynchronously — skipped for R2-served audio
     // (reliable, and avoids a HEAD/Class-B op per page view).
-    const targetUrl = "{% if ep.is_r2_served %}{% else %}{{ ep.raw_audio_url|escapejs }}{% endif %}";
-    if (targetUrl) {
+    (function () {
+        const targetUrl = "{% if ep.is_r2_served %}{% else %}{{ ep.raw_audio_url|escapejs }}{% endif %}";
+        if (!targetUrl) return;
         fetch(`/api/check-audio/?url=${encodeURIComponent(targetUrl)}`)
         .then(response => response.json())
         .then(data => {
-            if (!data.reachable) {
-                document.getElementById('audio-warning-banner').classList.remove('d-none');
-            }
+            // The page may have been swapped away before the check resolved.
+            const banner = document.getElementById('audio-warning-banner');
+            if (!data.reachable && banner) banner.classList.remove('d-none');
         })
         .catch(err => console.error("Audio check failed", err));
-    }
+    })();
 
     /* ── Episode type chip selector (localStorage-backed) ──── */
     (function () {
@@ -1344,9 +1455,8 @@
         });
     }
 
-    const player = Array.from(document.querySelectorAll('audio.js-player'))
-        .find(a => a.querySelector('source')?.src) || document.querySelector('audio.js-player');
-    if (!player) return;
+    const remote = document.querySelector('.js-episode-remote');
+    if (!remote) return;
 
     box.addEventListener('click', e => {
         const btn = e.target.closest('.chapter-link[data-start]');
@@ -1354,15 +1464,13 @@
         const t = parseFloat(btn.dataset.start);
         if (isNaN(t)) return;
         const plyr = window._mainPlyr;
-        if (plyr) {
+        if (remote._isCurrent() && plyr) {
             if (plyr.media.readyState > 0) { plyr.currentTime = t; plyr.play(); }
             else { plyr.media.addEventListener('canplay', () => { plyr.currentTime = t; }, { once: true }); plyr.play(); }
         } else {
-            if (player.readyState > 0) { player.currentTime = t; }
-            else { player.addEventListener('canplay', () => { player.currentTime = t; }, { once: true }); }
-            player.play().catch(() => {});
+            remote._playAt(t);
         }
-        (plyr?.elements?.container || player).scrollIntoView({ behavior: 'smooth', block: 'center' });
+        remote.scrollIntoView({ behavior: 'smooth', block: 'center' });
     });
 })();
 
@@ -1447,9 +1555,9 @@
         return html + '</div>';
     }
 
-    // Player is found once; listeners attached once
-    const player = Array.from(document.querySelectorAll('audio.js-player'))
-        .find(a => a.querySelector('source')?.src) || document.querySelector('audio.js-player');
+    // The global bar is the only audio engine; word-sync tracks it while it
+    // is playing this page's episode (matched via the remote card's URL).
+    const remote = document.querySelector('.js-episode-remote');
 
     let lastIdx = -1;
     let wordEls = [];
@@ -1470,57 +1578,55 @@
         lastIdx = -1;
     }
 
-    if (player) {
-        player.addEventListener('timeupdate', () => {
-            if (!starts.length) return;
-            const t = player.currentTime;
-            let lo = 0, hi = starts.length - 1, idx = -1;
-            while (lo <= hi) {
-                const mid = (lo + hi) >> 1;
-                if (starts[mid] <= t) { idx = mid; lo = mid + 1; }
-                else hi = mid - 1;
-            }
-            if (idx === lastIdx) return;
-            if (lastIdx >= 0) wordEls[lastIdx].classList.remove('tx-active');
-            if (idx >= 0) {
-                wordEls[idx].classList.add('tx-active');
-                if (!userScrolling) {
-                    const el  = wordEls[idx];
-                    const top = el.offsetTop - container.offsetTop;
-                    const vis = container.scrollTop;
-                    const bot = vis + container.clientHeight;
-                    if (top < vis + 60 || top > bot - 80) {
-                        container.scrollTo({ top: top - container.clientHeight / 2, behavior: 'smooth' });
-                    }
+    window.VectoPage.on(document, 'vecto:playerupdate', () => {
+        if (!starts.length) return;
+        const p = window._mainPlyr;
+        if (!p || !remote || !remote._isCurrent()) {
+            if (lastIdx >= 0) { wordEls[lastIdx].classList.remove('tx-active'); lastIdx = -1; }
+            return;
+        }
+        const t = p.currentTime;
+        let lo = 0, hi = starts.length - 1, idx = -1;
+        while (lo <= hi) {
+            const mid = (lo + hi) >> 1;
+            if (starts[mid] <= t) { idx = mid; lo = mid + 1; }
+            else hi = mid - 1;
+        }
+        if (idx === lastIdx) return;
+        if (lastIdx >= 0) wordEls[lastIdx].classList.remove('tx-active');
+        if (idx >= 0) {
+            wordEls[idx].classList.add('tx-active');
+            if (!userScrolling) {
+                const el  = wordEls[idx];
+                const top = el.offsetTop - container.offsetTop;
+                const vis = container.scrollTop;
+                const bot = vis + container.clientHeight;
+                if (top < vis + 60 || top > bot - 80) {
+                    container.scrollTo({ top: top - container.clientHeight / 2, behavior: 'smooth' });
                 }
             }
-            lastIdx = idx;
-        });
+        }
+        lastIdx = idx;
+    });
 
-        container.addEventListener('click', e => {
-            const span = e.target.closest('span.tx-word[data-start]');
-            if (!span) return;
-            const t = parseFloat(span.dataset.start);
-            const plyr = window._mainPlyr;
-            if (plyr) {
-                if (plyr.media.readyState > 0) {
-                    plyr.currentTime = t;
-                    plyr.play();
-                } else {
-                    // Media not loaded yet — seek once it's ready, then play
-                    plyr.media.addEventListener('canplay', () => { plyr.currentTime = t; }, { once: true });
-                    plyr.play();
-                }
+    container.addEventListener('click', e => {
+        const span = e.target.closest('span.tx-word[data-start]');
+        if (!span || !remote) return;
+        const t = parseFloat(span.dataset.start);
+        const plyr = window._mainPlyr;
+        if (remote._isCurrent() && plyr) {
+            if (plyr.media.readyState > 0) {
+                plyr.currentTime = t;
+                plyr.play();
             } else {
-                if (player.readyState > 0) {
-                    player.currentTime = t;
-                } else {
-                    player.addEventListener('canplay', () => { player.currentTime = t; }, { once: true });
-                }
-                player.play().catch(() => {});
+                // Media not loaded yet — seek once it's ready, then play
+                plyr.media.addEventListener('canplay', () => { plyr.currentTime = t; }, { once: true });
+                plyr.play();
             }
-        });
-    }
+        } else {
+            remote._playAt(t);
+        }
+    });
 
     async function init() {
         let doc;
@@ -1542,7 +1648,7 @@
         lastDoc = doc;
         container.innerHTML = buildEnhancedTranscript(doc);
         rebuildWordSync();
-        if (player && !player.paused) player.dispatchEvent(new Event('timeupdate'));
+        document.dispatchEvent(new CustomEvent('vecto:playerupdate'));
     }
 
     // Called by the speaker-label approval handler with a cache-busted fresh doc
@@ -1555,16 +1661,12 @@
     });
 
     // The Speaker Labels toggle (combined↔split) re-renders the cached doc in place.
-    document.addEventListener('tx:splitchange', e => {
+    window.VectoPage.on(document, 'tx:splitchange', e => {
         splitView = !!(e.detail && e.detail.split);
         if (lastDoc) { container.innerHTML = buildEnhancedTranscript(lastDoc); rebuildWordSync(); }
     });
 
-    if (document.readyState === 'loading') {
-        document.addEventListener('DOMContentLoaded', init);
-    } else {
-        init();
-    }
+    init();
 })();
 
 
@@ -1767,7 +1869,7 @@
 {% include 'pod_manager/snippets/show_multiselect_assets.html' %}
 
 <script>
-document.addEventListener('DOMContentLoaded', () => {
+(() => {
     // Owner form: one access-mode select per chosen target podcast.
     const ownerForm = document.getElementById('ownerCrossPublishForm');
     if (ownerForm) {
@@ -1816,6 +1918,6 @@ document.addEventListener('DOMContentLoaded', () => {
         ownerForm.addEventListener('sms:change', renderModeRows);
         renderModeRows();
     }
-});
+})();
 </script>
 {% endblock %}

@@ -99,6 +99,12 @@ def _reverse_award(edit, membership):
 def _handle_approve_edit(request, current_network):
     edit_id = request.POST.get('edit_id')
     edit = get_object_or_404(EpisodeEditSuggestion, id=edit_id, episode__podcast__network=current_network)
+    # Idempotency: a duplicate/late approve POST on an already-resolved edit must
+    # not reprocess it — every field would now match the live episode, tripping the
+    # zero-approval trap below and flipping an APPROVED edit to REJECTED.
+    if edit.status != EpisodeEditSuggestion.Status.PENDING:
+        messages.info(request, f"Edit #{edit.id} was already {edit.get_status_display().lower()} — nothing to do.")
+        return
     membership, _ = NetworkMembership.objects.get_or_create(user=edit.user, network=current_network)
 
     ep = edit.episode
@@ -305,6 +311,9 @@ def _handle_approve_edit(request, current_network):
 def _handle_reject_edit(request, current_network):
     edit_id = request.POST.get('edit_id')
     edit = get_object_or_404(EpisodeEditSuggestion, id=edit_id, episode__podcast__network=current_network)
+    if edit.status != EpisodeEditSuggestion.Status.PENDING:
+        messages.info(request, f"Edit #{edit.id} was already {edit.get_status_display().lower()} — nothing to do.")
+        return
     membership, _ = NetworkMembership.objects.get_or_create(user=edit.user, network=current_network)
     edit.status = EpisodeEditSuggestion.Status.REJECTED
     edit.resolved_at = timezone.now()

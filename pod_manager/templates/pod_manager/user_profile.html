@@ -248,7 +248,7 @@
 <div class="modal fade" id="customAvatarModal" tabindex="-1">
     <div class="modal-dialog modal-dialog-centered">
         <div class="modal-content bg-dark border-secondary">
-            <form method="POST" action="{% url 'upload_custom_avatar' %}" enctype="multipart/form-data">
+            <form method="POST" action="{% url 'upload_custom_avatar' %}" enctype="multipart/form-data" hx-boost="false">
                 {% csrf_token %}
                 <div class="modal-header border-secondary">
                     <h5 class="modal-title text-light">Upload Custom Avatar</h5>
@@ -273,6 +273,7 @@
 </div>
 
 <script>
+(function () {
     const triadWrapper = document.getElementById('avatarTriad');
 
     triadWrapper.addEventListener('click', function() {
@@ -304,13 +305,15 @@
     }
 
     // Ping Gravatar for fallback UI
-    document.addEventListener("DOMContentLoaded", function() {
-        let checkImg = new Image();
-        checkImg.src = "https://0.gravatar.com/avatar/{{ membership.email_hash }}?d=404&s=150";
-        checkImg.onerror = function() {
-            let tail = document.getElementById('gravatar-setup-tail');
-            if (tail) tail.style.display = ''; 
-        };
-    });
+    let checkImg = new Image();
+    checkImg.src = "https://0.gravatar.com/avatar/{{ membership.email_hash }}?d=404&s=150";
+    checkImg.onerror = function() {
+        let tail = document.getElementById('gravatar-setup-tail');
+        if (tail) tail.style.display = ''; 
+    };
+
+    window.selectAvatar = selectAvatar;
+    window.openUploadModal = openUploadModal;
+})();
 </script>
 {% endblock %}

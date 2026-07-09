@@ -99,7 +99,7 @@
 </div>
 
 <script>
-    document.addEventListener("DOMContentLoaded", function() {
+    (function () {
         const filterInput = document.getElementById("cpxFilter");
         const selectAll = document.getElementById("cpxSelectAll");
         if (!filterInput || !selectAll) return;
@@ -137,7 +137,7 @@
                 lastChecked = this;
             });
         });
-    });
+    })();
 
     function validateCrossPublishForm() {
         if (document.querySelectorAll(".cpx-checkbox:checked").length === 0) {

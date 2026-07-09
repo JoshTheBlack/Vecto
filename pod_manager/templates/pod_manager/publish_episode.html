@@ -410,9 +410,8 @@
 {% if edit_ep %}{{ edit_ep.tags|json_script:"initial-tags" }}{% else %}<script id="initial-tags" type="application/json">[]</script>{% endif %}
 {% if edit_ep and edit_ep.chapters_public %}{{ edit_ep.chapters_public|json_script:"initial-chapters" }}{% else %}<script id="initial-chapters" type="application/json">null</script>{% endif %}
 
-<script src="{% static 'pod_manager/js/quill.js' %}"></script>
 <script>
-document.addEventListener('DOMContentLoaded', function () {
+(function () {
     /* ── Quill ─────────────────────────────────────────────── */
     const quill = new Quill('#descEditor', {
         theme: 'snow',
@@ -719,10 +718,15 @@ document.addEventListener('DOMContentLoaded', function () {
         const n = new Date();
         utcClockEl.textContent = `${n.getUTCFullYear()}-${padZ(n.getUTCMonth()+1)}-${padZ(n.getUTCDate())} ${padZ(n.getUTCHours())}:${padZ(n.getUTCMinutes())}:${padZ(n.getUTCSeconds())}`;
     }
-    tickUtcClock(); setInterval(tickUtcClock, 1000);
+    tickUtcClock();
+    const utcClockTimer = setInterval(() => {
+        if (!document.body.contains(utcClockEl)) { clearInterval(utcClockTimer); return; }
+        tickUtcClock();
+    }, 1000);
 
     /* ── Form submission ────────────────────────────────────── */
-    document.getElementById('publishForm').addEventListener('submit', () => {
+    const publishForm = document.getElementById('publishForm');
+    const buildPublishPayload = () => {
         commitTag();
         document.getElementById('tagsJson').value = JSON.stringify(currentTags);
         document.getElementById('descJson').value  = quill.root.innerHTML;
@@ -751,6 +755,20 @@ document.addEventListener('DOMContentLoaded', function () {
         const payload = { version:'1.2.0', chapters:rows };
         if (document.getElementById('globalWaypoints').checked) payload.waypoints = true;
         document.getElementById('chaptersJson').value = JSON.stringify(payload);
+    };
+    publishForm.addEventListener('submit', buildPublishPayload);
+    // htmx serializes boosted forms in its own submit listener, whose order
+    // relative to ours isn't guaranteed — rebuild the JSON fields at
+    // request-build time so the POST always carries the live values.
+    window.VectoPage.on(document.body, 'htmx:configRequest', (e) => {
+        if (e.detail.elt !== publishForm) return;
+        buildPublishPayload();
+        ['tags_json', 'description', 'chapters_json', 'duration', 'scheduled_at'].forEach(name => {
+            const el = publishForm.querySelector(`[name="${name}"]`);
+            if (!el) return;
+            if (e.detail.parameters && typeof e.detail.parameters.set === 'function') e.detail.parameters.set(name, el.value);
+            else e.detail.parameters[name] = el.value;
+        });
     });
 
     /* ── Tab switcher styling ───────────────────────────────── */
@@ -762,7 +780,7 @@ document.addEventListener('DOMContentLoaded', function () {
             e.target.classList.remove('text-muted'); e.target.classList.add('active','text-light','bg-dark');
         });
     });
-});
+})();
 </script>
 
 {% include 'pod_manager/snippets/show_multiselect_assets.html' %}

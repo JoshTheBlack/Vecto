@@ -291,10 +291,6 @@
         });
     }
 
-    if (document.readyState === 'loading') {
-        document.addEventListener('DOMContentLoaded', initTranscriptBackfill);
-    } else {
-        initTranscriptBackfill();
-    }
+    initTranscriptBackfill();
 })();
 </script>

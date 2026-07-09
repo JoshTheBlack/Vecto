@@ -38,7 +38,7 @@
                         {% endif %}
                         
                         {% if reports.csv_exists %}
-                            <a href="{{ reports.csv_url }}" download class="btn btn-success fw-bold">
+                            <a href="{{ reports.csv_url }}" download hx-boost="false" class="btn btn-success fw-bold">
                                 <i class="bi bi-file-spreadsheet me-1"></i> Download CSV
                             </a>
                         {% endif %}

@@ -1175,7 +1175,7 @@
         // ---- FORM SUBMIT ----
         const form = wrapper.querySelector('.inbox-approve-form');
 
-        form.addEventListener('submit', () => {
+        function fillApproveHiddens() {
             // Hidden sections leave their hidden inputs empty; the server
             // skips sections whose approve checkbox never rendered anyway.
             // 1. Tags
@@ -1211,7 +1211,9 @@
             if (epNumInput) wrapper.querySelector('.hidden-edited-episode-number').value = epNumInput.value.trim();
             const epTypeInput = wrapper.querySelector('.diff-episode-type-suggested');
             if (epTypeInput) wrapper.querySelector('.hidden-edited-episode-type').value = epTypeInput.value.trim();
-        });
+        }
+        form.addEventListener('submit', fillApproveHiddens);
+        form._fillApproveHiddens = fillApproveHiddens;
 
         // ---- LIVE TRUST-POINTS PREVIEW ----
         // Sum the CHECKED sections' base points, then apply the bonus rules from
@@ -1270,13 +1272,32 @@
         document.querySelectorAll('#inboxAccordion .accordion-collapse.show .diff-wrapper').forEach(initEdit);
     }
 
-    document.addEventListener('DOMContentLoaded', () => {
-        initVisible();
-        document.querySelectorAll('#inboxAccordion .accordion-collapse').forEach(coll => {
-            coll.addEventListener('show.bs.collapse', () => {
-                const wrapper = coll.querySelector('.diff-wrapper');
-                if (wrapper) initEdit(wrapper);
-            });
+    initVisible();
+    document.querySelectorAll('#inboxAccordion .accordion-collapse').forEach(coll => {
+        coll.addEventListener('show.bs.collapse', () => {
+            const wrapper = coll.querySelector('.diff-wrapper');
+            if (wrapper) initEdit(wrapper);
+        });
+    });
+
+    // htmx serializes boosted forms in its own submit listener, whose order
+    // relative to the per-form filler above isn't guaranteed — refill the
+    // hidden fields at request-build time so an approval always posts the
+    // live editable values instead of empty strings (which the server reads
+    // as "skip this section", collapsing full approvals into rejections).
+    window.VectoPage.on(document.body, 'htmx:configRequest', (e) => {
+        const f = e.detail.elt;
+        if (!f || !f.classList || !f.classList.contains('inbox-approve-form')) return;
+        const wrapper = f.closest('.diff-wrapper');
+        if (wrapper) initEdit(wrapper);
+        if (f._fillApproveHiddens) f._fillApproveHiddens();
+        const p = e.detail.parameters;
+        ['edited_title', 'edited_tags', 'edited_chapters', 'edited_description',
+         'edited_season_number', 'edited_episode_number', 'edited_episode_type'].forEach(name => {
+            const el = f.querySelector(`[name="${name}"]`);
+            if (!el) return;
+            if (p && typeof p.set === 'function') p.set(name, el.value);
+            else p[name] = el.value;
         });
     });
 })();

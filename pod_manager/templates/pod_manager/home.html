@@ -256,7 +256,8 @@
                                         data-audio="{{ ep.raw_audio_url }}"
                                         data-title="{{ ep.title }}"
                                         data-show="{{ ep.podcast.title }}"
-                                        data-cover="{{ ep.podcast.image_url|default:ep.podcast.network.default_image_url|default:'' }}">
+                                        data-cover="{{ ep.podcast.image_url|default:ep.podcast.network.default_image_url|default:'' }}"
+                                        data-link="{% url 'episode_detail' ep.id %}">
                                     <i class="bi bi-play-circle"></i> Play Episode
                                 </button>
                                 {% if ep.transcript and ep.transcript.status == 'completed' %}
@@ -610,7 +611,7 @@
 {% include 'pod_manager/snippets/show_multiselect_assets.html' %}
 
 <script>
-document.addEventListener('DOMContentLoaded', function() {
+(function () {
 
     // --- SEARCH BAR TOGGLES ---
     const searchForm      = document.getElementById('searchForm');
@@ -673,6 +674,18 @@ document.addEventListener('DOMContentLoaded', function() {
         });
     }
     searchForm.addEventListener('submit', syncShowHidden);
+    window.VectoPage.on(document.body, 'htmx:configRequest', (e) => {
+        if (e.detail.elt !== searchForm) return;
+        syncShowHidden();
+        syncTranscriptField();
+        const p = e.detail.parameters;
+        if (!p || typeof p.delete !== 'function') return;
+        p.delete('show');
+        document.querySelectorAll('#showFilterHidden input[name="show"]').forEach(i => p.append('show', i.value));
+        p.delete('transcripts');
+        const t = document.getElementById('transcriptsHidden');
+        if (t) p.append('transcripts', t.value);
+    });
 
     if (filterBar) {
         const bar      = filterBar;
@@ -724,7 +737,7 @@ document.addEventListener('DOMContentLoaded', function() {
             searchBarEl.classList.remove('filter-open');
             if (apply && selectionKey() !== initialSelection) {
                 syncShowHidden();
-                searchForm.submit();
+                searchForm.requestSubmit();
             }
         }
 
@@ -739,7 +752,7 @@ document.addEventListener('DOMContentLoaded', function() {
                 const check = checks().find(c => c.value === remover.dataset.slug);
                 if (check) check.checked = false;
                 syncShowHidden();
-                searchForm.submit();
+                searchForm.requestSubmit();
                 return;
             }
             togglePanel();
@@ -758,10 +771,10 @@ document.addEventListener('DOMContentLoaded', function() {
             updateCount();
         });
 
-        document.addEventListener('click', (e) => {
+        window.VectoPage.on(document, 'click', (e) => {
             if (!bar.contains(e.target) && !panel.contains(e.target)) closePanel();
         });
-        document.addEventListener('keydown', (e) => {
+        window.VectoPage.on(document, 'keydown', (e) => {
             if (e.key === 'Escape') closePanel();
         });
 
@@ -854,24 +867,6 @@ document.addEventListener('DOMContentLoaded', function() {
         }
         isFetching = false;
     }
-});
-</script>
-
-<script>
-// Dashboard "Play Episode" → load into the global pinned player and start
-// playing, without navigating. Delegated so infinite-scroll cards work too.
-document.addEventListener('click', (e) => {
-    const btn = e.target.closest('.js-play-episode');
-    if (!btn) return;
-    e.preventDefault();
-    const url = btn.dataset.audio;
-    if (!url || !window.VectoPlayer) return;
-    window.VectoPlayer.play({
-        url,
-        title: btn.dataset.title || '',
-        show:  btn.dataset.show  || '',
-        cover: btn.dataset.cover || '',
-    });
-});
+})();
 </script>
 {% endblock %}

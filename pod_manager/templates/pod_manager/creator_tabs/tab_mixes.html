@@ -72,7 +72,7 @@
                                             <h5 class="modal-title fw-bold"><i class="bi bi-pencil-square text-info"></i> Edit "{{ mix.name }}"</h5>
                                             <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
                                         </div>
-                                        <form method="POST" action="{% url 'creator_settings' %}?network={{ current_network.slug }}" enctype="multipart/form-data">
+                                        <form method="POST" action="{% url 'creator_settings' %}?network={{ current_network.slug }}" enctype="multipart/form-data" hx-boost="false">
                                             <div class="modal-body p-4">
                                                 {% csrf_token %}
                                                 <input type="hidden" name="action" value="edit_network_mix">
@@ -151,7 +151,7 @@
                             <h5 class="modal-title fw-bold"><i class="bi bi-collection-play text-warning"></i> Create Network Mix</h5>
                             <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
                         </div>
-                        <form method="POST" action="{% url 'creator_settings' %}?network={{ current_network.slug }}" enctype="multipart/form-data">
+                        <form method="POST" action="{% url 'creator_settings' %}?network={{ current_network.slug }}" enctype="multipart/form-data" hx-boost="false">
                             <div class="modal-body p-4">
                                 {% csrf_token %}
                                 <input type="hidden" name="action" value="add_network_mix">
@@ -221,7 +221,7 @@
                             <h5 class="modal-title fw-bold"><i class="bi bi-collection-play text-warning"></i> Create Network Mix</h5>
                             <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
                         </div>
-                        <form method="POST" action="{% url 'creator_settings' %}?network={{ current_network.slug }}" enctype="multipart/form-data">
+                        <form method="POST" action="{% url 'creator_settings' %}?network={{ current_network.slug }}" enctype="multipart/form-data" hx-boost="false">
                             <div class="modal-body p-4">
                                 {% csrf_token %}
                                 <input type="hidden" name="action" value="add_network_mix">

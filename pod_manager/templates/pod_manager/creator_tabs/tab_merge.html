@@ -23,7 +23,7 @@
                             <input type="hidden" name="merge_view" value="{{ merge_view }}">
                             
                             <div class="col-md-{% if merge_view == 'matched' %}3{% else %}4{% endif %} mb-2">
-                                <select name="merge_podcast_id" class="form-select bg-black text-warning fw-bold border-secondary" onchange="this.form.submit()">
+                                <select name="merge_podcast_id" class="form-select bg-black text-warning fw-bold border-secondary" onchange="this.form.requestSubmit()">
                                     {% for pod in network_podcasts %}
                                         <option value="{{ pod.id }}" {% if merge_podcast_id == pod.id|stringformat:"s" %}selected{% endif %}>
                                             {{ pod.title }}
@@ -42,7 +42,7 @@
                             
                             {% if merge_view == 'matched' %}
                             <div class="col-md-3 mb-2">
-                                <select name="merge_reason" class="form-select bg-black text-light border-secondary" onchange="this.form.submit()">
+                                <select name="merge_reason" class="form-select bg-black text-light border-secondary" onchange="this.form.requestSubmit()">
                                     <option value="">All Match Types...</option>
                                     {% for reason in match_reasons %}
                                         <option value="{{ reason }}" {% if merge_reason == reason %}selected{% endif %}>{{ reason }}</option>

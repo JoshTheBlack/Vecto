@@ -9,8 +9,9 @@
     let activeStreams = {};  // run_id → poll controller ({ stop })
     let runLogs = {};        // run_id → captured log text
 
-    // ── Bootstrap ──────────────────────────────────────────────
-    document.addEventListener('DOMContentLoaded', () => {
+    // ── Bootstrap (invoked at the bottom of this file, after the window.*
+    //    handlers it depends on are assigned; re-runs safely on htmx swaps) ──
+    function initGdriveTab() {
         const tab = document.getElementById('list-gdrive-recovery-list');
         if (!tab) return;
 
@@ -21,14 +22,14 @@
             }
         });
 
-        // creator_tabs.js fires shown.bs.tab during its own DOMContentLoaded handler
-        // (before ours runs), so we check whether the pane is already active here.
+        // creator_tabs.js activates the URL-selected tab during its own load
+        // (before this runs), so we check whether the pane is already active.
         const pane = document.getElementById('list-gdrive-recovery');
         if (pane && pane.classList.contains('active') &&
                 !document.getElementById('recovery-file-list').dataset.loaded) {
             recoveryRefresh();
         }
-    });
+    }
 
     // ── Public: triggered by toolbar Refresh button ─────────────
     window.recoveryRefresh = function () {
@@ -487,5 +488,7 @@
         const cookie = document.cookie.split(';').find(c => c.trim().startsWith('csrftoken='));
         return cookie ? cookie.trim().split('=')[1] : '';
     }
+
+    initGdriveTab();
 
 })();

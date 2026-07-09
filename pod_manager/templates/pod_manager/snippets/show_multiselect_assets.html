@@ -235,7 +235,7 @@ page, after the page's own <style> block.
 </style>
 
 <script>
-document.addEventListener('DOMContentLoaded', () => {
+(() => {
     document.querySelectorAll('[data-sms]').forEach(initShowMultiselect);
 
     function initShowMultiselect(wrap) {
@@ -358,10 +358,10 @@ document.addEventListener('DOMContentLoaded', () => {
             notifyChange();
         });
 
-        document.addEventListener('click', (e) => {
+        window.VectoPage.on(document, 'click', (e) => {
             if (!wrap.contains(e.target)) closePanel();
         });
-        document.addEventListener('keydown', (e) => {
+        window.VectoPage.on(document, 'keydown', (e) => {
             if (e.key === 'Escape') closePanel();
         });
 
@@ -392,5 +392,5 @@ document.addEventListener('DOMContentLoaded', () => {
         syncChips();
         updateCount();
     }
-});
+})();
 </script>

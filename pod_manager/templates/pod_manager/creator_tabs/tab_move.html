@@ -128,6 +128,7 @@
 </div>
 
 <script>
+    (function () {
     // --- 1. Live Filter Logic ---
     function filterMoveTable() {
         const input = document.getElementById("moveFilter").value.toLowerCase();
@@ -161,7 +162,7 @@
     // --- 3. Shift-Click Range Selection Logic ---
     let lastCheckedBox = null;
 
-    document.addEventListener("DOMContentLoaded", function() {
+    (function () {
         const checkboxes = Array.from(document.querySelectorAll('.move-checkbox'));
         
         checkboxes.forEach(cb => {
@@ -189,7 +190,7 @@
                 lastCheckedBox = this;
             });
         });
-    });
+    })();
 
     // --- 4. Form Submission & Validation Logic ---
     function clearNewForm() {
@@ -233,4 +234,11 @@
         
         return true;
     }
+
+    window.filterMoveTable = filterMoveTable;
+    window.toggleAllMoveCheckboxes = toggleAllMoveCheckboxes;
+    window.clearNewForm = clearNewForm;
+    window.clearExistingForm = clearExistingForm;
+    window.validateMoveForm = validateMoveForm;
+    })();
 </script>

@@ -1,3 +1,9 @@
+// Runs on every load of the Creator Settings page — including htmx boosted
+// swaps, which re-execute this file. Everything lives in one IIFE so re-runs
+// can't collide with earlier ones; functions used by inline on* handlers are
+// exported on window at the bottom.
+(function () {
+
 // ==========================================
 // MERGE DESK LOGIC
 // ==========================================
@@ -11,23 +17,21 @@ function checkMergeState() {
 // ==========================================
 // THEME CONFIG VALIDATION
 // ==========================================
-document.addEventListener('DOMContentLoaded', function() {
-    const networkForm = document.getElementById('networkSettingsForm');
-    if (networkForm) {
-        networkForm.addEventListener('submit', function(e) {
-            const jsonTextarea = document.querySelector('textarea[name="theme_config"]');
-            if (jsonTextarea && jsonTextarea.value.trim() !== '') {
-                try {
-                    JSON.parse(jsonTextarea.value);
-                } catch (error) {
-                    e.preventDefault();
-                    alert("Invalid JSON in Theme Config:\n\n" + error.message + "\n\nPlease fix any formatting errors before saving.");
-                    jsonTextarea.focus();
-                }
+const networkForm = document.getElementById('networkSettingsForm');
+if (networkForm) {
+    networkForm.addEventListener('submit', function(e) {
+        const jsonTextarea = document.querySelector('textarea[name="theme_config"]');
+        if (jsonTextarea && jsonTextarea.value.trim() !== '') {
+            try {
+                JSON.parse(jsonTextarea.value);
+            } catch (error) {
+                e.preventDefault();
+                alert("Invalid JSON in Theme Config:\n\n" + error.message + "\n\nPlease fix any formatting errors before saving.");
+                jsonTextarea.focus();
             }
-        });
-    }
-});
+        }
+    });
+}
 
 // ==========================================
 // LIVE IMPORT STREAMING (polling, not SSE — more reliable behind gunicorn/Traefik)
@@ -142,7 +146,7 @@ const TAB_PARAM_MAP = {
 };
 const TAB_ID_MAP = Object.fromEntries(Object.entries(TAB_PARAM_MAP).map(([k, v]) => [v, k]));
 
-document.addEventListener('DOMContentLoaded', function() {
+(function () {
     const urlParams = new URLSearchParams(window.location.search);
     let activeTabId = null;
 
@@ -193,7 +197,7 @@ document.addEventListener('DOMContentLoaded', function() {
             }
         }, 500);
     }
-});
+})();
 
 // ==========================================
 // LIVE FILTERING (AJAX)
@@ -202,7 +206,7 @@ let filterTimeout = null;
 
 function applyLiveFilter() {
     clearTimeout(filterTimeout);
-    
+
     const accordion = document.getElementById('showsAccordion');
     accordion.style.opacity = '0.5'; // Dim slightly to indicate loading
 
@@ -210,22 +214,22 @@ function applyLiveFilter() {
     filterTimeout = setTimeout(() => {
         const form = document.getElementById('manage-podcasts-form');
         const url = new URL(window.location.pathname, window.location.origin);
-        
+
         // Grab all inputs from the form automatically
         const params = new URLSearchParams(new FormData(form));
-        
+
         fetch(url.pathname + '?' + params.toString())
             .then(response => response.text())
             .then(html => {
                 const parser = new DOMParser();
                 const doc = parser.parseFromString(html, 'text/html');
-                
+
                 // Extract just the new accordion HTML and replace the old one
                 const newAccordion = doc.getElementById('showsAccordion');
                 if (newAccordion) {
                     accordion.innerHTML = newAccordion.innerHTML;
                 }
-                
+
                 accordion.style.opacity = '1';
                 // Silently update the URL bar so browser back-buttons still work
                 window.history.replaceState({}, '', url.pathname + '?' + params.toString() + '#list-shows');
@@ -234,5 +238,12 @@ function applyLiveFilter() {
                 console.error("Live filter failed:", error);
                 accordion.style.opacity = '1';
             });
-    }, 300); 
+    }, 300);
 }
+
+window.checkMergeState = checkMergeState;
+window.startLiveImport = startLiveImport;
+window.startAllLiveImports = startAllLiveImports;
+window.applyLiveFilter = applyLiveFilter;
+
+})();

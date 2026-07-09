@@ -450,7 +450,7 @@
 {% include 'pod_manager/snippets/mix_modals.html' %}
 
 <script>
-    document.addEventListener("DOMContentLoaded", () => {
+    (() => {
         // ── 0. Layout Restructure for Expanded Art ──
         // Moves ONLY the description next to the art. Leaves URL/Apps full-width below.
         document.querySelectorAll('.feed-row').forEach(row => {
@@ -548,7 +548,7 @@
         };
 
         // Hooks into Bootstrap to reset the dropdown state when it closes
-        document.addEventListener('hidden.bs.dropdown', function (event) {
+        window.VectoPage.on(document, 'hidden.bs.dropdown', function (event) {
             const ul = event.target.nextElementSibling;
             if (ul && ul.classList.contains('dropdown-menu-apps')) {
                 const container = ul.querySelector('.extra-apps-container');
@@ -604,7 +604,6 @@
 
         rows.forEach(row => grid.appendChild(row));
         updateCounts();
-    });
 
     // ── 4. Accordion Toggle ──
     window.toggleFeed = function(el) {
@@ -668,5 +667,6 @@
             btn.classList.remove('copied');
         }, 2000);
     };
+    })();
 </script>
 {% endblock %}

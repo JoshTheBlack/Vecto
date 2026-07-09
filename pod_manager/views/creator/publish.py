@@ -388,4 +388,14 @@ def manage_episode(request, episode_id):
             cache.delete(f"ep_frag_private_{ep.id}")
             messages.success(request, f'"{ep.title}" moved to scheduled.')
 
+    elif action == 'move_episode':
+        target_id = request.POST.get('target_podcast_id')
+        target_pod = get_object_or_404(Podcast, pk=target_id, network=ep.podcast.network)
+        if target_pod.id == ep.podcast_id:
+            messages.info(request, "Episode is already in that feed.")
+        else:
+            from ...services.episode_move import move_episodes
+            move_episodes([ep.id], target_pod, base_url=request.build_absolute_uri('/'), moved_by=request.user)
+            messages.success(request, f'"{ep.title}" moved to "{target_pod.title}".')
+
     return redirect(request.META.get('HTTP_REFERER', reverse('episode_detail', args=[ep.id])))

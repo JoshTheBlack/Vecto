@@ -853,6 +853,26 @@
                         </form>
                         {% endif %}
 
+                        {% if network_podcasts %}
+                        <form method="POST" action="{% url 'manage_episode' ep.id %}" class="mb-4">
+                            {% csrf_token %}
+                            <input type="hidden" name="action" value="move_episode">
+                            <label class="form-label text-light">Move to Feed</label>
+                            <div class="input-group">
+                                <select name="target_podcast_id" class="form-select bg-dark text-light border-secondary">
+                                    {% for pod in network_podcasts %}
+                                    <option value="{{ pod.id }}">{{ pod.title }}</option>
+                                    {% endfor %}
+                                </select>
+                                <button type="submit" class="btn btn-outline-warning btn-sm"
+                                        onclick="return confirm('Move this episode to the selected feed?')">
+                                    <i class="bi bi-arrow-left-right me-1"></i>Move
+                                </button>
+                            </div>
+                            <div class="form-text text-muted">Reassigns this episode's parent podcast within the network.</div>
+                        </form>
+                        {% endif %}
+
                         <div class="d-flex flex-wrap gap-3">
                             {% if not ep.is_published %}
                             <form method="POST" action="{% url 'manage_episode' ep.id %}">

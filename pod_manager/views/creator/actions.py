@@ -772,6 +772,15 @@ def handle_add_notfound_entry(request, current_network):
         messages.error(request, f"Failed to add 404 pool entry: {e}")
 
 
+def handle_edit_notfound_entry(request, current_network):
+    entry = get_object_or_404(NotFoundEntry, id=request.POST.get('entry_id'), network=current_network)
+    caption = request.POST.get('caption', '').strip()
+    if caption:
+        entry.caption = caption
+        entry.save(update_fields=['caption'])
+        messages.success(request, "404 pool entry updated.")
+
+
 def handle_delete_notfound_entry(request, current_network):
     entry = get_object_or_404(NotFoundEntry, id=request.POST.get('entry_id'), network=current_network)
     if entry.image_upload:
@@ -816,6 +825,7 @@ ACTION_HANDLERS = {
     'edit_network_mix':     handle_edit_network_mix,
     'delete_network_mix':   handle_delete_network_mix,
     'add_notfound_entry':   handle_add_notfound_entry,
+    'edit_notfound_entry':  handle_edit_notfound_entry,
     'delete_notfound_entry': handle_delete_notfound_entry,
     'generate_s3_report':   handle_generate_s3_report,
 }

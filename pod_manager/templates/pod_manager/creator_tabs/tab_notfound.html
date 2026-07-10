@@ -37,8 +37,19 @@
                     <div class="card bg-black border-secondary h-100">
                         <img src="{{ entry.display_image }}" class="card-img-top border-bottom border-secondary" style="height: 160px; object-fit: cover;">
                         <div class="card-body d-flex flex-column">
-                            <p class="text-light small flex-grow-1">{{ entry.caption }}</p>
-                            <form method="POST" action="{% url 'creator_settings' %}?network={{ current_network.slug }}&tab=notfound">
+                            <form method="POST" action="{% url 'creator_settings' %}?network={{ current_network.slug }}&tab=notfound" class="notfound-edit-form flex-grow-1 d-flex flex-column">
+                                {% csrf_token %}
+                                <input type="hidden" name="action" value="edit_notfound_entry">
+                                <input type="hidden" name="entry_id" value="{{ entry.id }}">
+                                <p class="text-light small flex-grow-1 notfound-caption-view">{{ entry.caption }}</p>
+                                <input type="text" name="caption" value="{{ entry.caption }}" maxlength="200" required
+                                       class="form-control form-control-sm bg-black text-light border-secondary mb-2 d-none notfound-caption-edit">
+                                <div class="d-flex gap-2">
+                                    <button type="button" class="btn btn-sm btn-outline-light flex-grow-1 notfound-edit-btn"><i class="bi bi-pencil"></i> Edit</button>
+                                    <button type="submit" class="btn btn-sm btn-warning flex-grow-1 d-none notfound-save-btn"><i class="bi bi-check-lg"></i> Save</button>
+                                </div>
+                            </form>
+                            <form method="POST" action="{% url 'creator_settings' %}?network={{ current_network.slug }}&tab=notfound" class="mt-2">
                                 {% csrf_token %}
                                 <input type="hidden" name="action" value="delete_notfound_entry">
                                 <input type="hidden" name="entry_id" value="{{ entry.id }}">
@@ -104,6 +115,18 @@
         });
         xhr.addEventListener('error', fail);
         xhr.send(new FormData(form));
+    });
+})();
+
+(function () {
+    document.querySelectorAll('.notfound-edit-btn').forEach(function (btn) {
+        btn.addEventListener('click', function () {
+            const form = btn.closest('.notfound-edit-form');
+            form.querySelector('.notfound-caption-view').classList.add('d-none');
+            form.querySelector('.notfound-caption-edit').classList.remove('d-none');
+            btn.classList.add('d-none');
+            form.querySelector('.notfound-save-btn').classList.remove('d-none');
+        });
     });
 })();
 </script>

@@ -8,7 +8,7 @@
 
     {% if entry %}
         <p class="fs-4 fw-bold mb-3">{{ entry.caption }}</p>
-        <img src="{{ entry.display_image }}" alt="{{ entry.caption }}" class="img-fluid rounded border border-secondary shadow-sm mb-3" style="max-height: 360px;">
+        <img src="{{ entry.display_image }}" alt="{{ entry.caption }}" class="img-fluid rounded mb-3" style="max-height: 360px;">
     {% else %}
         {% if current_network.theme_config.logo_url %}
             <img src="{{ current_network.theme_config.logo_url }}" alt="{{ current_network.name }}" class="rounded border border-secondary shadow-sm mb-3" style="height: 120px; width: auto;">

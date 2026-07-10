@@ -746,6 +746,23 @@ class NotFoundEntryCrudTests(TestCase):
             self.assertTrue(getattr(img, 'is_animated', False))
             self.assertEqual(img.n_frames, 3)
 
+    def test_404_images_keep_full_frame_never_cropped(self):
+        # 404 art often has text baked in — a wide upload must keep its aspect
+        # ratio (only bounded to 800px), not get centre-cropped square.
+        import io
+        from PIL import Image
+        buf = io.BytesIO()
+        Image.new('RGB', (400, 100), color='red').save(buf, format='PNG')
+        self._post({
+            'action': 'add_notfound_entry',
+            'caption': 'Wide boy.',
+            'image_upload': SimpleUploadedFile('wide.png', buf.getvalue(), content_type='image/png'),
+        })
+        entry = NotFoundEntry.objects.get(network=self.network)
+        with entry.image_upload.open('rb') as f:
+            img = Image.open(f)
+            self.assertEqual((img.width, img.height), (400, 100))
+
     def test_static_upload_stays_single_frame_webp(self):
         from PIL import Image
         self._post({

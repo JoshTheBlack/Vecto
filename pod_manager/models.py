@@ -892,7 +892,9 @@ class NotFoundEntry(models.Model):
     def save(self, *args, **kwargs):
         if self.image_upload and not self.image_upload._committed:
             try:
-                data = process_image_field(self.image_upload, 800)
+                # Full frame, never cropped — 404 art often has text/captions
+                # baked in; only the longest side is bounded.
+                data = process_image_field(self.image_upload, 800, crop_square=False)
                 self.image_upload.save('notfound.webp', ContentFile(data), save=False)
                 self.image_version = (self.image_version or 0) + 1
             except Exception as e:

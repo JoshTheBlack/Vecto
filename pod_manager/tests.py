@@ -400,6 +400,17 @@ def _tiny_image_upload(name='pic.png'):
     return SimpleUploadedFile(name, buf.getvalue(), content_type='image/png')
 
 
+def _tiny_gif_upload(name='anim.gif', frames=3):
+    """A minimal real animated GIF (distinct frames, 100ms apart)."""
+    import io
+    from PIL import Image
+    imgs = [Image.new('RGB', (10, 10), color=c) for c in ('red', 'lime', 'blue')[:frames]]
+    buf = io.BytesIO()
+    imgs[0].save(buf, format='GIF', save_all=True, append_images=imgs[1:],
+                 duration=100, loop=0)
+    return SimpleUploadedFile(name, buf.getvalue(), content_type='image/gif')
+
+
 class PendingApprovalsContextProcessorTests(TestCase):
     """pending_approvals(): badge count aggregated across owned networks, not
     scoped to request.network (which is often None on the admin console)."""
@@ -720,6 +731,33 @@ class NotFoundEntryCrudTests(TestCase):
         self.assertEqual(entry.caption, "I'm sorry Dave, I'm afraid I can't do that.")
         self.assertTrue(entry.image_upload)
         self.assertEqual(entry.image_version, 1)
+
+    def test_animated_gif_becomes_animated_webp(self):
+        from PIL import Image
+        self._post({
+            'action': 'add_notfound_entry',
+            'caption': 'Deal with it.',
+            'image_upload': _tiny_gif_upload(frames=3),
+        })
+        entry = NotFoundEntry.objects.get(network=self.network)
+        with entry.image_upload.open('rb') as f:
+            img = Image.open(f)
+            self.assertEqual(img.format, 'WEBP')
+            self.assertTrue(getattr(img, 'is_animated', False))
+            self.assertEqual(img.n_frames, 3)
+
+    def test_static_upload_stays_single_frame_webp(self):
+        from PIL import Image
+        self._post({
+            'action': 'add_notfound_entry',
+            'caption': 'Still here.',
+            'image_upload': _tiny_image_upload(),
+        })
+        entry = NotFoundEntry.objects.get(network=self.network)
+        with entry.image_upload.open('rb') as f:
+            img = Image.open(f)
+            self.assertEqual(img.format, 'WEBP')
+            self.assertFalse(getattr(img, 'is_animated', False))
 
     def test_delete_notfound_entry_removes_row(self):
         entry = NotFoundEntry.objects.create(

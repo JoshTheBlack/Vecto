@@ -18,5 +18,7 @@ image + caption from an owner-curated pool.
   with a stock line. Unrecognized domains get a generic Vecto-branded 404
   with no search box.
 - Images are processed to WebP at 800 px on upload, like other network
-  imagery. Deleting an entry also deletes its stored image.
+  imagery. Animated GIFs stay animated — they convert to animated WebP with
+  frame timing and looping preserved. Deleting an entry also deletes its
+  stored image.
 - The handler only runs with `DEBUG=False` (standard Django behavior).

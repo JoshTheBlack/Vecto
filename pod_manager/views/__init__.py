@@ -34,6 +34,7 @@ from .feeds import (
     generate_public_feed,
     generate_mix_feed,
     generate_network_mix_feed,
+    generate_calendar_feed,
     play_episode,
     episode_chapters,
 )
@@ -105,6 +106,12 @@ from .creator.gdrive_recovery import (
     gdrive_recovery_run,
     gdrive_recovery_poll,
     gdrive_recovery_rewind,
+)
+
+from .calendar import (
+    calendar_page,
+    calendar_events,
+    calendar_manage,
 )
 
 from .transcripts import serve_transcript

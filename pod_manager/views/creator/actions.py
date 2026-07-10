@@ -7,6 +7,7 @@ Each handler accepts (request, current_network) and returns either:
 """
 import json
 import logging
+import re
 
 from django.contrib import messages
 from django.contrib.auth.models import User
@@ -489,6 +490,39 @@ def handle_update_network(request, current_network):
         task_rebuild_podcast_fragments.delay(pod.id, base_url)
 
 
+def handle_update_network_font(request, current_network):
+    if request.POST.get('remove') == '1':
+        if current_network.custom_font_upload:
+            current_network.custom_font_upload.delete(save=False)
+        current_network.custom_font_upload = None
+        current_network.custom_font_family = ''
+        current_network.save()
+        messages.success(request, "Custom font removed.")
+        return
+
+    font_file = request.FILES.get('font_upload')
+    if font_file:
+        if not font_file.name.lower().endswith('.woff2'):
+            messages.error(request, "Unsupported font file — only .woff2 is accepted.")
+            return
+        if font_file.size > 2 * 1024 * 1024:
+            messages.error(request, "Font file too large (max 2MB).")
+            return
+        magic = font_file.read(4)
+        font_file.seek(0)
+        if magic != b'wOF2':
+            messages.error(request, "That file doesn't look like a valid .woff2 font.")
+            return
+        current_network.custom_font_upload = font_file
+        # The stable key is CDN-cached immutable for a year — without a bump a
+        # re-upload never reaches browsers (base.html renders display_font_url).
+        current_network.custom_font_version = (current_network.custom_font_version or 0) + 1
+
+    current_network.custom_font_family = re.sub(r'[^\w \-]', '', request.POST.get('custom_font_family', '')).strip()[:100]
+    current_network.save()
+    messages.success(request, "Custom font saved.")
+
+
 def handle_update_show(request, current_network):
     show_id = request.POST.get('show_id')
     show = get_object_or_404(Podcast, id=show_id, network=current_network)
@@ -771,6 +805,7 @@ ACTION_HANDLERS = {
     'bulk_rollback':        _handle_bulk_rollback,
     'run_manual_sync':      handle_run_manual_sync,
     'update_network':       handle_update_network,
+    'update_network_font':  handle_update_network_font,
     'update_show':          handle_update_show,
     'add_show':             handle_add_show,
     'merge_episodes':       handle_merge_episodes,

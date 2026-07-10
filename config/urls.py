@@ -20,6 +20,11 @@ urlpatterns = [
     
     # Creator Route
     path('creator/', views.creator_settings, name='creator_settings'),
+
+    # Public per-network release calendar (Feature 4, A14)
+    path('calendar/', views.calendar_page, name='calendar'),
+    path('calendar/events/', views.calendar_events, name='calendar_events'),
+    path('calendar/manage/', views.calendar_manage, name='calendar_manage'),
     
     # Auth & API Routes
     path('admin/', admin.site.urls),
@@ -44,6 +49,7 @@ urlpatterns = [
     path('feed/<slug:network_slug>/mix/<slug:mix_slug>/', views.generate_network_mix_feed, name='network_mix_feed'),
     path('public/feed/<slug:podcast_slug>/', views.generate_public_feed, name='public_feed'),
     path('feed/mix/<uuid:unique_id>', views.generate_mix_feed, name='mix_feed'),
+    path('feed/<slug:network_slug>/calendar.ics', views.generate_calendar_feed, name='calendar_feed'),
     path('import/start/<int:show_id>/', views.import_feed_start, name='import_feed_start'),
     path('import/poll/<int:show_id>/', views.import_feed_poll, name='import_feed_poll'),
     path('play/<int:episode_id>.mp3', views.play_episode, name='play_episode'),

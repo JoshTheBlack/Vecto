@@ -26,6 +26,7 @@ Run with: python manage.py test pod_manager
 import json
 import re
 import shutil
+import datetime
 import tempfile
 import time
 from datetime import timedelta
@@ -43,7 +44,7 @@ from django.utils import timezone
 
 from pod_manager import views
 from pod_manager.models import (
-    Network, PatronProfile, PatreonTier, Podcast, Episode, EpisodeCrossPublication,
+    CalendarEntry, Network, PatronProfile, PatreonTier, Podcast, Episode, EpisodeCrossPublication,
     NetworkMembership, NetworkMix, UserMix, EpisodeEditSuggestion, Transcript,
     R2OrphanedObject, LogEntry, NotFoundEntry,
 )
@@ -52,6 +53,11 @@ from pod_manager.services.edits import (
     update_contribution_stats,
 )
 from pod_manager.services.episode_move import move_episodes
+from pod_manager.services.release_calendar import (
+    ensure_calendar_entry_for_episode,
+    link_calendar_entry_for_new_episode,
+    match_calendar_entry,
+)
 from pod_manager.services.transcription import (
     _parse_srt,
     _parse_srt_timestamp,
@@ -741,6 +747,115 @@ class NotFoundEntryCrudTests(TestCase):
         self.assertFalse(NotFoundEntry.objects.filter(caption='x').exists())
 
 
+def _woff2_upload(name='font.woff2', size=64):
+    """A minimal fake .woff2: correct magic bytes, rest is padding."""
+    return SimpleUploadedFile(name, b'wOF2' + b'\x00' * (size - 4), content_type='font/woff2')
+
+
+class NetworkCustomFontTests(TestCase):
+    """handle_update_network_font: extension/size/magic-byte validation,
+    sanitization, overwrite-in-place on re-upload, and removal (Feature 5
+    amendments A2/A3/A5)."""
+
+    def setUp(self):
+        self.factory = RequestFactory()
+        self.owner = User.objects.create_user(username='owner', email='owner@example.com')
+        self.network = Network.objects.create(name='Net', slug='n')
+        self.network.owners.add(self.owner)
+
+    def _post(self, data, user=None):
+        req = _make_tenant_request(self.factory, self.network,
+                                   method='post', path='/creator/',
+                                   data=data, user=user or self.owner)
+        return views.creator_settings(req)
+
+    def test_valid_upload_accepted(self):
+        self._post({
+            'action': 'update_network_font',
+            'font_upload': _woff2_upload(),
+            'custom_font_family': 'Brand Sans',
+        })
+        self.network.refresh_from_db()
+        self.assertTrue(self.network.custom_font_upload)
+        self.assertEqual(self.network.custom_font_family, 'Brand Sans')
+
+    def test_wrong_extension_rejected(self):
+        self._post({
+            'action': 'update_network_font',
+            'font_upload': SimpleUploadedFile('font.ttf', b'wOF2' + b'\x00' * 60, content_type='font/ttf'),
+            'custom_font_family': 'Brand Sans',
+        })
+        self.network.refresh_from_db()
+        self.assertFalse(self.network.custom_font_upload)
+
+    def test_oversize_rejected(self):
+        self._post({
+            'action': 'update_network_font',
+            'font_upload': _woff2_upload(size=2 * 1024 * 1024 + 1),
+            'custom_font_family': 'Brand Sans',
+        })
+        self.network.refresh_from_db()
+        self.assertFalse(self.network.custom_font_upload)
+
+    def test_bad_magic_bytes_rejected(self):
+        self._post({
+            'action': 'update_network_font',
+            'font_upload': SimpleUploadedFile('font.woff2', b'NOPE' + b'\x00' * 60, content_type='font/woff2'),
+            'custom_font_family': 'Brand Sans',
+        })
+        self.network.refresh_from_db()
+        self.assertFalse(self.network.custom_font_upload)
+
+    def test_reupload_overwrites_in_place(self):
+        self._post({'action': 'update_network_font', 'font_upload': _woff2_upload(size=64)})
+        self.network.refresh_from_db()
+        first_name = self.network.custom_font_upload.name
+
+        self._post({'action': 'update_network_font', 'font_upload': _woff2_upload(size=100)})
+        self.network.refresh_from_db()
+        self.assertEqual(self.network.custom_font_upload.name, first_name)
+        self.assertEqual(self.network.custom_font_upload.size, 100)
+
+    def test_upload_bumps_version_for_cache_busting(self):
+        # The stable fonts/<slug>.woff2 key is CDN-cached immutable for a year;
+        # each upload must bump the version so display_font_url changes.
+        self._post({'action': 'update_network_font', 'font_upload': _woff2_upload()})
+        self.network.refresh_from_db()
+        self.assertEqual(self.network.custom_font_version, 1)
+        self.assertTrue(self.network.display_font_url.endswith('?v=1'))
+
+        self._post({'action': 'update_network_font', 'font_upload': _woff2_upload()})
+        self.network.refresh_from_db()
+        self.assertEqual(self.network.custom_font_version, 2)
+
+    def test_family_only_save_does_not_bump_version(self):
+        self._post({'action': 'update_network_font', 'font_upload': _woff2_upload()})
+        self.network.refresh_from_db()
+        self.assertEqual(self.network.custom_font_version, 1)
+        self._post({'action': 'update_network_font', 'custom_font_family': 'Renamed Sans'})
+        self.network.refresh_from_db()
+        self.assertEqual(self.network.custom_font_version, 1)
+
+    def test_font_name_sanitization_strips_quotes(self):
+        self._post({
+            'action': 'update_network_font',
+            'custom_font_family': '"Evil"; } body { display: none; } /*',
+        })
+        self.network.refresh_from_db()
+        self.assertNotIn('"', self.network.custom_font_family)
+        self.assertNotIn(';', self.network.custom_font_family)
+
+    def test_remove_clears_both_fields(self):
+        self._post({'action': 'update_network_font', 'font_upload': _woff2_upload(), 'custom_font_family': 'Brand Sans'})
+        self.network.refresh_from_db()
+        self.assertTrue(self.network.custom_font_upload)
+
+        self._post({'action': 'update_network_font', 'remove': '1'})
+        self.network.refresh_from_db()
+        self.assertFalse(self.network.custom_font_upload)
+        self.assertEqual(self.network.custom_font_family, '')
+
+
 @override_settings(DEBUG=False, ALLOWED_HOSTS=['*'])
 class Custom404ViewTests(TestCase):
     """handler404 -> pod_manager.views.errors.custom_404: themed pool pick,
@@ -749,6 +864,7 @@ class Custom404ViewTests(TestCase):
     HTTP_HOST matching Network.custom_domain)."""
 
     def setUp(self):
+        cache.clear()  # tenant_custom_domains is cached for 60s across requests
         self.network = Network.objects.create(
             name='Themed Net', slug='themed', custom_domain='themed.example.test',
         )
@@ -4934,6 +5050,7 @@ class VendoredAssetTests(SimpleTestCase):
         "pod_manager/css/quill.snow.css": "ql-snow",
         "pod_manager/js/quill.js": None,
         "pod_manager/js/htmx.min.js": 'version:"2.0.8"',
+        "pod_manager/js/fullcalendar.min.js": "FullCalendar Standard Bundle v6.1.15",
         "pod_manager/audio/blank.wav": None,
     }
 
@@ -4944,9 +5061,9 @@ class VendoredAssetTests(SimpleTestCase):
     def test_no_cdn_script_or_stylesheet_refs(self):
         """No template may load a JS/CSS library from a known CDN host.
 
-        Image services (gravatar, ui-avatars) and the per-network Google Fonts
-        theme URL are intentionally remote and not matched here — we only flag
-        <script src> and <link ... .css> pointing at library CDNs.
+        Image services (gravatar, ui-avatars) are intentionally remote and not
+        matched here — we only flag <script src> and <link ... .css> pointing
+        at library CDNs.
         """
         script_re = re.compile(r"""<script[^>]+src=["']https?://([^"'/]+)""", re.I)
         link_re = re.compile(r"""<link[^>]+href=["']https?://[^"']+\.css""", re.I)
@@ -4990,6 +5107,23 @@ class VendoredAssetTests(SimpleTestCase):
         )
         self.assertIn("../fonts/bootstrap-icons.woff", css)
         self.assertNotIn('url("./fonts/', css)
+
+
+@override_settings(DEBUG=False, ALLOWED_HOSTS=['*'])
+class CustomFontRenderTests(TestCase):
+    """A network with a custom font upload renders an @font-face block
+    referencing that network's font URL (Feature 5 step 5)."""
+
+    def test_renders_font_face_for_network_with_custom_font(self):
+        cache.clear()  # tenant_custom_domains is cached for 60s across requests
+        network = Network.objects.create(
+            name='Themed Net', slug='themed-font', custom_domain='themed-font.example.test',
+            custom_font_upload=_woff2_upload(), custom_font_family='Brand Sans',
+        )
+        resp = self.client.get('/', HTTP_HOST='themed-font.example.test')
+        self.assertContains(resp, '@font-face')
+        self.assertContains(resp, network.display_font_url)
+        self.assertContains(resp, 'Brand Sans')
 
 
 # ===========================================================================
@@ -7248,4 +7382,724 @@ class BackfillSeasonEpisodeTagsCommandTests(TestCase):
         other.refresh_from_db()
         self.assertEqual(self.episode.season_number, 5)
         self.assertIsNone(other.season_number)  # out of scope, untouched
+
+
+class ReleaseCalendarServiceTests(TestCase):
+    """services/release_calendar: natural-key matching (numbered shows via
+    season+episode, unnumbered via type+title with the blank-type wildcard),
+    the ±60-day stale window, ensure_'s explicit-id / match / auto-create
+    fallthrough, idempotency, and network scoping of explicit ids."""
+
+    def setUp(self):
+        self.network = Network.objects.create(name='Net', slug='netcal')
+        self.podcast = Podcast.objects.create(network=self.network, title='Show', slug='showcal')
+        self.when = timezone.now() + timedelta(days=7)
+
+    def _episode(self, **kw):
+        base = dict(podcast=self.podcast, title='Ep 1', pub_date=self.when,
+                    scheduled_at=self.when, is_published=False,
+                    raw_description='x', clean_description='x')
+        base.update(kw)
+        return Episode.objects.create(**base)
+
+    def _entry(self, **kw):
+        base = dict(network=self.network, podcast=self.podcast, title='Ep 1',
+                    scheduled_at=self.when)
+        base.update(kw)
+        return CalendarEntry.objects.create(**base)
+
+    def test_numbered_show_matches_on_season_episode(self):
+        entry = self._entry(title='Planned placeholder', season_number=2, episode_number=5)
+        ep = self._episode(title='Actual on-air title', season_number=2, episode_number=5)
+        self.assertEqual(match_calendar_entry(ep), entry)
+
+    def test_numbered_show_requires_both_numbers_to_agree(self):
+        self._entry(season_number=2, episode_number=6)
+        ep = self._episode(season_number=2, episode_number=5)
+        self.assertIsNone(match_calendar_entry(ep))
+
+    def test_unnumbered_show_blank_type_entry_matches_typed_episode(self):
+        # A planner's entry typically leaves episode_type blank while the real
+        # episode arrives typed ('full') — the wildcard must bridge that.
+        entry = self._entry(title='Watch Party', episode_type='')
+        ep = self._episode(title='watch party', episode_type='full')
+        self.assertEqual(match_calendar_entry(ep), entry)
+
+    def test_unnumbered_show_conflicting_type_does_not_match(self):
+        self._entry(title='Watch Party', episode_type='bonus')
+        ep = self._episode(title='Watch Party', episode_type='full')
+        self.assertIsNone(match_calendar_entry(ep))
+
+    def test_window_excludes_stale_entry(self):
+        stale = self._entry(season_number=1, episode_number=1,
+                            scheduled_at=self.when - timedelta(days=90))
+        ep = self._episode(season_number=1, episode_number=1)
+        self.assertIsNone(match_calendar_entry(ep))
+        created = ensure_calendar_entry_for_episode(ep)
+        stale.refresh_from_db()
+        self.assertIsNone(stale.episode)
+        self.assertNotEqual(created.id, stale.id)
+
+    def test_ensure_auto_creates_when_no_match(self):
+        ep = self._episode(season_number=3, episode_number=1, episode_type='full')
+        entry = ensure_calendar_entry_for_episode(ep)
+        self.assertEqual(CalendarEntry.objects.count(), 1)
+        self.assertEqual(entry.episode, ep)
+        self.assertEqual(entry.network, self.network)
+        self.assertEqual(entry.podcast, self.podcast)
+        self.assertEqual(entry.title, ep.title)
+        self.assertEqual(entry.season_number, 3)
+        self.assertEqual(entry.episode_number, 1)
+        self.assertEqual(entry.episode_type, 'full')
+        self.assertEqual(entry.scheduled_at, self.when)
+
+    def test_ensure_is_idempotent_and_resyncs_time(self):
+        ep = self._episode(season_number=2, episode_number=5)
+        first = ensure_calendar_entry_for_episode(ep)
+        later = self.when + timedelta(days=2)
+        ep = Episode.objects.get(pk=ep.pk)
+        ep.scheduled_at = later
+        ep.save(update_fields=['scheduled_at'])
+        second = ensure_calendar_entry_for_episode(ep)
+        self.assertEqual(first.id, second.id)
+        self.assertEqual(CalendarEntry.objects.count(), 1)
+        self.assertEqual(second.scheduled_at, later)
+
+    def test_ensure_explicit_id_links_freeform_entry_and_syncs_podcast(self):
+        # A freeform entry that would never auto-match (no podcast, other title).
+        entry = self._entry(podcast=None, title='Live Watch')
+        ep = self._episode(title='Something Unrelated')
+        result = ensure_calendar_entry_for_episode(ep, calendar_entry_id=entry.id)
+        self.assertEqual(result.id, entry.id)
+        entry.refresh_from_db()
+        self.assertEqual(entry.episode, ep)
+        self.assertEqual(entry.podcast, self.podcast)
+        self.assertEqual(entry.scheduled_at, self.when)
+        self.assertEqual(CalendarEntry.objects.count(), 1)
+
+    def test_link_syncs_fields_and_description_from_episode(self):
+        # Once linked, the episode is the public source of truth: an explicit
+        # freeform pick adopts the episode's title/S/E/type and description.
+        entry = self._entry(podcast=None, title='Live Watch', notes='planner notes')
+        ep = self._episode(title='Real Title', season_number=2, episode_number=5,
+                           episode_type='full',
+                           clean_description='<p>Big &amp; bold finale</p>')
+        ensure_calendar_entry_for_episode(ep, calendar_entry_id=entry.id)
+        entry.refresh_from_db()
+        self.assertEqual(entry.title, 'Real Title')
+        self.assertEqual(entry.season_number, 2)
+        self.assertEqual(entry.episode_number, 5)
+        self.assertEqual(entry.episode_type, 'full')
+        self.assertEqual(entry.notes, 'Big & bold finale')
+
+    def test_link_preserves_planned_fields_when_episode_blank(self):
+        entry = self._entry(title='Planned', season_number=4, episode_number=2,
+                            episode_type='bonus', notes='keep me')
+        ep = self._episode(title='Actual', season_number=4, episode_number=2,
+                           episode_type='', clean_description='')
+        ensure_calendar_entry_for_episode(ep)
+        entry.refresh_from_db()
+        self.assertEqual(entry.title, 'Actual')
+        self.assertEqual(entry.episode_type, 'bonus')
+        self.assertEqual(entry.notes, 'keep me')
+
+    def test_auto_create_populates_notes_from_description(self):
+        ep = self._episode(clean_description='<p>Notes here</p>')
+        entry = ensure_calendar_entry_for_episode(ep)
+        self.assertEqual(entry.notes, 'Notes here')
+
+    def test_ensure_rejects_cross_network_entry_id(self):
+        other_network = Network.objects.create(name='Other', slug='othercal')
+        foreign = CalendarEntry.objects.create(
+            network=other_network, title='Foreign plan', scheduled_at=self.when)
+        ep = self._episode()
+        result = ensure_calendar_entry_for_episode(ep, calendar_entry_id=foreign.id)
+        foreign.refresh_from_db()
+        self.assertIsNone(foreign.episode)
+        self.assertIsNone(foreign.podcast)
+        self.assertNotEqual(result.id, foreign.id)
+        self.assertEqual(result.network, self.network)
+
+
+class PublishCalendarEntryWiringTests(TestCase):
+    """ensure_calendar_entry_for_episode wiring: _handle_publish_post's
+    schedule + immediate-publish branches, manage_episode's schedule +
+    publish_now actions (with the explicit calendar_entry_id passthrough),
+    and never on draft."""
+
+    def setUp(self):
+        self.network = Network.objects.create(name='Net', slug='netcalwire')
+        self.podcast = Podcast.objects.create(network=self.network, title='Show', slug='showcalwire')
+        self.owner = User.objects.create_user('calowner', password='x')
+        self.network.owners.add(self.owner)
+        self.client.force_login(self.owner)
+
+    def _post_publish(self, action, **extra):
+        data = {'action': action, 'network_slug': self.network.slug,
+                'podcast_id': self.podcast.id, 'title': 'New Ep',
+                'tags_json': '[]', 'chapters_json': 'null'}
+        data.update(extra)
+        with mock.patch('pod_manager.views.creator.publish.task_rebuild_episode_fragments'):
+            return self.client.post(reverse('publish_episode'), data)
+
+    def _post_manage(self, ep, action, **extra):
+        data = {'action': action}
+        data.update(extra)
+        with mock.patch('pod_manager.views.creator.publish.task_rebuild_episode_fragments'):
+            return self.client.post(reverse('manage_episode', args=[ep.id]), data)
+
+    def test_schedule_creates_and_links_entry(self):
+        resp = self._post_publish('schedule', scheduled_at='2026-08-15T12:00')
+        self.assertEqual(resp.status_code, 302)
+        ep = Episode.objects.get(title='New Ep')
+        entry = CalendarEntry.objects.get()
+        self.assertEqual(entry.episode, ep)
+        self.assertEqual(entry.scheduled_at, ep.scheduled_at)
+
+    def test_schedule_reconciles_preplanned_entry(self):
+        planned = CalendarEntry.objects.create(
+            network=self.network, podcast=self.podcast, title='New Ep',
+            scheduled_at=timezone.now() + timedelta(days=3))
+        self._post_publish('schedule', scheduled_at='2026-07-20T12:00')
+        planned.refresh_from_db()
+        self.assertEqual(planned.episode, Episode.objects.get(title='New Ep'))
+        self.assertEqual(CalendarEntry.objects.count(), 1)
+
+    def test_schedule_links_explicit_calendar_entry_id(self):
+        freeform = CalendarEntry.objects.create(
+            network=self.network, title='Live Watch',
+            scheduled_at=timezone.now() + timedelta(days=3))
+        self._post_publish('schedule', scheduled_at='2026-08-15T12:00',
+                           calendar_entry_id=freeform.id)
+        freeform.refresh_from_db()
+        self.assertEqual(freeform.episode, Episode.objects.get(title='New Ep'))
+        self.assertEqual(freeform.podcast, self.podcast)
+        self.assertEqual(CalendarEntry.objects.count(), 1)
+
+    def test_immediate_publish_creates_entry(self):
+        self._post_publish('publish')
+        ep = Episode.objects.get(title='New Ep')
+        entry = CalendarEntry.objects.get()
+        self.assertEqual(entry.episode, ep)
+        self.assertEqual(entry.scheduled_at, ep.pub_date)
+
+    def test_draft_creates_no_entry(self):
+        self._post_publish('draft')
+        self.assertTrue(Episode.objects.filter(title='New Ep').exists())
+        self.assertEqual(CalendarEntry.objects.count(), 0)
+
+    def test_manage_schedule_creates_and_links_entry(self):
+        ep = Episode.objects.create(
+            podcast=self.podcast, title='Existing', pub_date=timezone.now(),
+            raw_description='x', clean_description='x', is_published=True)
+        self._post_manage(ep, 'schedule', scheduled_at='2026-08-20T18:00')
+        ep.refresh_from_db()
+        entry = CalendarEntry.objects.get()
+        self.assertEqual(entry.episode, ep)
+        self.assertEqual(entry.scheduled_at, ep.scheduled_at)
+
+    def test_manage_publish_now_creates_entry_keeping_planned_time(self):
+        # A3: publish_now nulls scheduled_at but pub_date keeps the planned
+        # time — the calendar shows the planned slot, not the go-live moment.
+        planned_time = timezone.now() + timedelta(days=1)
+        ep = Episode.objects.create(
+            podcast=self.podcast, title='Existing', pub_date=planned_time,
+            scheduled_at=planned_time, is_published=False,
+            raw_description='x', clean_description='x')
+        self._post_manage(ep, 'publish_now')
+        ep.refresh_from_db()
+        self.assertTrue(ep.is_published)
+        entry = CalendarEntry.objects.get()
+        self.assertEqual(entry.episode, ep)
+        self.assertEqual(entry.scheduled_at, planned_time)
+
+
+class CommitEpisodeCalendarLinkTests(TestCase):
+    """commit_episode()'s A5 hook: link_calendar_entry_for_new_episode runs
+    for NEW ingested episodes only, links a matching pre-planned entry with
+    the [CALENDAR LINK] stdout line, and never auto-creates from ingest."""
+
+    def setUp(self):
+        self.network = Network.objects.create(name='Net', slug='netcaling')
+        self.podcast = Podcast.objects.create(network=self.network, title='Show', slug='showcaling')
+
+    def _commit(self, pub_entry):
+        from pod_manager.ingesters.default import commit_episode
+        stdout = mock.Mock()
+        with mock.patch('pod_manager.ingesters.default.task_rebuild_episode_fragments'):
+            episode = commit_episode(self.podcast, pub_entry, None, 'Test', stdout)
+        return episode, [c.args[0] for c in stdout.write.call_args_list]
+
+    def test_new_episode_links_matching_entry(self):
+        planned = CalendarEntry.objects.create(
+            network=self.network, podcast=self.podcast, title='Ep 1',
+            scheduled_at=timezone.now() + timedelta(days=3))
+        episode, lines = self._commit(_FakeEntry(id='guid-cal-1', title='Ep 1'))
+        planned.refresh_from_db()
+        self.assertEqual(planned.episode, episode)
+        self.assertEqual(planned.scheduled_at, episode.pub_date)
+        self.assertTrue(any('[CALENDAR LINK]' in line for line in lines))
+        self.assertEqual(CalendarEntry.objects.count(), 1)
+
+    def test_new_episode_never_auto_creates_entry(self):
+        episode, lines = self._commit(_FakeEntry(id='guid-cal-2', title='Ep 2'))
+        self.assertIsNotNone(episode.pk)
+        self.assertEqual(CalendarEntry.objects.count(), 0)
+        self.assertFalse(any('[CALENDAR LINK]' in line for line in lines))
+
+    def test_existing_episode_update_does_not_link(self):
+        Episode.objects.create(
+            podcast=self.podcast, title='Ep 1', pub_date=timezone.now(),
+            raw_description='x', clean_description='x', guid_public='guid-cal-3')
+        CalendarEntry.objects.create(
+            network=self.network, podcast=self.podcast, title='Ep 1',
+            scheduled_at=timezone.now())
+        _, lines = self._commit(_FakeEntry(id='guid-cal-3', title='Ep 1'))
+        self.assertFalse(CalendarEntry.objects.filter(episode__isnull=False).exists())
+        self.assertFalse(any('[CALENDAR LINK]' in line for line in lines))
+
+
+class CalendarFeedTests(TestCase):
+    """generate_calendar_feed ICS output: A6 (DTSTAMP on every VEVENT,
+    X-WR-CALNAME, timed zero-duration events, url only when linked+published
+    else external_link, notes as DESCRIPTION) and A13 (a scheduled-unpublished
+    entry appears WITHOUT a URL; the same entry carries the episode URL once
+    is_published flips)."""
+
+    def setUp(self):
+        self.network = Network.objects.create(name='Net', slug='netcalfeed')
+        self.podcast = Podcast.objects.create(network=self.network, title='Show', slug='showcalfeed')
+        self.factory = RequestFactory()
+
+    def _entry(self, **kw):
+        base = dict(network=self.network, podcast=self.podcast, title='Planned Ep',
+                    scheduled_at=timezone.now() + timedelta(days=3))
+        base.update(kw)
+        return CalendarEntry.objects.create(**base)
+
+    def _ics(self):
+        req = self.factory.get(reverse('calendar_feed', args=[self.network.slug]))
+        resp = views.generate_calendar_feed(req, network_slug=self.network.slug)
+        self.assertEqual(resp['Content-Type'], 'text/calendar')
+        return resp.content.decode('utf-8')
+
+    def test_calendar_shell_and_dtstamp_on_every_vevent(self):
+        self._entry(title='One')
+        self._entry(title='Two')
+        ics = self._ics()
+        self.assertIn('BEGIN:VCALENDAR', ics)
+        self.assertIn('VERSION:2.0', ics)
+        self.assertIn('PRODID:-//Vecto//Net Release Calendar//EN', ics)
+        self.assertIn('X-WR-CALNAME:Net Releases', ics)
+        self.assertEqual(ics.count('BEGIN:VEVENT'), 2)
+        self.assertEqual(ics.count('DTSTAMP'), 2)
+        self.assertEqual(ics.count('LAST-MODIFIED'), 2)
+
+    def test_events_are_timed_and_zero_duration(self):
+        self._entry()
+        ics = self._ics()
+        dtstart_lines = [l for l in ics.splitlines() if l.startswith('DTSTART')]
+        self.assertEqual(len(dtstart_lines), 1)
+        self.assertIn('T', dtstart_lines[0].split(':', 1)[1])  # timed, not all-day
+        self.assertNotIn('VALUE=DATE:', dtstart_lines[0])
+        self.assertNotIn('DTEND', ics)
+
+    def test_freeform_entry_uses_external_link(self):
+        self._entry(podcast=None, title='Live Watch',
+                    external_link='https://example.com/live')
+        ics = self._ics()
+        self.assertIn('URL:https://example.com/live', ics)
+
+    def test_unlinked_entry_without_external_link_has_no_url(self):
+        self._entry()
+        self.assertNotIn('URL', self._ics())
+
+    def test_notes_become_description_with_podcast_header(self):
+        self._entry(notes='Season finale — bring snacks', episode_type='full')
+        ics = self._ics()
+        self.assertIn('DESCRIPTION:Show · full', ics)
+        self.assertIn('Season finale', ics)
+
+    def test_freeform_description_is_just_notes(self):
+        self._entry(podcast=None, notes='Come hang out')
+        self.assertIn('DESCRIPTION:Come hang out', self._ics())
+
+    def test_numbered_summary_includes_sxe(self):
+        self._entry(title='Finale', season_number=2, episode_number=5)
+        self.assertIn('SUMMARY:S2E5 · Finale', self._ics())
+
+    def test_scheduled_unpublished_entry_appears_without_url_then_gains_it(self):
+        # A13 is a requirement, not an accident: the URL is computed live from
+        # is_published at render time, never stored on the entry.
+        when = timezone.now() + timedelta(days=3)
+        ep = Episode.objects.create(
+            podcast=self.podcast, title='Scheduled Ep', pub_date=when,
+            scheduled_at=when, is_published=False,
+            raw_description='x', clean_description='x')
+        entry = self._entry(title='Scheduled Ep', episode=ep, scheduled_at=when)
+        ics = self._ics()
+        self.assertIn('SUMMARY:Scheduled Ep', ics)
+        self.assertNotIn('URL', ics)
+
+        # Simulate the scheduled auto-publish task / publish_now flipping it.
+        ep.is_published = True
+        ep.save(update_fields=['is_published'])
+        ics = self._ics()
+        self.assertEqual(ics.count('BEGIN:VEVENT'), 1)
+        self.assertIn(f'URL:http://testserver/episode/{ep.id}/', ics)
+
+
+def _sched_ep(podcast, title, when, published=False):
+    return Episode.objects.create(
+        podcast=podcast, title=title, pub_date=when, scheduled_at=when,
+        is_published=published, raw_description='x', clean_description='x')
+
+
+@override_settings(ALLOWED_HOSTS=['*'])
+class CalendarPageViewTests(TestCase):
+    """Public /calendar page (Feature 4, A14): read-only for listeners, owner
+    controls rendered only for owners, 404 off a network domain. Themed cases
+    route through NetworkMiddleware via an HTTP_HOST matching custom_domain."""
+
+    def setUp(self):
+        cache.clear()
+        self.network = Network.objects.create(
+            name='CalNet', slug='calpage', custom_domain='calpage.example.test')
+        self.podcast = Podcast.objects.create(network=self.network, title='Show', slug='calpageshow')
+        self.owner = User.objects.create_user('calowner', password='x')
+        self.network.owners.add(self.owner)
+        self.host = 'calpage.example.test'
+
+    def test_listener_sees_read_only_page(self):
+        resp = self.client.get('/calendar/', HTTP_HOST=self.host)
+        self.assertEqual(resp.status_code, 200)
+        self.assertContains(resp, 'Release Calendar')
+        self.assertContains(resp, 'Subscribe')
+        self.assertNotContains(resp, 'id="calAddBtn"')
+        self.assertNotContains(resp, 'id="calEntryModal"')
+
+    def test_owner_sees_add_controls(self):
+        self.client.force_login(self.owner)
+        resp = self.client.get('/calendar/', HTTP_HOST=self.host)
+        self.assertEqual(resp.status_code, 200)
+        self.assertContains(resp, 'id="calAddBtn"')
+        self.assertContains(resp, 'id="calEntryModal"')
+
+    def test_navbar_has_calendar_link(self):
+        resp = self.client.get('/calendar/', HTTP_HOST=self.host)
+        self.assertContains(resp, '>Calendar</a>')
+
+    def test_subscribe_row_has_all_affordances(self):
+        resp = self.client.get('/calendar/', HTTP_HOST=self.host)
+        self.assertContains(resp, 'webcal://calpage.example.test/feed/calpage/calendar.ics')
+        self.assertContains(resp, 'calendar.google.com/calendar/render')
+        self.assertContains(resp, 'outlook.live.com/calendar/0/addfromweb')
+
+    def test_404_off_network_domain(self):
+        resp = self.client.get('/calendar/', HTTP_HOST='totally-unknown.example.test')
+        self.assertEqual(resp.status_code, 404)
+
+
+@override_settings(ALLOWED_HOSTS=['*'])
+class CalendarEventsJsonTests(TestCase):
+    """Public JSON event source (A7 + A14): scoped to request.network,
+    editable = is_owner AND unlinked, url computed live from is_published (A13)."""
+
+    def setUp(self):
+        cache.clear()
+        self.network = Network.objects.create(
+            name='EvNet', slug='calev', custom_domain='calev.example.test')
+        self.podcast = Podcast.objects.create(network=self.network, title='Show', slug='calevshow')
+        self.owner = User.objects.create_user('evowner', password='x')
+        self.network.owners.add(self.owner)
+        self.other = Network.objects.create(
+            name='Other', slug='calevother', custom_domain='calevother.example.test')
+        CalendarEntry.objects.create(
+            network=self.other, title='ForeignEntry', scheduled_at=timezone.now())
+        self.host = 'calev.example.test'
+
+    def _events(self):
+        resp = self.client.get('/calendar/events/', HTTP_HOST=self.host)
+        self.assertEqual(resp.status_code, 200)
+        return resp.json()
+
+    def test_scoped_to_request_network(self):
+        CalendarEntry.objects.create(network=self.network, title='MineEntry', scheduled_at=timezone.now())
+        titles = [e['title'] for e in self._events()]
+        self.assertIn('MineEntry', titles)
+        self.assertNotIn('ForeignEntry', titles)
+
+    def test_editable_only_for_owner_and_unlinked(self):
+        CalendarEntry.objects.create(
+            network=self.network, podcast=self.podcast, title='Free', scheduled_at=timezone.now())
+        self.assertFalse(self._events()[0]['editable'])
+        self.client.force_login(self.owner)
+        self.assertTrue(self._events()[0]['editable'])
+
+    def test_linked_entry_not_editable_for_owner(self):
+        when = timezone.now()
+        ep = _sched_ep(self.podcast, 'Ep', when)
+        CalendarEntry.objects.create(
+            network=self.network, podcast=self.podcast, title='Ep', episode=ep, scheduled_at=when)
+        self.client.force_login(self.owner)
+        self.assertFalse(self._events()[0]['editable'])
+
+    def test_numbered_title_and_a13_url_logic(self):
+        when = timezone.now()
+        ep = _sched_ep(self.podcast, 'S2E5', when)
+        CalendarEntry.objects.create(
+            network=self.network, podcast=self.podcast, title='Finale',
+            season_number=2, episode_number=5, episode=ep, scheduled_at=when)
+        ev = self._events()[0]
+        self.assertEqual(ev['title'], 'Finale')
+        self.assertEqual(ev['extendedProps']['sxe'], 'S2E5')
+        self.assertNotIn('url', ev)  # scheduled-unpublished: no url (A13)
+        ep.is_published = True
+        ep.save(update_fields=['is_published'])
+        ev = self._events()[0]
+        self.assertIn('url', ev)
+        self.assertIn(f'/episode/{ep.id}/', ev['url'])
+
+    def test_freeform_external_link_used_as_url(self):
+        CalendarEntry.objects.create(
+            network=self.network, title='Live', external_link='https://ex.com/live',
+            scheduled_at=timezone.now())
+        self.assertEqual(self._events()[0]['url'], 'https://ex.com/live')
+
+    def test_notes_surfaced_in_extended_props(self):
+        CalendarEntry.objects.create(
+            network=self.network, title='WithNotes', notes='public copy here',
+            scheduled_at=timezone.now())
+        self.assertEqual(self._events()[0]['extendedProps']['notes'], 'public copy here')
+
+    def test_start_rendered_in_eastern_wall_clock(self):
+        # 16:00 UTC on 2026-08-01 is 12:00 EDT; FullCalendar runs in UTC mode so
+        # we hand it the Eastern wall-clock with the tz stripped.
+        when = datetime.datetime(2026, 8, 1, 16, 0, tzinfo=datetime.timezone.utc)
+        CalendarEntry.objects.create(network=self.network, title='ET', scheduled_at=when)
+        self.assertEqual(self._events()[0]['start'], '2026-08-01T12:00:00')
+
+
+@override_settings(ALLOWED_HOSTS=['*'])
+class CalendarManageTests(TestCase):
+    """Owner mutations (A14): server-side ownership on every endpoint, freeform
+    vs podcast add, network-scoped delete, drag-move UNLINKED entries only (A8)."""
+
+    def setUp(self):
+        cache.clear()
+        self.network = Network.objects.create(
+            name='MgNet', slug='calmg', custom_domain='calmg.example.test')
+        self.podcast = Podcast.objects.create(network=self.network, title='Show', slug='calmgshow')
+        self.owner = User.objects.create_user('mgowner', password='x')
+        self.network.owners.add(self.owner)
+        self.stranger = User.objects.create_user('mgstranger', password='x')
+        self.host = 'calmg.example.test'
+
+    def _post(self, data):
+        return self.client.post('/calendar/manage/', data, HTTP_HOST=self.host)
+
+    def test_add_podcast_entry_owner(self):
+        self.client.force_login(self.owner)
+        resp = self._post({
+            'action': 'add', 'title': 'Planned', 'podcast_id': self.podcast.id,
+            'date': '2026-08-01', 'time': '12:00', 'season_number': '2',
+            'episode_number': '5', 'episode_type': 'full', 'notes': 'hi',
+        })
+        self.assertEqual(resp.status_code, 302)
+        entry = CalendarEntry.objects.get(title='Planned')
+        self.assertEqual(entry.podcast_id, self.podcast.id)
+        self.assertEqual(entry.season_number, 2)
+        self.assertEqual(entry.episode_number, 5)
+        self.assertEqual(entry.episode_type, 'full')
+        self.assertEqual(entry.created_by, self.owner)
+
+    def test_add_freeform_entry(self):
+        self.client.force_login(self.owner)
+        self._post({
+            'action': 'add', 'title': 'Live Watch', 'podcast_id': '',
+            'date': '2026-08-01', 'time': '12:00', 'external_link': 'https://ex.com/live',
+        })
+        entry = CalendarEntry.objects.get(title='Live Watch')
+        self.assertIsNone(entry.podcast_id)
+        self.assertEqual(entry.external_link, 'https://ex.com/live')
+
+    def test_add_rejected_for_non_owner(self):
+        self.client.force_login(self.stranger)
+        resp = self._post({'action': 'add', 'title': 'Nope', 'scheduled_at': '2026-08-01T12:00'})
+        self.assertEqual(resp.status_code, 403)
+        self.assertFalse(CalendarEntry.objects.filter(title='Nope').exists())
+
+    def test_add_rejected_for_anonymous(self):
+        resp = self._post({'action': 'add', 'title': 'Nope', 'scheduled_at': '2026-08-01T12:00'})
+        self.assertEqual(resp.status_code, 403)
+        self.assertFalse(CalendarEntry.objects.filter(title='Nope').exists())
+
+    def test_delete_owner(self):
+        entry = CalendarEntry.objects.create(network=self.network, title='Del', scheduled_at=timezone.now())
+        self.client.force_login(self.owner)
+        resp = self._post({'action': 'delete', 'entry_id': entry.id})
+        self.assertEqual(resp.status_code, 302)
+        self.assertFalse(CalendarEntry.objects.filter(id=entry.id).exists())
+
+    def test_delete_scoped_to_network(self):
+        other = Network.objects.create(name='O', slug='calmgo', custom_domain='calmgo.example.test')
+        foreign = CalendarEntry.objects.create(network=other, title='Foreign', scheduled_at=timezone.now())
+        self.client.force_login(self.owner)
+        resp = self._post({'action': 'delete', 'entry_id': foreign.id})
+        self.assertEqual(resp.status_code, 404)
+        self.assertTrue(CalendarEntry.objects.filter(id=foreign.id).exists())
+
+    def test_move_unlinked_entry_interprets_eastern(self):
+        entry = CalendarEntry.objects.create(network=self.network, title='Move', scheduled_at=timezone.now())
+        self.client.force_login(self.owner)
+        # FullCalendar (UTC mode over an Eastern display) hands back the Eastern
+        # wall-clock UTC-labeled: 15:00 on 2026-09-09 is EDT (-4) -> 19:00 UTC.
+        resp = self._post({'action': 'move', 'entry_id': entry.id, 'start': '2026-09-09T15:00:00Z'})
+        self.assertEqual(resp.status_code, 200)
+        self.assertTrue(resp.json()['ok'])
+        entry.refresh_from_db()
+        self.assertEqual(entry.scheduled_at.isoformat(), '2026-09-09T19:00:00+00:00')
+
+    def test_add_defaults_to_eastern(self):
+        self.client.force_login(self.owner)
+        self._post({'action': 'add', 'title': 'ETdefault', 'date': '2026-08-01', 'time': '12:00'})
+        entry = CalendarEntry.objects.get(title='ETdefault')
+        # 12:00 EDT (-4) -> 16:00 UTC
+        self.assertEqual(entry.scheduled_at.isoformat(), '2026-08-01T16:00:00+00:00')
+
+    def test_add_respects_selected_timezone(self):
+        self.client.force_login(self.owner)
+        self._post({'action': 'add', 'title': 'PT', 'date': '2026-08-01', 'time': '12:00',
+                    'tz': 'America/Los_Angeles'})
+        entry = CalendarEntry.objects.get(title='PT')
+        # 12:00 PDT (-7) -> 19:00 UTC
+        self.assertEqual(entry.scheduled_at.isoformat(), '2026-08-01T19:00:00+00:00')
+
+    def test_add_invalid_tz_falls_back_to_eastern(self):
+        self.client.force_login(self.owner)
+        self._post({'action': 'add', 'title': 'BadTz', 'date': '2026-08-01', 'time': '12:00',
+                    'tz': 'Mars/Phobos'})
+        entry = CalendarEntry.objects.get(title='BadTz')
+        self.assertEqual(entry.scheduled_at.isoformat(), '2026-08-01T16:00:00+00:00')
+
+    def test_add_missing_time_rejected(self):
+        self.client.force_login(self.owner)
+        self._post({'action': 'add', 'title': 'NoTime', 'date': '2026-08-01'})
+        self.assertFalse(CalendarEntry.objects.filter(title='NoTime').exists())
+
+    def test_edit_freeform_entry(self):
+        entry = CalendarEntry.objects.create(
+            network=self.network, title='Old', scheduled_at=timezone.now(),
+            external_link='https://ex.com/old', notes='old notes')
+        self.client.force_login(self.owner)
+        resp = self._post({
+            'action': 'edit', 'entry_id': entry.id, 'title': 'New Title',
+            'date': '2026-08-01', 'time': '12:00', 'podcast_id': '',
+            'external_link': 'https://ex.com/new', 'notes': 'new notes',
+        })
+        self.assertEqual(resp.status_code, 302)
+        entry.refresh_from_db()
+        self.assertEqual(entry.title, 'New Title')
+        self.assertEqual(entry.external_link, 'https://ex.com/new')
+        self.assertEqual(entry.notes, 'new notes')
+        self.assertEqual(entry.scheduled_at.isoformat(), '2026-08-01T16:00:00+00:00')
+
+    def test_edit_can_attach_podcast_fields(self):
+        entry = CalendarEntry.objects.create(
+            network=self.network, title='Freeform', scheduled_at=timezone.now())
+        self.client.force_login(self.owner)
+        self._post({
+            'action': 'edit', 'entry_id': entry.id, 'title': 'Now Podcast',
+            'date': '2026-08-01', 'time': '12:00', 'podcast_id': self.podcast.id,
+            'season_number': '3', 'episode_number': '7', 'episode_type': 'full',
+        })
+        entry.refresh_from_db()
+        self.assertEqual(entry.podcast_id, self.podcast.id)
+        self.assertEqual(entry.season_number, 3)
+        self.assertEqual(entry.episode_number, 7)
+        self.assertEqual(entry.external_link, '')
+
+    def test_edit_rejects_linked_entry(self):
+        when = timezone.now()
+        ep = _sched_ep(self.podcast, 'Ep', when)
+        entry = CalendarEntry.objects.create(
+            network=self.network, podcast=self.podcast, title='Linked',
+            episode=ep, scheduled_at=when)
+        self.client.force_login(self.owner)
+        self._post({'action': 'edit', 'entry_id': entry.id, 'title': 'Hacked',
+                    'date': '2026-08-01', 'time': '12:00'})
+        entry.refresh_from_db()
+        self.assertEqual(entry.title, 'Linked')  # unchanged
+
+    def test_edit_scoped_to_network(self):
+        other = Network.objects.create(name='O', slug='calmgedit', custom_domain='calmgedit.example.test')
+        foreign = CalendarEntry.objects.create(network=other, title='Foreign', scheduled_at=timezone.now())
+        self.client.force_login(self.owner)
+        resp = self._post({'action': 'edit', 'entry_id': foreign.id, 'title': 'X',
+                           'date': '2026-08-01', 'time': '12:00'})
+        self.assertEqual(resp.status_code, 404)
+        foreign.refresh_from_db()
+        self.assertEqual(foreign.title, 'Foreign')
+
+    def test_edit_rejected_for_non_owner(self):
+        entry = CalendarEntry.objects.create(network=self.network, title='NE', scheduled_at=timezone.now())
+        self.client.force_login(self.stranger)
+        resp = self._post({'action': 'edit', 'entry_id': entry.id, 'title': 'X',
+                           'date': '2026-08-01', 'time': '12:00'})
+        self.assertEqual(resp.status_code, 403)
+
+    def test_move_linked_entry_rejected(self):
+        when = timezone.now()
+        ep = _sched_ep(self.podcast, 'Ep', when)
+        entry = CalendarEntry.objects.create(
+            network=self.network, podcast=self.podcast, title='Ep', episode=ep, scheduled_at=when)
+        self.client.force_login(self.owner)
+        resp = self._post({'action': 'move', 'entry_id': entry.id, 'start': '2026-09-09T15:00:00+00:00'})
+        self.assertEqual(resp.status_code, 409)
+        entry.refresh_from_db()
+        self.assertEqual(entry.scheduled_at, when)
+
+    def test_move_rejected_for_non_owner(self):
+        entry = CalendarEntry.objects.create(network=self.network, title='NM', scheduled_at=timezone.now())
+        self.client.force_login(self.stranger)
+        resp = self._post({'action': 'move', 'entry_id': entry.id, 'start': '2026-09-09T15:00:00+00:00'})
+        self.assertEqual(resp.status_code, 403)
+
+
+class PublishFormCalendarSelectorTests(TestCase):
+    """Publish form 'Link to Calendar Entry' selector (A9): renders unlinked
+    upcoming entries with data-podcast-id; excludes linked/past entries."""
+
+    def setUp(self):
+        self.network = Network.objects.create(name='PbNet', slug='calpub')
+        self.podcast = Podcast.objects.create(network=self.network, title='Show', slug='calpubshow')
+        self.owner = User.objects.create_user('pbowner', password='x')
+        self.network.owners.add(self.owner)
+        self.client.force_login(self.owner)
+
+    def _get(self):
+        return self.client.get(reverse('publish_episode') + '?network=calpub')
+
+    def test_selector_shows_unlinked_upcoming_entries(self):
+        CalendarEntry.objects.create(
+            network=self.network, podcast=self.podcast, title='ZzUpcomingEntry',
+            scheduled_at=timezone.now() + timedelta(days=5))
+        resp = self._get()
+        self.assertContains(resp, 'id="calendarEntrySelect"')
+        self.assertContains(resp, 'ZzUpcomingEntry')
+        self.assertContains(resp, f'data-podcast-id="{self.podcast.id}"')
+
+    def test_linked_and_past_entries_excluded(self):
+        when = timezone.now() + timedelta(days=5)
+        ep = _sched_ep(self.podcast, 'Ep', when)
+        CalendarEntry.objects.create(
+            network=self.network, podcast=self.podcast, title='ZzLinkedEntry',
+            episode=ep, scheduled_at=when)
+        CalendarEntry.objects.create(
+            network=self.network, podcast=self.podcast, title='ZzPastEntry',
+            scheduled_at=timezone.now() - timedelta(days=5))
+        resp = self._get()
+        self.assertNotContains(resp, 'id="calendarEntrySelect"')
+        self.assertNotContains(resp, 'ZzLinkedEntry')
+        self.assertNotContains(resp, 'ZzPastEntry')
 

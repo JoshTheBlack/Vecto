@@ -22,13 +22,14 @@ from django.shortcuts import get_object_or_404
 from django.urls import reverse
 from django.utils import timezone
 
+import icalendar
 from podgen import Podcast as PodgenPodcast, Episode as PodgenEpisode, Media, Person
 from lxml import etree
 
 from django.db.models import Q
 
 from ..models import (
-    PatronProfile, Podcast, Episode, EpisodeCrossPublication, NetworkMix, UserMix,
+    Network, PatronProfile, Podcast, Episode, EpisodeCrossPublication, NetworkMix, UserMix,
 )
 from ..services.access import _evaluate_access, _build_episode_description, _evaluate_mix_access
 from ..services.analytics import _record_active_user
@@ -589,6 +590,55 @@ def generate_network_mix_feed(request, network_slug, mix_slug):
         network_ids.add(network_mix.network_id)
         _record_active_user(network_ids, user.id)
     return etag_xml_response(request, final_xml.encode('utf-8'))
+
+
+def generate_calendar_feed(request, network_slug):
+    """Public per-network release-calendar ICS feed — subscribable from
+    Apple/Google/Outlook. Fully public by design (decision #3), like the
+    podcast RSS feeds themselves.
+
+    Events are timed and zero-duration (no DTEND) — calendar apps render an
+    instant at the release time. The episode URL is computed live from
+    is_published (A13): a scheduled-unpublished entry appears with no URL,
+    then carries the episode link once it publishes — never stored."""
+    network = get_object_or_404(Network, slug=network_slug)
+    cal = icalendar.Calendar()
+    cal.add('prodid', f'-//Vecto//{network.name} Release Calendar//EN')
+    cal.add('version', '2.0')
+    cal.add('x-wr-calname', f'{network.name} Releases')
+    now = timezone.now()
+    entries = network.calendar_entries.select_related('episode', 'podcast').order_by('scheduled_at')
+    for entry in entries:
+        event = icalendar.Event()
+        event.add('uid', f'calendar-entry-{entry.id}@vecto')
+        # RFC 5545 requires DTSTAMP on every VEVENT; the icalendar lib does
+        # NOT add it automatically.
+        event.add('dtstamp', now)
+        event.add('last-modified', entry.updated_at)
+        numbered = entry.season_number is not None and entry.episode_number is not None
+        summary = (
+            f'S{entry.season_number}E{entry.episode_number} · {entry.title}'
+            if numbered else entry.title
+        )
+        event.add('summary', summary)
+        event.add('dtstart', entry.scheduled_at)
+        if entry.episode_id and entry.episode.is_published:
+            event.add('url', request.build_absolute_uri(
+                reverse('episode_detail', args=[entry.episode_id])))
+        elif entry.external_link:
+            event.add('url', entry.external_link)
+        # DESCRIPTION: a podcast/type header line, then the public notes.
+        header_bits = [b for b in (
+            entry.podcast.title if entry.podcast else '', entry.episode_type) if b]
+        desc_parts = [b for b in (' · '.join(header_bits), entry.notes) if b]
+        if desc_parts:
+            event.add('description', '\n\n'.join(desc_parts))
+        cal.add_component(event)
+    resp = HttpResponse(cal.to_ical(), content_type='text/calendar')
+    # Calendar apps poll this URL on their own schedule; make sure nothing
+    # between us and them serves a stale copy.
+    resp['Cache-Control'] = 'no-cache'
+    return resp
 
 
 def play_episode(request, episode_id):

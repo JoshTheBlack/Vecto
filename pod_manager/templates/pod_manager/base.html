@@ -19,8 +19,22 @@
     <script src="{% static 'pod_manager/js/quill.js' %}"></script>
     <script src="{% static 'pod_manager/js/diff.min.js' %}"></script>
 
-    {% if current_network and current_network.theme_config.google_fonts_url %}
-        <link href="{{ current_network.theme_config.google_fonts_url }}" rel="stylesheet">
+    {% if current_network.custom_font_upload %}
+        <style>
+            @font-face {
+                font-family: "{{ current_network.custom_font_family|default:"NetworkBrandFont" }}";
+                src: url("{{ current_network.display_font_url }}") format("woff2");
+                /* Range, not a single weight: Google-served woff2s are variable
+                   fonts whose DEFAULT instance is the lightest cut (Montserrat
+                   defaults to Thin 100) — a single-weight declaration lets the
+                   browser render that default. The range pins body text to
+                   wght=400 and gives real 700 for bold. A static single-cut
+                   upload simply serves all weights as-is (no faux bold). */
+                font-weight: 100 900;
+                font-style: normal;
+                font-display: swap;
+            }
+        </style>
     {% endif %}
 
     <style>
@@ -30,7 +44,7 @@
             --vecto-bg: {{ current_network.theme_config.bg_color|default:"#121212" }};
             --vecto-bg-text: {{ current_network.theme_config.bg_text_color|default:"#f8f9fa" }};
             --vecto-bg-muted: {{ current_network.theme_config.bg_muted_text_color|default:"#6c757d" }};
-            --bs-body-font-family: {{ current_network.theme_config.font_family|default:"system-ui, sans-serif" }} !important;
+            --bs-body-font-family: {% if current_network.custom_font_upload %}"{{ current_network.custom_font_family|default:"NetworkBrandFont" }}", {% endif %}{{ current_network.theme_config.font_family|default:"system-ui, sans-serif" }} !important;
 
             /* Surfaces */
             --vecto-surface-bg: {{ current_network.theme_config.surface_bg_color|default:"#1e1e1e" }};
@@ -81,6 +95,10 @@
         .header-wrapper { border-bottom: 2px solid var(--vecto-primary); }
         .navbar .navbar-brand, .navbar-nav .nav-link, .navbar-text { color: var(--vecto-nav-text) !important; }
         .navbar .text-muted { color: var(--vecto-nav-muted) !important; }
+        /* When the row runs tight, flex squeezes items until labels fold onto
+           two lines — never wrap inside a nav label or button; the user email
+           is the flexible element instead (it truncates, below). */
+        .navbar-nav .nav-link, .navbar .btn { white-space: nowrap; }
 
         .social-bar {
             display: flex;
@@ -819,26 +837,8 @@ document.addEventListener('click', (e) => {
                 <ul class="navbar-nav me-auto align-items-center">
                     <li class="nav-item"><a class="nav-link" href="{% url 'home' %}">Dashboard</a></li>
                     <li class="nav-item"><a class="nav-link" href="{% url 'user_feeds' %}">Your Feeds</a></li>
-                    {% if request.user.is_authenticated and request.user.owned_networks.exists or request.user.is_superuser %}
-                        <li class="nav-item">
-                            <a class="nav-link" href="{% url 'publish_episode' %}">
-                                <i class="bi bi-plus-circle-fill me-1" style="color:var(--vecto-primary);"></i>Publish
-                            </a>
-                        </li>
-                    {% endif %}
-                    {% if request.user.is_staff %}
-                        <li class="nav-item">
-                            <a class="nav-link" href="/staff/logs/">
-                                <i class="bi bi-terminal-split me-1"></i> Logs
-                            </a>
-                        </li>
-                    {% endif %}
-                    {% if request.user.is_superuser %}
-                        <li class="nav-item">
-                            <a class="nav-link" href="{% url 'admin_console' %}">
-                                <i class="bi bi-sliders me-1"></i> Admin
-                            </a>
-                        </li>
+                    {% if current_network %}
+                        <li class="nav-item"><a class="nav-link" href="{% url 'calendar' %}">Calendar</a></li>
                     {% endif %}
                 </ul>
                 
@@ -853,24 +853,18 @@ document.addEventListener('click', (e) => {
                     
                     <div class="d-flex align-items-center gap-3">
                         {% if request.user.is_authenticated %}
-                            <span class="d-none d-lg-inline" style="color: var(--vecto-nav-muted);">{{ request.user.email }}</span>
-                            
-                            {% if request.user.owned_networks.exists or request.user.is_superuser %}
-                                <a href="{% url 'creator_settings' %}" class="btn btn-sm" style="background-color: var(--vecto-primary); color: var(--vecto-primary-text); border: none;">
-                                    <i class="bi bi-gear-fill"></i> Creator Settings
-                                </a>
-                            {% endif %}
-                            
+                            <span class="d-none d-lg-inline-block text-truncate" style="color: var(--vecto-nav-muted); min-width: 0; flex-shrink: 1;">{{ request.user.email }}</span>
+
                             <a class="nav-link p-0 d-flex align-items-center" href="{% url 'user_profile' %}" title="View Profile">
                                 {% if request.tenant_profile %}
-                                    <img src="{{ request.tenant_profile.display_avatar }}" 
-                                        alt="Profile" 
-                                        class="rounded-circle border" 
+                                    <img src="{{ request.tenant_profile.display_avatar }}"
+                                        alt="Profile"
+                                        class="rounded-circle border"
                                         style="width: 38px; height: 38px; object-fit: cover; border-color: var(--vecto-primary, #ffc107) !important; border-width: 2px !important; transition: transform 0.2s ease, filter 0.2s ease;"
                                         onmouseover="this.style.transform='scale(1.1)'; this.style.filter='brightness(1.2)';"
                                         onmouseout="this.style.transform='scale(1)'; this.style.filter='brightness(1)';">
                                 {% else %}
-                                    <div class="rounded-circle border d-flex justify-content-center align-items-center" 
+                                    <div class="rounded-circle border d-flex justify-content-center align-items-center"
                                         style="width: 38px; height: 38px; background-color: rgba(0,0,0,0.2); border-color: var(--vecto-primary, #ffc107) !important; border-width: 2px !important; transition: transform 0.2s ease;"
                                         onmouseover="this.style.transform='scale(1.1)';"
                                         onmouseout="this.style.transform='scale(1)';">
@@ -878,7 +872,47 @@ document.addEventListener('click', (e) => {
                                     </div>
                                 {% endif %}
                             </a>
-                            
+
+                            {% if request.user.owned_networks.exists or request.user.is_staff or request.user.is_superuser %}
+                                <div class="dropdown">
+                                    <button class="btn btn-sm dropdown-toggle" type="button" id="creatorDropdown" data-bs-toggle="dropdown" aria-expanded="false"
+                                            style="background-color: var(--vecto-primary); color: var(--vecto-primary-text); border: none;">
+                                        {% if request.user.owned_networks.exists or request.user.is_superuser %}Creator{% else %}Staff{% endif %}
+                                    </button>
+                                    <ul class="dropdown-menu dropdown-menu-end dropdown-menu-dark shadow-sm" aria-labelledby="creatorDropdown">
+                                        {% if request.user.owned_networks.exists or request.user.is_superuser %}
+                                            <li>
+                                                <a class="dropdown-item py-2" href="{% url 'publish_episode' %}">
+                                                    <i class="bi bi-plus-circle-fill me-2" style="color: var(--vecto-primary);"></i>Publish
+                                                </a>
+                                            </li>
+                                            <li>
+                                                <a class="dropdown-item py-2" href="{% url 'creator_settings' %}">
+                                                    <i class="bi bi-gear-fill me-2"></i>Settings
+                                                </a>
+                                            </li>
+                                        {% endif %}
+                                        {% if request.user.is_staff or request.user.is_superuser %}
+                                            {% if request.user.owned_networks.exists or request.user.is_superuser %}
+                                                <li><hr class="dropdown-divider"></li>
+                                            {% endif %}
+                                            <li>
+                                                <a class="dropdown-item py-2" href="/staff/logs/">
+                                                    <i class="bi bi-terminal-split me-2"></i>Logs
+                                                </a>
+                                            </li>
+                                        {% endif %}
+                                        {% if request.user.is_superuser %}
+                                            <li>
+                                                <a class="dropdown-item py-2" href="{% url 'admin_console' %}">
+                                                    <i class="bi bi-sliders me-2"></i>Admin
+                                                </a>
+                                            </li>
+                                        {% endif %}
+                                    </ul>
+                                </div>
+                            {% endif %}
+
                             <a href="{% url 'logout' %}" class="btn btn-sm btn-outline-danger" hx-boost="false">
                                 <i class="bi bi-box-arrow-right"></i> Logout
                             </a>

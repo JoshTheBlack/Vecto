@@ -7,7 +7,7 @@ from django.contrib.auth.models import User
 from django.db.models import Q, F, BooleanField, ExpressionWrapper
 from django.utils.html import format_html, mark_safe
 from django.urls import reverse
-from .models import Network, PatreonTier, Podcast, Episode, EpisodeCrossPublication, UserMix, NetworkMix, PatronProfile, EpisodeEditSuggestion, NetworkMembership, LogEntry, Transcript, R2OrphanedObject
+from .models import Network, PatreonTier, Podcast, Episode, EpisodeCrossPublication, UserMix, NetworkMix, PatronProfile, EpisodeEditSuggestion, NetworkMembership, LogEntry, Transcript, R2OrphanedObject, CalendarEntry
 
 class S3SubscriberAudioFilter(SimpleListFilter):
     title = 'S3 Hosted Audio (Affected)'
@@ -318,6 +318,17 @@ class PodcastAdmin(admin.ModelAdmin):
     # Filter podcasts by Network and what Tier they require!
     list_filter = ('network', 'required_tier')
     search_fields = ('title', 'slug')
+
+
+@admin.register(CalendarEntry)
+class CalendarEntryAdmin(admin.ModelAdmin):
+    list_display = ('title', 'network', 'podcast', 'season_number', 'episode_number',
+                    'episode_type', 'scheduled_at', 'episode', 'created_by', 'updated_at')
+    list_filter = ('network', 'podcast')
+    search_fields = ('title', 'notes')
+    date_hierarchy = 'scheduled_at'
+    raw_id_fields = ('episode', 'podcast', 'created_by')
+    list_select_related = ('network', 'podcast', 'episode', 'created_by')
 
 class _MixCoverAdminMixin:
     """Shared inspection columns for the two mix types. Surfaces the exact

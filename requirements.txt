@@ -9,6 +9,7 @@ feedparser
 podgen
 nh3
 beautifulsoup4
+icalendar
 
 # Database & Task Queue
 psycopg[binary]

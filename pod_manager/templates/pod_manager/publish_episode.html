@@ -139,6 +139,21 @@
         </div>
     </div>
 
+    {% if calendar_entries %}
+    <div class="card border-secondary mb-3" id="calendarLinkCard">
+        <div class="card-body py-3">
+            <label class="form-label fw-bold text-light mb-2"><i class="bi bi-calendar3 me-1 text-warning"></i>Link to Calendar Entry <small class="text-muted fw-normal">(optional)</small></label>
+            <select name="calendar_entry_id" id="calendarEntrySelect" class="form-select bg-dark text-light border-secondary">
+                <option value="">Auto-match or create a new entry</option>
+                {% for entry in calendar_entries %}
+                <option value="{{ entry.id }}" data-podcast-id="{{ entry.podcast_id|default:'' }}">{{ entry.title }} — {{ entry.scheduled_at|date:'M d, Y' }}{% if not entry.podcast_id %} (freeform){% endif %}</option>
+                {% endfor %}
+            </select>
+            <div class="form-text text-muted">Reconcile this episode with a pre-planned entry instead of creating a duplicate.</div>
+        </div>
+    </div>
+    {% endif %}
+
     <!-- Content -->
     <div class="card border-secondary mb-3">
         <div class="card-header border-secondary py-2">
@@ -153,7 +168,7 @@
 
             <div class="mb-3">
                 <label class="form-label fw-bold text-light">Description</label>
-                <div id="descEditor" class="bg-dark text-light">{% if edit_ep %}{{ edit_ep.clean_description|safe }}{% endif %}</div>
+                <div id="descEditor" class="bg-dark text-light"></div>
             </div>
 
             <div class="mb-1">
@@ -408,12 +423,36 @@
 </div><!-- /tab-content -->
 
 {% if edit_ep %}{{ edit_ep.tags|json_script:"initial-tags" }}{% else %}<script id="initial-tags" type="application/json">[]</script>{% endif %}
+{% if edit_ep %}{{ edit_ep.clean_description|json_script:"initial-desc" }}{% else %}<script id="initial-desc" type="application/json">""</script>{% endif %}
 {% if edit_ep and edit_ep.chapters_public %}{{ edit_ep.chapters_public|json_script:"initial-chapters" }}{% else %}<script id="initial-chapters" type="application/json">null</script>{% endif %}
 
 <script>
 (function () {
+    /* Boosted publish->publish swaps (the Scheduled tab's Edit button) break
+       naive page init two ways: (1) the outgoing and incoming pages BOTH sit
+       in the document while inline scripts execute, so document-wide id
+       lookups are ambiguous; (2) htmx's settle pass temporarily copies the
+       OLD element's attributes onto the matching-id incoming element and
+       restores the real ones ~20ms later (htmx.config.defaultSettleDelay), so
+       classes Quill adds inside that window are clobbered. Scope every lookup
+       to THIS script's own region and defer init past the settle window. */
+    const pageScript = document.currentScript;
+    setTimeout(function initPublishPage() {
+    if (pageScript && !pageScript.isConnected) return;
+    const root = (pageScript && pageScript.closest('#boosted-region')) || document;
+    const $id = (id) => root.querySelector('[id="' + id + '"]');
     /* ── Quill ─────────────────────────────────────────────── */
-    const quill = new Quill('#descEditor', {
+    // Idempotent init: if this DOM already carries a Quill (htmx history
+    // restore), unwrap it back to plain content before re-initializing. The
+    // editor div itself is ALWAYS server-rendered empty — the edit
+    // description arrives via the initial-desc json_script and is loaded
+    // through the clipboard API below, never as live editor innerHTML.
+    const descEl = $id('descEditor');
+    descEl.parentElement.querySelectorAll(':scope > .ql-toolbar').forEach(t => t.remove());
+    descEl.parentElement.querySelectorAll(':scope > .ql-toolbar').forEach(t => t.remove());
+    descEl.classList.remove('ql-container', 'ql-snow', 'ql-disabled');
+    descEl.innerHTML = '';
+    const quill = new Quill(descEl, {
         theme: 'snow',
         modules: { toolbar: [
             ['bold','italic','underline','strike'],
@@ -423,18 +462,22 @@
             ['link','clean']
         ]}
     });
+    try {
+        const initialDesc = JSON.parse($id('initial-desc').textContent);
+        if (initialDesc) quill.clipboard.dangerouslyPasteHTML(initialDesc);
+    } catch (e) {}
 
     /* ── Publish mode selector ──────────────────────────────── */
     const modeIds    = ['modePublish','modeDraft','modeSchedule'];
     const modeValues = ['publish',    'draft',    'schedule'];
-    const actionInput = document.getElementById('formAction');
-    const submitLabel = document.getElementById('submitLabel');
-    const schedRow    = document.getElementById('scheduleDateRow');
+    const actionInput = $id('formAction');
+    const submitLabel = $id('submitLabel');
+    const schedRow    = $id('scheduleDateRow');
     const labels = { publish:'Publish Now', draft:'Save as Draft', schedule:'Schedule' };
 
     window.selectMode = function(mode) {
         modeIds.forEach((id, i) => {
-            document.getElementById(id).classList.toggle('selected', modeValues[i] === mode);
+            $id(id).classList.toggle('selected', modeValues[i] === mode);
         });
         actionInput.value = mode;
         submitLabel.textContent = labels[mode];
@@ -446,12 +489,12 @@
     {% endif %}
 
     /* ── Tag pill widget ────────────────────────────────────── */
-    const tagWrapper = document.getElementById('tagWrapper');
-    const tagInput   = document.getElementById('tagInput');
+    const tagWrapper = $id('tagWrapper');
+    const tagInput   = $id('tagInput');
     let currentTags  = [];
 
     try {
-        const raw = document.getElementById('initial-tags');
+        const raw = $id('initial-tags');
         if (raw) { const parsed = JSON.parse(raw.textContent); currentTags = Array.isArray(parsed) ? parsed : []; }
     } catch (e) { currentTags = []; }
 
@@ -481,7 +524,7 @@
     renderTags();
 
     /* ── Chapter engine ─────────────────────────────────────── */
-    const chapterContainer = document.getElementById('chapterContainer');
+    const chapterContainer = $id('chapterContainer');
     function formatTime(s) {
         if (!s) return '00:00:00';
         return [Math.floor(s/3600),Math.floor((s%3600)/60),Math.floor(s%60)].map(n=>String(n).padStart(2,'0')).join(':');
@@ -524,16 +567,16 @@
         chapterContainer.appendChild(row);
     };
     try {
-        const raw = JSON.parse(document.getElementById('initial-chapters').textContent);
+        const raw = JSON.parse($id('initial-chapters').textContent);
         const list = Array.isArray(raw) ? raw : (raw && raw.chapters ? raw.chapters : []);
-        if (raw && !Array.isArray(raw) && raw.waypoints) document.getElementById('globalWaypoints').checked = true;
+        if (raw && !Array.isArray(raw) && raw.waypoints) $id('globalWaypoints').checked = true;
         if (list.length) list.forEach(c => addChapterRow(c.startTime, c.endTime, c.title, c.url||'', c.img||'', c.toc, c.location));
     } catch (e) {}
 
     /* ── Episode type chip selector (localStorage-backed) ──── */
-    const typeChipGroup     = document.getElementById('typeChipGroup');
-    const typeAddInput      = document.getElementById('typeAddInput');
-    const episodeTypeHidden = document.getElementById('episodeTypeHidden');
+    const typeChipGroup     = $id('typeChipGroup');
+    const typeAddInput      = $id('typeAddInput');
+    const episodeTypeHidden = $id('episodeTypeHidden');
     const EP_TYPES_KEY      = 'vecto_ep_types_' + typeChipGroup.dataset.network;
     let selectedType        = typeChipGroup.dataset.init || '';
 
@@ -592,10 +635,10 @@
     selectTypeChip(selectedType);
 
     /* ── Duration widget ────────────────────────────────────── */
-    const durH = document.getElementById('durH');
-    const durM = document.getElementById('durM');
-    const durS = document.getElementById('durS');
-    const durationHidden = document.getElementById('durationHidden');
+    const durH = $id('durH');
+    const durM = $id('durM');
+    const durS = $id('durS');
+    const durationHidden = $id('durationHidden');
 
     function buildDurationStr() {
         const h = parseInt(durH.value, 10) || 0;
@@ -621,7 +664,7 @@
     });
     document.querySelectorAll('.dur-adj').forEach(btn => {
         btn.addEventListener('click', () => {
-            const el = document.getElementById(btn.dataset.target);
+            const el = $id(btn.dataset.target);
             const max = el === durH ? 99 : 59;
             let v = (parseInt(el.value, 10) || 0) + parseInt(btn.dataset.delta, 10);
             el.value = Math.max(0, Math.min(max, v)) || '';
@@ -629,7 +672,7 @@
         });
     });
     (function initDuration() {
-        const raw = document.getElementById('durationWidget').dataset.init;
+        const raw = $id('durationWidget').dataset.init;
         if (!raw) return;
         const parts = raw.split(':').map(x => parseInt(x, 10) || 0);
         if (parts.length >= 3) { durH.value = parts[0] || ''; durM.value = parts[1] || ''; durS.value = parts[2] || ''; }
@@ -661,7 +704,7 @@
         {label:'Buenos Aires (ART)',            tz:'America/Argentina/Buenos_Aires'},
     ];
 
-    const tzSelect = document.getElementById('tzSelector');
+    const tzSelect = $id('tzSelector');
     TZ_LIST.forEach(t => { const o = document.createElement('option'); o.value = t.tz; o.textContent = t.label; tzSelect.appendChild(o); });
     const browserTz = Intl.DateTimeFormat().resolvedOptions().timeZone;
     tzSelect.value = TZ_LIST.some(t => t.tz === browserTz) ? browserTz : 'UTC';
@@ -682,10 +725,10 @@
         return approx;
     }
 
-    const scheduledAtLocal  = document.getElementById('scheduledAtLocal');
-    const scheduledAtHidden = document.getElementById('scheduledAtHidden');
-    const schedUtcEquiv     = document.getElementById('schedUtcEquiv');
-    const utcClockEl        = document.getElementById('utcClock');
+    const scheduledAtLocal  = $id('scheduledAtLocal');
+    const scheduledAtHidden = $id('scheduledAtHidden');
+    const schedUtcEquiv     = $id('schedUtcEquiv');
+    const utcClockEl        = $id('utcClock');
 
     function updateSchedDisplay() {
         const utcDate = localStrToUtcDate(scheduledAtLocal.value, tzSelect.value);
@@ -725,11 +768,11 @@
     }, 1000);
 
     /* ── Form submission ────────────────────────────────────── */
-    const publishForm = document.getElementById('publishForm');
+    const publishForm = $id('publishForm');
     const buildPublishPayload = () => {
         commitTag();
-        document.getElementById('tagsJson').value = JSON.stringify(currentTags);
-        document.getElementById('descJson').value  = quill.root.innerHTML;
+        $id('tagsJson').value = JSON.stringify(currentTags);
+        $id('descJson').value  = quill.root.innerHTML;
         buildDurationStr();
         if (actionInput.value === 'schedule') updateSchedDisplay();
 
@@ -753,8 +796,8 @@
         });
         rows.sort((a,b) => a.startTime - b.startTime);
         const payload = { version:'1.2.0', chapters:rows };
-        if (document.getElementById('globalWaypoints').checked) payload.waypoints = true;
-        document.getElementById('chaptersJson').value = JSON.stringify(payload);
+        if ($id('globalWaypoints').checked) payload.waypoints = true;
+        $id('chaptersJson').value = JSON.stringify(payload);
     };
     publishForm.addEventListener('submit', buildPublishPayload);
     // htmx serializes boosted forms in its own submit listener, whose order
@@ -780,6 +823,43 @@
             e.target.classList.remove('text-muted'); e.target.classList.add('active','text-light','bg-dark');
         });
     });
+    }, 60);
+})();
+</script>
+
+<script>
+(function () {
+    // "Link to Calendar Entry" filter (A9): show only the entries whose podcast
+    // matches the selected parent podcast (freeform entries — no podcast — match
+    // any); hide the whole control when nothing is applicable. Root-scoped +
+    // deferred for the same publish->publish swap ambiguity as the main IIFE.
+    const pageScript = document.currentScript;
+    setTimeout(function () {
+    if (pageScript && !pageScript.isConnected) return;
+    const root = (pageScript && pageScript.closest('#boosted-region')) || document;
+    const $id = (id) => root.querySelector('[id="' + id + '"]');
+    const card = $id('calendarLinkCard');
+    const select = $id('calendarEntrySelect');
+    const parent = $id('parentPodcastSelect');
+    if (!card || !select || !parent) return;
+
+    const opts = Array.from(select.querySelectorAll('option[data-podcast-id]'));
+    function sync() {
+        const podId = parent.value;
+        let visible = 0;
+        opts.forEach(function (opt) {
+            const pid = opt.dataset.podcastId;
+            const show = pid === '' || pid === podId;
+            opt.hidden = !show;
+            opt.disabled = !show;
+            if (show) visible++;
+            if (!show && opt.selected) { opt.selected = false; select.value = ''; }
+        });
+        card.style.display = visible ? '' : 'none';
+    }
+    parent.addEventListener('change', sync);
+    sync();
+    }, 60);
 })();
 </script>
 

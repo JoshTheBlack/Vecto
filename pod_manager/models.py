@@ -60,10 +60,30 @@ def default_theme_config():
         "success_text_color": "#ffffff",
         "border_color": "#343a40",
         "font_family": "system-ui, sans-serif",
-        "google_fonts_url": "",
         "border_radius": "0.375rem",
         "logo_url": ""
     }
+
+def network_font_path(instance, filename):
+    """Stable R2 key for a network's custom font: fonts/<slug>.woff2.
+
+    Matches mix_cover_path — the key never changes on re-upload, so the object
+    is OVERWRITTEN in place. The passed filename is ignored.
+    """
+    return f"fonts/{instance.slug}.woff2"
+
+
+class OverwriteStorage(FileSystemStorage):
+    def get_available_name(self, name, max_length=None):
+        """Returns the same name even if it already exists on the system."""
+        if self.exists(name):
+            self.delete(name) # Use Django's backend-agnostic delete
+        return name
+
+# Defined ahead of Network (which is defined ahead of UserMix) since
+# select_media_storage() local-imports this name at field-construction time —
+# Network.custom_font_upload needs it just as early as UserMix.image_upload does.
+mix_storage = OverwriteStorage()
 
 import hashlib
 
@@ -131,6 +151,16 @@ class Network(models.Model):
     one_liner = models.CharField(max_length=255, blank=True, null=True)
     logo_url = models.URLField(max_length=500, blank=True, null=True) # Maps to image_small_url
     banner_image_url = models.URLField(max_length=500, blank=True, null=True) # Maps to image_url
+    custom_font_upload = models.FileField(
+        upload_to=network_font_path, storage=select_media_storage, blank=True, null=True,
+        help_text="Self-hosted .woff2 file for this network's theme font.")
+    custom_font_family = models.CharField(
+        max_length=100, blank=True,
+        help_text="Font name declared in the generated @font-face rule (e.g. 'Brand Sans').")
+    custom_font_version = models.IntegerField(
+        default=0,
+        help_text="Bumped on every font upload — cache-busts the stable fonts/<slug>.woff2 "
+                  "key, which the CDN serves with a 1-year immutable cache.")
     patreon_url = models.URLField(max_length=500, blank=True, null=True)
     discord_server_id = models.CharField(max_length=100, blank=True, null=True)
 
@@ -167,10 +197,20 @@ class Network(models.Model):
     whisper_num_speakers = models.IntegerField(null=True, blank=True, help_text="Expected speaker count hint for diarization. Null = auto-detect.")
     whisper_max_speakers = models.IntegerField(default=4, help_text="Maximum expected speakers for diarization.")
 
+    @property
+    def display_font_url(self):
+        """Version-busted URL for the custom font. The stable fonts/<slug>.woff2
+        key is CDN-cached for a year (immutable), so a re-upload never reaches
+        browsers without a fresh query string — same problem/solution as
+        display_image on the mix models."""
+        if not self.custom_font_upload:
+            return ''
+        return f"{self.custom_font_upload.url}?v={self.custom_font_version}"
+
     def save(self, *args, **kwargs):
         super().save(*args, **kwargs)
-        
-        # Automatically invalidate podcast shells when the network is updated 
+
+        # Automatically invalidate podcast shells when the network is updated
         # (Catches changes made via the Django /admin panel)
         try:
             from django.core.cache import cache
@@ -448,6 +488,32 @@ class Episode(models.Model):
                 pass
         return None
 
+class CalendarEntry(models.Model):
+    """A planned release on a network's public calendar. Optionally tied to a
+    podcast (season/ep/type mirror Episode's own fields) for planned episodes,
+    or fully freeform (title + external_link) for non-episode items. Linked
+    OneToOne to a real Episode once one is scheduled/published — an episode
+    maps to at most one entry, so "is there already an entry for this episode"
+    is a cheap reverse lookup (episode.calendar_entry)."""
+    network = models.ForeignKey(Network, on_delete=models.CASCADE, related_name='calendar_entries')
+    podcast = models.ForeignKey(Podcast, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='calendar_entries', help_text="Leave blank for a non-episode entry (e.g. a Live Watch).")
+    title = models.CharField(max_length=255)
+    season_number = models.IntegerField(null=True, blank=True)
+    episode_number = models.IntegerField(null=True, blank=True)
+    episode_type = models.CharField(max_length=50, blank=True)
+    scheduled_at = models.DateTimeField(db_index=True)
+    external_link = models.URLField(blank=True, help_text="Where to go for a non-episode entry (e.g. a Live Watch link).")
+    episode = models.OneToOneField(Episode, on_delete=models.SET_NULL, null=True, blank=True, related_name='calendar_entry')
+    notes = models.TextField(blank=True)
+    created_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return f"{self.network.slug} | {self.title} @ {self.scheduled_at:%Y-%m-%d %H:%M}"
+
+
 class EpisodeCrossPublication(models.Model):
     """Places an episode into another podcast's feeds in addition to its
     parent. The episode stays a single entity (one parent podcast, one set of
@@ -535,15 +601,6 @@ def avatar_upload_path(instance, filename):
     """
     return f"avatars/{instance.user_id}-{instance.network_id}.webp"
 
-
-class OverwriteStorage(FileSystemStorage):
-    def get_available_name(self, name, max_length=None):
-        """Returns the same name even if it already exists on the system."""
-        if self.exists(name):
-            self.delete(name) # Use Django's backend-agnostic delete
-        return name
-    
-mix_storage = OverwriteStorage()
 
 class UserMix(models.Model):
     """A user's custom-built feed."""

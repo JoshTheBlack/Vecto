@@ -468,6 +468,14 @@ def commit_episode(podcast, pub_entry, sub_entry, match_reason, stdout, enhancer
 
     episode.save()
 
+    if is_new:
+        # Link-only calendar reconciliation (never auto-creates — see
+        # services.release_calendar): a pre-planned CalendarEntry for an
+        # RSS-sourced show would otherwise never reconcile, since ingested
+        # episodes are born published and never pass through publish.py.
+        from pod_manager.services.release_calendar import link_calendar_entry_for_new_episode
+        link_calendar_entry_for_new_episode(episode, stdout=stdout)
+
     task_rebuild_episode_fragments.delay(episode.id, _network_base_url(podcast.network))
     
     status = "Created" if is_new else ("Updated [LOCKED]" if episode.is_metadata_locked else "Updated")

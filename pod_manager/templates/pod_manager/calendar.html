@@ -1,0 +1,575 @@
+{% extends 'pod_manager/base.html' %}
+{% load static %}
+
+{% block content %}
+<style>
+    #calendar {
+        --fc-border-color: var(--bs-border-color);
+        --fc-page-bg-color: transparent;
+        --fc-neutral-bg-color: rgba(0, 0, 0, 0.2);
+        --fc-neutral-text-color: var(--vecto-surface-muted);
+        --fc-today-bg-color: color-mix(in srgb, var(--vecto-primary) 12%, transparent);
+        --fc-event-bg-color: var(--vecto-primary);
+        --fc-event-border-color: var(--vecto-primary);
+        --fc-event-text-color: var(--vecto-primary-text);
+        --fc-button-bg-color: var(--vecto-surface-bg);
+        --fc-button-border-color: var(--bs-border-color);
+        --fc-button-text-color: var(--vecto-surface-text);
+        --fc-button-hover-bg-color: color-mix(in srgb, var(--vecto-primary) 20%, var(--vecto-surface-bg));
+        --fc-button-hover-border-color: var(--vecto-primary);
+        --fc-button-active-bg-color: var(--vecto-primary);
+        --fc-button-active-border-color: var(--vecto-primary);
+        --fc-list-event-hover-bg-color: rgba(0, 0, 0, 0.2);
+        /* The calendar sits inside a themed CARD, so all its chrome text must
+           use the surface tokens — the bg-* tokens are for the page background
+           and can be dark-on-dark here (e.g. a light-bg network theme). */
+        color: var(--vecto-surface-text);
+    }
+    #calendar .fc-button { border-radius: var(--vecto-radius-md) !important; text-transform: capitalize; }
+    #calendar .fc-button-active { color: var(--vecto-primary-text) !important; }
+    #calendar .fc-toolbar-title { color: var(--vecto-surface-text) !important; font-weight: 700; }
+    #calendar .fc-col-header-cell-cushion,
+    #calendar .fc-daygrid-day-number { color: var(--vecto-surface-muted); text-decoration: none; }
+    #calendar .fc-event { border-radius: var(--vecto-radius-sm); cursor: pointer; overflow: hidden; }
+    #calendar a.fc-event { text-decoration: none; }
+    /* Grid views (Week columns + Month) render filled block pills, so their
+       text uses --fc-event-text-color (accent-on-accent). Scoped to daygrid so
+       it never bleeds into the agenda rows, which sit on the page bg. */
+    #calendar .fc-daygrid-event .fc-event-main { color: var(--fc-event-text-color); }
+    .cal-ev { padding: 2px 4px; line-height: 1.2; white-space: normal; overflow: hidden; }
+    .cal-ev-time { font-weight: 700; font-size: 0.72rem; margin-bottom: 3px; }
+    .cal-ev-pod { font-size: 0.62rem; text-transform: uppercase; letter-spacing: 0.03em; opacity: 0.85; overflow: hidden; text-overflow: ellipsis; margin-bottom: 3px; }
+    .cal-ev-title { font-size: 0.78rem; font-weight: 600; }
+    .cal-ev-link { display: inline-block; margin-top: 1px; font-size: 0.7rem; font-weight: 600; text-decoration: underline; color: inherit; }
+    /* Agenda (List / listWeek): rows sit on the page bg, not an accent fill, so
+       their text must use the page text colors — not --fc-event-text-color. */
+    #calendar .fc-list-day-cushion {
+        background: var(--fc-neutral-bg-color) !important;
+        border-bottom: 2px solid color-mix(in srgb, var(--vecto-primary) 35%, transparent);
+        position: relative;
+        overflow: hidden;
+    }
+    /* Scanner: two bright spots sweep in from both edges of the day divider,
+       meet in the middle, and bounce back out — Knight Rider, stereo. */
+    #calendar .fc-list-day-cushion::after {
+        content: "";
+        position: absolute;
+        left: 0; bottom: 0;
+        width: 100%; height: 2px;
+        background:
+            linear-gradient(90deg,
+                transparent,
+                color-mix(in srgb, var(--vecto-primary) 60%, transparent) 35%,
+                color-mix(in srgb, var(--vecto-primary) 100%, white 35%) 50%,
+                color-mix(in srgb, var(--vecto-primary) 60%, transparent) 65%,
+                transparent),
+            linear-gradient(90deg,
+                transparent,
+                color-mix(in srgb, var(--vecto-primary) 60%, transparent) 35%,
+                color-mix(in srgb, var(--vecto-primary) 100%, white 35%) 50%,
+                color-mix(in srgb, var(--vecto-primary) 60%, transparent) 65%,
+                transparent);
+        background-size: 180px 100%, 180px 100%;
+        background-repeat: no-repeat, no-repeat;
+        background-position: calc(0% - 180px) 0, calc(100% + 180px) 0;
+        animation: calScanner 3.6s ease-in-out infinite;
+        pointer-events: none;
+    }
+    @keyframes calScanner {
+        0%   { background-position: calc(0% - 180px) 0, calc(100% + 180px) 0; }
+        50%  { background-position: calc(50% + 0px) 0, calc(50% + 0px) 0; }
+        100% { background-position: calc(0% - 180px) 0, calc(100% + 180px) 0; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+        #calendar .fc-list-day-cushion::after { animation: none; display: none; }
+        #calendar .fc-list-day-cushion { border-bottom-color: var(--vecto-primary); }
+    }
+    #calendar .fc-list-day-text,
+    #calendar .fc-list-day-side-text,
+    #calendar .fc-list-day-cushion a { color: var(--vecto-surface-text) !important; font-weight: 700; text-decoration: none; }
+    #calendar .fc-list-event:hover td { background: var(--fc-list-event-hover-bg-color); }
+    #calendar .fc-list-event-title,
+    #calendar .fc-list-event-title a,
+    #calendar .fc-list-event .fc-event-main,
+    #calendar .fc-list-event .cal-ev { color: var(--vecto-surface-text) !important; }
+    #calendar .fc-list-event-time { color: var(--vecto-surface-muted) !important; white-space: nowrap; }
+    #calendar .fc-list-empty { color: var(--vecto-surface-muted); }
+    .cal-subscribe .btn { border-radius: var(--vecto-radius-md); }
+    /* Native date/time picker indicator is black-on-dark by default — invert it
+       so the built-in time picker is visible on the themed form. */
+    #calEntryModal input[type="date"]::-webkit-calendar-picker-indicator,
+    #calEntryModal input[type="time"]::-webkit-calendar-picker-indicator {
+        filter: invert(1); opacity: 0.8; cursor: pointer;
+    }
+    .cal-freeform-only.d-none, .cal-podcast-only.d-none { display: none !important; }
+    /* Episode-type chips — same picker as the publish form (localStorage-backed). */
+    .type-chip-group { display:flex; flex-wrap:wrap; gap:6px; align-items:center; padding:.4rem 0; min-height:2.25rem; }
+    .type-chip { padding:.3rem .8rem; border:1px solid #444; border-radius:999px; background:rgba(255,255,255,.05); color:#aaa; font-size:.875rem; cursor:pointer; user-select:none; transition:all .15s; white-space:nowrap; }
+    .type-chip:hover { border-color:#888; color:#f8f9fa; }
+    .type-chip.selected { border-color:var(--vecto-primary); background:color-mix(in srgb, var(--vecto-primary) 14%, transparent); color:var(--vecto-primary); }
+    .type-chip .chip-remove { margin-left:.35rem; opacity:.5; cursor:pointer; }
+    .type-chip .chip-remove:hover { opacity:1; color:#dc3545; }
+    .type-add-input { background:transparent; border:none; outline:none; color:#f8f9fa; font-size:.875rem; min-width:70px; width:90px; padding:.3rem .2rem; }
+    .type-add-input::placeholder { color:rgba(248,249,250,.3); }
+</style>
+
+<div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-1">
+    <h1 class="h4 fw-bold text-light mb-0"><i class="bi bi-calendar3 me-2 text-warning"></i>Release Calendar</h1>
+    {% if is_owner %}
+    <button class="btn btn-sm btn-warning fw-bold" type="button" id="calAddBtn">
+        <i class="bi bi-plus-lg me-1"></i>Add Entry
+    </button>
+    {% endif %}
+</div>
+<p class="text-muted small mb-3"><i class="bi bi-clock me-1"></i>All times are shown in Eastern Time (ET).</p>
+
+<div class="card border-secondary mb-3 cal-subscribe">
+    <div class="card-body py-3">
+        <div class="d-flex flex-wrap align-items-center gap-2">
+            <span class="fw-bold text-light me-2"><i class="bi bi-bell me-1 text-warning"></i>Subscribe</span>
+            <a class="btn btn-sm btn-subtle" href="{{ subscribe.google }}" target="_blank" rel="noopener"><i class="bi bi-google me-1"></i>Google</a>
+            <a class="btn btn-sm btn-subtle" href="{{ subscribe.webcal }}"><i class="bi bi-apple me-1"></i>Apple</a>
+            <a class="btn btn-sm btn-subtle" href="{{ subscribe.outlook }}" target="_blank" rel="noopener"><i class="bi bi-microsoft me-1"></i>Outlook.com</a>
+            <div class="input-group input-group-sm flex-grow-1" style="min-width: 240px; max-width: 480px;">
+                <input type="text" id="calSubscribeUrl" class="form-control bg-dark text-light border-secondary" value="{{ subscribe.webcal }}" readonly>
+                <button class="btn btn-subtle" type="button" id="calCopyBtn"><i class="bi bi-clipboard"></i></button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="card border-secondary">
+    <div class="card-body">
+        <div id="calendar"
+             data-events-url="{% url 'calendar_events' %}"
+             data-manage-url="{% url 'calendar_manage' %}"
+             data-owner="{{ is_owner|yesno:'1,0' }}"
+             data-script-url="{% static 'pod_manager/js/fullcalendar.min.js' %}"></div>
+    </div>
+</div>
+
+<div class="modal fade" id="calEventModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content bg-dark border-secondary">
+            <div class="modal-header border-secondary">
+                <h5 class="modal-title text-light" id="calEventTitle"></h5>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <p class="text-muted small mb-1" id="calEventPodcast"></p>
+                <p class="text-light mb-0" id="calEventNotes" style="white-space: pre-wrap;"></p>
+            </div>
+            <div class="modal-footer border-secondary">
+                <a href="#" class="btn btn-sm btn-outline-warning d-none" id="calEventOpen" target="_blank" rel="noopener"><i class="bi bi-box-arrow-up-right me-1"></i>Open</a>
+                {% if is_owner %}
+                <button type="button" class="btn btn-sm btn-outline-warning d-none" id="calEventEdit"><i class="bi bi-pencil me-1"></i>Edit</button>
+                <form method="post" action="{% url 'calendar_manage' %}" class="d-inline" id="calEventDeleteForm" hx-boost="false" onsubmit="return confirm('Delete this calendar entry?');">
+                    {% csrf_token %}
+                    <input type="hidden" name="action" value="delete">
+                    <input type="hidden" name="entry_id" id="calEventDeleteId">
+                    <button type="submit" class="btn btn-sm btn-outline-danger"><i class="bi bi-trash me-1"></i>Delete</button>
+                </form>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+</div>
+
+{% if is_owner %}
+<div class="modal fade" id="calEntryModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered modal-lg">
+        <div class="modal-content bg-dark border-secondary">
+            <form method="post" action="{% url 'calendar_manage' %}" id="calEntryForm" class="cal-entry-form" hx-boost="false">
+                {% csrf_token %}
+                <input type="hidden" name="action" id="calEntryActionField" value="add">
+                <input type="hidden" name="entry_id" id="calEntryIdField" value="">
+                <div class="modal-header border-secondary">
+                    <h5 class="modal-title text-light" id="calEntryModalTitle">New Calendar Entry</h5>
+                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <div class="row g-3">
+                        <div class="col-md-12">
+                            <label class="form-label fw-bold text-light">Title <span class="text-danger">*</span></label>
+                            <input type="text" name="title" class="form-control bg-dark text-light border-secondary" required placeholder="e.g. Season 2 Episode 5">
+                        </div>
+                        <div class="col-md-4">
+                            <label class="form-label fw-bold text-light">Date <span class="text-danger">*</span></label>
+                            <input type="date" name="date" class="form-control bg-dark text-light border-secondary" required>
+                        </div>
+                        <div class="col-md-4">
+                            <label class="form-label fw-bold text-light">Time <span class="text-danger">*</span></label>
+                            <input type="time" name="time" class="form-control bg-dark text-light border-secondary" required>
+                        </div>
+                        <div class="col-md-4">
+                            <label class="form-label fw-bold text-light">Timezone</label>
+                            <select name="tz" class="form-select bg-dark text-light border-secondary">
+                                {% for value, label in tz_choices %}
+                                <option value="{{ value }}">{{ label }}</option>
+                                {% endfor %}
+                            </select>
+                        </div>
+                        <div class="col-md-12">
+                            <label class="form-label fw-bold text-light">Podcast</label>
+                            <select name="podcast_id" id="calPodcastSelect" class="form-select bg-dark text-light border-secondary">
+                                <option value="">— None (freeform) —</option>
+                                {% for pod in podcasts %}
+                                <option value="{{ pod.id }}">{{ pod.title }}</option>
+                                {% endfor %}
+                            </select>
+                            <div class="form-text text-muted">Set the podcast plus season/episode/type to auto-match a real episode when it's scheduled or ingested.</div>
+                        </div>
+                        <div class="col-md-3 cal-podcast-only d-none">
+                            <label class="form-label fw-bold text-light">Season</label>
+                            <input type="number" name="season_number" min="0" class="form-control bg-dark text-light border-secondary">
+                        </div>
+                        <div class="col-md-3 cal-podcast-only d-none">
+                            <label class="form-label fw-bold text-light">Episode</label>
+                            <input type="number" name="episode_number" min="0" class="form-control bg-dark text-light border-secondary">
+                        </div>
+                        <div class="col-md-6 cal-podcast-only d-none">
+                            <label class="form-label fw-bold text-light">Type <small class="text-muted fw-normal">(blank matches any — Enter to add custom)</small></label>
+                            <div id="calTypeChipGroup" class="type-chip-group" data-network="{{ current_network.slug }}">
+                                <span class="type-chip" data-value="" data-builtin="true">Blank</span>
+                                <input type="text" id="calTypeAddInput" class="type-add-input" placeholder="+ Add type…" maxlength="50">
+                            </div>
+                            <input type="hidden" name="episode_type" id="calEpisodeTypeHidden" value="">
+                        </div>
+                        <div class="col-md-12 cal-freeform-only">
+                            <label class="form-label fw-bold text-light">External Link <small class="text-muted fw-normal">(optional)</small></label>
+                            <input type="url" name="external_link" class="form-control bg-dark text-light border-secondary" placeholder="https://example.com/live-watch">
+                        </div>
+                        <div class="col-12">
+                            <label class="form-label fw-bold text-light">Public notes <small class="text-muted fw-normal">— shown on the public calendar and in subscribers' calendar apps</small></label>
+                            <textarea name="notes" rows="2" class="form-control bg-dark text-light border-secondary" placeholder="Optional public-facing copy."></textarea>
+                        </div>
+                    </div>
+                </div>
+                <div class="modal-footer border-secondary">
+                    <button type="button" class="btn btn-subtle" data-bs-dismiss="modal">Cancel</button>
+                    <button type="submit" class="btn btn-warning fw-bold" id="calEntrySubmit"><i class="bi bi-plus-lg me-1"></i>Add Entry</button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+{% endif %}
+
+<script>
+(function () {
+    const el = document.getElementById('calendar');
+    if (!el) return;
+
+    const eventsUrl = el.dataset.eventsUrl;
+    const manageUrl = el.dataset.manageUrl;
+    const isOwner   = el.dataset.owner === '1';
+    const scriptUrl = el.dataset.scriptUrl;
+
+    function csrf() {
+        const t = document.querySelector('[name=csrfmiddlewaretoken]');
+        return t ? t.value : '';
+    }
+    function pad(n) { return String(n).padStart(2, '0'); }
+
+    // Current wall-clock time in Eastern, formatted as a naive ISO string so
+    // FullCalendar's UTC mode treats it as Eastern — otherwise "today" is keyed
+    // off real UTC and highlights tomorrow after ~8pm ET.
+    function nowEastern() {
+        const parts = new Intl.DateTimeFormat('en-CA', {
+            timeZone: 'America/New_York', hourCycle: 'h23',
+            year: 'numeric', month: '2-digit', day: '2-digit',
+            hour: '2-digit', minute: '2-digit', second: '2-digit',
+        }).formatToParts(new Date());
+        const g = function (t) { return parts.find(function (p) { return p.type === t; }).value; };
+        return g('year') + '-' + g('month') + '-' + g('day') + 'T' + g('hour') + ':' + g('minute') + ':' + g('second');
+    }
+
+    // Destroy any prior instance before a boosted swap removes #calendar's DOM
+    // (A11). Bound once on document.body — NOT via VectoPage.on, since the base
+    // cleanup runs on the same beforeSwap and would unbind us before we fire.
+    if (!window._vectoCalCleanupBound) {
+        window._vectoCalCleanupBound = true;
+        document.body.addEventListener('htmx:beforeSwap', function (e) {
+            if (e.detail.target && e.detail.target.id === 'boosted-region' && window._vectoCal) {
+                try { window._vectoCal.destroy(); } catch (err) {}
+                window._vectoCal = null;
+            }
+        });
+    }
+
+    const detailEl = document.getElementById('calEventModal');
+    const detailModal = detailEl ? new bootstrap.Modal(detailEl) : null;
+    const entryEl = document.getElementById('calEntryModal');
+    const entryModal = entryEl ? new bootstrap.Modal(entryEl) : null;
+    let detailEvent = null;
+
+    function showDetail(event) {
+        if (!detailModal) return;
+        detailEvent = event;
+        const p = event.extendedProps;
+        document.getElementById('calEventTitle').textContent = (p.sxe ? p.sxe + ' · ' : '') + event.title;
+        document.getElementById('calEventPodcast').textContent = p.podcast || '';
+        document.getElementById('calEventNotes').textContent = p.notes || '';
+        const open = document.getElementById('calEventOpen');
+        if (event.url) { open.href = event.url; open.classList.remove('d-none'); }
+        else { open.classList.add('d-none'); }
+        const delId = document.getElementById('calEventDeleteId');
+        if (delId) delId.value = event.id;
+        const editBtn = document.getElementById('calEventEdit');
+        if (editBtn) {
+            // Linked-scheduled entries edit in the publisher; freeform/unlinked
+            // in the entry modal; linked-published have no edit target.
+            const canEdit = !!p.editUrl || !p.linked;
+            editBtn.classList.toggle('d-none', !canEdit);
+            editBtn.innerHTML = p.editUrl
+                ? '<i class="bi bi-box-arrow-up-right me-1"></i>Edit in Publisher'
+                : '<i class="bi bi-pencil me-1"></i>Edit';
+        }
+        detailModal.show();
+    }
+
+    /* Episode-type chip selector — same pattern + localStorage key as the
+       publish form (vecto_ep_types_<network>), so custom types stay in sync. */
+    const typeChipGroup = document.getElementById('calTypeChipGroup');
+    const typeAddInput = document.getElementById('calTypeAddInput');
+    const typeHidden = document.getElementById('calEpisodeTypeHidden');
+    const EP_TYPES_KEY = typeChipGroup ? 'vecto_ep_types_' + typeChipGroup.dataset.network : '';
+
+    function loadEpTypes() { try { return JSON.parse(localStorage.getItem(EP_TYPES_KEY)) || []; } catch (e) { return []; } }
+    function saveEpTypes(types) { localStorage.setItem(EP_TYPES_KEY, JSON.stringify(types)); }
+
+    function selectTypeChip(value) {
+        if (!typeChipGroup) return;
+        typeHidden.value = value;
+        typeChipGroup.querySelectorAll('.type-chip').forEach(function (c) {
+            c.classList.toggle('selected', c.dataset.value === value);
+        });
+    }
+
+    function renderStoredChip(value) {
+        const chip = document.createElement('span');
+        chip.className = 'type-chip';
+        chip.dataset.value = value;
+        chip.textContent = value;
+        const x = document.createElement('span');
+        x.className = 'chip-remove';
+        x.title = 'Remove';
+        x.textContent = ' ×';
+        chip.appendChild(x);
+        chip.addEventListener('click', function (e) {
+            if (e.target === x) {
+                e.stopPropagation();
+                saveEpTypes(loadEpTypes().filter(function (t) { return t !== value; }));
+                if (typeHidden.value === value) selectTypeChip('');
+                chip.remove();
+                return;
+            }
+            selectTypeChip(value);
+        });
+        typeChipGroup.insertBefore(chip, typeAddInput);
+    }
+
+    function setCalType(value) {
+        if (!typeChipGroup) return;
+        value = (value || '').trim().slice(0, 50);
+        if (value && !typeChipGroup.querySelector('.type-chip[data-value="' + CSS.escape(value) + '"]')) {
+            const types = loadEpTypes();
+            if (!types.includes(value)) { types.push(value); saveEpTypes(types); }
+            renderStoredChip(value);
+        }
+        selectTypeChip(value);
+    }
+
+    if (typeChipGroup) {
+        typeChipGroup.querySelector('.type-chip[data-builtin]').addEventListener('click', function () { selectTypeChip(''); });
+        loadEpTypes().forEach(renderStoredChip);
+        typeAddInput.addEventListener('keydown', function (e) {
+            if (e.key === 'Enter') { e.preventDefault(); setCalType(typeAddInput.value); typeAddInput.value = ''; }
+        });
+        selectTypeChip('');
+    }
+
+    // Podcast-vs-freeform field toggle (A14 / bulk-mover pattern).
+    function syncPodToggle() {
+        const podSelect = document.getElementById('calPodcastSelect');
+        if (!podSelect) return;
+        const freeform = !podSelect.value;
+        document.querySelectorAll('.cal-podcast-only').forEach(function (n) { n.classList.toggle('d-none', freeform); });
+        document.querySelectorAll('.cal-freeform-only').forEach(function (n) { n.classList.toggle('d-none', !freeform); });
+    }
+
+    function openAddModal() {
+        const f = document.getElementById('calEntryForm');
+        if (!f || !entryModal) return;
+        f.reset();
+        document.getElementById('calEntryActionField').value = 'add';
+        document.getElementById('calEntryIdField').value = '';
+        document.getElementById('calEntryModalTitle').textContent = 'New Calendar Entry';
+        document.getElementById('calEntrySubmit').innerHTML = '<i class="bi bi-plus-lg me-1"></i>Add Entry';
+        setCalType('');
+        syncPodToggle();
+        entryModal.show();
+    }
+
+    function openEditModal(event) {
+        const f = document.getElementById('calEntryForm');
+        if (!f || !entryModal) return;
+        const p = event.extendedProps;
+        f.reset();
+        document.getElementById('calEntryActionField').value = 'edit';
+        document.getElementById('calEntryIdField').value = event.id;
+        f.elements['title'].value = event.title || '';
+        const d = event.start;
+        if (d) {
+            f.elements['date'].value = d.getUTCFullYear() + '-' + pad(d.getUTCMonth() + 1) + '-' + pad(d.getUTCDate());
+            f.elements['time'].value = pad(d.getUTCHours()) + ':' + pad(d.getUTCMinutes());
+        }
+        f.elements['tz'].value = 'America/New_York';  // the grid displays ET
+        f.elements['podcast_id'].value = p.podcastId || '';
+        f.elements['season_number'].value = (p.season !== '' && p.season != null) ? p.season : '';
+        f.elements['episode_number'].value = (p.episode !== '' && p.episode != null) ? p.episode : '';
+        setCalType(p.episodeType || '');
+        f.elements['external_link'].value = p.externalLink || '';
+        f.elements['notes'].value = p.notes || '';
+        document.getElementById('calEntryModalTitle').textContent = 'Edit Calendar Entry';
+        document.getElementById('calEntrySubmit').innerHTML = '<i class="bi bi-check-lg me-1"></i>Save Changes';
+        syncPodToggle();
+        entryModal.show();
+    }
+
+    function moveEntry(info) {
+        fetch(manageUrl, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'X-CSRFToken': csrf() },
+            body: new URLSearchParams({
+                action: 'move',
+                entry_id: info.event.id,
+                start: info.event.start.toISOString(),
+            }),
+        }).then(function (r) {
+            if (!r.ok) info.revert();
+        }).catch(function () { info.revert(); });
+    }
+
+    function initCal() {
+        if (window._vectoCal) { try { window._vectoCal.destroy(); } catch (err) {} window._vectoCal = null; }
+        const cal = new FullCalendar.Calendar(el, {
+            initialView: 'listWeek',
+            timeZone: 'UTC',  // events are handed to FC as Eastern wall-clock
+                              // with the tz stripped, so the rendered clock is ET
+            now: nowEastern,
+            headerToolbar: {
+                left: 'prev,next today',
+                center: 'title',
+                right: 'listWeek,dayGridWeek,dayGridMonth',
+            },
+            buttonText: { today: 'today', listWeek: 'List', dayGridWeek: 'Week', dayGridMonth: 'Month' },
+            // "List" (default) = a per-day agenda: each day a heading with its
+            // entries stacked (point-in-time entries stack cleanly here).
+            // "Week" = a 7-column week, one column per day. "Month" = the
+            // standard grid. dayGrid/month use filled block pills.
+            eventDisplay: 'block',
+            displayEventTime: true,
+            eventTimeFormat: { hour: 'numeric', minute: '2-digit', meridiem: 'short' },
+            height: 'auto',
+            nowIndicator: true,
+            editable: isOwner,
+            eventStartEditable: isOwner,
+            eventDurationEditable: false,
+            events: eventsUrl,
+            eventContent: function (arg) {
+                const p = arg.event.extendedProps;
+                const wrap = document.createElement('div');
+                wrap.className = 'cal-ev';
+                // The agenda already shows the time in its own column, so only
+                // add our time line in the grid views.
+                if (arg.timeText && arg.view.type !== 'listWeek') {
+                    const t = document.createElement('div');
+                    t.className = 'cal-ev-time';
+                    t.textContent = arg.timeText;
+                    wrap.appendChild(t);
+                }
+                if (p.podcast) {
+                    const pod = document.createElement('div');
+                    pod.className = 'cal-ev-pod';
+                    pod.textContent = p.podcast;
+                    wrap.appendChild(pod);
+                }
+                const title = document.createElement('div');
+                title.className = 'cal-ev-title';
+                title.textContent = (p.sxe ? p.sxe + ' · ' : '') + arg.event.title;
+                wrap.appendChild(title);
+                if (arg.event.url) {
+                    const a = document.createElement('a');
+                    a.className = 'cal-ev-link';
+                    a.href = arg.event.url;
+                    a.target = '_blank';
+                    a.rel = 'noopener';
+                    a.textContent = 'link';
+                    // Let the link navigate without opening the detail modal.
+                    a.addEventListener('click', function (e) { e.stopPropagation(); });
+                    wrap.appendChild(a);
+                }
+                return { domNodes: [wrap] };
+            },
+            eventClick: function (info) {
+                // Surface notes/detail in the modal instead of raw-navigating,
+                // so public copy (A14) is always visible; the modal offers the
+                // Open link when the event carries a URL.
+                info.jsEvent.preventDefault();
+                showDetail(info.event);
+            },
+            eventDrop: isOwner ? moveEntry : undefined,
+        });
+        cal.render();
+        window._vectoCal = cal;
+    }
+
+    if (typeof FullCalendar === 'undefined') {
+        const s = document.createElement('script');
+        s.src = scriptUrl;
+        s.onload = initCal;
+        document.head.appendChild(s);
+    } else {
+        initCal();
+    }
+
+    // Owner controls.
+    const addBtn = document.getElementById('calAddBtn');
+    if (addBtn) addBtn.addEventListener('click', openAddModal);
+
+    const podSelect = document.getElementById('calPodcastSelect');
+    if (podSelect) podSelect.addEventListener('change', syncPodToggle);
+
+    const editBtn = document.getElementById('calEventEdit');
+    if (editBtn) {
+        editBtn.addEventListener('click', function () {
+            if (!detailEvent) return;
+            const p = detailEvent.extendedProps;
+            if (p.editUrl) { window.location.href = p.editUrl; return; }
+            if (detailModal) detailModal.hide();
+            openEditModal(detailEvent);
+        });
+    }
+
+    // Copy-subscribe (IIFE-local, no persistent listeners).
+    const copyBtn = document.getElementById('calCopyBtn');
+    const copyInput = document.getElementById('calSubscribeUrl');
+    if (copyBtn && copyInput) {
+        copyBtn.addEventListener('click', function () {
+            const done = function () {
+                copyBtn.innerHTML = '<i class="bi bi-check-lg"></i>';
+                setTimeout(function () { copyBtn.innerHTML = '<i class="bi bi-clipboard"></i>'; }, 1500);
+            };
+            if (navigator.clipboard && navigator.clipboard.writeText) {
+                navigator.clipboard.writeText(copyInput.value).then(done).catch(function () {
+                    copyInput.select(); document.execCommand('copy'); done();
+                });
+            } else {
+                copyInput.select(); document.execCommand('copy'); done();
+            }
+        });
+    }
+})();
+</script>
+{% endblock %}

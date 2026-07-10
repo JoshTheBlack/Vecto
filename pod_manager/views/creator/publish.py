@@ -20,6 +20,7 @@ from ...models import Episode, EpisodeCrossPublication, Network, Podcast
 from ...services.cross_publish import (
     current_target_ids, sync_cross_publications, validate_cross_targets,
 )
+from ...services.release_calendar import ensure_calendar_entry_for_episode
 from ...tasks import task_rebuild_episode_fragments
 from ...utils import sanitize_user_html
 
@@ -76,6 +77,14 @@ def publish_episode(request):
         is_published=False,
     ).select_related('podcast').order_by('scheduled_at', '-pub_date')
 
+    # Unlinked upcoming calendar entries for the "Link to Calendar Entry"
+    # selector (A9) — filtered client-side against the chosen podcast.
+    from ...models import CalendarEntry
+    calendar_entries = CalendarEntry.objects.filter(
+        network=current_network, episode__isnull=True,
+        scheduled_at__gte=timezone.now(),
+    ).order_by('scheduled_at')
+
     return render(request, 'pod_manager/publish_episode.html', {
         'networks': networks,
         'current_network': current_network,
@@ -83,6 +92,7 @@ def publish_episode(request):
         'scheduled': scheduled,
         'edit_ep': edit_ep,
         'edit_ep_cross_ids': current_target_ids(edit_ep) if edit_ep else [],
+        'calendar_entries': calendar_entries,
         'now': timezone.now(),
     })
 
@@ -196,6 +206,7 @@ def _handle_publish_post(request, current_network, podcasts, networks):
         ep.pub_date     = scheduled_dt
         ep.save()
         _sync_cross(ep)
+        ensure_calendar_entry_for_episode(ep, calendar_entry_id=request.POST.get('calendar_entry_id'))
         logger.info(f"[publish] Episode {ep.id} '{ep.title}' scheduled for {scheduled_dt.isoformat()} by {request.user.username}")
         messages.success(request, f'"{ep.title}" scheduled for {scheduled_dt.strftime("%b %d, %Y %H:%M")}.')
         return redirect(f"{reverse('publish_episode')}?network={current_network.slug}&tab=scheduled")
@@ -217,6 +228,7 @@ def _handle_publish_post(request, current_network, podcasts, networks):
         ep.pub_date     = timezone.now()
         ep.save()
         _sync_cross(ep)
+        ensure_calendar_entry_for_episode(ep, calendar_entry_id=request.POST.get('calendar_entry_id'))
         logger.info(f"[publish] Episode {ep.id} '{ep.title}' published to '{ep.podcast.title}' by {request.user.username}")
         base_url = request.build_absolute_uri('/')
         task_rebuild_episode_fragments.delay(ep.id, base_url)
@@ -302,6 +314,7 @@ def manage_episode(request, episode_id):
         ep.is_published = True
         ep.scheduled_at = None
         ep.save(update_fields=['is_published', 'scheduled_at'])
+        ensure_calendar_entry_for_episode(ep, calendar_entry_id=request.POST.get('calendar_entry_id'))
         from django.core.cache import cache
         cache.delete(f"ep_frag_public_{ep.id}")
         cache.delete(f"ep_frag_private_{ep.id}")
@@ -383,6 +396,7 @@ def manage_episode(request, episode_id):
             ep.scheduled_at = scheduled_dt
             ep.pub_date     = scheduled_dt
             ep.save(update_fields=['is_published', 'scheduled_at', 'pub_date'])
+            ensure_calendar_entry_for_episode(ep, calendar_entry_id=request.POST.get('calendar_entry_id'))
             from django.core.cache import cache
             cache.delete(f"ep_frag_public_{ep.id}")
             cache.delete(f"ep_frag_private_{ep.id}")

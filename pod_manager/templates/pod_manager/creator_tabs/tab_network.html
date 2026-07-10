@@ -152,6 +152,32 @@
 
                             <button type="submit" class="btn btn-warning fw-bold"><i class="bi bi-floppy"></i> Save Network Configurations</button>
                         </form>
+
+                        <h5 class="fw-bold mb-3 border-bottom border-secondary pb-2 mt-4 text-warning">Custom Font</h5>
+                        <p class="text-muted small mb-3">Upload a self-hosted .woff2 file to use as this network's theme font. It's prepended to the font stack above, so the existing fallback still applies if it fails to load.</p>
+                        <form method="POST" action="{% url 'creator_settings' %}?network={{ current_network.slug }}&tab=network" enctype="multipart/form-data" hx-boost="false" class="row g-3 align-items-end mb-3">
+                            {% csrf_token %}
+                            <input type="hidden" name="action" value="update_network_font">
+                            <div class="col-md-5">
+                                <label class="form-label text-muted small fw-bold">Font File (.woff2)</label>
+                                <input type="file" name="font_upload" class="form-control bg-black text-light border-secondary" accept=".woff2">
+                            </div>
+                            <div class="col-md-5">
+                                <label class="form-label text-muted small fw-bold">Font Name</label>
+                                <input type="text" name="custom_font_family" class="form-control bg-black text-light border-secondary" value="{{ current_network.custom_font_family }}" placeholder="e.g. Brand Sans" maxlength="100">
+                            </div>
+                            <div class="col-md-2">
+                                <button type="submit" class="btn btn-warning fw-bold w-100"><i class="bi bi-cloud-upload"></i> Save</button>
+                            </div>
+                        </form>
+                        {% if current_network.custom_font_upload %}
+                        <form method="POST" action="{% url 'creator_settings' %}?network={{ current_network.slug }}&tab=network">
+                            {% csrf_token %}
+                            <input type="hidden" name="action" value="update_network_font">
+                            <input type="hidden" name="remove" value="1">
+                            <button type="submit" class="btn btn-sm btn-outline-danger" onclick="return confirm('Remove the custom font for this network?');"><i class="bi bi-trash"></i> Remove Custom Font</button>
+                        </form>
+                        {% endif %}
                     </div>
                 </div>
             </div>

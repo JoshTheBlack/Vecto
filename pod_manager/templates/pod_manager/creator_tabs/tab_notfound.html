@@ -75,8 +75,12 @@
         btn.disabled = true;
         status.classList.remove('d-none');
 
+        // form.action is shadowed by the <input name="action"> control (named
+        // form elements override built-in form properties) — read the literal
+        // attribute instead.
+        const actionUrl = form.getAttribute('action');
         const xhr = new XMLHttpRequest();
-        xhr.open('POST', form.action);
+        xhr.open('POST', actionUrl);
         xhr.upload.addEventListener('progress', function (ev) {
             if (!ev.lengthComputable) return;
             const pct = Math.round((ev.loaded / ev.total) * 100);
@@ -96,7 +100,7 @@
             if (xhr.status >= 400) { fail(); return; }
             // Server redirects back to this tab; navigate there so the fresh
             // pool (and any messages) render.
-            window.location.href = form.action;
+            window.location.href = actionUrl;
         });
         xhr.addEventListener('error', fail);
         xhr.send(new FormData(form));

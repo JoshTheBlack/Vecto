@@ -74,6 +74,18 @@
                 </div>
             </div>
         </div>
+
+        {% if live_stats.notfound_seen >= 1 %}
+        <div class="card border mb-3" style="background-color: rgba(0,0,0,0.15); border-color: var(--bs-border-color) !important;">
+            <div class="card-body py-2 px-3 d-flex align-items-center">
+                <i class="bi bi-binoculars-fill text-warning fs-3 me-3"></i>
+                <div>
+                    <div class="fw-bold">Random Encounters</div>
+                    <div class="small text-surface-muted">Error pages discovered: <span class="text-accent fw-bold">{{ live_stats.notfound_seen }} of {% if live_stats.notfound_reveal_total %}{{ live_stats.notfound_total }}{% else %}?{% endif %}</span></div>
+                </div>
+            </div>
+        </div>
+        {% endif %}
     </div>
 </div>
 

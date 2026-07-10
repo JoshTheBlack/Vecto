@@ -48,12 +48,20 @@ def get_live_user_stats(tenant_profile):
     live_streak_weeks = tenant_profile.streak_weeks or 0
     live_obsession_title = tenant_profile.current_obsession.title if tenant_profile.current_obsession else "Wandering Adventurer"
 
+    # "Random Encounters" — the total is withheld ("?") until the hunt is down
+    # to its last entry, so the finish line only appears once it's in reach.
+    notfound_seen = tenant_profile.seen_notfound_entries.count()
+    notfound_total = tenant_profile.network.notfound_entries.count()
+    notfound_reveal_total = notfound_total == 0 or notfound_seen >= notfound_total - 1
+
     cache_backend = settings.CACHES['default'].get('BACKEND', '').lower()
     if 'locmem' in cache_backend or 'dummy' in cache_backend:
         return {
             'playback_hits': live_play_hits, 'hours_accessed': round(live_hours, 2),
             'streak_days': live_streak_days, 'streak_weeks': live_streak_weeks,
-            'obsession_title': live_obsession_title
+            'obsession_title': live_obsession_title,
+            'notfound_seen': notfound_seen, 'notfound_total': notfound_total,
+            'notfound_reveal_total': notfound_reveal_total,
         }
 
     try:
@@ -97,5 +105,8 @@ def get_live_user_stats(tenant_profile):
         'hours_accessed': round(live_hours, 2),
         'streak_days': live_streak_days,
         'streak_weeks': live_streak_weeks,
-        'obsession_title': live_obsession_title
+        'obsession_title': live_obsession_title,
+        'notfound_seen': notfound_seen,
+        'notfound_total': notfound_total,
+        'notfound_reveal_total': notfound_reveal_total,
     }

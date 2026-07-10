@@ -314,7 +314,7 @@
                 </button>
             </li>
             {% endif %}
-            {% if transcript or is_owner %}
+            {% if show_transcript_tab %}
             <li class="nav-item" role="presentation">
                 <button class="nav-link text-muted border-secondary" id="transcript-tab" data-bs-toggle="tab" data-bs-target="#transcript" type="button" role="tab" aria-selected="false">
                     <i class="bi bi-file-text"></i> Transcript
@@ -407,7 +407,7 @@
                                         <span class="vecto-remote-time vecto-remote-total">{{ ep.duration|default:"0:00" }}</span>
                                     </div>
                                     {% endif %}
-                                {% else %}
+                                {% elif ep.raw_audio_url %}
                                 <div class="vecto-remote js-episode-remote{% if chapters %} has-chapters{% endif %}" data-link="{% url 'episode_detail' ep.id %}" data-audio="{{ ep.raw_audio_url }}" data-title="{{ ep.title }}" data-show="{{ ep.podcast.title }}" data-cover="{{ ep.podcast.image_url|default:ep.podcast.network.default_image_url|default:'' }}" data-chapters="1">
                                     <button type="button" class="vecto-remote-play" title="Play"><i class="bi bi-play-fill"></i></button>
                                     <span class="vecto-remote-time vecto-remote-cur">0:00</span>
@@ -499,7 +499,7 @@
                     {% endif %}
                 </div>
 
-                {% if transcript or is_owner %}
+                {% if show_transcript_tab %}
                 <div class="tab-pane fade" id="transcript" role="tabpanel" aria-labelledby="transcript-tab">
                     <div class="d-flex justify-content-between align-items-center mb-4 pb-3 border-bottom border-secondary">
                         <h4 class="text-light mb-0"><i class="bi bi-file-text me-2"></i>Episode Transcript</h4>

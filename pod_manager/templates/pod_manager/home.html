@@ -251,6 +251,7 @@
                             {% endif %}
 
                             <div class="d-flex flex-wrap gap-2">
+                                {% if ep.raw_audio_url %}
                                 <button type="button"
                                         class="btn btn-warning btn-sm px-3 fw-bold js-play-episode"
                                         data-audio="{{ ep.raw_audio_url }}"
@@ -264,6 +265,7 @@
                                 <a href="{% url 'episode_detail' ep.id %}#transcript" class="btn btn-outline-light btn-sm px-3 fw-bold">
                                     <i class="bi bi-file-text"></i> Transcript
                                 </a>
+                                {% endif %}
                                 {% endif %}
                             </div>
                         </div>

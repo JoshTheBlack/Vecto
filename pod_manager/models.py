@@ -718,6 +718,12 @@ class NetworkMembership(models.Model):
     # and appended to the avatar URL as ?v=N (the object key never changes).
     image_version = models.IntegerField(default=0)
 
+    # "Random Encounters" achievement — the 404 pool entries this member has
+    # stumbled onto. Deliberately not weighted (see notfound view selection):
+    # it's a hunt, and the denominator (network.notfound_entries.count()) moves
+    # as the pool grows, so the achievement re-opens whenever new art is added.
+    seen_notfound_entries = models.ManyToManyField('NotFoundEntry', blank=True, related_name='seen_by_members')
+
     class Meta:
         unique_together = ('user', 'network')
 

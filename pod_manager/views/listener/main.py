@@ -338,6 +338,12 @@ def episode_detail(request, episode_id):
 
     chapters = _episode_chapter_list(ep, ep.user_has_access)
 
+    # A private-only episode (no public fallback) has no raw_audio_url for a
+    # viewer without access — nothing to play, so the transcript tab (which
+    # is keyed to that audio) shouldn't appear for them either. Owners always
+    # see it regardless.
+    show_transcript_tab = is_owner or bool(transcript and ep.raw_audio_url)
+
     cross_targets = ep.cross_publications.select_related('podcast').order_by('podcast__title')
     network_podcasts = []
     if request.user.is_authenticated:
@@ -346,6 +352,7 @@ def episode_detail(request, episode_id):
     return render(request, 'pod_manager/episode_detail.html', {
         'ep': ep,
         'is_owner': is_owner,
+        'show_transcript_tab': show_transcript_tab,
         'chapters': chapters,
         'chapters_json': _json.dumps(chapters),
         'cross_targets': cross_targets,
@@ -376,7 +383,11 @@ def user_profile(request):
             'has_active_totp': has_active_totp,
             'totp_mode': totp_mode,
             'membership': current_membership,
-            'live_stats': {'playback_hits': 0, 'hours_accessed': 0.0, 'streak_days': 0, 'streak_weeks': 0, 'obsession_title': "Wandering Adventurer"},
+            'live_stats': {
+                'playback_hits': 0, 'hours_accessed': 0.0, 'streak_days': 0, 'streak_weeks': 0,
+                'obsession_title': "Wandering Adventurer",
+                'notfound_seen': 0, 'notfound_total': 0, 'notfound_reveal_total': True,
+            },
         })
 
     account_vintage = tenant_profile.patreon_join_date

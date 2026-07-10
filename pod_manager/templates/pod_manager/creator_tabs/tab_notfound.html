@@ -6,7 +6,7 @@
         <div class="card-body">
             <p class="text-muted small mb-4">A random image + caption pair from this pool is shown whenever a visitor hits a broken link on your network. Leave the pool empty for a plain themed fallback.</p>
 
-            <form method="POST" action="{% url 'creator_settings' %}?network={{ current_network.slug }}&tab=notfound" enctype="multipart/form-data" hx-boost="false" class="row g-3 align-items-end mb-4 pb-4 border-bottom border-secondary">
+            <form method="POST" action="{% url 'creator_settings' %}?network={{ current_network.slug }}&tab=notfound" enctype="multipart/form-data" hx-boost="false" id="notfoundAddForm" class="row g-3 align-items-end mb-4 pb-4 border-bottom border-secondary">
                 {% csrf_token %}
                 <input type="hidden" name="action" value="add_notfound_entry">
                 <div class="col-md-5">
@@ -18,7 +18,16 @@
                     <input type="text" name="caption" class="form-control bg-black text-light border-secondary" placeholder="e.g., I'm sorry Dave, I'm afraid I can't do that." maxlength="200" required>
                 </div>
                 <div class="col-md-2">
-                    <button type="submit" class="btn btn-warning fw-bold w-100"><i class="bi bi-plus-lg"></i> Add</button>
+                    <button type="submit" id="notfoundAddBtn" class="btn btn-warning fw-bold w-100"><i class="bi bi-plus-lg"></i> Add</button>
+                </div>
+                <div class="col-12 d-none" id="notfoundUploadStatus">
+                    <div class="d-flex align-items-center gap-2 mb-2">
+                        <div class="spinner-border spinner-border-sm text-warning" role="status"></div>
+                        <span class="text-light small" id="notfoundUploadLabel">Uploading… 0%</span>
+                    </div>
+                    <div class="progress" style="height: 6px; background: rgba(0,0,0,0.4);">
+                        <div class="progress-bar" id="notfoundUploadBar" style="width: 0%; background: var(--vecto-primary);"></div>
+                    </div>
                 </div>
             </form>
 
@@ -47,3 +56,50 @@
         </div>
     </div>
 </div>
+
+<script>
+(function () {
+    const form = document.getElementById('notfoundAddForm');
+    if (!form) return;
+    const btn = document.getElementById('notfoundAddBtn');
+    const status = document.getElementById('notfoundUploadStatus');
+    const label = document.getElementById('notfoundUploadLabel');
+    const bar = document.getElementById('notfoundUploadBar');
+
+    form.addEventListener('submit', function (e) {
+        // XHR instead of a native POST purely for feedback: an upload progress
+        // bar, then a processing state while the server re-encodes (animated
+        // GIFs take a few seconds) — the request itself is unchanged. Native
+        // required-field validation has already passed by the time this fires.
+        e.preventDefault();
+        btn.disabled = true;
+        status.classList.remove('d-none');
+
+        const xhr = new XMLHttpRequest();
+        xhr.open('POST', form.action);
+        xhr.upload.addEventListener('progress', function (ev) {
+            if (!ev.lengthComputable) return;
+            const pct = Math.round((ev.loaded / ev.total) * 100);
+            bar.style.width = pct + '%';
+            label.textContent = pct < 100
+                ? 'Uploading… ' + pct + '%'
+                : 'Processing image — animated GIFs take a few seconds…';
+        });
+        const fail = function () {
+            btn.disabled = false;
+            status.classList.add('d-none');
+            bar.style.width = '0%';
+            label.textContent = 'Uploading… 0%';
+            alert('Upload failed — please try again.');
+        };
+        xhr.addEventListener('load', function () {
+            if (xhr.status >= 400) { fail(); return; }
+            // Server redirects back to this tab; navigate there so the fresh
+            // pool (and any messages) render.
+            window.location.href = form.action;
+        });
+        xhr.addEventListener('error', fail);
+        xhr.send(new FormData(form));
+    });
+})();
+</script>

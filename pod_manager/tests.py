@@ -1876,6 +1876,23 @@ class CreatorNetworkAndShowTests(TestCase):
         show.refresh_from_db()
         self.assertEqual(show.public_feed_url, 'https://new.example.com/feed.rss')
 
+    def test_update_show_persists_allow_public_transcripts(self):
+        show = Podcast.objects.create(network=self.network, title='S3', slug='s3')
+        self.assertTrue(show.allow_public_transcripts)  # default True
+        base = {
+            'action': 'update_show', 'show_id': show.id,
+            'public_feed_url': '', 'subscriber_feed_url': '',
+            'tier_id': '', 'show_footer_public': '', 'show_footer_private': '',
+        }
+        # Checkbox absent in POST => unchecked => False (serve gate applies live).
+        self._post(base)
+        show.refresh_from_db()
+        self.assertFalse(show.allow_public_transcripts)
+        # Checkbox present => True.
+        self._post({**base, 'allow_public_transcripts': 'on'})
+        show.refresh_from_db()
+        self.assertTrue(show.allow_public_transcripts)
+
 
 # ---------------------------------------------------------------------------
 # Creator settings: episode merge, split, move
@@ -3217,7 +3234,16 @@ class RunTranscriptionTests(TestCase):
 
     def _mock_dl(self, mock_get):
         mock_get.return_value.raise_for_status = mock.MagicMock()
-        mock_get.return_value.iter_content.return_value = [b'mp3data']
+        # is_audio_file() magic-byte-sniffs the download (audio_sniff.py) to
+        # reject HTML interstitials — an ID3 tag prefix satisfies that check.
+        mock_get.return_value.iter_content.return_value = [b'ID3' + b'\x00' * 9 + b'mp3data']
+
+    def _session_get(self, mock_session_cls):
+        """_download_audio_to_temp downloads via a requests.Session() instance
+        (added for GDrive cookie/User-Agent support), not the bare requests.get
+        function — so tests must patch requests.Session and pull .get off the
+        instance mock it returns, not requests.get itself."""
+        return mock_session_cls.return_value.get
 
     def _mock_asr(self, mock_post, text=_MOCK_ASR_JSON):
         mock_post.return_value.raise_for_status = mock.MagicMock()
@@ -3225,9 +3251,9 @@ class RunTranscriptionTests(TestCase):
 
     @mock.patch('pod_manager.tasks.task_rebuild_episode_fragments')
     @mock.patch('pod_manager.services.transcription.requests.post')
-    @mock.patch('pod_manager.services.transcription.requests.get')
-    def test_happy_path_status_and_fields(self, mock_get, mock_post, mock_rebuild):
-        self._mock_dl(mock_get)
+    @mock.patch('pod_manager.services.transcription.requests.Session')
+    def test_happy_path_status_and_fields(self, mock_session_cls, mock_post, mock_rebuild):
+        self._mock_dl(self._session_get(mock_session_cls))
         self._mock_asr(mock_post)
         from pod_manager.services.transcription import run_transcription
         with override_settings(**self._settings(WHISPER_ENABLED=True)):
@@ -3241,9 +3267,9 @@ class RunTranscriptionTests(TestCase):
 
     @mock.patch('pod_manager.tasks.task_rebuild_episode_fragments')
     @mock.patch('pod_manager.services.transcription.requests.post')
-    @mock.patch('pod_manager.services.transcription.requests.get')
-    def test_all_five_files_written_to_disk(self, mock_get, mock_post, mock_rebuild):
-        self._mock_dl(mock_get)
+    @mock.patch('pod_manager.services.transcription.requests.Session')
+    def test_all_five_files_written_to_disk(self, mock_session_cls, mock_post, mock_rebuild):
+        self._mock_dl(self._session_get(mock_session_cls))
         self._mock_asr(mock_post)
         from pod_manager.services.transcription import run_transcription
         with override_settings(**self._settings(WHISPER_ENABLED=True)):
@@ -3273,9 +3299,9 @@ class RunTranscriptionTests(TestCase):
         self.assertFalse(Transcript.objects.filter(episode_id=99999).exists())
 
     @mock.patch('pod_manager.services.transcription.requests.post')
-    @mock.patch('pod_manager.services.transcription.requests.get')
-    def test_failure_marks_failed_and_increments_retry(self, mock_get, mock_post):
-        self._mock_dl(mock_get)
+    @mock.patch('pod_manager.services.transcription.requests.Session')
+    def test_failure_marks_failed_and_increments_retry(self, mock_session_cls, mock_post):
+        self._mock_dl(self._session_get(mock_session_cls))
         mock_post.side_effect = Exception('ASR down')
         from pod_manager.services.transcription import run_transcription
         with override_settings(**self._settings(WHISPER_ENABLED=True)):
@@ -3287,9 +3313,10 @@ class RunTranscriptionTests(TestCase):
         self.assertIn('ASR down', t.error_message)
 
     @mock.patch('pod_manager.services.transcription.requests.post')
-    @mock.patch('pod_manager.services.transcription.requests.get')
-    def test_permanent_source_error_parks_awaiting_recovery(self, mock_get, mock_post):
+    @mock.patch('pod_manager.services.transcription.requests.Session')
+    def test_permanent_source_error_parks_awaiting_recovery(self, mock_session_cls, mock_post):
         import requests as _rq
+        mock_get = self._session_get(mock_session_cls)
         resp = mock.MagicMock(); resp.status_code = 404
         mock_get.return_value.raise_for_status.side_effect = _rq.exceptions.HTTPError(response=resp)
         from pod_manager.services.transcription import run_transcription
@@ -3301,9 +3328,10 @@ class RunTranscriptionTests(TestCase):
         mock_post.assert_not_called()
 
     @mock.patch('pod_manager.services.transcription.requests.post')
-    @mock.patch('pod_manager.services.transcription.requests.get')
-    def test_transient_source_error_marks_failed_and_raises(self, mock_get, mock_post):
+    @mock.patch('pod_manager.services.transcription.requests.Session')
+    def test_transient_source_error_marks_failed_and_raises(self, mock_session_cls, mock_post):
         import requests as _rq
+        mock_get = self._session_get(mock_session_cls)
         resp = mock.MagicMock(); resp.status_code = 503
         mock_get.return_value.raise_for_status.side_effect = _rq.exceptions.HTTPError(response=resp)
         from pod_manager.services.transcription import run_transcription
@@ -3316,14 +3344,14 @@ class RunTranscriptionTests(TestCase):
 
     @mock.patch('pod_manager.tasks.task_rebuild_episode_fragments')
     @mock.patch('pod_manager.services.transcription.requests.post')
-    @mock.patch('pod_manager.services.transcription.requests.get')
-    def test_podcast_override_wins_over_network(self, mock_get, mock_post, mock_rebuild):
+    @mock.patch('pod_manager.services.transcription.requests.Session')
+    def test_podcast_override_wins_over_network(self, mock_session_cls, mock_post, mock_rebuild):
         """Podcast-level whisper_model takes precedence over network default."""
         self.net.whisper_model = 'large'
         self.net.save()
         self.pod.whisper_model = 'base'
         self.pod.save()
-        self._mock_dl(mock_get)
+        self._mock_dl(self._session_get(mock_session_cls))
         self._mock_asr(mock_post)
         from pod_manager.services.transcription import run_transcription
         with override_settings(**self._settings(WHISPER_ENABLED=True)):
@@ -3333,12 +3361,12 @@ class RunTranscriptionTests(TestCase):
 
     @mock.patch('pod_manager.tasks.task_rebuild_episode_fragments')
     @mock.patch('pod_manager.services.transcription.requests.post')
-    @mock.patch('pod_manager.services.transcription.requests.get')
-    def test_call_kwarg_wins_over_podcast_and_network(self, mock_get, mock_post, mock_rebuild):
+    @mock.patch('pod_manager.services.transcription.requests.Session')
+    def test_call_kwarg_wins_over_podcast_and_network(self, mock_session_cls, mock_post, mock_rebuild):
         """Per-call model kwarg overrides all other levels."""
         self.pod.whisper_model = 'base'
         self.pod.save()
-        self._mock_dl(mock_get)
+        self._mock_dl(self._session_get(mock_session_cls))
         self._mock_asr(mock_post)
         from pod_manager.services.transcription import run_transcription
         with override_settings(**self._settings(WHISPER_ENABLED=True)):
@@ -3348,10 +3376,10 @@ class RunTranscriptionTests(TestCase):
 
     @mock.patch('pod_manager.tasks.task_rebuild_episode_fragments')
     @mock.patch('pod_manager.services.transcription.requests.post')
-    @mock.patch('pod_manager.services.transcription.requests.get')
-    def test_global_settings_used_when_no_overrides(self, mock_get, mock_post, mock_rebuild):
+    @mock.patch('pod_manager.services.transcription.requests.Session')
+    def test_global_settings_used_when_no_overrides(self, mock_session_cls, mock_post, mock_rebuild):
         """Falls back to settings.WHISPER_MODEL when podcast and network have no overrides."""
-        self._mock_dl(mock_get)
+        self._mock_dl(self._session_get(mock_session_cls))
         self._mock_asr(mock_post)
         # Clear all model overrides so the settings fallback is actually reached.
         self.net.whisper_model = ''
@@ -4444,6 +4472,38 @@ class FeedTranscriptTagTests(TestCase):
         xml = self._render(completed_transcript=False)
         self.assertNotIn('podcast:transcript', xml)
 
+    # ── Section C: flag gating + auth placeholder ────────────────────────────
+
+    def test_flag_off_public_variant_suppresses_tags(self):
+        self.pod.allow_public_transcripts = False
+        self.pod.save()
+        xml = self._render(completed_transcript=True, has_access=False)
+        self.assertNotIn('podcast:transcript', xml)
+
+    def test_flag_off_private_variant_still_emits_tags(self):
+        """An entitled (private-variant) listener gets the tags regardless of
+        the public flag."""
+        self.pod.allow_public_transcripts = False
+        self.pod.save()
+        xml = self._render(completed_transcript=True, has_access=True)
+        self.assertIn('podcast:transcript', xml)
+
+    def test_flag_on_public_variant_emits_tags_without_auth(self):
+        # flag defaults True
+        xml = self._render(completed_transcript=True, has_access=False)
+        self.assertIn('podcast:transcript', xml)
+        # no auth placeholder anywhere in the transcript block
+        self.assertNotIn('auth=__VECTO_AUTH_TOKEN__', xml.split('podcast:transcript', 1)[1])
+
+    def test_private_variant_carries_auth_placeholder(self):
+        # lxml serialises the leading '&' of the transcript URL's auth as '&amp;'
+        xml = self._render(completed_transcript=True, has_access=True)
+        self.assertIn('&amp;auth=__VECTO_AUTH_TOKEN__', xml)
+
+    def test_transcript_tag_points_at_our_endpoint_not_cdn(self):
+        xml = self._render(completed_transcript=True, has_access=False)
+        self.assertIn(f'/transcripts/{self.ep.id}.vtt', xml)
+
 
 # ── 13. apply_approved_edit — speaker_mappings branch ────────────────────────
 
@@ -4764,6 +4824,105 @@ class CrossPublishFeedTests(TestCase):
         req = _make_tenant_request(self.factory, self.network, path='/feed/n/mix/netmix/')
         xml = views.generate_network_mix_feed(req, network_slug='n', mix_slug='netmix').content.decode('utf-8')
         self.assertEqual(xml.count('shared-guid-123'), 1)
+
+
+# ── Section C: feed-level transcript emission end-to-end ─────────────────────
+
+@override_settings(**TRANSCRIPTION_SETTINGS)
+class FeedTranscriptEmissionTests(TestCase):
+    """Section C, view level: the podcast:transcript tag emission is gated by
+    the origin podcast's allow_public_transcripts flag, entitled feeds carry a
+    real ?v=N&auth=<token>, and NO tokenless render path leaks the raw
+    __VECTO_AUTH_TOKEN__ placeholder (public feed AND the network-mix
+    session-user path)."""
+
+    def setUp(self):
+        cache.clear()
+        self.factory = RequestFactory()
+        self.network = Network.objects.create(name='Net', slug='n')
+        self.pod = Podcast.objects.create(network=self.network, title='Show', slug='show')
+        self.ep = Episode.objects.create(
+            podcast=self.pod, title='Ep', pub_date=timezone.now(),
+            raw_description='x', clean_description='x',
+            audio_url_public='https://cdn.example.com/pub.mp3',
+            audio_url_subscriber='https://cdn.example.com/sub.mp3',
+            guid_public='ep-guid-1',
+        )
+        Transcript.objects.create(
+            episode=self.ep, status=Transcript.Status.COMPLETED,
+            vtt_file=f'transcriptions/{self.ep.id // 1000}/{self.ep.id}.vtt',
+        )
+
+    def _public_feed(self):
+        req = _make_tenant_request(self.factory, self.network, path='/feed/')
+        return views.generate_public_feed(req, podcast_slug='show').content.decode('utf-8')
+
+    def _custom_feed(self, profile):
+        req = self.factory.get('/feed/', {'auth': str(profile.feed_token), 'show': 'show'})
+        req.network = self.network
+        return views.generate_custom_feed(req).content.decode('utf-8')
+
+    def _owner(self):
+        user = User.objects.create_user(username='owner')
+        profile = PatronProfile.objects.create(user=user, patreon_id=None)
+        self.network.owners.add(user)
+        NetworkMembership.objects.create(user=user, network=self.network)
+        return user, profile
+
+    # -- public feed gating ---------------------------------------------------
+
+    def test_public_feed_flag_on_has_tags_at_our_endpoint(self):
+        xml = self._public_feed()
+        self.assertIn('podcast:transcript', xml)
+        self.assertIn(f'/transcripts/{self.ep.id}.vtt', xml)
+        # never a CDN object URL, only our on-platform endpoint
+        self.assertNotIn('transcriptions/', xml)
+
+    def test_public_feed_flag_off_no_tags(self):
+        self.pod.allow_public_transcripts = False
+        self.pod.save()
+        cache.clear()
+        xml = self._public_feed()
+        self.assertNotIn('podcast:transcript', xml)
+
+    def test_public_feed_no_placeholder_literal(self):
+        xml = self._public_feed()
+        self.assertNotIn('__VECTO_AUTH_TOKEN__', xml)
+        self.assertNotIn('auth=', xml)  # tokenless: audio + transcript both stripped
+
+    # -- entitled custom feed on a flag-off podcast ---------------------------
+
+    def test_custom_feed_flag_off_entitled_carries_real_auth(self):
+        self.pod.allow_public_transcripts = False
+        self.pod.save()
+        cache.clear()
+        _, profile = self._owner()
+        xml = self._custom_feed(profile)
+        self.assertIn('podcast:transcript', xml)
+        # tag present with the real feed token substituted (serialised '&amp;')
+        self.assertIn(f'&amp;auth={profile.feed_token}', xml)
+        self.assertNotIn('__VECTO_AUTH_TOKEN__', xml)
+
+    # -- network-mix session-user path (no feed_token) ------------------------
+
+    def test_network_mix_session_user_strips_transcript_auth(self):
+        """generate_network_mix_feed can serve PRIVATE fragments to a session
+        user with NO feed token; without the &amp;auth strip the raw
+        placeholder would leak into that XML."""
+        self.pod.allow_public_transcripts = False
+        self.pod.save()
+        cache.clear()
+        user, _ = self._owner()
+        mix = NetworkMix.objects.create(network=self.network, name='Net Mix', slug='netmix')
+        mix.selected_podcasts.add(self.pod)
+        req = _make_tenant_request(self.factory, self.network,
+                                   path='/feed/n/mix/netmix/', user=user)
+        xml = views.generate_network_mix_feed(req, network_slug='n', mix_slug='netmix').content.decode('utf-8')
+        # private fragment served (entitled owner) => tag present ...
+        self.assertIn('podcast:transcript', xml)
+        # ... but the placeholder is stripped, not left raw
+        self.assertNotIn('__VECTO_AUTH_TOKEN__', xml)
+        self.assertNotIn('auth=', xml)
 
 
 @override_settings(CACHES=TEST_CACHES)

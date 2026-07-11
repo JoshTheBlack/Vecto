@@ -40,6 +40,20 @@ warnings.filterwarnings("ignore", message=".*Size is set to 0.*")
 logger = logging.getLogger(__name__)
 
 
+def _strip_auth_placeholder(xml: str) -> str:
+    """Remove the auth placeholder from a tokenless render (public feed or a
+    session-authenticated request that carries no feed_token). The audio URL
+    appends '?auth=__VECTO_AUTH_TOKEN__' (no ampersand), while transcript URLs
+    carry '?v=N' first, so their auth arrives as '&auth=...' — and lxml
+    serialises the '&' as '&amp;'. All three forms must be scrubbed or the raw
+    placeholder leaks into the XML (see planned_features.txt Section C2)."""
+    return (
+        xml.replace('?auth=__VECTO_AUTH_TOKEN__', '')
+           .replace('&amp;auth=__VECTO_AUTH_TOKEN__', '')
+           .replace('&auth=__VECTO_AUTH_TOKEN__', '')
+    )
+
+
 def etag_xml_response(request, xml_bytes: bytes) -> HttpResponse:
     etag = f'"{hashlib.md5(xml_bytes).hexdigest()}"'
     if request.META.get('HTTP_IF_NONE_MATCH') == etag:
@@ -178,7 +192,9 @@ class RSSFeedBuilder:
             if ep.explicit is not None:
                 etree.SubElement(item, f'{{{itunes_ns}}}explicit').text = 'true' if ep.explicit else 'false'
 
-            if ep.id in transcript_map:
+            if ep.id in transcript_map and (
+                ep_access or ep.podcast.allow_public_transcripts
+            ):
                 # ?v=N so the on-platform URL (which 302s to the immutable cdn
                 # object) busts when a re-transcribe bumps the version.
                 t_version = transcript_map[ep.id].version or 0
@@ -190,7 +206,14 @@ class RSSFeedBuilder:
                 ):
                     t_elem = etree.SubElement(item, f'{{{podcast_ns}}}transcript')
                     t_url = reverse('serve_transcript', kwargs={'episode_id': ep.id, 'ext': ext})
-                    t_elem.set('url', f"{self.base_url}{t_url}?v={t_version}")
+                    # Private-variant fragments carry the auth placeholder so an
+                    # entitled app follows our endpoint's 302 to the keyed CDN
+                    # object; ?v is first, so auth arrives as '&auth=...' and the
+                    # tokenless strips must remove that variant too.
+                    full_url = f"{self.base_url}{t_url}?v={t_version}"
+                    if ep_access:
+                        full_url += "&auth=__VECTO_AUTH_TOKEN__"
+                    t_elem.set('url', full_url)
                     t_elem.set('type', mime)
 
         final_xml = etree.tostring(root, encoding='utf-8', xml_declaration=True).decode('utf-8')
@@ -429,7 +452,7 @@ def generate_public_feed(request, podcast_slug):
         items_xml += frag
 
     final_xml = header + items_xml + footer
-    final_xml = final_xml.replace('?auth=__VECTO_AUTH_TOKEN__', '')
+    final_xml = _strip_auth_placeholder(final_xml)
     return etag_xml_response(request, final_xml.encode('utf-8'))
 
 
@@ -583,8 +606,10 @@ def generate_network_mix_feed(request, network_slug, mix_slug):
         items_xml += frag
 
     final_xml = header + items_xml + footer
-    if feed_token: final_xml = final_xml.replace('__VECTO_AUTH_TOKEN__', str(feed_token))
-    else: final_xml = final_xml.replace('?auth=__VECTO_AUTH_TOKEN__', '')
+    if feed_token:
+        final_xml = final_xml.replace('__VECTO_AUTH_TOKEN__', str(feed_token))
+    else:
+        final_xml = _strip_auth_placeholder(final_xml)
     if user and user.is_authenticated:
         network_ids = set(network_mix.selected_podcasts.values_list('network_id', flat=True))
         network_ids.add(network_mix.network_id)

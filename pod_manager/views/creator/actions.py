@@ -551,6 +551,9 @@ def handle_update_show(request, current_network):
     # Per-feed R2 serving override (checkbox — absent in POST means unchecked).
     show.force_r2_serve = bool(request.POST.get('force_r2_serve'))
 
+    # Public-transcript gate (checkbox — absent in POST means unchecked).
+    show.allow_public_transcripts = bool(request.POST.get('allow_public_transcripts'))
+
     # Ingest priority (checkbox — absent in POST means unchecked).
     show.is_low_priority = bool(request.POST.get('is_low_priority'))
 

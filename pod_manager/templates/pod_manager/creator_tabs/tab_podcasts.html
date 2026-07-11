@@ -193,6 +193,20 @@
                                                 </label>
                                             </div>
 
+                                            <div class="form-check form-switch mb-4">
+                                                <input class="form-check-input" type="checkbox" role="switch"
+                                                       id="allow_public_transcripts_{{ show.id }}" name="allow_public_transcripts"
+                                                       {% if show.allow_public_transcripts %}checked{% endif %}>
+                                                <label class="form-check-label text-light small fw-bold" for="allow_public_transcripts_{{ show.id }}">
+                                                    Public transcripts
+                                                    <span class="d-block text-muted fw-normal">
+                                                        On = serve transcripts (and the feed transcript tag) to listeners without premium access.
+                                                        Turn off for feeds whose private audio contains content never released publicly (e.g. extended spoiler sections) —
+                                                        the transcript is always generated from the private audio.
+                                                    </span>
+                                                </label>
+                                            </div>
+
                                             <h6 class="fw-semibold mb-2 mt-3 text-warning border-bottom border-secondary pb-1">
                                                 <i class="bi bi-rss me-1"></i>Feed Ingest
                                             </h6>

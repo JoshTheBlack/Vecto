@@ -208,7 +208,7 @@ class Command(BaseCommand):
 
         # Read the current .words (local for the majority, R2 for version>=1).
         try:
-            current_bytes = read_transcript_bytes(episode_id, 'words', t.version)
+            current_bytes = read_transcript_bytes(episode_id, 'words', t.version, t.r2_key_token)
             current_doc = json.loads(current_bytes.decode('utf-8'))
         except Exception as exc:
             self.stdout.write(self.style.ERROR(f"  ep {episode_id}: .words unreadable — skipping ({exc})"))
@@ -289,7 +289,7 @@ class Command(BaseCommand):
         episode_id = t.episode_id
         is_r2_resident = settings.R2_MEDIA_ENABLED and (t.version or 0) >= 1
         if is_r2_resident:
-            written, changed = write_transcript_formats(episode_id, rendered)
+            written, changed = write_transcript_formats(episode_id, rendered, t.r2_key_token)
             if changed:
                 for ext in _FORMATS:
                     setattr(t, _MARKER[ext], written[ext])

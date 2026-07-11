@@ -504,7 +504,7 @@
                     <div class="d-flex justify-content-between align-items-center mb-4 pb-3 border-bottom border-secondary">
                         <h4 class="text-light mb-0"><i class="bi bi-file-text me-2"></i>Episode Transcript</h4>
                         <div class="d-flex gap-2 align-items-center flex-wrap">
-                            {% if transcript.status == 'completed' %}
+                            {% if transcript.status == 'completed' and transcript_viewable %}
                             <a href="{% url 'serve_transcript' ep.id 'vtt' %}?download=1" class="btn btn-subtle btn-sm" download hx-boost="false">
                                 <i class="bi bi-download me-1"></i>VTT
                             </a>
@@ -604,7 +604,12 @@
                     </div>
                     {% endif %}
 
-                    {% if transcript.status == 'completed' and transcript_html %}
+                    {% if transcript.status == 'completed' and not transcript_viewable %}
+                        <div class="d-flex align-items-center gap-3 text-muted">
+                            <i class="bi bi-lock fs-5"></i>
+                            <span>{% if ep.podcast.required_tier %}Transcripts for this show are available to subscribers.{% else %}Sign in to view transcripts.{% endif %}</span>
+                        </div>
+                    {% elif transcript.status == 'completed' and transcript_html %}
                         <div class="transcript-body text-light"
                              id="transcriptBody"
                              {% if transcript.words_json_file %}data-words-url="{% url 'serve_transcript' ep.id 'words' %}?v={{ transcript.version }}"{% endif %}
@@ -640,7 +645,7 @@
                         </div>
                     {% endif %}
 
-                    {% if transcript.status == 'completed' and request.user.is_authenticated %}
+                    {% if transcript.status == 'completed' and transcript_viewable and request.user.is_authenticated %}
                     <div class="mt-4 pt-3 border-top border-secondary">
                         <h6 class="text-muted fw-bold mb-2">
                             <i class="bi bi-person-badge me-1"></i>Speaker Labels
@@ -1765,7 +1770,7 @@
 })();
 {% endif %}
 
-{% if transcript and transcript.status == 'completed' and request.user.is_authenticated %}
+{% if transcript and transcript.status == 'completed' and transcript_viewable and request.user.is_authenticated %}
 (function () {
     const submitBtn = document.getElementById('submitSpeakerLabelsBtn');
     const statusEl  = document.getElementById('speakerLabelStatus');

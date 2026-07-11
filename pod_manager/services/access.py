@@ -92,6 +92,19 @@ def _evaluate_mix_access(user, network_mix, *, membership=None, is_owner=None):
     return False
 
 
+def can_view_transcript(episode, has_premium_access):
+    """The single authority for transcript visibility, shared by the serve view,
+    the episode page, and the feed builder so the rule can't drift between them.
+
+    Premium access always serves. Otherwise the episode's ORIGIN podcast's
+    `allow_public_transcripts` flag governs — never is_premium (ad-only public/
+    private differences make it true almost everywhere), and never the feed being
+    rendered (the fragment cache keys only on the origin podcast). The deferred
+    episode-level public-audio term lands here, in this one place.
+    """
+    return bool(has_premium_access or episode.podcast.allow_public_transcripts)
+
+
 def _build_episode_description(episode, has_access):
     desc = episode.clean_description or episode.raw_description
     footer_parts = []

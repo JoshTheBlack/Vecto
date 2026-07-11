@@ -1,4 +1,4 @@
-import uuid, os, base64, logging
+import uuid, os, base64, logging, secrets
 from decimal import Decimal
 from urllib.parse import urlparse
 from django.db import models
@@ -295,6 +295,16 @@ class Podcast(models.Model):
         default=False,
         help_text="Serve this podcast's audio from the R2 mirror whenever a mirror exists, "
                   "instead of the original host.",
+    )
+
+    allow_public_transcripts = models.BooleanField(
+        default=True,
+        help_text="Serve transcripts (and the podcast:transcript feed tag) "
+                  "to listeners without premium access to this podcast. "
+                  "Turn off for feeds where the private audio contains "
+                  "content never released publicly (e.g. extended spoiler "
+                  "sections) — the single transcript is always generated "
+                  "from the private audio.",
     )
 
     is_low_priority = models.BooleanField(
@@ -976,6 +986,14 @@ class LogEntry(models.Model):
         return f"[{self.level}] {ts} - {self.message[:80]}"
 
 
+def new_transcript_token() -> str:
+    """Random suffix mixed into a transcript's R2 object keys so they can't be
+    derived from the episode id. 22 URL- and S3-key-safe chars (~128 bits).
+    Applied as the field default on INSERT only, so every new Transcript is born
+    keyed while existing rows migrate as null (legacy deterministic key)."""
+    return secrets.token_urlsafe(16)
+
+
 class Transcript(models.Model):
     class Status(models.TextChoices):
         PENDING    = 'pending',    'Pending'
@@ -1012,6 +1030,14 @@ class Transcript(models.Model):
     # on every (re)transcribe and speaker-label rewrite. 0 = legacy local-only
     # (written before the R2 cutover / when R2_MEDIA_ENABLED is off).
     version = models.IntegerField(default=0)
+
+    r2_key_token = models.CharField(
+        max_length=32, null=True, blank=True, default=new_transcript_token,
+        help_text="Random suffix mixed into the R2 object keys so they "
+                  "can't be derived from the episode id. Null = legacy "
+                  "deterministic key (pre-rekey). Set at creation for new "
+                  "transcripts; backfilled by rekey_transcripts.",
+    )
 
     # Plain text extracted from JSON for full-text search (Phase 8)
     transcript_text = models.TextField(blank=True, null=True)
@@ -1160,7 +1186,7 @@ def auto_delete_transcript_files(sender, instance, **kwargs):
         from pod_manager.services.r2_storage import delete_media_object
         for ext in ALLOWED_EXTENSIONS:
             try:
-                delete_media_object(transcript_r2_key(instance.episode_id, ext))
+                delete_media_object(transcript_r2_key(instance.episode_id, ext, instance.r2_key_token))
             except Exception as e:
                 logger.error("Failed to delete R2 transcript %s.%s: %s", instance.episode_id, ext, e)
 

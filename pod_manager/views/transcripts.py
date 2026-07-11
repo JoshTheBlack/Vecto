@@ -15,6 +15,48 @@ from pod_manager.services.transcription import (ALLOWED_EXTENSIONS,
 logger = logging.getLogger(__name__)
 
 
+def _resolve_transcript_access(request, episode) -> bool:
+    """Resolve premium access to `episode`'s transcript for the two audiences that
+    reach this endpoint — mirroring play_episode / episode_detail so the gate can't
+    diverge:
+
+      a) Site visitors (session): owner/superuser, or _evaluate_access against the
+         episode's PARENT podcast (network owners covered there; superusers are not,
+         so they're added explicitly the way episode_detail's is_owner does).
+      b) Podcast apps (?auth=<feed_token>): PatronProfile lookup, _evaluate_access
+         against the PARENT podcast, then the cross-publication TARGET override loop
+         verbatim from play_episode — a subscriber to a TARGET-mode target gets in.
+
+    This only resolves PREMIUM access; the public-flag decision is layered on top by
+    can_view_transcript at the call site.
+    """
+    from pod_manager.services.access import _evaluate_access
+
+    podcast = episode.podcast
+
+    user = request.user
+    if user.is_authenticated:
+        if user.is_superuser or podcast.network.owners.filter(pk=user.pk).exists():
+            return True
+        if _evaluate_access(user, podcast, podcast.network)[0]:
+            return True
+
+    feed_token = request.GET.get('auth')
+    if feed_token:
+        from pod_manager.models import EpisodeCrossPublication, PatronProfile
+        profile = PatronProfile.objects.filter(feed_token=feed_token).first()
+        if profile:
+            if _evaluate_access(profile.user, podcast, podcast.network)[0]:
+                return True
+            for cp in episode.cross_publications.filter(
+                access_mode=EpisodeCrossPublication.AccessMode.TARGET
+            ).select_related('podcast', 'podcast__network'):
+                if _evaluate_access(profile.user, cp.podcast, cp.podcast.network)[0]:
+                    return True
+
+    return False
+
+
 def _download_filename(episode_id, ext):
     """``<audio-stem>.<ext>`` so a transcript download matches the MP3's name."""
     try:
@@ -51,22 +93,44 @@ def serve_transcript(request, episode_id, ext: str):
     cdn. Legacy local transcripts (version 0 / R2 disabled) are served from disk
     with the existing ETag-revalidate behavior.
     """
-    from pod_manager.models import Transcript
+    from pod_manager.models import Episode, Transcript
+    from pod_manager.services.access import can_view_transcript
 
     if ext not in ALLOWED_EXTENSIONS:
+        raise Http404
+
+    episode = (
+        Episode.objects
+        .select_related('podcast', 'podcast__network')
+        .filter(pk=episode_id)
+        .first()
+    )
+    if episode is None:
         raise Http404
 
     transcript = (
         Transcript.objects
         .filter(episode_id=episode_id)
-        .only('episode_id', 'version', 'vtt_file', 'json_file', 'srt_file',
-              'html_file', 'words_json_file')
+        .only('episode_id', 'version', 'r2_key_token', 'vtt_file', 'json_file',
+              'srt_file', 'html_file', 'words_json_file')
         .first()
     )
     if transcript is None:
         raise Http404
     field = 'words_json_file' if ext == 'words' else f'{ext}_file'
     if not getattr(transcript, field, None):
+        raise Http404
+
+    # Access gate — closes both exposure layers: this Django endpoint AND (via the
+    # keyed CDN object) the bytes. 404 (not 403) matches the file's existing pattern
+    # and hides existence from probers. Applies uniformly to all five exts (words
+    # carries the full text too) and to the ?download=1 branch and legacy local path
+    # below, since it runs before either.
+    if not can_view_transcript(episode, _resolve_transcript_access(request, episode)):
+        logger.info(
+            "serve_transcript: denied episode=%s ext=%s (no premium access, "
+            "allow_public_transcripts off)", episode_id, ext,
+        )
         raise Http404
 
     version = transcript.version or 0
@@ -77,7 +141,7 @@ def serve_transcript(request, episode_id, ext: str):
         from botocore.exceptions import ClientError
         from pod_manager.services.r2_storage import (get_media_object,
                                                      media_public_url)
-        key = transcript_r2_key(int(episode_id), ext)
+        key = transcript_r2_key(int(episode_id), ext, transcript.r2_key_token)
         if download:
             try:
                 data, ctype = get_media_object(key)

@@ -206,7 +206,7 @@ def submit_speaker_labels(request, episode_id):
     try:
         from pod_manager.services.transcription import read_transcript_bytes
         if hasattr(ep, 'transcript') and ep.transcript.words_json_file:
-            doc = _json.loads(read_transcript_bytes(ep.id, 'words', ep.transcript.version).decode('utf-8'))
+            doc = _json.loads(read_transcript_bytes(ep.id, 'words', ep.transcript.version, ep.transcript.r2_key_token).decode('utf-8'))
             existing_mappings = doc.get('speaker_mappings', {})
             for seg in doc.get('segments', []):
                 sid = seg.get('speaker_id') or seg.get('speaker')

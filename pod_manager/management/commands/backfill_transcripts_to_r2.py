@@ -137,7 +137,7 @@ class Command(BaseCommand):
         # Already in R2 -> skip (presence-checked, not just version, so a row
         # written locally during a flag flip still gets pushed).
         if not force and (t.version or 0) >= 1:
-            if all(media_object_exists(transcript_r2_key(t.episode_id, e)) for e in exts):
+            if all(media_object_exists(transcript_r2_key(t.episode_id, e, t.r2_key_token)) for e in exts):
                 return 'skipped'
 
         if dry_run:
@@ -151,7 +151,7 @@ class Command(BaseCommand):
                 data = transcript_path(t.episode_id, ext).read_bytes()
                 if ext == 'words':
                     data = self._enrich_words(data, t.episode)
-                put_media_object(transcript_r2_key(t.episode_id, ext), data, CONTENT_TYPES[ext])
+                put_media_object(transcript_r2_key(t.episode_id, ext, t.r2_key_token), data, CONTENT_TYPES[ext])
             t.version = (t.version or 0) + 1
             t.save(update_fields=['version'])
             self.stdout.write(self.style.SUCCESS(f"  uploaded ep {t.episode_id}: {', '.join(exts)} (v{t.version})"))
@@ -191,7 +191,7 @@ class Command(BaseCommand):
                 self.stdout.write(self.style.WARNING(f"  not yet migrated: ep {t.episode_id} (version 0)"))
             else:
                 for ext in exts:
-                    if media_object_exists(transcript_r2_key(t.episode_id, ext)):
+                    if media_object_exists(transcript_r2_key(t.episode_id, ext, t.r2_key_token)):
                         present += 1
                     else:
                         missing += 1
@@ -238,7 +238,7 @@ class Command(BaseCommand):
             if (t.version or 0) < 1:
                 skipped += 1
                 continue  # not migrated — nothing to prune against
-            if not all(media_object_exists(transcript_r2_key(t.episode_id, e)) for e in exts):
+            if not all(media_object_exists(transcript_r2_key(t.episode_id, e, t.r2_key_token)) for e in exts):
                 refused += 1
                 self.stdout.write(self.style.ERROR(
                     f"  ep {t.episode_id}: not fully in R2 — refusing to prune"))

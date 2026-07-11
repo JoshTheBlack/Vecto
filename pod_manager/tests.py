@@ -8158,3 +8158,335 @@ class PublishFormCalendarSelectorTests(TestCase):
         self.assertNotContains(resp, 'ZzLinkedEntry')
         self.assertNotContains(resp, 'ZzPastEntry')
 
+
+
+# â”€â”€ 13. Transcript access gate (Section A/B/E1) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+_ALLOWED_TX_EXTS = ('vtt', 'json', 'srt', 'html', 'words')
+
+_R2_SERVE_SETTINGS = {
+    **TRANSCRIPTION_SETTINGS,
+    'R2_MEDIA_ENABLED': True,
+    'R2_MEDIA_PUBLIC_HOST': 'https://cdn.example.com',
+    'R2_MEDIA_KEY_PREFIX': '',
+}
+
+
+class TranscriptKeyShapeTests(SimpleTestCase):
+    """transcript_r2_key(episode_id, ext, token=None) â€” the single derivation
+    chokepoint. Legacy vs keyed shapes (Section E1)."""
+
+    def test_legacy_key_when_no_token(self):
+        self.assertEqual(transcript_r2_key(6354, 'vtt'), 'transcripts/6/6354.vtt')
+
+    def test_keyed_key_when_token(self):
+        self.assertEqual(transcript_r2_key(6354, 'vtt', 'abc123'),
+                         'transcripts/6/6354.abc123.vtt')
+
+    def test_bucket_math_matches_legacy(self):
+        self.assertEqual(transcript_r2_key(999, 'srt', 'tok').split('/')[1], '0')
+        self.assertEqual(transcript_r2_key(1000, 'srt', 'tok').split('/')[1], '1')
+
+    def test_invalid_ext_raises_even_with_token(self):
+        with self.assertRaises(ValueError):
+            transcript_r2_key(1, 'exe', 'abc')
+
+
+class TranscriptTokenDefaultTests(TestCase):
+    """Section A2 / D4 â€” new transcripts are born keyed; existing rows (migrated
+    as NULL) stay legacy. The field default fires on INSERT only."""
+
+    def test_new_transcript_born_with_token(self):
+        _, _, ep = _make_fixture()
+        t = Transcript.objects.create(episode=ep)
+        self.assertTrue(t.r2_key_token)
+        self.assertEqual(len(t.r2_key_token), 22)  # secrets.token_urlsafe(16)
+
+    def test_token_generator_is_random(self):
+        from pod_manager.models import new_transcript_token
+        self.assertNotEqual(new_transcript_token(), new_transcript_token())
+
+
+@override_settings(**_R2_SERVE_SETTINGS)
+class TranscriptServeAccessTests(TestCase):
+    """Section B â€” serve_transcript gate across both audiences, all five exts,
+    and the ?download branch. Also verifies the 302 target's key shape (Keys)."""
+
+    def setUp(self):
+        cache.clear()
+        self.net = Network.objects.create(name='Net', slug='n-serve')
+        self.tier = PatreonTier.objects.create(network=self.net, name='Premium', minimum_cents=500)
+        self.pod = Podcast.objects.create(
+            network=self.net, title='Show', slug='show-serve', required_tier=self.tier)
+        self.ep = Episode.objects.create(
+            podcast=self.pod, title='Ep', pub_date=timezone.now(),
+            raw_description='x', clean_description='x',
+            audio_url_public='https://cdn.example.com/pub.mp3',
+            audio_url_subscriber='https://cdn.example.com/priv.mp3',
+        )
+        self.token = 'tok0123456789abcdef012'
+        self.transcript = Transcript.objects.create(
+            episode=self.ep, status=Transcript.Status.COMPLETED, version=1,
+            r2_key_token=self.token,
+            vtt_file='m', json_file='m', srt_file='m', html_file='m', words_json_file='m',
+        )
+
+    # -- helpers --------------------------------------------------------------
+    def _url(self, ext):
+        return reverse('serve_transcript', kwargs={'episode_id': self.ep.id, 'ext': ext})
+
+    def _set_flag(self, value):
+        self.pod.allow_public_transcripts = value
+        self.pod.save(update_fields=['allow_public_transcripts'])
+
+    def _member(self, username, *, pledge=0, patron=False):
+        user = User.objects.create_user(username=username)
+        NetworkMembership.objects.create(
+            user=user, network=self.net,
+            is_active_patron=patron, patreon_pledge_cents=pledge)
+        return user
+
+    def _profile(self, user):
+        return PatronProfile.objects.create(user=user, patreon_id=None)
+
+    # -- unauthenticated / flag --------------------------------------------
+    def test_unauthenticated_flag_on_redirects_all_exts(self):
+        self._set_flag(True)
+        for ext in _ALLOWED_TX_EXTS:
+            resp = self.client.get(self._url(ext))
+            self.assertEqual(resp.status_code, 302, ext)
+
+    def test_unauthenticated_flag_off_404_all_exts(self):
+        self._set_flag(False)
+        for ext in _ALLOWED_TX_EXTS:
+            resp = self.client.get(self._url(ext))
+            self.assertEqual(resp.status_code, 404, ext)
+
+    # -- session audience --------------------------------------------------
+    def test_session_premium_flag_off_redirects(self):
+        self._set_flag(False)
+        self.client.force_login(self._member('patron', pledge=500, patron=True))
+        self.assertEqual(self.client.get(self._url('vtt')).status_code, 302)
+
+    def test_owner_flag_off_redirects(self):
+        self._set_flag(False)
+        owner = User.objects.create_user(username='owner-serve')
+        self.net.owners.add(owner)
+        self.client.force_login(owner)
+        self.assertEqual(self.client.get(self._url('vtt')).status_code, 302)
+
+    def test_superuser_flag_off_redirects(self):
+        self._set_flag(False)
+        su = User.objects.create_superuser(username='su-serve', email='su@e.com', password='x')
+        self.client.force_login(su)
+        self.assertEqual(self.client.get(self._url('vtt')).status_code, 302)
+
+    def test_session_member_without_pledge_flag_off_404(self):
+        self._set_flag(False)
+        self.client.force_login(self._member('plain'))
+        self.assertEqual(self.client.get(self._url('vtt')).status_code, 404)
+
+    # -- podcast-app (?auth) audience --------------------------------------
+    def test_auth_with_access_flag_off_redirects(self):
+        self._set_flag(False)
+        profile = self._profile(self._member('auth-yes', pledge=500, patron=True))
+        resp = self.client.get(self._url('vtt'), {'auth': str(profile.feed_token)})
+        self.assertEqual(resp.status_code, 302)
+
+    def test_auth_without_access_flag_off_404(self):
+        self._set_flag(False)
+        profile = self._profile(self._member('auth-no'))
+        resp = self.client.get(self._url('vtt'), {'auth': str(profile.feed_token)})
+        self.assertEqual(resp.status_code, 404)
+
+    def test_auth_without_access_flag_on_redirects(self):
+        self._set_flag(True)
+        profile = self._profile(self._member('auth-flagon'))
+        resp = self.client.get(self._url('vtt'), {'auth': str(profile.feed_token)})
+        self.assertEqual(resp.status_code, 302)
+
+    def test_target_cross_publication_grants_access_flag_off(self):
+        # Parent podcast is gated; TARGET-mode target is free, so a member with no
+        # pledge (no parent access) gets in via the override loop.
+        self._set_flag(False)
+        target = Podcast.objects.create(network=self.net, title='Target', slug='target-serve')
+        EpisodeCrossPublication.objects.create(
+            episode=self.ep, podcast=target,
+            access_mode=EpisodeCrossPublication.AccessMode.TARGET,
+        )
+        profile = self._profile(self._member('auth-target'))
+        resp = self.client.get(self._url('vtt'), {'auth': str(profile.feed_token)})
+        self.assertEqual(resp.status_code, 302)
+
+    def test_inherit_cross_publication_does_not_grant_flag_off(self):
+        # An INHERIT link (default) must NOT open the gate for a target-only member.
+        self._set_flag(False)
+        target = Podcast.objects.create(network=self.net, title='Target2', slug='target2-serve')
+        EpisodeCrossPublication.objects.create(episode=self.ep, podcast=target)  # INHERIT
+        profile = self._profile(self._member('auth-inherit'))
+        resp = self.client.get(self._url('vtt'), {'auth': str(profile.feed_token)})
+        self.assertEqual(resp.status_code, 404)
+
+    # -- download branch ---------------------------------------------------
+    def test_download_branch_enforces_gate(self):
+        self._set_flag(False)
+        resp = self.client.get(self._url('vtt'), {'download': '1'})
+        self.assertEqual(resp.status_code, 404)
+
+    # -- key shape in the 302 target (Keys) --------------------------------
+    def test_redirect_uses_keyed_key_when_tokened(self):
+        self._set_flag(True)
+        resp = self.client.get(self._url('vtt'))
+        self.assertEqual(
+            resp['Location'],
+            f'https://cdn.example.com/transcripts/{self.ep.id // 1000}/'
+            f'{self.ep.id}.{self.token}.vtt?v=1',
+        )
+
+    def test_redirect_uses_legacy_key_when_untokened(self):
+        self._set_flag(True)
+        self.transcript.r2_key_token = None
+        self.transcript.save(update_fields=['r2_key_token'])
+        resp = self.client.get(self._url('vtt'))
+        self.assertEqual(
+            resp['Location'],
+            f'https://cdn.example.com/transcripts/{self.ep.id // 1000}/{self.ep.id}.vtt?v=1',
+        )
+
+
+# â”€â”€ 14. Episode-page transcript gate (Section D) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+@override_settings(**TRANSCRIPTION_SETTINGS)
+class EpisodePageTranscriptGateTests(TestCase):
+    """Section D â€” episode_detail is a second content-delivery path (inline HTML +
+    words JSON via read_transcript_bytes). The gate is real enforcement: a
+    non-viewer's page must carry no transcript bytes and no data-words-url."""
+
+    SECRET = 'SECRET_TRANSCRIPT_TEXT'
+
+    def setUp(self):
+        cache.clear()
+        self.tmp = tempfile.mkdtemp()
+        self._media = override_settings(MEDIA_ROOT=self.tmp)
+        self._media.enable()
+        self.net = Network.objects.create(name='Net', slug='n-page')
+        self.tier = PatreonTier.objects.create(network=self.net, name='Premium', minimum_cents=500)
+        # Gated show, but with BOTH public + subscriber audio so the tab stays
+        # visible (raw_audio_url resolves to the public cut) while the transcript
+        # itself is gated â€” the Bald Movies "First Run" shape.
+        self.pod = Podcast.objects.create(
+            network=self.net, title='Show', slug='show-page', required_tier=self.tier)
+        self.ep = Episode.objects.create(
+            podcast=self.pod, title='Ep', pub_date=timezone.now(),
+            raw_description='x', clean_description='x',
+            audio_url_public='https://cdn.example.com/pub.mp3',
+            audio_url_subscriber='https://cdn.example.com/priv.mp3',
+        )
+
+    def tearDown(self):
+        self._media.disable()
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    # -- helpers --------------------------------------------------------------
+    def _set_flag(self, value, pod=None):
+        pod = pod or self.pod
+        pod.allow_public_transcripts = value
+        pod.save(update_fields=['allow_public_transcripts'])
+
+    def _local_transcript(self, ep=None):
+        ep = ep or self.ep
+        hp = transcript_path(ep.id, 'html')
+        hp.parent.mkdir(parents=True, exist_ok=True)
+        hp.write_text(f'<div>{self.SECRET}</div>', encoding='utf-8')
+        wp = transcript_path(ep.id, 'words')
+        wp.write_text(json.dumps({'segments': []}), encoding='utf-8')
+        return Transcript.objects.create(
+            episode=ep, status=Transcript.Status.COMPLETED, version=0,
+            html_file=str(hp.relative_to(self.tmp)),
+            words_json_file=str(wp.relative_to(self.tmp)),
+        )
+
+    def _render(self, user, ep=None):
+        ep = ep or self.ep
+        req = _make_tenant_request(
+            RequestFactory(), self.net, path=f'/episode/{ep.id}/', user=user)
+        return views.episode_detail(req, ep.id).content.decode('utf-8')
+
+    def _anon(self):
+        from django.contrib.auth.models import AnonymousUser
+        return AnonymousUser()
+
+    # -- gated logged-out ---------------------------------------------------
+    def test_logged_out_flag_off_gate_notice_no_content(self):
+        self._set_flag(False)
+        self._local_transcript()
+        body = self._render(self._anon())
+        # Tab visible, but no transcript bytes and no word-sync hook.
+        self.assertIn('id="transcript-tab"', body)
+        self.assertNotIn(self.SECRET, body)
+        self.assertNotIn('data-words-url', body)
+        # Gated show -> subscriber copy; download buttons hidden.
+        self.assertIn('available to subscribers', body)
+        vtt_url = reverse('serve_transcript', kwargs={'episode_id': self.ep.id, 'ext': 'vtt'})
+        self.assertNotIn(f'{vtt_url}?download=1', body)
+
+    def test_free_show_gate_notice_says_sign_in(self):
+        free = Podcast.objects.create(
+            network=self.net, title='Free', slug='free-page', allow_public_transcripts=False)
+        ep = Episode.objects.create(
+            podcast=free, title='FreeEp', pub_date=timezone.now(),
+            raw_description='x', clean_description='x',
+            audio_url_public='https://cdn.example.com/pub.mp3',
+            audio_url_subscriber='https://cdn.example.com/priv.mp3',
+        )
+        self._local_transcript(ep)
+        body = self._render(self._anon(), ep=ep)
+        self.assertIn('Sign in to view transcripts', body)
+        self.assertNotIn('available to subscribers', body)
+        self.assertNotIn(self.SECRET, body)
+
+    def test_flag_on_public_visitor_sees_transcript(self):
+        self._set_flag(True)
+        self._local_transcript()
+        body = self._render(self._anon())
+        self.assertIn(self.SECRET, body)
+        self.assertIn('data-words-url', body)
+
+    # -- subscriber (keyed R2 transcript) ----------------------------------
+    def test_subscriber_sees_inline_transcript_keyed(self):
+        self._set_flag(False)
+        user = User.objects.create_user(username='sub-page')
+        NetworkMembership.objects.create(
+            user=user, network=self.net, is_active_patron=True, patreon_pledge_cents=500)
+        token = 'keyedtoken0123456789ab'
+        Transcript.objects.create(
+            episode=self.ep, status=Transcript.Status.COMPLETED, version=1,
+            r2_key_token=token, html_file='m', words_json_file='m')
+        store = {
+            transcript_r2_key(self.ep.id, 'html', token): b'<div>' + self.SECRET.encode() + b'</div>',
+            transcript_r2_key(self.ep.id, 'words', token): json.dumps({'segments': []}).encode(),
+        }
+
+        def fake_get(key):
+            return store[key], 'text/html'
+
+        with override_settings(R2_MEDIA_ENABLED=True,
+                               R2_MEDIA_PUBLIC_HOST='https://cdn.example.com',
+                               R2_MEDIA_KEY_PREFIX=''), \
+             mock.patch('pod_manager.services.r2_storage.get_media_object', side_effect=fake_get):
+            body = self._render(user)
+        # Inline render pulled the bytes from the KEYED object (a miss on the legacy
+        # key would KeyError in fake_get), and the word-sync hook is present.
+        self.assertIn(self.SECRET, body)
+        self.assertIn('data-words-url', body)
+
+    # -- owner always full access ------------------------------------------
+    def test_owner_flag_off_sees_content_and_retranscribe_panel(self):
+        self._set_flag(False)
+        owner = User.objects.create_user(username='owner-page')
+        self.net.owners.add(owner)
+        self._local_transcript()
+        body = self._render(owner)
+        self.assertIn(self.SECRET, body)
+        self.assertIn('retranscribePanel', body)
+

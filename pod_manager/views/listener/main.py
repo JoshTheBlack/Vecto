@@ -20,7 +20,8 @@ from ...models import (
     PatronProfile, NetworkMembership, Podcast, Episode, NetworkMix, UserMix,
     EpisodeEditSuggestion, Transcript,
 )
-from ...services.access import _evaluate_access, _build_episode_description, _evaluate_mix_access
+from ...services.access import (_evaluate_access, _build_episode_description,
+                                _evaluate_mix_access, can_view_transcript)
 from ...services.analytics import get_live_user_stats
 from ...utils import get_membership
 from .actions import MIX_ACTION_HANDLERS
@@ -298,6 +299,11 @@ def episode_detail(request, episode_id):
         trust_score = membership.trust_score if membership else 0
 
     transcript = getattr(ep, 'transcript', None)
+    # ENFORCEMENT (not cosmetic): the inline HTML + words JSON are delivered
+    # server-side here, a content path that never touches serve_transcript. Gate
+    # the reads themselves on the shared predicate so a non-viewer's page carries
+    # no transcript bytes — and skip two R2 Class B reads per non-viewer pageview.
+    transcript_viewable = is_owner or can_view_transcript(ep, ep.user_has_access)
     transcript_html = None
     # transcript_speakers: ordered distinct speaker_id set (timeline order) — used
     # only as the "any speakers?" guard now that the form boxes are JS-rendered.
@@ -311,15 +317,15 @@ def episode_detail(request, episode_id):
     # Inline render reads the html + words FROM R2 (or local when not R2-backed)
     # via the transcript store, so the page no longer depends on local disk.
     from pod_manager.services.transcription import read_transcript_bytes, fold_speaker_mappings
-    if transcript and transcript.status == Transcript.Status.COMPLETED and transcript.html_file:
+    if transcript_viewable and transcript and transcript.status == Transcript.Status.COMPLETED and transcript.html_file:
         try:
-            transcript_html = read_transcript_bytes(ep.id, 'html', transcript.version).decode('utf-8')
+            transcript_html = read_transcript_bytes(ep.id, 'html', transcript.version, transcript.r2_key_token).decode('utf-8')
         except Exception:
             pass
 
-    if transcript and transcript.status == Transcript.Status.COMPLETED and transcript.words_json_file:
+    if transcript_viewable and transcript and transcript.status == Transcript.Status.COMPLETED and transcript.words_json_file:
         try:
-            words_doc = _json.loads(read_transcript_bytes(ep.id, 'words', transcript.version).decode('utf-8'))
+            words_doc = _json.loads(read_transcript_bytes(ep.id, 'words', transcript.version, transcript.r2_key_token).decode('utf-8'))
             # Resolved names come from the approved-edit fold over the immutable
             # speaker_id base (not from distinct seg.speaker), so the form reflects
             # the same source of truth replay writes. Pre-backfill .words without a
@@ -360,6 +366,7 @@ def episode_detail(request, episode_id):
         'network_podcasts': network_podcasts,
         'trust_score': trust_score,
         'transcript': transcript,
+        'transcript_viewable': transcript_viewable,
         'transcript_html': transcript_html,
         'transcript_speakers': transcript_speakers,
         'transcript_speaker_names': transcript_speaker_names,

@@ -125,22 +125,28 @@ def transcript_path(episode_id: int, ext: str) -> Path:
     return path
 
 
-def transcript_r2_key(episode_id: int, ext: str) -> str:
-    """Stable cdn key for a transcript format:
-    transcripts/{episode_id // 1000}/{episode_id}.{ext}.
+def transcript_r2_key(episode_id: int, ext: str, token: str | None = None) -> str:
+    """Cdn key for a transcript format. The single derivation chokepoint — every
+    read/write/serve path routes through here so the two key shapes stay in sync:
 
-    Deterministic from id+ext, so no full URL is stored — the serve view
-    recomputes the target from the key + Transcript.version. Overwritten in place
-    on re-transcribe (transcripts are tiny single GETs, no in-flight-stream
-    concern), so no orphan/GC machinery is needed. The // 1000 bucket folder
-    mirrors the local layout and keeps each prefix to ~1000 episodes (5 objects
-    each) so the bucket stays navigable for recovery.
+        token is None -> transcripts/{id // 1000}/{id}.{ext}          (legacy)
+        token set     -> transcripts/{id // 1000}/{id}.{token}.{ext}  (keyed)
+
+    The {id} prefix stays for bucket navigability/recovery; secrecy lives entirely
+    in the ~128-bit token, which makes the object key non-derivable from the (small,
+    enumerable) episode id. The serve view recomputes the target from the key +
+    Transcript.version; the token is stored on the row, never in a feed URL.
+
+    The // 1000 bucket folder mirrors the local layout and keeps each prefix to
+    ~1000 episodes so the bucket stays navigable for recovery. Overwritten in place
+    on re-transcribe (transcripts are tiny single GETs, no in-flight-stream concern).
     """
     if ext not in ALLOWED_EXTENSIONS:
         raise ValueError(
             f"Extension '{ext}' not allowed. Must be one of: {', '.join(sorted(ALLOWED_EXTENSIONS))}"
         )
-    return f"transcripts/{episode_id // 1000}/{episode_id}.{ext}"
+    stem = f"{episode_id}.{token}" if token else str(episode_id)
+    return f"transcripts/{episode_id // 1000}/{stem}.{ext}"
 
 
 def episode_recovery_metadata(episode) -> dict:
@@ -157,15 +163,16 @@ def episode_recovery_metadata(episode) -> dict:
     }
 
 
-def write_transcript_file(episode_id: int, ext: str, content: bytes) -> str:
+def write_transcript_file(episode_id: int, ext: str, content: bytes, token: str | None = None) -> str:
     """Write one transcript format and return its Transcript.*_file marker.
 
     R2 (vecto-cdn) when R2_MEDIA_ENABLED, else the legacy MEDIA_ROOT path (dev /
     pre-cutover). Callers bump Transcript.version after writing all formats.
+    ``token`` (the row's r2_key_token) selects the keyed vs legacy object key.
     """
     if settings.R2_MEDIA_ENABLED:
         from pod_manager.services.r2_storage import put_media_object
-        key = transcript_r2_key(episode_id, ext)
+        key = transcript_r2_key(episode_id, ext, token)
         put_media_object(key, content, CONTENT_TYPES[ext])
         return key
     p = transcript_path(episode_id, ext)
@@ -203,7 +210,7 @@ def _r2_format_matches(key: str, new_bytes: bytes) -> bool:
 
 
 def write_transcript_formats(
-    episode_id: int, rendered: list[tuple[str, bytes]],
+    episode_id: int, rendered: list[tuple[str, bytes]], token: str | None = None,
 ) -> tuple[dict[str, str], list[str]]:
     """Idempotently write rendered transcript formats; return ({ext: marker},
     changed_exts).
@@ -224,7 +231,7 @@ def write_transcript_formats(
     if settings.R2_MEDIA_ENABLED:
         from pod_manager.services.r2_storage import put_media_object
         for ext, content in rendered:
-            key = transcript_r2_key(episode_id, ext)
+            key = transcript_r2_key(episode_id, ext, token)
             markers[ext] = key
             if _r2_format_matches(key, content):
                 continue
@@ -232,20 +239,21 @@ def write_transcript_formats(
             changed.append(ext)
     else:
         for ext, content in rendered:
-            markers[ext] = write_transcript_file(episode_id, ext, content)
+            markers[ext] = write_transcript_file(episode_id, ext, content, token)
             changed.append(ext)
     return markers, changed
 
 
-def read_transcript_bytes(episode_id: int, ext: str, version: int) -> bytes:
+def read_transcript_bytes(episode_id: int, ext: str, version: int, token: str | None = None) -> bytes:
     """Read one transcript format's bytes.
 
     Reads from R2 when the transcript is R2-backed (version >= 1 and R2 enabled),
     else from the legacy local file (version 0 / R2 disabled). Raises on miss.
+    ``token`` (the row's r2_key_token) selects the keyed vs legacy object key.
     """
     if settings.R2_MEDIA_ENABLED and (version or 0) >= 1:
         from pod_manager.services.r2_storage import get_media_object
-        data, _ = get_media_object(transcript_r2_key(episode_id, ext))
+        data, _ = get_media_object(transcript_r2_key(episode_id, ext, token))
         return data
     return transcript_path(episode_id, ext).read_bytes()
 
@@ -1041,7 +1049,7 @@ def run_transcription(
             ('srt',   _to_srt(segments)),
             ('html',  _to_html(segments)),
             ('words', _to_words_json(segments, metadata=words_metadata)),
-        ])
+        ], transcript.r2_key_token)
 
         # 7. Mark completed. Bump the cache-bust version only when ≥1 format
         # actually changed, so a re-transcribe that produces identical bytes
@@ -1225,7 +1233,7 @@ def apply_speaker_labels(episode_id: int) -> None:
             return
 
         try:
-            words_bytes = read_transcript_bytes(episode_id, 'words', transcript.version)
+            words_bytes = read_transcript_bytes(episode_id, 'words', transcript.version, transcript.r2_key_token)
         except Exception as exc:
             logger.error("apply_speaker_labels: .words unreadable for episode %d — %s", episode_id, exc)
             return
@@ -1274,7 +1282,7 @@ def apply_speaker_labels(episode_id: int) -> None:
             ('srt',   _to_srt(segments)),
             ('html',  _to_html(segments)),
             ('words', _to_words_json(segments, metadata=metadata)),
-        ])
+        ], transcript.r2_key_token)
 
         if changed:
             transcript.version = (transcript.version or 0) + 1

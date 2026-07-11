@@ -104,6 +104,14 @@ R2_MEDIA_KEY_PREFIX      = os.getenv("R2_MEDIA_KEY_PREFIX", "dev/" if IS_IDE els
 # app runs without R2). Forced False under IS_TEST so the suite never touches R2.
 R2_MEDIA_ENABLED         = os.getenv("R2_MEDIA_ENABLED", "False") == "True"
 
+# Cloudflare edge-cache purge (transcript rekey churn). Deleting an object at
+# origin does NOT evict the year-long immutable edge cache, so moving transcript
+# objects to keyed locations must purge the old URLs. API token scoped to
+# Zone -> Cache Purge on the zone that carries R2_MEDIA_PUBLIC_HOST. Unset =
+# purges fail closed (orphan rows are retained as the retry ledger).
+CLOUDFLARE_ZONE_ID       = os.getenv("CLOUDFLARE_ZONE_ID", "")
+CLOUDFLARE_PURGE_TOKEN   = os.getenv("CLOUDFLARE_PURGE_TOKEN", "")
+
 # Django's internal DEBUG needs to be a boolean, so it's True if 'True' OR 'IDE'
 DEBUG = (RAW_DEBUG in ['True', 'IDE'])
 

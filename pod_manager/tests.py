@@ -8649,3 +8649,451 @@ class EpisodePageTranscriptGateTests(TestCase):
         self.assertIn(self.SECRET, body)
         self.assertIn('retranscribePanel', body)
 
+
+# ── 15. Rekey churn, orphan routing, CDN purge (Sections E2-E5) ──────────────
+
+from botocore.exceptions import ClientError as _BotoClientError
+
+from pod_manager.services import cloudflare as cf
+from pod_manager.services import r2_maintenance
+
+_REKEY_SETTINGS = dict(
+    CACHES=TEST_CACHES,
+    R2_MEDIA_ENABLED=True,
+    R2_MEDIA_PUBLIC_HOST='https://cdn.example.com',
+    R2_MEDIA_KEY_PREFIX='',
+    R2_MEDIA_BUCKET='vecto-cdn-test',
+    R2_BUCKET='vecto-audio-test',
+    R2_PUBLIC_HOST='https://audio.test',
+    R2_KEY_PREFIX='',
+    R2_ORPHAN_RETENTION_DAYS=90,
+    R2_REKEY_GRACE_DAYS=7,
+)
+
+
+def _tx_fields(exts):
+    return {('words_json_file' if e == 'words' else f'{e}_file'): 'm' for e in exts}
+
+
+class CloudflarePurgeTests(SimpleTestCase):
+    """purge_urls: 30-URL batching, Bearer auth, fail-closed semantics (E4)."""
+
+    def _resp(self, status=200, success=True):
+        resp = mock.Mock(status_code=status, text='{}')
+        resp.json.return_value = {'success': success}
+        return resp
+
+    @override_settings(CLOUDFLARE_ZONE_ID='zone123', CLOUDFLARE_PURGE_TOKEN='cf-tok')
+    def test_batches_of_30_with_zone_and_bearer(self):
+        urls = [f'https://cdn.example.com/u{i}' for i in range(65)]
+        with mock.patch.object(cf.requests, 'post', return_value=self._resp()) as post:
+            self.assertTrue(cf.purge_urls(urls))
+        self.assertEqual(post.call_count, 3)
+        endpoint = post.call_args_list[0].args[0]
+        self.assertIn('/zones/zone123/purge_cache', endpoint)
+        sizes = [len(c.kwargs['json']['files']) for c in post.call_args_list]
+        self.assertEqual(sizes, [30, 30, 5])
+        self.assertEqual(post.call_args_list[0].kwargs['headers']['Authorization'],
+                         'Bearer cf-tok')
+
+    @override_settings(CLOUDFLARE_ZONE_ID='zone123', CLOUDFLARE_PURGE_TOKEN='cf-tok')
+    def test_any_failed_batch_returns_false(self):
+        with mock.patch.object(cf.requests, 'post',
+                               side_effect=[self._resp(), self._resp(success=False)]):
+            self.assertFalse(cf.purge_urls([f'u{i}' for i in range(31)]))
+
+    @override_settings(CLOUDFLARE_ZONE_ID='zone123', CLOUDFLARE_PURGE_TOKEN='cf-tok')
+    def test_network_error_returns_false(self):
+        with mock.patch.object(cf.requests, 'post', side_effect=OSError('boom')):
+            self.assertFalse(cf.purge_urls(['u1']))
+
+    @override_settings(CLOUDFLARE_ZONE_ID='', CLOUDFLARE_PURGE_TOKEN='')
+    def test_unconfigured_fails_closed_without_calling_api(self):
+        with mock.patch.object(cf.requests, 'post') as post:
+            self.assertFalse(cf.purge_urls(['u1']))
+        post.assert_not_called()
+
+    @override_settings(CLOUDFLARE_ZONE_ID='', CLOUDFLARE_PURGE_TOKEN='')
+    def test_empty_list_is_trivially_true(self):
+        with mock.patch.object(cf.requests, 'post') as post:
+            self.assertTrue(cf.purge_urls([]))
+        post.assert_not_called()
+
+
+@override_settings(R2_MEDIA_ENABLED=True)
+class WriteTranscriptFormatsKeyedTests(TestCase):
+    """Keys checklist: a tokened write lands at the KEYED object location."""
+
+    def test_put_targets_keyed_location_when_token_passed(self):
+        put_calls = []
+        with mock.patch('pod_manager.services.r2_storage.media_object_etag',
+                        return_value=None), \
+             mock.patch('pod_manager.services.r2_storage.put_media_object',
+                        side_effect=lambda key, content, ct: put_calls.append(key)):
+            markers, changed = write_transcript_formats(7, [('vtt', b'WEBVTT')], 'tok123')
+        self.assertEqual(put_calls, ['transcripts/0/7.tok123.vtt'])
+        self.assertEqual(markers['vtt'], 'transcripts/0/7.tok123.vtt')
+        self.assertEqual(changed, ['vtt'])
+
+
+@override_settings(**_REKEY_SETTINGS)
+class RekeyTranscriptsTests(TestCase):
+    """Section E2 — the churn: strict record->copy->token->delete->purge order,
+    idempotency, scoping, --limit, and crash/purge-failure convergence."""
+
+    def setUp(self):
+        self.net = Network.objects.create(name='Net', slug='n-rekey')
+        self.pod_a = Podcast.objects.create(network=self.net, title='A', slug='show-a')
+        self.pod_b = Podcast.objects.create(network=self.net, title='B', slug='show-b')
+        self.ep_a = self._episode(self.pod_a, 'A1')
+        self.ep_b = self._episode(self.pod_b, 'B1')
+        # Two legacy (untokened) R2-backed transcripts across two podcasts...
+        self.t_a = Transcript.objects.create(
+            episode=self.ep_a, status=Transcript.Status.COMPLETED, version=3,
+            r2_key_token=None, **_tx_fields(('vtt', 'json', 'srt', 'html', 'words')))
+        self.t_b = Transcript.objects.create(
+            episode=self.ep_b, status=Transcript.Status.COMPLETED, version=1,
+            r2_key_token=None, **_tx_fields(('vtt',)))
+        # ...and rows the churn must never touch: already keyed / local-only / not done.
+        self.t_keyed = Transcript.objects.create(
+            episode=self._episode(self.pod_a, 'A2'), status=Transcript.Status.COMPLETED,
+            version=2, r2_key_token='alreadykeyed0123456789', **_tx_fields(('vtt',)))
+        self.t_local = Transcript.objects.create(
+            episode=self._episode(self.pod_a, 'A3'), status=Transcript.Status.COMPLETED,
+            version=0, r2_key_token=None, **_tx_fields(('vtt',)))
+        self.t_pending = Transcript.objects.create(
+            episode=self._episode(self.pod_a, 'A4'), status=Transcript.Status.PENDING,
+            version=1, r2_key_token=None)
+
+    def _episode(self, podcast, title):
+        return Episode.objects.create(
+            podcast=podcast, title=title, pub_date=timezone.now(),
+            raw_description='x', clean_description='x')
+
+    def _run(self, purge_ok=True, client=None, apply=True, **kwargs):
+        client = client or mock.MagicMock()
+        purge = mock.MagicMock(return_value=purge_ok)
+        with mock.patch.object(r2_maintenance, 'get_r2_client', return_value=client), \
+             mock.patch('pod_manager.services.r2_storage.get_r2_client',
+                        return_value=client), \
+             mock.patch.object(cf, 'purge_urls', purge):
+            result = r2_maintenance.rekey_transcripts(apply=apply, **kwargs)
+        return result, client, purge
+
+    def _plain_key(self, ep, ext):
+        return transcript_r2_key(ep.id, ext)
+
+    def _counts(self, result):
+        return {k: result[k] for k in ('rekeyed', 'retry_pending', 'errors')}
+
+    # -- dry run (the safety-idiom default) -----------------------------------
+    def test_dry_run_lists_candidates_and_writes_nothing(self):
+        result, client, purge = self._run(apply=False)
+        self.assertEqual(result['candidates'], [self.ep_a.id, self.ep_b.id])
+        self.assertFalse(result['applied'])
+        client.copy_object.assert_not_called()
+        client.delete_object.assert_not_called()
+        purge.assert_not_called()
+        self.t_a.refresh_from_db()
+        self.assertIsNone(self.t_a.r2_key_token)
+        self.assertEqual(R2OrphanedObject.objects.count(), 0)
+
+    # -- the full happy path, no args = every podcast ------------------------
+    def test_no_args_rekeys_all_podcasts(self):
+        result, client, purge = self._run()
+        self.assertEqual(self._counts(result), {'rekeyed': 2, 'retry_pending': 0, 'errors': 0})
+
+        self.t_a.refresh_from_db(); self.t_b.refresh_from_db()
+        self.assertEqual(len(self.t_a.r2_key_token), 22)
+        self.assertEqual(len(self.t_b.r2_key_token), 22)
+        self.assertNotEqual(self.t_a.r2_key_token, self.t_b.r2_key_token)
+        # Untouched rows keep their state.
+        self.t_keyed.refresh_from_db(); self.t_local.refresh_from_db()
+        self.assertEqual(self.t_keyed.r2_key_token, 'alreadykeyed0123456789')
+        self.assertIsNone(self.t_local.r2_key_token)
+
+        # Server-side copies, media bucket, old plain key -> keyed key.
+        self.assertEqual(client.copy_object.call_count, 6)  # 5 exts + 1 ext
+        for c in client.copy_object.call_args_list:
+            self.assertEqual(c.kwargs['Bucket'], 'vecto-cdn-test')
+            self.assertEqual(c.kwargs['CopySource']['Bucket'], 'vecto-cdn-test')
+        b_copy = [c for c in client.copy_object.call_args_list
+                  if c.kwargs['CopySource']['Key'] == self._plain_key(self.ep_b, 'vtt')]
+        self.assertEqual(len(b_copy), 1)
+        self.assertEqual(b_copy[0].kwargs['Key'],
+                         transcript_r2_key(self.ep_b.id, 'vtt', self.t_b.r2_key_token))
+
+        # Old plain objects deleted from the MEDIA bucket.
+        self.assertEqual(client.delete_object.call_count, 6)
+        deleted = {c.kwargs['Key'] for c in client.delete_object.call_args_list}
+        self.assertIn(self._plain_key(self.ep_a, 'words'), deleted)
+        self.assertIn(self._plain_key(self.ep_b, 'vtt'), deleted)
+        for c in client.delete_object.call_args_list:
+            self.assertEqual(c.kwargs['Bucket'], 'vecto-cdn-test')
+
+        # Purge: bare URL + ?v=1..version per old key (E4).
+        self.assertEqual(purge.call_count, 2)
+        a_urls, b_urls = purge.call_args_list[0].args[0], purge.call_args_list[1].args[0]
+        self.assertEqual(len(a_urls), 5 * (1 + 3))  # 5 exts x (bare + v1..v3)
+        base_b = f'https://cdn.example.com/{self._plain_key(self.ep_b, "vtt")}'
+        self.assertEqual(b_urls, [base_b, f'{base_b}?v=1'])
+
+        # Fully converged: no retry ledger left behind.
+        self.assertEqual(R2OrphanedObject.objects.count(), 0)
+
+    def test_idempotent_rerun_is_a_no_op(self):
+        self._run()
+        result, client, _ = self._run()
+        self.assertEqual(result['rekeyed'], 0)
+        client.copy_object.assert_not_called()
+
+    # -- scoping --------------------------------------------------------------
+    def test_podcast_slug_scopes_the_churn(self):
+        result, _, _ = self._run(podcast_slug='show-b')
+        self.assertEqual(result['rekeyed'], 1)
+        self.t_a.refresh_from_db(); self.t_b.refresh_from_db()
+        self.assertIsNone(self.t_a.r2_key_token)
+        self.assertIsNotNone(self.t_b.r2_key_token)
+
+    def test_limit_stops_after_n(self):
+        Transcript.objects.create(
+            episode=self._episode(self.pod_b, 'B2'), status=Transcript.Status.COMPLETED,
+            version=1, r2_key_token=None, **_tx_fields(('vtt',)))
+        result, _, _ = self._run(limit=2)
+        self.assertEqual(result['rekeyed'], 2)
+        tokened = Transcript.objects.filter(
+            r2_key_token__isnull=False).exclude(pk=self.t_keyed.pk).count()
+        self.assertEqual(tokened, 2)
+
+    # -- failure ordering ------------------------------------------------------
+    def test_crash_between_copy_and_token_leaves_retryable_orphans(self):
+        bad = mock.MagicMock()
+        bad.copy_object.side_effect = _BotoClientError(
+            {'Error': {'Code': 'NoSuchKey'}}, 'CopyObject')
+        result, _, purge = self._run(client=bad, podcast_slug='show-a')
+        self.assertEqual(self._counts(result), {'rekeyed': 0, 'retry_pending': 0, 'errors': 1})
+        # Orphan rows were recorded BEFORE the copy — the durable retry record.
+        keys = set(R2OrphanedObject.objects.values_list('key', flat=True))
+        self.assertEqual(keys, {self._plain_key(self.ep_a, e)
+                                for e in ('vtt', 'json', 'srt', 'html', 'words')})
+        self.assertEqual(
+            set(R2OrphanedObject.objects.values_list('reason', flat=True)),
+            {R2OrphanedObject.Reason.MOVE_REKEY})
+        # Token NOT set (the 302 must keep pointing at the live plain objects)...
+        self.t_a.refresh_from_db()
+        self.assertIsNone(self.t_a.r2_key_token)
+        purge.assert_not_called()
+        # ...and a rerun with a healthy client converges.
+        result, _, _ = self._run(podcast_slug='show-a')
+        self.assertEqual(result['rekeyed'], 1)
+        self.t_a.refresh_from_db()
+        self.assertIsNotNone(self.t_a.r2_key_token)
+        self.assertEqual(R2OrphanedObject.objects.count(), 0)
+
+    def test_purge_failure_keeps_orphan_rows_but_sets_token(self):
+        result, client, _ = self._run(purge_ok=False, podcast_slug='show-b')
+        self.assertEqual(self._counts(result), {'rekeyed': 0, 'retry_pending': 1, 'errors': 0})
+        # The move itself completed: token set, old object deleted...
+        self.t_b.refresh_from_db()
+        self.assertIsNotNone(self.t_b.r2_key_token)
+        client.delete_object.assert_called_once()
+        # ...but the row survives as the purge retry ledger (cleared only after
+        # delete AND purge succeed).
+        self.assertEqual(
+            list(R2OrphanedObject.objects.values_list('key', flat=True)),
+            [self._plain_key(self.ep_b, 'vtt')])
+
+    def test_r2_media_disabled_raises(self):
+        with override_settings(R2_MEDIA_ENABLED=False):
+            with self.assertRaises(RuntimeError):
+                r2_maintenance.rekey_transcripts()
+
+    # -- management command ----------------------------------------------------
+    def test_command_dry_run_by_default(self):
+        from io import StringIO
+        from django.core.management import call_command
+        out = StringIO()
+        client = mock.MagicMock()
+        with mock.patch.object(r2_maintenance, 'get_r2_client', return_value=client):
+            call_command('rekey_transcripts', stdout=out)
+        self.assertIn('2 transcript(s) would be rekeyed', out.getvalue())
+        client.copy_object.assert_not_called()
+        self.t_a.refresh_from_db()
+        self.assertIsNone(self.t_a.r2_key_token)
+
+    def test_command_apply_reports_counts(self):
+        from io import StringIO
+        from django.core.management import call_command
+        out = StringIO()
+        client = mock.MagicMock()
+        with mock.patch.object(r2_maintenance, 'get_r2_client', return_value=client), \
+             mock.patch('pod_manager.services.r2_storage.get_r2_client',
+                        return_value=client), \
+             mock.patch.object(cf, 'purge_urls', mock.MagicMock(return_value=True)):
+            call_command('rekey_transcripts', '--apply', stdout=out)
+        self.assertIn('2 transcript(s) rekeyed', out.getvalue())
+
+    def test_command_unknown_slug_raises(self):
+        from io import StringIO
+        from django.core.management import call_command
+        from django.core.management.base import CommandError
+        with self.assertRaises(CommandError):
+            call_command('rekey_transcripts', '--podcast', 'nope', stdout=StringIO())
+
+
+@override_settings(**_REKEY_SETTINGS)
+class CleanupOrphanTranscriptRoutingTests(TestCase):
+    """Section E3 — cleanup_orphans routes transcripts/ rows to the MEDIA bucket
+    (audio rows untouched), re-validates against live Transcript resolution,
+    applies ZERO retention, and couples the hard-delete to the CDN purge."""
+
+    def setUp(self):
+        self.net = Network.objects.create(name='Net', slug='n-route')
+        self.pod = Podcast.objects.create(network=self.net, title='Show', slug='show-route')
+        self.ep = Episode.objects.create(
+            podcast=self.pod, title='Ep', pub_date=timezone.now(),
+            raw_description='x', clean_description='x')
+
+    def _run(self, purge_ok=True, apply=True):
+        client = mock.MagicMock()
+        purge = mock.MagicMock(return_value=purge_ok)
+        with mock.patch.object(r2_maintenance, 'get_r2_client', return_value=client), \
+             mock.patch('pod_manager.services.r2_storage.get_r2_client',
+                        return_value=client), \
+             mock.patch.object(cf, 'purge_urls', purge):
+            result = r2_maintenance.cleanup_orphans(apply=apply)
+        return result, client, purge
+
+    def _tokened_transcript(self, version=2):
+        return Transcript.objects.create(
+            episode=self.ep, status=Transcript.Status.COMPLETED, version=version,
+            r2_key_token='livetoken0123456789ab', **_tx_fields(('vtt',)))
+
+    def test_routes_transcript_rows_to_media_bucket_audio_unaffected(self):
+        self._tokened_transcript(version=2)
+        plain = transcript_r2_key(self.ep.id, 'vtt')
+        # FRESH transcript row (zero retention — must still be processed) vs the
+        # audio rows' normal per-reason retention windows.
+        R2OrphanedObject.objects.create(
+            key=plain, reason=R2OrphanedObject.Reason.MOVE_REKEY,
+            orphaned_at=timezone.now())
+        R2OrphanedObject.objects.create(
+            key='9/9/old.mp3', reason=R2OrphanedObject.Reason.REVERSION,
+            orphaned_at=timezone.now() - timedelta(days=100))
+        R2OrphanedObject.objects.create(
+            key='9/9/fresh.mp3', reason=R2OrphanedObject.Reason.REVERSION,
+            orphaned_at=timezone.now() - timedelta(days=10))
+
+        result, client, purge = self._run()
+
+        # Audio: batch-deleted from the AUDIO bucket, expired row only.
+        _, ckwargs = client.delete_objects.call_args
+        self.assertEqual(ckwargs['Bucket'], 'vecto-audio-test')
+        self.assertEqual({o['Key'] for o in ckwargs['Delete']['Objects']}, {'9/9/old.mp3'})
+        # Transcript: single delete against the MEDIA bucket + coupled purge.
+        client.delete_object.assert_called_once_with(Bucket='vecto-cdn-test', Key=plain)
+        base = f'https://cdn.example.com/{plain}'
+        purge.assert_called_once_with([base, f'{base}?v=1', f'{base}?v=2'])
+        self.assertEqual(result['transcripts'], [plain])
+        self.assertEqual(result['transcripts_retained'], 0)
+        remaining = set(R2OrphanedObject.objects.values_list('key', flat=True))
+        self.assertEqual(remaining, {'9/9/fresh.mp3'})
+
+    def test_readopted_when_live_transcript_still_resolves_to_key(self):
+        # Live transcript is UNTOKENED — the plain key is still its serve target
+        # (the crash-before-token-set window), so the object must survive.
+        Transcript.objects.create(
+            episode=self.ep, status=Transcript.Status.COMPLETED, version=1,
+            r2_key_token=None, **_tx_fields(('vtt',)))
+        plain = transcript_r2_key(self.ep.id, 'vtt')
+        R2OrphanedObject.objects.create(
+            key=plain, reason=R2OrphanedObject.Reason.MOVE_REKEY,
+            orphaned_at=timezone.now())
+        result, client, purge = self._run()
+        self.assertEqual(result['readopted'], 1)
+        client.delete_object.assert_not_called()
+        purge.assert_not_called()
+        self.assertEqual(R2OrphanedObject.objects.count(), 0)
+
+    def test_stale_keyed_orphan_is_deleted(self):
+        self._tokened_transcript()
+        stale = transcript_r2_key(self.ep.id, 'vtt', 'oldstaletoken123456789')
+        R2OrphanedObject.objects.create(
+            key=stale, reason=R2OrphanedObject.Reason.MOVE_REKEY,
+            orphaned_at=timezone.now())
+        result, client, _ = self._run()
+        client.delete_object.assert_called_once_with(Bucket='vecto-cdn-test', Key=stale)
+        self.assertEqual(R2OrphanedObject.objects.count(), 0)
+
+    def test_purge_failure_retains_row_for_retry(self):
+        self._tokened_transcript()
+        plain = transcript_r2_key(self.ep.id, 'vtt')
+        R2OrphanedObject.objects.create(
+            key=plain, reason=R2OrphanedObject.Reason.MOVE_REKEY,
+            orphaned_at=timezone.now())
+        result, client, _ = self._run(purge_ok=False)
+        client.delete_object.assert_called_once()  # origin delete happened
+        self.assertEqual(result['transcripts_retained'], 1)
+        self.assertTrue(R2OrphanedObject.objects.filter(key=plain).exists())
+
+    @override_settings(R2_MEDIA_KEY_PREFIX='dev/')
+    def test_media_object_key_prefix_applied_in_dev(self):
+        # No live Transcript row (deleted-to-retranscribe) -> bare-URL purge only.
+        plain = transcript_r2_key(self.ep.id, 'vtt')
+        R2OrphanedObject.objects.create(
+            key=plain, reason=R2OrphanedObject.Reason.MOVE_REKEY,
+            orphaned_at=timezone.now())
+        _, client, purge = self._run()
+        client.delete_object.assert_called_once_with(
+            Bucket='vecto-cdn-test', Key=f'dev/{plain}')
+        purge.assert_called_once_with([f'https://cdn.example.com/dev/{plain}'])
+
+    def test_dry_run_reports_but_touches_nothing(self):
+        self._tokened_transcript()
+        plain = transcript_r2_key(self.ep.id, 'vtt')
+        R2OrphanedObject.objects.create(
+            key=plain, reason=R2OrphanedObject.Reason.MOVE_REKEY,
+            orphaned_at=timezone.now())
+        result, client, purge = self._run(apply=False)
+        self.assertEqual(result['transcripts'], [plain])
+        client.delete_object.assert_not_called()
+        purge.assert_not_called()
+        self.assertEqual(R2OrphanedObject.objects.count(), 1)
+
+
+class HandleUpdateShowRekeyDispatchTests(TestCase):
+    """Section E5 — flipping allow_public_transcripts off auto-dispatches the
+    rekey churn for that podcast (idempotent, so every such save may fire it)."""
+
+    def setUp(self):
+        self.network = Network.objects.create(name='Net', slug='n-dispatch')
+        self.pod = Podcast.objects.create(
+            network=self.network, title='Show', slug='show-dispatch')
+        self.user = User.objects.create_user('creator-dispatch')
+
+    def _post(self, flag_on):
+        from pod_manager.views.creator import actions
+        data = {'show_id': self.pod.id}
+        if flag_on:
+            data['allow_public_transcripts'] = 'on'
+        req = RequestFactory().post('/', data)
+        req.user = self.user
+        with mock.patch.object(actions, 'messages'), \
+             mock.patch.object(actions, 'task_rebuild_podcast_fragments'), \
+             mock.patch.object(actions, 'task_rekey_podcast_transcripts') as rekey:
+            actions.handle_update_show(req, self.network)
+        return rekey
+
+    @override_settings(R2_MEDIA_ENABLED=True)
+    def test_flag_landing_false_dispatches_rekey(self):
+        rekey = self._post(flag_on=False)
+        rekey.delay.assert_called_once_with(self.pod.id)
+
+    @override_settings(R2_MEDIA_ENABLED=True)
+    def test_flag_on_does_not_dispatch(self):
+        self.assertFalse(self._post(flag_on=True).delay.called)
+
+    def test_r2_media_disabled_does_not_dispatch(self):
+        # R2_MEDIA_ENABLED is forced False in tests — the guard must hold.
+        self.assertFalse(self._post(flag_on=False).delay.called)
+

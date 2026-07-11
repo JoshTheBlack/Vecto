@@ -9,6 +9,7 @@ import json
 import logging
 import re
 
+from django.conf import settings
 from django.contrib import messages
 from django.contrib.auth.models import User
 from django.core.cache import cache
@@ -24,7 +25,9 @@ from ...services.cross_publish import sync_cross_publications, validate_cross_ta
 from ...services.edits import chapter_items, score_contribution, REJECT_PENALTY
 from ...services.episode_move import move_episodes
 from ...services.patreon import sync_network_patrons
-from ...tasks import task_rebuild_episode_fragments, task_rebuild_podcast_fragments
+from ...tasks import (task_rebuild_episode_fragments,
+                      task_rebuild_podcast_fragments,
+                      task_rekey_podcast_transcripts)
 from ...utils import sanitize_user_html
 
 logger = logging.getLogger(__name__)
@@ -562,6 +565,12 @@ def handle_update_show(request, current_network):
 
     base_url = request.build_absolute_uri('/')[:-1]
     task_rebuild_podcast_fragments.delay(show.id, base_url)
+
+    # Flag landed False -> close the direct-CDN window: any still-untokened
+    # transcript remains fuzzable at its plain key until churned (E5). The rekey
+    # is idempotent, so firing on every such save is harmless.
+    if not show.allow_public_transcripts and settings.R2_MEDIA_ENABLED:
+        task_rekey_podcast_transcripts.delay(show.id)
 
 
 def handle_add_show(request, current_network):

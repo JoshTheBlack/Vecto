@@ -918,6 +918,23 @@ def task_rekey_episode_audio(self, episode_id: int):
         raise self.retry(exc=exc, countdown=60 * (self.request.retries + 1))
 
 
+@shared_task(bind=True, max_retries=3, time_limit=3600, acks_late=True, reject_on_worker_lost=True)
+def task_rekey_podcast_transcripts(self, podcast_id: int):
+    """Churn one podcast's legacy transcripts to keyed R2 locations. Auto-
+    dispatched when allow_public_transcripts lands False (transcript plan E5) —
+    until churned, an untokened transcript is still fuzzable at its plain CDN
+    key. Idempotent, so firing on every such save is harmless."""
+    from pod_manager.services.r2_maintenance import rekey_transcripts
+    try:
+        result = rekey_transcripts(podcast_id=podcast_id, apply=True)
+        logger.info(
+            "task_rekey_podcast_transcripts: podcast %d -> rekeyed=%d retry_pending=%d errors=%d",
+            podcast_id, result["rekeyed"], result["retry_pending"], result["errors"],
+        )
+    except Exception as exc:
+        raise self.retry(exc=exc, countdown=60 * (self.request.retries + 1))
+
+
 @shared_task
 def task_r2_reconcile():
     """Weekly: record partial-failure orphans (section I, Layer 2)."""

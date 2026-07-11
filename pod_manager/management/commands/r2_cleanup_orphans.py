@@ -32,17 +32,31 @@ class Command(BaseCommand):
             raise CommandError("This permanently deletes R2 objects. Re-run with --apply --yes to confirm.")
         result = cleanup_orphans(apply=apply)
         self.stdout.write(
-            f"{len(result['deleted'])} object(s) eligible for deletion; "
+            f"{len(result['deleted'])} audio object(s) eligible for deletion; "
+            f"{len(result['transcripts'])} transcript object(s) (media bucket, "
+            f"delete + CDN purge); "
             f"{result['readopted']} re-adopted (row dropped, object kept)."
         )
         for key in result["deleted"][:50]:
             self.stdout.write(f"  delete: {key}")
         if len(result["deleted"]) > 50:
             self.stdout.write(f"  ... and {len(result['deleted']) - 50} more")
+        for key in result["transcripts"][:50]:
+            self.stdout.write(f"  delete+purge (media): {key}")
+        if len(result["transcripts"]) > 50:
+            self.stdout.write(f"  ... and {len(result['transcripts']) - 50} more")
+        if apply and result["transcripts_retained"]:
+            self.stdout.write(self.style.WARNING(
+                f"{result['transcripts_retained']} transcript row(s) retained "
+                f"(delete or CDN purge failed — will retry next run)."
+            ))
         if apply:
-            logger.info("r2_cleanup_orphans applied: deleted=%d readopted=%d",
-                        len(result["deleted"]), result["readopted"])
-            self.stdout.write(self.style.SUCCESS(f"Deleted {len(result['deleted'])} object(s)."))
+            logger.info("r2_cleanup_orphans applied: deleted=%d transcripts=%d retained=%d readopted=%d",
+                        len(result["deleted"]), len(result["transcripts"]),
+                        result["transcripts_retained"], result["readopted"])
+            cleared_tx = len(result["transcripts"]) - result["transcripts_retained"]
+            self.stdout.write(self.style.SUCCESS(
+                f"Deleted {len(result['deleted'])} audio + {cleared_tx} transcript object(s)."))
         else:
             self.stdout.write(self.style.WARNING("Dry run — nothing deleted. Re-run with --apply --yes."))
 
@@ -50,5 +64,7 @@ class Command(BaseCommand):
         emit_summary(self.stdout, {
             "applied": apply,
             "deleted": len(result["deleted"]),
+            "transcripts": len(result["transcripts"]),
+            "transcripts_retained": result["transcripts_retained"],
             "readopted": result["readopted"],
         })

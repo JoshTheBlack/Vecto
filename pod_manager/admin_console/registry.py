@@ -145,6 +145,14 @@ REGISTRY = {
         category="R2 / Storage",
         danger=True,
     ),
+    "rekey_transcripts": CommandSpec(
+        name="rekey_transcripts",
+        category="R2 / Storage",
+        # A move, not destruction: the old plain-key object is deleted (and its
+        # CDN URLs purged) only after a byte-identical copy is live at the keyed
+        # location, so --apply alone executes (no --yes). --podcast auto-infers
+        # the picker; --limit is a plain int.
+    ),
     "r2_smoke_test": CommandSpec(
         name="r2_smoke_test",
         category="R2 / Storage",

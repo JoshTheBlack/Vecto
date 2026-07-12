@@ -92,6 +92,25 @@ def _evaluate_mix_access(user, network_mix, *, membership=None, is_owner=None):
     return False
 
 
+def patron_profile_for_token(raw_token):
+    """PatronProfile for a ``?auth=<feed_token>`` query value, or None.
+
+    feed_token is a UUIDField, so filtering it on a malformed string raises
+    ValidationError — a 500 for what is just a bad credential. These tokens
+    ride on public-facing URLs (feed audio and transcript links), so junk
+    values arrive from the open internet; treat anything unparseable exactly
+    like an unknown token.
+    """
+    if not raw_token:
+        return None
+    from django.core.exceptions import ValidationError
+    from ..models import PatronProfile
+    try:
+        return PatronProfile.objects.filter(feed_token=raw_token).first()
+    except (ValidationError, ValueError, TypeError):
+        return None
+
+
 def can_view_transcript(episode, has_premium_access):
     """The single authority for transcript visibility, shared by the serve view,
     the episode page, and the feed builder so the rule can't drift between them.

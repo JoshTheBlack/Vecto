@@ -30,7 +30,8 @@ def _resolve_transcript_access(request, episode) -> bool:
     This only resolves PREMIUM access; the public-flag decision is layered on top by
     can_view_transcript at the call site.
     """
-    from pod_manager.services.access import _evaluate_access
+    from pod_manager.services.access import (_evaluate_access,
+                                              patron_profile_for_token)
 
     podcast = episode.podcast
 
@@ -43,8 +44,8 @@ def _resolve_transcript_access(request, episode) -> bool:
 
     feed_token = request.GET.get('auth')
     if feed_token:
-        from pod_manager.models import EpisodeCrossPublication, PatronProfile
-        profile = PatronProfile.objects.filter(feed_token=feed_token).first()
+        from pod_manager.models import EpisodeCrossPublication
+        profile = patron_profile_for_token(feed_token)
         if profile:
             if _evaluate_access(profile.user, podcast, podcast.network)[0]:
                 return True
@@ -93,28 +94,31 @@ def serve_transcript(request, episode_id, ext: str):
     cdn. Legacy local transcripts (version 0 / R2 disabled) are served from disk
     with the existing ETag-revalidate behavior.
     """
-    from pod_manager.models import Episode, Transcript
+    from pod_manager.models import Episode
     from pod_manager.services.access import can_view_transcript
 
     if ext not in ALLOWED_EXTENSIONS:
         raise Http404
 
+    # One round trip for episode + podcast + network + transcript (OneToOne).
+    # The transcript's fat columns are deferred: transcript_text is the whole
+    # episode as plain text (full-text-search fodder, easily 100KB+) and
+    # error_message can hold tracebacks — far too heavy to drag through every
+    # 302 on an endpoint podcast apps hammer. Episode/podcast/network stay
+    # fully loaded: the access predicates touch enough of their fields that
+    # trimming them risks silent per-request refetch queries.
     episode = (
         Episode.objects
-        .select_related('podcast', 'podcast__network')
+        .select_related('podcast', 'podcast__network', 'transcript')
+        .defer('transcript__transcript_text', 'transcript__error_message',
+               'transcript__source_audio_url')
         .filter(pk=episode_id)
         .first()
     )
     if episode is None:
         raise Http404
 
-    transcript = (
-        Transcript.objects
-        .filter(episode_id=episode_id)
-        .only('episode_id', 'version', 'r2_key_token', 'vtt_file', 'json_file',
-              'srt_file', 'html_file', 'words_json_file')
-        .first()
-    )
+    transcript = getattr(episode, 'transcript', None)
     if transcript is None:
         raise Http404
     field = 'words_json_file' if ext == 'words' else f'{ext}_file'

@@ -52,6 +52,10 @@ DEV_PREFIX = "dev/"
 # routes them via media_object_key() and pairs the delete with a CDN purge.
 TRANSCRIPTS_PREFIX = "transcripts/"
 
+# ?v purge range used when an orphaned transcript key has no live Transcript row
+# to read the real version from (see _delete_and_purge_transcript_key).
+_FALLBACK_PURGE_VERSIONS = 25
+
 # R2 DeleteObjects accepts up to 1000 keys per call.
 _DELETE_BATCH = 1000
 
@@ -275,11 +279,17 @@ def _delete_and_purge_transcript_key(key: str) -> bool:
     from pod_manager.services.cloudflare import purge_urls
     from pod_manager.services.r2_storage import delete_media_object
 
-    version = 0
+    # When the Transcript row is gone (deleted to force re-transcription, or an
+    # Episode cascade) its version — and with it the exact set of ?v=N entries
+    # the 302 ever pushed into the edge cache — is unknowable, so purge a
+    # generous fixed range instead. Versions are tiny ints (a handful of
+    # re-transcribes), and the whole range still fits one 30-URL purge call.
+    version = _FALLBACK_PURGE_VERSIONS
     parsed = _parse_transcript_key(key)
     if parsed:
         row = Transcript.objects.filter(episode_id=parsed[0]).only('version').first()
-        version = (row.version if row else 0) or 0
+        if row is not None:
+            version = row.version or 0
     try:
         delete_media_object(key)
     except ClientError as exc:
@@ -343,6 +353,15 @@ def _rekey_one_transcript(client, bucket, transcript) -> str:
 
     # 4./5. Delete the old objects, purge their CDN URLs, and only then clear the
     #       orphan rows — any failure keeps the rows for cleanup_orphans to retry.
+    #       On failure the ledger is re-recorded first: a cleanup run racing the
+    #       pre-token window sees the plain key still resolving live, classifies
+    #       the rows as re-adopted, and DROPS them — so they can't be assumed to
+    #       still exist here (_record_orphan is get_or_create, so this is free
+    #       when they do).
+    def _reassert_ledger():
+        for key in old_keys:
+            _record_orphan(key, transcript.episode, reason=R2OrphanedObject.Reason.MOVE_REKEY)
+
     try:
         for old_key in old_keys:
             delete_media_object(old_key)
@@ -351,6 +370,7 @@ def _rekey_one_transcript(client, bucket, transcript) -> str:
             "transcript rekey: old-object delete failed for episode %d (orphan "
             "rows retained for retry): %s", episode_id, exc,
         )
+        _reassert_ledger()
         return 'retry_pending'
     urls = [
         url for old_key in old_keys
@@ -361,6 +381,7 @@ def _rekey_one_transcript(client, bucket, transcript) -> str:
             "transcript rekey: CDN purge failed for episode %d (orphan rows "
             "retained for retry)", episode_id,
         )
+        _reassert_ledger()
         return 'retry_pending'
     if old_keys:
         R2OrphanedObject.objects.filter(key__in=old_keys).delete()

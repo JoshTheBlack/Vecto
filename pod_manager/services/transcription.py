@@ -1043,6 +1043,16 @@ def run_transcription(
         # Idempotent write: hash-check every format and PUT only those that
         # changed (§4). All writes complete here before the version bump below,
         # so a mid-write failure raises and leaves version untouched.
+        #
+        # Re-read the key token first: download + ASR take minutes, long enough
+        # for the rekey churn to token this row mid-task. Writing with the stale
+        # null token would recreate content at the fuzzable plain key right
+        # after the rekey deleted and purged it, while serving points at the
+        # (now stale) keyed copy.
+        try:
+            transcript.refresh_from_db(fields=['r2_key_token'])
+        except Transcript.DoesNotExist:
+            pass  # row deleted mid-task — keep prior behavior (save re-inserts)
         written, changed_formats = write_transcript_formats(episode_id, [
             ('vtt',   _to_vtt(segments)),
             ('json',  _to_podcast_index_json(segments)),

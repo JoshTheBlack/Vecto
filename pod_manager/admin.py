@@ -250,7 +250,7 @@ class EpisodeAdmin(admin.ModelAdmin):
         if skipped_in_progress:
             self.message_user(request, f"{skipped_in_progress} skipped (already pending/processing).", level='warning')
         if skipped_done:
-            self.message_user(request, f"{skipped_done} skipped (already completed). Delete the Transcript record to force re-transcription.", level='warning')
+            self.message_user(request, f"{skipped_done} skipped (already completed). Use the Transcript admin's \"Requeue transcription\" actions to re-transcribe (reuses the row, keeping its version history and R2 key token).", level='warning')
     trigger_transcription.short_description = "Queue transcription"
 
 @admin.register(PatronProfile)

@@ -29,9 +29,11 @@ from lxml import etree
 from django.db.models import Q
 
 from ..models import (
-    Network, PatronProfile, Podcast, Episode, EpisodeCrossPublication, NetworkMix, UserMix,
+    Network, Podcast, Episode, EpisodeCrossPublication, NetworkMix, UserMix,
 )
-from ..services.access import _evaluate_access, _build_episode_description, _evaluate_mix_access
+from ..services.access import (_evaluate_access, _build_episode_description,
+                               _evaluate_mix_access, can_view_transcript,
+                               patron_profile_for_token)
 from ..services.analytics import _record_active_user
 
 warnings.filterwarnings("ignore", message=".*Image URL must end with.*")
@@ -192,9 +194,7 @@ class RSSFeedBuilder:
             if ep.explicit is not None:
                 etree.SubElement(item, f'{{{itunes_ns}}}explicit').text = 'true' if ep.explicit else 'false'
 
-            if ep.id in transcript_map and (
-                ep_access or ep.podcast.allow_public_transcripts
-            ):
+            if ep.id in transcript_map and can_view_transcript(ep, ep_access):
                 # ?v=N so the on-platform URL (which 302s to the immutable cdn
                 # object) busts when a re-transcribe bumps the version.
                 t_version = transcript_map[ep.id].version or 0
@@ -358,7 +358,9 @@ def _parse_feed_limit(value: str, default: int = 500):
 def generate_custom_feed(request):
     feed_token = request.GET.get('auth')
     podcast = get_podcast_for_request(request, request.GET.get('show'))
-    profile = get_object_or_404(PatronProfile, feed_token=feed_token)
+    profile = patron_profile_for_token(feed_token)
+    if profile is None:
+        raise Http404("Feed not found.")
     has_access, _ = _evaluate_access(profile.user, podcast, podcast.network)
 
     base_url = request.build_absolute_uri('/')[:-1]
@@ -542,7 +544,7 @@ def generate_mix_feed(request, unique_id):
 def generate_network_mix_feed(request, network_slug, mix_slug):
     network_mix = get_object_or_404(NetworkMix, slug=mix_slug, network__slug=network_slug)
     feed_token = request.GET.get('auth')
-    profile = PatronProfile.objects.filter(feed_token=feed_token).first() if feed_token else None
+    profile = patron_profile_for_token(feed_token)
     user = profile.user if profile else request.user
 
     user_meets_mix_tier = _evaluate_mix_access(user, network_mix)
@@ -672,7 +674,7 @@ def play_episode(request, episode_id):
 
     has_access = False
     if feed_token:
-        profile = PatronProfile.objects.filter(feed_token=feed_token).first()
+        profile = patron_profile_for_token(feed_token)
         if profile:
             has_access, _ = _evaluate_access(profile.user, ep.podcast, ep.podcast.network)
             if not has_access:

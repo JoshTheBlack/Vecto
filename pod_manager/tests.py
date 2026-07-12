@@ -4903,6 +4903,13 @@ class FeedTranscriptEmissionTests(TestCase):
         self.assertIn(f'&amp;auth={profile.feed_token}', xml)
         self.assertNotIn('__VECTO_AUTH_TOKEN__', xml)
 
+    def test_custom_feed_malformed_auth_404s(self):
+        # feed_token is a UUIDField; a junk value must 404, not 500.
+        req = self.factory.get('/feed/', {'auth': 'not-a-uuid', 'show': 'show'})
+        req.network = self.network
+        with self.assertRaises(Http404):
+            views.generate_custom_feed(req)
+
     # -- network-mix session-user path (no feed_token) ------------------------
 
     def test_network_mix_session_user_strips_transcript_auth(self):
@@ -8492,6 +8499,17 @@ class TranscriptServeAccessTests(TestCase):
         resp = self.client.get(self._url('vtt'), {'download': '1'})
         self.assertEqual(resp.status_code, 404)
 
+    # -- malformed auth ------------------------------------------------------
+    def test_malformed_auth_treated_as_anonymous_not_500(self):
+        # feed_token is a UUIDField; a junk value must read as "no profile"
+        # (a bare filter would raise ValidationError -> 500).
+        self._set_flag(False)
+        resp = self.client.get(self._url('vtt'), {'auth': 'not-a-uuid'})
+        self.assertEqual(resp.status_code, 404)
+        self._set_flag(True)
+        resp = self.client.get(self._url('vtt'), {'auth': 'not-a-uuid'})
+        self.assertEqual(resp.status_code, 302)
+
     # -- key shape in the 302 target (Keys) --------------------------------
     def test_redirect_uses_keyed_key_when_tokened(self):
         self._set_flag(True)
@@ -8903,6 +8921,25 @@ class RekeyTranscriptsTests(TestCase):
             list(R2OrphanedObject.objects.values_list('key', flat=True)),
             [self._plain_key(self.ep_b, 'vtt')])
 
+    def test_purge_failure_rerecords_ledger_dropped_by_concurrent_cleanup(self):
+        # A cleanup run racing the pre-token window classifies the plain-key
+        # rows as re-adopted and drops them; if the purge then fails, the rekey
+        # must re-assert the ledger or nothing ever retries the purge.
+        def drop_rows_then_fail(urls):
+            R2OrphanedObject.objects.all().delete()
+            return False
+
+        client = mock.MagicMock()
+        with mock.patch.object(r2_maintenance, 'get_r2_client', return_value=client), \
+             mock.patch('pod_manager.services.r2_storage.get_r2_client',
+                        return_value=client), \
+             mock.patch.object(cf, 'purge_urls', side_effect=drop_rows_then_fail):
+            result = r2_maintenance.rekey_transcripts(apply=True, podcast_slug='show-b')
+        self.assertEqual(result['retry_pending'], 1)
+        self.assertEqual(
+            list(R2OrphanedObject.objects.values_list('key', flat=True)),
+            [self._plain_key(self.ep_b, 'vtt')])
+
     def test_r2_media_disabled_raises(self):
         with override_settings(R2_MEDIA_ENABLED=False):
             with self.assertRaises(RuntimeError):
@@ -9036,9 +9073,22 @@ class CleanupOrphanTranscriptRoutingTests(TestCase):
         self.assertEqual(result['transcripts_retained'], 1)
         self.assertTrue(R2OrphanedObject.objects.filter(key=plain).exists())
 
+    def test_missing_row_purges_fallback_version_range(self):
+        # Row deleted (delete-to-retranscribe / episode cascade): the real ?v
+        # range is unknowable, so a generous fixed range is purged instead of
+        # just the bare URL — the ?v=N entries are what the edge actually holds.
+        plain = transcript_r2_key(self.ep.id, 'vtt')
+        R2OrphanedObject.objects.create(
+            key=plain, reason=R2OrphanedObject.Reason.MOVE_REKEY,
+            orphaned_at=timezone.now())
+        _, _, purge = self._run()
+        base = f'https://cdn.example.com/{plain}'
+        purge.assert_called_once_with(
+            [base] + [f'{base}?v={k}'
+                      for k in range(1, r2_maintenance._FALLBACK_PURGE_VERSIONS + 1)])
+
     @override_settings(R2_MEDIA_KEY_PREFIX='dev/')
     def test_media_object_key_prefix_applied_in_dev(self):
-        # No live Transcript row (deleted-to-retranscribe) -> bare-URL purge only.
         plain = transcript_r2_key(self.ep.id, 'vtt')
         R2OrphanedObject.objects.create(
             key=plain, reason=R2OrphanedObject.Reason.MOVE_REKEY,
@@ -9046,7 +9096,10 @@ class CleanupOrphanTranscriptRoutingTests(TestCase):
         _, client, purge = self._run()
         client.delete_object.assert_called_once_with(
             Bucket='vecto-cdn-test', Key=f'dev/{plain}')
-        purge.assert_called_once_with([f'https://cdn.example.com/dev/{plain}'])
+        # No live row here either -> fallback range, all dev-prefixed.
+        urls = purge.call_args.args[0]
+        self.assertEqual(urls[0], f'https://cdn.example.com/dev/{plain}')
+        self.assertEqual(len(urls), 1 + r2_maintenance._FALLBACK_PURGE_VERSIONS)
 
     def test_dry_run_reports_but_touches_nothing(self):
         self._tokened_transcript()

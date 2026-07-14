@@ -153,18 +153,30 @@ def _hex(value, fallback):
     return fallback
 
 
+def _mix(rgb, other, amt):
+    """Blend `rgb` toward `other` by `amt` (0-1) — used to derive a day-band
+    shade from the surface color the same way the web calendar overlays
+    rgba(0,0,0,0.2) on its card."""
+    return tuple(int(a * (1 - amt) + b * amt) for a, b in zip(rgb, other))
+
+
 def render_schedule_png(network, groups, days):
     """Render the agenda to a PNG (BytesIO) themed with the network's
     theme_config colors — the image analogue of the List view."""
     from PIL import Image, ImageDraw
 
+    # The agenda sits on the network's CARD surface and uses only the surface_*
+    # text tokens — never bg_* — so a light-surface theme can't paint dark text
+    # onto the dark page bg (the dark-on-dark trap). Everything below pairs
+    # surface_text/-muted with the surface_bg they were designed against.
     theme = network.theme_config or {}
     bg = _hex(theme.get("surface_bg_color"), (30, 30, 30))
-    page_bg = _hex(theme.get("bg_color"), (18, 18, 18))
     text = _hex(theme.get("surface_text_color"), (248, 249, 250))
     muted = _hex(theme.get("surface_muted_text_color"), (173, 181, 189))
     primary = _hex(theme.get("primary_color"), (255, 193, 7))
-    primary_text = _hex(theme.get("primary_text_color"), (0, 0, 0))
+    success = _hex(theme.get("success_color"), (25, 135, 84))
+    border = _hex(theme.get("border_color"), _mix(bg, (0, 0, 0), 0.35))
+    band = _mix(bg, (0, 0, 0), 0.22)  # header/day-divider shade
 
     W = 900
     PAD = 32
@@ -190,11 +202,11 @@ def render_schedule_png(network, groups, days):
         body_h = 80
     H = header_h + body_h + PAD
 
-    img = Image.new("RGB", (W, H), page_bg)
+    img = Image.new("RGB", (W, H), bg)
     d = ImageDraw.Draw(img)
 
-    # Header band
-    d.rectangle([0, 0, W, header_h], fill=bg)
+    # Header band (shaded surface + primary accent underline)
+    d.rectangle([0, 0, W, header_h], fill=band)
     d.rectangle([0, header_h - 3, W, header_h], fill=primary)
     d.text((PAD, 30), network.name, font=f_head, fill=text)
     d.text((PAD, 68),
@@ -207,14 +219,14 @@ def render_schedule_png(network, groups, days):
     for day, vs in views.items():
         # Day divider (accent underline echoes the web scanner bar)
         label = day.strftime("%A · %b %-d") if os.name != "nt" else day.strftime("%A · %b %#d")
-        d.rectangle([PAD, y, W - PAD, y + day_head_h - 8], fill=bg)
+        d.rectangle([PAD, y, W - PAD, y + day_head_h - 8], fill=band)
         d.text((PAD + 12, y + 8), label, font=f_day, fill=text)
         d.rectangle([PAD, y + day_head_h - 8, W - PAD, y + day_head_h - 6], fill=primary)
         y += day_head_h
 
         for v in vs:
-            # Status pip
-            pip = _hex(theme.get("success_color"), (25, 135, 84)) if v["published"] else primary
+            # Status pip: published = success, planned/scheduled = accent
+            pip = success if v["published"] else primary
             d.ellipse([PAD + 2, y + row_h // 2 - 5, PAD + 12, y + row_h // 2 + 5], fill=pip)
             # Time column
             d.text((PAD + 24, y + 18), v["time"], font=f_time, fill=muted)
@@ -227,7 +239,7 @@ def render_schedule_png(network, groups, days):
                 title_y = y + 18
             title = (f"{v['sxe']} · " if v["sxe"] else "") + v["title"]
             d.text((tx, title_y), title[:70], font=f_title, fill=text)
-            d.line([PAD, y + row_h - 1, W - PAD, y + row_h - 1], fill=bg, width=1)
+            d.line([PAD, y + row_h - 1, W - PAD, y + row_h - 1], fill=border, width=1)
             y += row_h
         y += 12
 

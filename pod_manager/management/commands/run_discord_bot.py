@@ -1,6 +1,10 @@
+import io
 import logging
 import math
 import os
+from collections import OrderedDict
+from datetime import timedelta
+from zoneinfo import ZoneInfo
 
 import discord
 from discord import app_commands
@@ -9,15 +13,228 @@ from asgiref.sync import sync_to_async
 from django.conf import settings
 from django.core.management.base import BaseCommand
 from django.db.models import Q
+from django.utils import timezone
 
 logger = logging.getLogger(__name__)
 
 # Canonical site base URL; used when a network has no custom domain.
 SITE_BASE_URL = f"https://{os.getenv('DOMAIN', 'vecto.joshtheblack.com')}"
 
+# The web calendar renders everything in Eastern (see views/calendar.py); the
+# bot mirrors that so a posted schedule matches what owners see on /calendar.
+EASTERN = ZoneInfo('America/New_York')
+
 
 def _base_url(network):
     return f"https://{network.custom_domain}" if network.custom_domain else SITE_BASE_URL
+
+
+# ---------------------------------------------------------
+# RELEASE SCHEDULE (shared by /schedule embed + PNG renderers)
+# ---------------------------------------------------------
+def build_schedule(network, days):
+    """Return the network's upcoming calendar entries for the next `days`,
+    grouped by Eastern calendar day (mirrors the /calendar List view).
+
+    Returns an OrderedDict {date: [entry, ...]} in chronological order, plus a
+    parallel list of per-entry display dicts is built lazily by the renderers.
+    """
+    from pod_manager.models import CalendarEntry
+
+    now = timezone.now()
+    end = now + timedelta(days=days)
+    entries = (
+        CalendarEntry.objects
+        .filter(network=network, scheduled_at__gte=now, scheduled_at__lte=end)
+        .select_related('podcast', 'episode')
+        .order_by('scheduled_at')
+    )
+    groups = OrderedDict()
+    for entry in entries:
+        local = entry.scheduled_at.astimezone(EASTERN)
+        groups.setdefault(local.date(), []).append(entry)
+    return groups
+
+
+def _entry_view(entry, network):
+    """Flatten a CalendarEntry into the fields both renderers need."""
+    local = entry.scheduled_at.astimezone(EASTERN)
+    numbered = entry.season_number is not None and entry.episode_number is not None
+    sxe = f"S{entry.season_number}E{entry.episode_number}" if numbered else ""
+    linked = bool(entry.episode_id)
+    published = linked and entry.episode.is_published
+    url = ""
+    if published:
+        url = f"{_base_url(network)}/episode/{entry.episode_id}/"
+    elif entry.external_link:
+        url = entry.external_link
+    return {
+        "time": local.strftime("%-I:%M %p") if os.name != "nt" else local.strftime("%#I:%M %p"),
+        "podcast": entry.podcast.title if entry.podcast else "",
+        "sxe": sxe,
+        "title": entry.title,
+        "url": url,
+        "published": published,
+        "linked": linked,
+    }
+
+
+def render_schedule_embed(network, groups, days):
+    """Rich-text embed mimicking the /calendar List (agenda) view: one field
+    per day, each entry a line with time · podcast · SxE · title (+ link)."""
+    color = discord.Color.gold()
+    theme = network.theme_config or {}
+    primary = (theme.get("primary_color") or "").lstrip("#")
+    if len(primary) == 6:
+        try:
+            color = discord.Color(int(primary, 16))
+        except ValueError:
+            pass
+
+    embed = discord.Embed(
+        title=f"📅 {network.name} — Release Schedule",
+        description=f"Upcoming releases for the next **{days}** day{'s' if days != 1 else ''} · all times ET.",
+        color=color,
+    )
+    if not groups:
+        embed.description += "\n\n*Nothing on the calendar in this window.*"
+        return embed
+
+    for day, entries in groups.items():
+        name = day.strftime("%A · %b %-d") if os.name != "nt" else day.strftime("%A · %b %#d")
+        lines = []
+        for entry in entries:
+            v = _entry_view(entry, network)
+            label = (f"{v['sxe']} · " if v['sxe'] else "") + v['title']
+            if v['url']:
+                label = f"[{label}]({v['url']})"
+            pod = f" · *{v['podcast']}*" if v['podcast'] else ""
+            dot = "🟢" if v['published'] else "🔸"
+            lines.append(f"{dot} `{v['time']:>8}`  {label}{pod}")
+        value = "\n".join(lines)
+        embed.add_field(name=name, value=value[:1024], inline=False)
+
+    embed.set_footer(text="🟢 published · 🔸 planned/scheduled")
+    return embed
+
+
+# ---------------------------------------------------------
+# PNG renderer — draws the same agenda as an image (Pillow)
+# ---------------------------------------------------------
+def _load_font(size, bold=False):
+    """Best-effort TrueType lookup across Linux (pod) + Windows (local dev);
+    falls back to Pillow's bundled bitmap font so rendering never hard-fails."""
+    from PIL import ImageFont
+    candidates = (
+        ["/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", "C:/Windows/Fonts/arialbd.ttf", "arialbd.ttf"]
+        if bold else
+        ["/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", "C:/Windows/Fonts/arial.ttf", "arial.ttf"]
+    )
+    for path in candidates:
+        try:
+            return ImageFont.truetype(path, size)
+        except OSError:
+            continue
+    try:
+        return ImageFont.load_default(size)
+    except TypeError:  # Pillow < 10 has no sized default
+        return ImageFont.load_default()
+
+
+def _hex(value, fallback):
+    value = (value or "").strip()
+    if value.startswith("#") and len(value) in (4, 7):
+        try:
+            if len(value) == 4:
+                value = "#" + "".join(c * 2 for c in value[1:])
+            return tuple(int(value[i:i + 2], 16) for i in (1, 3, 5))
+        except ValueError:
+            pass
+    return fallback
+
+
+def render_schedule_png(network, groups, days):
+    """Render the agenda to a PNG (BytesIO) themed with the network's
+    theme_config colors — the image analogue of the List view."""
+    from PIL import Image, ImageDraw
+
+    theme = network.theme_config or {}
+    bg = _hex(theme.get("surface_bg_color"), (30, 30, 30))
+    page_bg = _hex(theme.get("bg_color"), (18, 18, 18))
+    text = _hex(theme.get("surface_text_color"), (248, 249, 250))
+    muted = _hex(theme.get("surface_muted_text_color"), (173, 181, 189))
+    primary = _hex(theme.get("primary_color"), (255, 193, 7))
+    primary_text = _hex(theme.get("primary_text_color"), (0, 0, 0))
+
+    W = 900
+    PAD = 32
+    time_col = 150
+    f_head = _load_font(30, bold=True)
+    f_sub = _load_font(16)
+    f_day = _load_font(19, bold=True)
+    f_time = _load_font(17)
+    f_title = _load_font(19, bold=True)
+    f_pod = _load_font(13, bold=True)
+
+    # ---- measure to compute canvas height ----
+    header_h = 108
+    day_head_h = 46
+    row_h = 58
+    body_h = 0
+    views = OrderedDict()
+    for day, entries in groups.items():
+        vs = [_entry_view(e, network) for e in entries]
+        views[day] = vs
+        body_h += day_head_h + row_h * len(vs) + 12
+    if not groups:
+        body_h = 80
+    H = header_h + body_h + PAD
+
+    img = Image.new("RGB", (W, H), page_bg)
+    d = ImageDraw.Draw(img)
+
+    # Header band
+    d.rectangle([0, 0, W, header_h], fill=bg)
+    d.rectangle([0, header_h - 3, W, header_h], fill=primary)
+    d.text((PAD, 30), network.name, font=f_head, fill=text)
+    d.text((PAD, 68),
+           f"Release Schedule · next {days} day{'s' if days != 1 else ''} · times ET",
+           font=f_sub, fill=muted)
+
+    y = header_h + 8
+    if not groups:
+        d.text((PAD, y + 20), "Nothing on the calendar in this window.", font=f_day, fill=muted)
+    for day, vs in views.items():
+        # Day divider (accent underline echoes the web scanner bar)
+        label = day.strftime("%A · %b %-d") if os.name != "nt" else day.strftime("%A · %b %#d")
+        d.rectangle([PAD, y, W - PAD, y + day_head_h - 8], fill=bg)
+        d.text((PAD + 12, y + 8), label, font=f_day, fill=text)
+        d.rectangle([PAD, y + day_head_h - 8, W - PAD, y + day_head_h - 6], fill=primary)
+        y += day_head_h
+
+        for v in vs:
+            # Status pip
+            pip = _hex(theme.get("success_color"), (25, 135, 84)) if v["published"] else primary
+            d.ellipse([PAD + 2, y + row_h // 2 - 5, PAD + 12, y + row_h // 2 + 5], fill=pip)
+            # Time column
+            d.text((PAD + 24, y + 18), v["time"], font=f_time, fill=muted)
+            # Podcast (uppercase, tiny) + title
+            tx = PAD + 24 + time_col
+            if v["podcast"]:
+                d.text((tx, y + 8), v["podcast"].upper()[:60], font=f_pod, fill=primary)
+                title_y = y + 26
+            else:
+                title_y = y + 18
+            title = (f"{v['sxe']} · " if v["sxe"] else "") + v["title"]
+            d.text((tx, title_y), title[:70], font=f_title, fill=text)
+            d.line([PAD, y + row_h - 1, W - PAD, y + row_h - 1], fill=bg, width=1)
+            y += row_h
+        y += 12
+
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    buf.seek(0)
+    return buf
 
 
 # ---------------------------------------------------------
@@ -497,6 +714,52 @@ class Command(BaseCommand):
                 source = "External Feed" if is_external else "Vecto Feed"
                 embed.add_field(name=f"{title}  ·  {source}", value=f"`{url}`", inline=False)
             await interaction.followup.send(embed=embed)
+
+        # ── /schedule ─────────────────────────────────────────────────────────
+        @bot.tree.command(name="schedule", description="Post this network's upcoming release schedule.")
+        @app_commands.describe(
+            days="How many days ahead to show (1–30, default 7)",
+            style="Rich embed (default) or a rendered PNG of the list view",
+        )
+        @app_commands.choices(style=[
+            app_commands.Choice(name="Embed (rich text)", value="embed"),
+            app_commands.Choice(name="Image (PNG)",       value="image"),
+        ])
+        async def schedule_command(
+            interaction: discord.Interaction,
+            days: int = 7,
+            style: app_commands.Choice[str] = None,
+        ):
+            await interaction.response.defer()
+            days = max(1, min(days, 30))
+            mode = style.value if style else "embed"
+
+            @sync_to_async
+            def gather():
+                network = Network.objects.filter(discord_server_id=str(interaction.guild_id)).first()
+                if not network:
+                    return None, None
+                groups = build_schedule(network, days)
+                if mode == "image":
+                    # Render inside the sync context so the ORM entries are
+                    # fully evaluated before we touch them off-thread.
+                    png = render_schedule_png(network, groups, days)
+                    return network, png
+                return network, render_schedule_embed(network, groups, days)
+
+            network, payload = await gather()
+            if network is None:
+                await interaction.followup.send(
+                    "This Discord server is not linked to any Vecto Network.", ephemeral=True)
+                return
+
+            if mode == "image":
+                file = discord.File(payload, filename="schedule.png")
+                await interaction.followup.send(
+                    content=f"**{network.name}** — release schedule, next {days} day{'s' if days != 1 else ''} (ET):",
+                    file=file)
+            else:
+                await interaction.followup.send(embed=payload)
 
         # ── START ─────────────────────────────────────────────────────────────
         try:

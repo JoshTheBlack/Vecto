@@ -153,6 +153,10 @@
                         {% endfor %}
                         <div class="show-filter-empty d-none" id="showFilterEmpty">No shows match.</div>
                     </div>
+                    <label class="show-filter-crosspub" for="crosspubToggle">
+                        <input class="form-check-input" type="checkbox" role="switch" id="crosspubToggle" {% if include_cross_published %}checked{% endif %}>
+                        <span>Include cross-published episodes</span>
+                    </label>
                     <div class="show-filter-footer">
                         <button type="button" class="show-filter-clear" id="showFilterClear">Clear all</button>
                         <span class="show-filter-count" id="showFilterCount"></span>
@@ -284,7 +288,7 @@
         {% if page_obj.number > 1 %}
             <li class="page-item">
                 <a class="page-link"
-                   href="?page=1{% for slug in selected_networks %}&network={{ slug }}{% endfor %}{% for s in selected_shows %}&show={{ s }}{% endfor %}{% if search_query %}&q={{ search_query }}{% endif %}{% if include_transcripts %}&transcripts=1{% endif %}{% if older_than %}&older_than={{ older_than }}{% endif %}{% if newer_than %}&newer_than={{ newer_than }}{% endif %}">
+                   href="?page=1{% for slug in selected_networks %}&network={{ slug }}{% endfor %}{% for s in selected_shows %}&show={{ s }}{% endfor %}{% if search_query %}&q={{ search_query }}{% endif %}{% if include_transcripts %}&transcripts=1{% endif %}{% if not include_cross_published %}&crosspub=0{% endif %}{% if older_than %}&older_than={{ older_than }}{% endif %}{% if newer_than %}&newer_than={{ newer_than }}{% endif %}">
                    &laquo; First
                 </a>
             </li>
@@ -293,7 +297,7 @@
         {% if page_obj.has_previous %}
             <li class="page-item">
                 <a class="page-link"
-                   href="?page={{ page_obj.previous_page_number }}{% for slug in selected_networks %}&network={{ slug }}{% endfor %}{% for s in selected_shows %}&show={{ s }}{% endfor %}{% if search_query %}&q={{ search_query }}{% endif %}{% if include_transcripts %}&transcripts=1{% endif %}{% if older_than %}&older_than={{ older_than }}{% endif %}{% if newer_than %}&newer_than={{ newer_than }}{% endif %}">
+                   href="?page={{ page_obj.previous_page_number }}{% for slug in selected_networks %}&network={{ slug }}{% endfor %}{% for s in selected_shows %}&show={{ s }}{% endfor %}{% if search_query %}&q={{ search_query }}{% endif %}{% if include_transcripts %}&transcripts=1{% endif %}{% if not include_cross_published %}&crosspub=0{% endif %}{% if older_than %}&older_than={{ older_than }}{% endif %}{% if newer_than %}&newer_than={{ newer_than }}{% endif %}">
                    &lsaquo; Prev
                 </a>
             </li>
@@ -305,7 +309,7 @@
                     <span class="page-link fw-bold">{{ i }}</span>
                 {% else %}
                     <a class="page-link"
-                       href="?page={{ i }}{% for slug in selected_networks %}&network={{ slug }}{% endfor %}{% for s in selected_shows %}&show={{ s }}{% endfor %}{% if search_query %}&q={{ search_query }}{% endif %}{% if include_transcripts %}&transcripts=1{% endif %}{% if older_than %}&older_than={{ older_than }}{% endif %}{% if newer_than %}&newer_than={{ newer_than }}{% endif %}">
+                       href="?page={{ i }}{% for slug in selected_networks %}&network={{ slug }}{% endfor %}{% for s in selected_shows %}&show={{ s }}{% endfor %}{% if search_query %}&q={{ search_query }}{% endif %}{% if include_transcripts %}&transcripts=1{% endif %}{% if not include_cross_published %}&crosspub=0{% endif %}{% if older_than %}&older_than={{ older_than }}{% endif %}{% if newer_than %}&newer_than={{ newer_than }}{% endif %}">
                        {{ i }}
                     </a>
                 {% endif %}
@@ -315,7 +319,7 @@
         {% if page_obj.has_next %}
             <li class="page-item">
                 <a class="page-link"
-                   href="?page={{ page_obj.next_page_number }}{% for slug in selected_networks %}&network={{ slug }}{% endfor %}{% for s in selected_shows %}&show={{ s }}{% endfor %}{% if search_query %}&q={{ search_query }}{% endif %}{% if include_transcripts %}&transcripts=1{% endif %}{% if older_than %}&older_than={{ older_than }}{% endif %}{% if newer_than %}&newer_than={{ newer_than }}{% endif %}">
+                   href="?page={{ page_obj.next_page_number }}{% for slug in selected_networks %}&network={{ slug }}{% endfor %}{% for s in selected_shows %}&show={{ s }}{% endfor %}{% if search_query %}&q={{ search_query }}{% endif %}{% if include_transcripts %}&transcripts=1{% endif %}{% if not include_cross_published %}&crosspub=0{% endif %}{% if older_than %}&older_than={{ older_than }}{% endif %}{% if newer_than %}&newer_than={{ newer_than }}{% endif %}">
                    Next &rsaquo;
                 </a>
             </li>
@@ -324,7 +328,7 @@
         {% if page_obj.number < page_obj.paginator.num_pages %}
             <li class="page-item">
                 <a class="page-link"
-                   href="?page={{ page_obj.paginator.num_pages }}{% for slug in selected_networks %}&network={{ slug }}{% endfor %}{% for s in selected_shows %}&show={{ s }}{% endfor %}{% if search_query %}&q={{ search_query }}{% endif %}{% if include_transcripts %}&transcripts=1{% endif %}{% if older_than %}&older_than={{ older_than }}{% endif %}{% if newer_than %}&newer_than={{ newer_than }}{% endif %}">
+                   href="?page={{ page_obj.paginator.num_pages }}{% for slug in selected_networks %}&network={{ slug }}{% endfor %}{% for s in selected_shows %}&show={{ s }}{% endfor %}{% if search_query %}&q={{ search_query }}{% endif %}{% if include_transcripts %}&transcripts=1{% endif %}{% if not include_cross_published %}&crosspub=0{% endif %}{% if older_than %}&older_than={{ older_than }}{% endif %}{% if newer_than %}&newer_than={{ newer_than }}{% endif %}">
                    Last &raquo;
                 </a>
             </li>
@@ -662,6 +666,17 @@
     });
     syncTranscriptField();
 
+    const crosspubToggle = document.getElementById('crosspubToggle');
+    function syncCrosspubField() {
+        document.getElementById('crosspubHidden')?.remove();
+        if (crosspubToggle && !crosspubToggle.checked) {
+            const inp = document.createElement('input');
+            inp.type = 'hidden'; inp.name = 'crosspub'; inp.value = '0'; inp.id = 'crosspubHidden';
+            searchForm.appendChild(inp);
+        }
+    }
+    syncCrosspubField();
+
     // --- SHOW FILTER COMBOBOX ---
     const filterBar  = document.getElementById('showFilterBar');
     const hiddenWrap = document.getElementById('showFilterHidden');
@@ -675,11 +690,12 @@
             hiddenWrap.appendChild(inp);
         });
     }
-    searchForm.addEventListener('submit', syncShowHidden);
+    searchForm.addEventListener('submit', () => { syncShowHidden(); syncCrosspubField(); });
     window.VectoPage.on(document.body, 'htmx:configRequest', (e) => {
         if (e.detail.elt !== searchForm) return;
         syncShowHidden();
         syncTranscriptField();
+        syncCrosspubField();
         const p = e.detail.parameters;
         if (!p || typeof p.delete !== 'function') return;
         p.delete('show');
@@ -687,6 +703,9 @@
         p.delete('transcripts');
         const t = document.getElementById('transcriptsHidden');
         if (t) p.append('transcripts', t.value);
+        p.delete('crosspub');
+        const c = document.getElementById('crosspubHidden');
+        if (c) p.append('crosspub', c.value);
     });
 
     if (filterBar) {
@@ -699,7 +718,8 @@
         const clearBtn = document.getElementById('showFilterClear');
 
         const checks = () => [...list.querySelectorAll('.show-filter-check')];
-        const selectionKey = () => checks().filter(c => c.checked).map(c => c.value).sort().join(',');
+        const selectionKey = () => checks().filter(c => c.checked).map(c => c.value).sort().join(',')
+            + '|' + (crosspubToggle && crosspubToggle.checked ? '1' : '0');
         const initialSelection = selectionKey();
 
         function updateCount() {

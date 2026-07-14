@@ -10,6 +10,9 @@ Params:
   placeholder      text shown when nothing is selected
   parent_select_id (optional) id of a <select> whose selected podcast id is
                    excluded live (used on the publish form's parent picker)
+  exclude_id       (optional) a single podcast id to omit from the list
+                   entirely (used to keep a feed out of its own destination
+                   picker)
 
 Include 'pod_manager/snippets/show_multiselect_assets.html' once per page.
 {% endcomment %}
@@ -28,6 +31,7 @@ Include 'pod_manager/snippets/show_multiselect_assets.html' once per page.
         </div>
         <div class="show-filter-list" data-sms-list role="listbox" aria-multiselectable="true">
             {% for podcast in podcast_list %}
+            {% if podcast.id != exclude_id %}
             <label class="show-filter-option" data-title="{{ podcast.title|lower }}" data-pod-id="{{ podcast.id }}">
                 <input type="checkbox" class="form-check-input show-filter-check" name="{{ field_name }}" value="{{ podcast.id }}"
                        data-pod-title="{{ podcast.title }}" data-pod-img="{{ podcast.image_url }}"
@@ -39,6 +43,7 @@ Include 'pod_manager/snippets/show_multiselect_assets.html' once per page.
                 {% endif %}
                 <span class="show-filter-option-title">{{ podcast.title }}</span>
             </label>
+            {% endif %}
             {% endfor %}
             <div class="show-filter-empty d-none" data-sms-empty>No shows match.</div>
         </div>

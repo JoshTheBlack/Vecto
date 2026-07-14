@@ -79,7 +79,7 @@ def _section_base(edit):
 
 #@diagnostic_timer("1. Gather Manage Podcasts")
 def gather_manage_podcasts(current_network):
-    podcasts = current_network.podcasts.annotate(
+    podcasts = list(current_network.podcasts.annotate(
         clean_title=Case(When(title__istartswith='The ', then=Substr('title', 5)), default='title', output_field=CharField()),
         latest_episode_date=Max('episodes__pub_date'),
         episode_count=Count('episodes', distinct=True),
@@ -88,7 +88,9 @@ def gather_manage_podcasts(current_network):
             filter=Q(episodes__audio_url_subscriber__icontains='s3.amazonaws.com'),
             distinct=True,
         ),
-    ).order_by(Lower('clean_title'))
+    ).order_by(Lower('clean_title')).prefetch_related('auto_crosspublish_targets'))
+    for pod in podcasts:
+        pod.auto_cp_target_ids = [t.id for t in pod.auto_crosspublish_targets.all()]
     return {'manage_podcasts': podcasts, 'network_podcasts': podcasts}
 
 

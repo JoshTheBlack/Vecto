@@ -19,15 +19,21 @@ from django.utils import timezone
 
 from ...models import (
     NetworkMembership, Podcast, Episode, EpisodeCrossPublication, PatreonTier, NetworkMix,
-    EpisodeEditSuggestion, NotFoundEntry,
+    EpisodeEditSuggestion, NotFoundEntry, CrossPublishAccessMode,
 )
-from ...services.cross_publish import sync_cross_publications, validate_cross_targets
+from ...services.cross_publish import (
+    add_cross_publications, sync_cross_publications, validate_cross_targets,
+    validate_feed_cross_targets, resync_feed_auto_access_mode,
+)
 from ...services.edits import chapter_items, score_contribution, REJECT_PENALTY
 from ...services.episode_move import move_episodes
 from ...services.patreon import sync_network_patrons
 from ...tasks import (task_rebuild_episode_fragments,
                       task_rebuild_podcast_fragments,
-                      task_rekey_podcast_transcripts)
+                      task_rebuild_podcast_shell,
+                      task_rekey_podcast_transcripts,
+                      task_apply_feed_auto_cross_publish,
+                      task_teardown_feed_auto_cross_publish)
 from ...utils import sanitize_user_html
 
 logger = logging.getLogger(__name__)
@@ -560,11 +566,49 @@ def handle_update_show(request, current_network):
     # Ingest priority (checkbox — absent in POST means unchecked).
     show.is_low_priority = bool(request.POST.get('is_low_priority'))
 
+    # Hide-from-directory (checkbox — absent in POST means unchecked).
+    show.is_hidden = bool(request.POST.get('is_hidden'))
+
+    # Feed-level auto cross-publish access mode.
+    access_mode_raw = request.POST.get('auto_crosspublish_access_mode', '')
+    old_access_mode = show.auto_crosspublish_access_mode
+    if access_mode_raw in CrossPublishAccessMode.values:
+        show.auto_crosspublish_access_mode = access_mode_raw
+    access_mode_changed = show.auto_crosspublish_access_mode != old_access_mode
+
+    existing_target_ids = set(show.auto_crosspublish_targets.values_list('id', flat=True))
+    new_target_ids = set(validate_feed_cross_targets(
+        show, request.POST.getlist('auto_crosspublish_target_ids'), current_network,
+    ).values_list('id', flat=True))
+    added_target_ids = sorted(new_target_ids - existing_target_ids)
+    removed_target_ids = sorted(existing_target_ids - new_target_ids)
+
     show.save()
+    show.auto_crosspublish_targets.set(new_target_ids)
     messages.success(request, f"{show.title} updated successfully!")
 
     base_url = request.build_absolute_uri('/')[:-1]
     task_rebuild_podcast_fragments.delay(show.id, base_url)
+
+    if added_target_ids:
+        task_apply_feed_auto_cross_publish.delay(show.id, added_target_ids, base_url)
+    if removed_target_ids:
+        task_teardown_feed_auto_cross_publish.delay(show.id, removed_target_ids, base_url)
+    if access_mode_changed:
+        for dest_id in resync_feed_auto_access_mode(show):
+            task_rebuild_podcast_shell(dest_id, base_url)
+
+    if show.is_hidden:
+        is_cross_published = bool(new_target_ids) or EpisodeCrossPublication.objects.filter(
+            episode__podcast=show).exists()
+        if not is_cross_published:
+            messages.warning(
+                request,
+                f"'{show.title}' is now hidden from Your Feeds but is not "
+                f"cross-published anywhere — its episodes will drop off the "
+                f"Dashboard show filter and listeners won't find it in the "
+                f"directory. Add a cross-publish destination to keep it reachable.",
+            )
 
     # Flag landed False -> close the direct-CDN window: any still-untokened
     # transcript remains fuzzable at its plain key until churned (E5). The rekey
@@ -690,26 +734,18 @@ def handle_cross_publish_episodes(request, current_network):
         return redirect(f"{reverse('creator_settings')}?network={current_network.slug}&tab=crosspub")
 
     eps = list(Episode.objects.filter(id__in=episode_ids, podcast__network=current_network))
-    already_linked = set(
-        EpisodeCrossPublication.objects.filter(
-            podcast__in=targets, episode_id__in=[ep.id for ep in eps]
-        ).values_list('episode_id', 'podcast_id')
-    )
-    new_links = [
-        EpisodeCrossPublication(episode=ep, podcast=target, added_by=request.user)
-        for ep in eps for target in targets
-        if ep.podcast_id != target.id and (ep.id, target.id) not in already_linked
-    ]
-    EpisodeCrossPublication.objects.bulk_create(new_links, ignore_conflicts=True)
-    skipped = len(eps) * len(targets) - len(new_links)
+    total_added = 0
+    for ep in eps:
+        total_added += len(add_cross_publications(ep, targets, added_by=request.user))
+    skipped = len(eps) * len(targets) - total_added
     target_names = ", ".join(t.title for t in targets)
     logger.info(
         f"Cross-published {len(eps)} episodes into [{target_names}] "
-        f"({len(new_links)} new links) by {request.user.username}"
+        f"({total_added} new links) by {request.user.username}"
     )
     messages.success(
         request,
-        f"Added {len(new_links)} feed placement(s) across {len(targets)} podcast(s)."
+        f"Added {total_added} feed placement(s) across {len(targets)} podcast(s)."
         + (f" Skipped {skipped} (already placed or parented there)." if skipped else "")
     )
 

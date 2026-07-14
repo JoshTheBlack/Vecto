@@ -303,11 +303,18 @@
             </button>
         </div>
         
-        {% if user.is_authenticated %}
-        <button class="app-btn ms-auto shadow-sm" style="background: transparent; border: 1px solid var(--vecto-primary, #ffc107); color: var(--vecto-primary, #ffc107);" data-bs-toggle="modal" data-bs-target="#createMixModal">
-            <i class="bi bi-plus-lg"></i> Create Mix
-        </button>
-        {% endif %}
+        <div class="d-flex align-items-center gap-2 ms-auto">
+            {% if show_hidden_available %}
+            <a class="app-btn shadow-sm{% if show_hidden %} copied{% endif %}" href="?show_hidden={% if show_hidden %}0{% else %}1{% endif %}{% for s in selected_networks %}&network={{ s }}{% endfor %}">
+                <i class="bi bi-eye{% if show_hidden %}-slash{% endif %}"></i> {% if show_hidden %}Hide hidden feeds{% else %}Show hidden feeds{% endif %}
+            </a>
+            {% endif %}
+            {% if user.is_authenticated %}
+            <button class="app-btn shadow-sm" style="background: transparent; border: 1px solid var(--vecto-primary, #ffc107); color: var(--vecto-primary, #ffc107);" data-bs-toggle="modal" data-bs-target="#createMixModal">
+                <i class="bi bi-plus-lg"></i> Create Mix
+            </button>
+            {% endif %}
+        </div>
     </div>
 
     <div class="feed-grid shadow-sm" id="feedGrid">
@@ -365,6 +372,9 @@
                                 <div class="marquee-container"><h6 class="mb-0 fw-bold marquee-text" style="font-size: 14px;">{{ item.podcast.title }}</h6></div>
                                 {% if not item.has_access %}
                                     <span class="ms-2" style="font-size:9px; border: 1px solid var(--vecto-primary, #ffc107); color: var(--vecto-primary, #ffc107); padding: 1px 5px; border-radius: 4px; font-weight: bold;">LOCKED</span>
+                                {% endif %}
+                                {% if item.podcast.is_hidden %}
+                                    <span class="ms-2" style="font-size:9px; border: 1px solid var(--vecto-surface-muted, #6c757d); color: var(--vecto-surface-muted, #6c757d); padding: 1px 5px; border-radius: var(--vecto-radius-sm, 4px); font-weight: bold;">HIDDEN</span>
                                 {% endif %}
                             </div>
                             <div class="meta-text mt-1 text-truncate d-flex align-items-center gap-1" style="font-size: 12px;">

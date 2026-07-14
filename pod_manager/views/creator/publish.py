@@ -18,7 +18,8 @@ from django.views.decorators.http import require_POST
 
 from ...models import Episode, EpisodeCrossPublication, Network, Podcast
 from ...services.cross_publish import (
-    current_target_ids, sync_cross_publications, validate_cross_targets,
+    apply_auto_cross_publish, current_target_ids, sync_cross_publications,
+    validate_cross_targets,
 )
 from ...services.release_calendar import ensure_calendar_entry_for_episode
 from ...tasks import task_rebuild_episode_fragments
@@ -191,6 +192,9 @@ def _handle_publish_post(request, current_network, podcasts, networks):
                 f"[publish] Episode {saved_ep.id} '{saved_ep.title}' cross-publish targets "
                 f"synced by {request.user.username}: +{added} -{removed}"
             )
+        # Published episodes never pass through commit_episode, so the
+        # feed-level auto cross-publish hook fires here instead.
+        apply_auto_cross_publish(saved_ep)
 
     if action == 'schedule':
         scheduled_str = request.POST.get('scheduled_at', '').strip()

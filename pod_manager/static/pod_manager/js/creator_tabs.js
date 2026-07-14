@@ -200,6 +200,35 @@ const TAB_ID_MAP = Object.fromEntries(Object.entries(TAB_PARAM_MAP).map(([k, v])
 })();
 
 // ==========================================
+// FEED VISIBILITY & CROSS-PUBLISH (hidden-but-not-cross-published warning)
+// ==========================================
+function refreshHiddenWarning(form) {
+    if (!form) return;
+    const toggle = form.querySelector('.cp-hidden-toggle');
+    const warning = form.querySelector('.cp-hidden-warning');
+    if (!toggle || !warning) return;
+    const hasTargets = form.querySelectorAll('input[name="auto_crosspublish_target_ids"]:checked').length > 0;
+    warning.classList.toggle('d-none', !toggle.checked || hasTargets);
+}
+
+function refreshAllHiddenWarnings() {
+    const accordion = document.getElementById('showsAccordion');
+    if (!accordion) return;
+    accordion.querySelectorAll('form').forEach(refreshHiddenWarning);
+}
+
+(function () {
+    const accordion = document.getElementById('showsAccordion');
+    if (!accordion) return;
+    accordion.addEventListener('change', (e) => {
+        if (e.target.matches('.cp-hidden-toggle') || e.target.matches('input[name="auto_crosspublish_target_ids"]')) {
+            refreshHiddenWarning(e.target.closest('form'));
+        }
+    });
+    refreshAllHiddenWarnings();
+})();
+
+// ==========================================
 // LIVE FILTERING (AJAX)
 // ==========================================
 let filterTimeout = null;
@@ -230,6 +259,7 @@ function applyLiveFilter() {
                     accordion.innerHTML = newAccordion.innerHTML;
                 }
 
+                refreshAllHiddenWarnings();
                 accordion.style.opacity = '1';
                 // Silently update the URL bar so browser back-buttons still work
                 window.history.replaceState({}, '', url.pathname + '?' + params.toString() + '#list-shows');

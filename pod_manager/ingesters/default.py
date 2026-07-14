@@ -9,6 +9,7 @@ from django.utils.timezone import make_aware
 from django.conf import settings
 from django.core.cache import cache
 from pod_manager.models import Episode
+from pod_manager.services.cross_publish import apply_auto_cross_publish
 from pod_manager.tasks import task_rebuild_episode_fragments, task_rebuild_podcast_shell
 from pod_manager.utils import validate_public_url, sanitize_user_html
 from difflib import SequenceMatcher
@@ -467,6 +468,13 @@ def commit_episode(podcast, pub_entry, sub_entry, match_reason, stdout, enhancer
             enhancer(episode, pub_entry, sub_entry, is_new, stdout)
 
     episode.save()
+
+    # Feed-level auto cross-publish. Skipped on the guid_update_only path: a
+    # low-priority feed touching another feed's episode doesn't own it, so
+    # evaluation waits until the episode auto-migrates (reeval inside
+    # move_episodes covers that moment).
+    if not guid_update_only:
+        apply_auto_cross_publish(episode, stdout=stdout)
 
     if is_new:
         # Link-only calendar reconciliation (never auto-creates — see

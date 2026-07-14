@@ -224,6 +224,48 @@
                                                 </label>
                                             </div>
 
+                                            <h6 class="fw-semibold mb-2 mt-3 text-warning border-bottom border-secondary pb-1">
+                                                <i class="bi bi-eye-slash me-1"></i>Feed Visibility &amp; Cross-Publish
+                                            </h6>
+                                            <div class="form-check form-switch mb-3">
+                                                <input class="form-check-input cp-hidden-toggle" type="checkbox" role="switch"
+                                                       id="is_hidden_{{ show.id }}" name="is_hidden"
+                                                       data-cp-scope="{{ show.id }}"
+                                                       {% if show.is_hidden %}checked{% endif %}>
+                                                <label class="form-check-label text-light small fw-bold" for="is_hidden_{{ show.id }}">
+                                                    Hide from Your Feeds directory
+                                                    <span class="d-block text-muted fw-normal">
+                                                        On = this feed no longer shows as a card in the Your Feeds directory.
+                                                        Its RSS URL keeps working and existing subscribers are unaffected.
+                                                    </span>
+                                                </label>
+                                            </div>
+
+                                            <div class="mb-2">
+                                                <label class="form-label text-muted small fw-bold">Auto Cross-Publish Destinations</label>
+                                                {% include 'pod_manager/snippets/show_multiselect.html' with field_name='auto_crosspublish_target_ids' podcast_list=network_podcasts selected_ids=show.auto_cp_target_ids exclude_id=show.id placeholder='No auto cross-publish destinations' %}
+                                                <div class="form-text text-muted cp-target-scope" data-cp-scope="{{ show.id }}">
+                                                    Every episode in this feed is automatically cross-published into the selected
+                                                    feeds, now and as new episodes arrive. Not transitive — if this feed also
+                                                    cross-publishes into a feed that has its own destinations, those don't chain.
+                                                </div>
+                                            </div>
+
+                                            <div class="mb-3">
+                                                <label class="form-label text-muted small fw-bold mb-1">Auto Cross-Publish Access Mode</label>
+                                                <select name="auto_crosspublish_access_mode" class="form-select form-select-sm bg-dark text-light border-secondary">
+                                                    <option value="inherit" {% if show.auto_crosspublish_access_mode == 'inherit' %}selected{% endif %}>Inherit — keep this feed's own tier</option>
+                                                    <option value="target" {% if show.auto_crosspublish_access_mode == 'target' %}selected{% endif %}>Target — adopt the destination feed's tier</option>
+                                                </select>
+                                            </div>
+
+                                            <div class="alert alert-warning bg-black border-warning small d-none cp-hidden-warning" data-cp-scope="{{ show.id }}">
+                                                <i class="bi bi-exclamation-triangle me-1"></i>
+                                                This feed will be hidden but is not cross-published anywhere — its episodes will
+                                                drop off the Dashboard show filter and listeners won't find it in the directory.
+                                                Add a cross-publish destination above to keep it reachable.
+                                            </div>
+
                                             <button type="submit" class="btn btn-outline-warning btn-sm fw-bold"><i class="bi bi-floppy"></i> Save Show Settings</button>
                                         </form>
 

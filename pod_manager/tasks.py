@@ -392,6 +392,36 @@ def task_rebuild_podcast_shell(podcast_id, base_url):
     except Podcast.DoesNotExist:
         pass
 
+
+@shared_task
+def task_apply_feed_auto_cross_publish(source_feed_id, added_target_ids, base_url):
+    """Feed-level auto cross-publish backfill: link every existing episode of
+    the source feed into the newly added destinations. Destination membership
+    is composed live at serve time, so only each destination's shell needs
+    rebuilding (lastBuildDate/ETag movement)."""
+    from pod_manager.services.cross_publish import sync_feed_auto_targets
+    try:
+        feed = Podcast.objects.get(id=source_feed_id)
+    except Podcast.DoesNotExist:
+        return
+    touched = sync_feed_auto_targets(feed, added_ids=added_target_ids)
+    for dest_id in touched:
+        task_rebuild_podcast_shell(dest_id, base_url)
+
+
+@shared_task
+def task_teardown_feed_auto_cross_publish(source_feed_id, removed_target_ids, base_url):
+    """Removes exactly the auto-created links this feed generated into the
+    removed destinations; manual links survive. Rebuilds affected shells."""
+    from pod_manager.services.cross_publish import sync_feed_auto_targets
+    try:
+        feed = Podcast.objects.get(id=source_feed_id)
+    except Podcast.DoesNotExist:
+        return
+    touched = sync_feed_auto_targets(feed, removed_ids=removed_target_ids)
+    for dest_id in touched:
+        task_rebuild_podcast_shell(dest_id, base_url)
+
 @shared_task
 def task_send_otp_email(email, otp_code, network_name="Vecto", theme_config=None):
     subject = f"Your {network_name} Login Code"

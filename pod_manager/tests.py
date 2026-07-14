@@ -1894,6 +1894,152 @@ class CreatorNetworkAndShowTests(TestCase):
         self.assertTrue(show.allow_public_transcripts)
 
 
+@override_settings(CACHES=TEST_CACHES)
+class CreatorShowVisibilityCrossPublishTests(TestCase):
+    """update_show handling of is_hidden + feed-level auto cross-publish
+    (rollout steps 5-6): field persistence, M2M diff -> backfill/teardown
+    tasks, access-mode re-sync, and the hidden-but-not-cross-published
+    warning."""
+
+    def setUp(self):
+        cache.clear()
+        self.factory = RequestFactory()
+        self.owner = User.objects.create_user(username='owner')
+        self.network = Network.objects.create(name='Net', slug='vis')
+        self.network.owners.add(self.owner)
+        self.show = Podcast.objects.create(network=self.network, title='Service', slug='vis-service')
+        self.dest1 = Podcast.objects.create(network=self.network, title='Dest1', slug='vis-dest1')
+        self.dest2 = Podcast.objects.create(network=self.network, title='Dest2', slug='vis-dest2')
+
+    def _base(self, **overrides):
+        base = {
+            'action': 'update_show', 'show_id': self.show.id,
+            'public_feed_url': '', 'subscriber_feed_url': '',
+            'tier_id': '', 'show_footer_public': '', 'show_footer_private': '',
+        }
+        base.update(overrides)
+        return base
+
+    def _post(self, data):
+        req = _make_tenant_request(self.factory, self.network,
+                                   method='post', path='/creator/',
+                                   data=data, user=self.owner)
+        return views.creator_settings(req)
+
+    def _post_req(self, data):
+        """Like _post, but calls the handler directly and returns the request
+        so messages can be inspected (creator_settings redirects afterward,
+        and a redirect response has no wsgi_request to read them off)."""
+        from pod_manager.views.creator.actions import handle_update_show
+        req = _make_tenant_request(self.factory, self.network,
+                                   method='post', path='/creator/',
+                                   data=data, user=self.owner)
+        handle_update_show(req, self.network)
+        return req
+
+    def _ep(self, podcast=None, **kwargs):
+        defaults = dict(
+            podcast=podcast or self.show, title='Ep', pub_date=timezone.now(),
+            raw_description='x', clean_description='x',
+        )
+        defaults.update(kwargs)
+        return Episode.objects.create(**defaults)
+
+    def test_is_hidden_persists_from_checkbox(self):
+        self.assertFalse(self.show.is_hidden)
+        self._post(self._base(is_hidden='on'))
+        self.show.refresh_from_db()
+        self.assertTrue(self.show.is_hidden)
+        # Checkbox absent => unchecked => False.
+        self._post(self._base())
+        self.show.refresh_from_db()
+        self.assertFalse(self.show.is_hidden)
+
+    def test_adding_destinations_backfills_existing_episodes_as_auto(self):
+        ep = self._ep()
+        self._post(self._base(auto_crosspublish_target_ids=[str(self.dest1.id), str(self.dest2.id)]))
+        self.show.refresh_from_db()
+        self.assertEqual(
+            set(self.show.auto_crosspublish_targets.values_list('id', flat=True)),
+            {self.dest1.id, self.dest2.id})
+        for dest in (self.dest1, self.dest2):
+            link = ep.cross_publications.get(podcast=dest)
+            self.assertTrue(link.auto_created)
+            self.assertEqual(link.access_mode, EpisodeCrossPublication.AccessMode.INHERIT)
+
+    def test_target_multiselect_excludes_self_and_foreign_network(self):
+        other_network = Network.objects.create(name='Other', slug='vis-other')
+        foreign = Podcast.objects.create(network=other_network, title='F', slug='vis-f')
+        self._post(self._base(auto_crosspublish_target_ids=[
+            str(self.show.id), str(self.dest1.id), str(foreign.id),
+        ]))
+        self.show.refresh_from_db()
+        self.assertEqual(
+            set(self.show.auto_crosspublish_targets.values_list('id', flat=True)),
+            {self.dest1.id})
+
+    def test_removing_one_destination_tears_down_only_that_ones_auto_links(self):
+        ep = self._ep()
+        self.show.auto_crosspublish_targets.set([self.dest1, self.dest2])
+        self._post(self._base())  # backfill both first
+        manual = EpisodeCrossPublication.objects.create(
+            episode=self._ep(title='Manual host'), podcast=self.dest1)
+
+        self._post(self._base(auto_crosspublish_target_ids=[str(self.dest2.id)]))
+
+        self.show.refresh_from_db()
+        self.assertEqual(
+            set(self.show.auto_crosspublish_targets.values_list('id', flat=True)),
+            {self.dest2.id})
+        self.assertFalse(ep.cross_publications.filter(podcast=self.dest1).exists())
+        self.assertTrue(ep.cross_publications.filter(podcast=self.dest2, auto_created=True).exists())
+        self.assertTrue(EpisodeCrossPublication.objects.filter(id=manual.id).exists())
+
+    def test_changing_access_mode_resyncs_existing_auto_links_only(self):
+        ep = self._ep()
+        self.show.auto_crosspublish_targets.set([self.dest1])
+        self._post(self._base())  # backfill at default INHERIT
+        manual = EpisodeCrossPublication.objects.create(episode=ep, podcast=self.dest2)
+
+        self._post(self._base(
+            auto_crosspublish_target_ids=[str(self.dest1.id)],
+            auto_crosspublish_access_mode='target'))
+
+        self.show.refresh_from_db()
+        self.assertEqual(self.show.auto_crosspublish_access_mode, 'target')
+        link = ep.cross_publications.get(podcast=self.dest1)
+        self.assertEqual(link.access_mode, EpisodeCrossPublication.AccessMode.TARGET)
+        manual.refresh_from_db()
+        self.assertEqual(manual.access_mode, EpisodeCrossPublication.AccessMode.INHERIT)
+
+    def test_hiding_non_cross_published_feed_warns_but_still_saves(self):
+        req = self._post_req(self._base(is_hidden='on'))
+        self.show.refresh_from_db()
+        self.assertTrue(self.show.is_hidden)
+        msgs = [str(m) for m in get_messages(req)]
+        self.assertTrue(any('not cross-published anywhere' in m for m in msgs))
+
+    def test_hiding_feed_with_auto_targets_does_not_warn(self):
+        req = self._post_req(self._base(
+            is_hidden='on', auto_crosspublish_target_ids=[str(self.dest1.id)]))
+        msgs = [str(m) for m in get_messages(req)]
+        self.assertFalse(any('not cross-published anywhere' in m for m in msgs))
+
+    def test_hiding_feed_with_existing_manual_cross_publication_does_not_warn(self):
+        ep = self._ep()
+        EpisodeCrossPublication.objects.create(episode=ep, podcast=self.dest1)
+        req = self._post_req(self._base(is_hidden='on'))
+        msgs = [str(m) for m in get_messages(req)]
+        self.assertFalse(any('not cross-published anywhere' in m for m in msgs))
+
+    def test_unhiding_feed_emits_no_warning(self):
+        self.show.is_hidden = True
+        self.show.save()
+        req = self._post_req(self._base())
+        msgs = [str(m) for m in get_messages(req)]
+        self.assertFalse(any('not cross-published anywhere' in m for m in msgs))
+
+
 # ---------------------------------------------------------------------------
 # Creator settings: episode merge, split, move
 # ---------------------------------------------------------------------------
@@ -5236,6 +5382,505 @@ class CrossPublishServiceTests(TestCase):
         self.sync(self.ep, [self.t1], modes={self.t1.id: 'bogus'})
         link = EpisodeCrossPublication.objects.get(episode=self.ep, podcast=self.t1)
         self.assertEqual(link.access_mode, EpisodeCrossPublication.AccessMode.INHERIT)
+
+
+@override_settings(CACHES=TEST_CACHES)
+class AutoCrossPublishServiceTests(TestCase):
+    """Feed-level auto cross-publish engine: apply/backfill/teardown/re-mode/
+    reeval, the auto-blind manual sync (S4), and manual promotion (E2)."""
+
+    def setUp(self):
+        from pod_manager.services import cross_publish
+        self.cp = cross_publish
+        self.network = Network.objects.create(name='Net', slug='acp')
+        self.service = Podcast.objects.create(network=self.network, title='Service', slug='acp-service')
+        self.dest1 = Podcast.objects.create(network=self.network, title='Dest1', slug='acp-dest1')
+        self.dest2 = Podcast.objects.create(network=self.network, title='Dest2', slug='acp-dest2')
+
+    def _ep(self, podcast=None, **kwargs):
+        defaults = dict(
+            podcast=podcast or self.service, title='Ep', pub_date=timezone.now(),
+            raw_description='x', clean_description='x',
+        )
+        defaults.update(kwargs)
+        return Episode.objects.create(**defaults)
+
+    def _auto_link(self, ep, dest):
+        return EpisodeCrossPublication.objects.create(episode=ep, podcast=dest, auto_created=True)
+
+    def test_apply_creates_auto_links_with_feed_mode(self):
+        self.service.auto_crosspublish_targets.set([self.dest1, self.dest2])
+        self.service.auto_crosspublish_access_mode = EpisodeCrossPublication.AccessMode.TARGET
+        self.service.save()
+        ep = self._ep()
+        created = self.cp.apply_auto_cross_publish(ep)
+        self.assertEqual(set(created), {self.dest1.id, self.dest2.id})
+        for link in ep.cross_publications.all():
+            self.assertTrue(link.auto_created)
+            self.assertEqual(link.access_mode, EpisodeCrossPublication.AccessMode.TARGET)
+
+    def test_apply_is_idempotent(self):
+        self.service.auto_crosspublish_targets.set([self.dest1])
+        ep = self._ep()
+        self.cp.apply_auto_cross_publish(ep)
+        self.assertEqual(self.cp.apply_auto_cross_publish(ep), [])
+        self.assertEqual(ep.cross_publications.count(), 1)
+
+    def test_apply_never_flips_existing_manual_link(self):
+        self.service.auto_crosspublish_targets.set([self.dest1])
+        ep = self._ep()
+        EpisodeCrossPublication.objects.create(episode=ep, podcast=self.dest1)
+        self.cp.apply_auto_cross_publish(ep)
+        link = ep.cross_publications.get(podcast=self.dest1)
+        self.assertFalse(link.auto_created)
+
+    def test_apply_noop_without_targets(self):
+        ep = self._ep()
+        self.assertEqual(self.cp.apply_auto_cross_publish(ep), [])
+        self.assertFalse(ep.cross_publications.exists())
+
+    def test_backfill_links_every_episode_as_auto(self):
+        eps = [self._ep(title=f'Ep {i}') for i in range(3)]
+        touched = self.cp.sync_feed_auto_targets(self.service, added_ids=[self.dest1.id])
+        self.assertEqual(touched, {self.dest1.id})
+        for ep in eps:
+            self.assertTrue(ep.cross_publications.filter(podcast=self.dest1, auto_created=True).exists())
+
+    def test_backfill_excludes_source_feed_itself(self):
+        self._ep()
+        touched = self.cp.sync_feed_auto_targets(self.service, added_ids=[self.service.id])
+        self.assertEqual(touched, set())
+        self.assertFalse(EpisodeCrossPublication.objects.exists())
+
+    def test_teardown_removes_only_that_destinations_auto_links(self):
+        ep = self._ep()
+        self._auto_link(ep, self.dest1)
+        self._auto_link(ep, self.dest2)
+        manual = EpisodeCrossPublication.objects.create(
+            episode=self._ep(title='Ep manual'), podcast=self.dest1)
+        touched = self.cp.sync_feed_auto_targets(self.service, removed_ids=[self.dest1.id])
+        self.assertEqual(touched, {self.dest1.id})
+        self.assertFalse(ep.cross_publications.filter(podcast=self.dest1).exists())
+        self.assertTrue(ep.cross_publications.filter(podcast=self.dest2, auto_created=True).exists())
+        self.assertTrue(EpisodeCrossPublication.objects.filter(id=manual.id).exists())
+
+    def test_resync_access_mode_updates_auto_links_only(self):
+        ep = self._ep()
+        self._auto_link(ep, self.dest1)
+        manual = EpisodeCrossPublication.objects.create(episode=ep, podcast=self.dest2)
+        self.service.auto_crosspublish_access_mode = EpisodeCrossPublication.AccessMode.TARGET
+        self.service.save()
+        touched = self.cp.resync_feed_auto_access_mode(self.service)
+        self.assertEqual(touched, {self.dest1.id})
+        self.assertEqual(
+            ep.cross_publications.get(podcast=self.dest1).access_mode,
+            EpisodeCrossPublication.AccessMode.TARGET)
+        manual.refresh_from_db()
+        self.assertEqual(manual.access_mode, EpisodeCrossPublication.AccessMode.INHERIT)
+
+    def test_manual_sync_is_blind_to_auto_rows(self):
+        ep = self._ep()
+        self._auto_link(ep, self.dest1)
+        self.assertEqual(self.cp.current_target_ids(ep), [])
+        added, removed = self.cp.sync_cross_publications(ep, [self.dest2])
+        self.assertEqual((added, removed), ([self.dest2.id], []))
+        self.assertTrue(ep.cross_publications.filter(podcast=self.dest1, auto_created=True).exists())
+
+    def test_manual_sync_promotes_submitted_auto_target(self):
+        ep = self._ep()
+        self._auto_link(ep, self.dest1)
+        added, _ = self.cp.sync_cross_publications(
+            ep, [self.dest1],
+            modes={self.dest1.id: EpisodeCrossPublication.AccessMode.TARGET})
+        self.assertEqual(added, [self.dest1.id])
+        link = ep.cross_publications.get(podcast=self.dest1)
+        self.assertFalse(link.auto_created)
+        self.assertEqual(link.access_mode, EpisodeCrossPublication.AccessMode.TARGET)
+
+    def test_promoted_link_survives_feed_teardown(self):
+        ep = self._ep()
+        self._auto_link(ep, self.dest1)
+        self.cp.sync_cross_publications(ep, [self.dest1])
+        self.cp.sync_feed_auto_targets(self.service, removed_ids=[self.dest1.id])
+        self.assertTrue(ep.cross_publications.filter(podcast=self.dest1).exists())
+
+    def test_add_cross_publications_is_add_only(self):
+        ep = self._ep()
+        existing = EpisodeCrossPublication.objects.create(episode=ep, podcast=self.dest1)
+        added = self.cp.add_cross_publications(ep, [self.dest2, self.service])
+        self.assertEqual(added, [self.dest2.id])
+        self.assertTrue(EpisodeCrossPublication.objects.filter(id=existing.id).exists())
+        self.assertFalse(ep.cross_publications.filter(podcast=self.service).exists())
+
+    def test_validate_feed_cross_targets_excludes_self_and_foreign(self):
+        other_network = Network.objects.create(name='Other', slug='acp-other')
+        foreign = Podcast.objects.create(network=other_network, title='F', slug='acp-f')
+        targets = self.cp.validate_feed_cross_targets(
+            self.service, [self.service.id, self.dest1.id, foreign.id, 'junk'], self.network)
+        self.assertEqual({t.id for t in targets}, {self.dest1.id})
+
+    def test_move_reevaluates_auto_links_and_preserves_manual(self):
+        new_parent = Podcast.objects.create(network=self.network, title='NewHome', slug='acp-home')
+        new_parent.auto_crosspublish_targets.set([self.dest2])
+        self.service.auto_crosspublish_targets.set([self.dest1])
+        ep = self._ep()
+        self._auto_link(ep, self.dest1)
+        dest3 = Podcast.objects.create(network=self.network, title='Dest3', slug='acp-dest3')
+        manual = EpisodeCrossPublication.objects.create(episode=ep, podcast=dest3)
+
+        move_episodes([ep.id], new_parent, base_url='http://n.test',
+                      rebuild_fragments=False)
+
+        self.assertFalse(ep.cross_publications.filter(podcast=self.dest1).exists())
+        self.assertTrue(ep.cross_publications.filter(podcast=self.dest2, auto_created=True).exists())
+        self.assertTrue(EpisodeCrossPublication.objects.filter(id=manual.id, auto_created=False).exists())
+
+    def test_move_manual_collision_with_new_parent_target_stays_manual(self):
+        new_parent = Podcast.objects.create(network=self.network, title='NewHome2', slug='acp-home2')
+        new_parent.auto_crosspublish_targets.set([self.dest2])
+        ep = self._ep()
+        EpisodeCrossPublication.objects.create(episode=ep, podcast=self.dest2)
+        move_episodes([ep.id], new_parent, base_url='http://n.test',
+                      rebuild_fragments=False)
+        link = ep.cross_publications.get(podcast=self.dest2)
+        self.assertFalse(link.auto_created)
+
+    def test_backfill_task_creates_links_and_rebuilds_shells(self):
+        from pod_manager.tasks import task_apply_feed_auto_cross_publish
+        ep = self._ep()
+        with mock.patch('pod_manager.tasks.task_rebuild_podcast_shell') as shell:
+            task_apply_feed_auto_cross_publish(self.service.id, [self.dest1.id], 'http://n.test')
+        self.assertTrue(ep.cross_publications.filter(podcast=self.dest1, auto_created=True).exists())
+        shell.assert_called_once_with(self.dest1.id, 'http://n.test')
+
+    def test_teardown_task_removes_links_and_rebuilds_shells(self):
+        from pod_manager.tasks import task_teardown_feed_auto_cross_publish
+        ep = self._ep()
+        self._auto_link(ep, self.dest1)
+        with mock.patch('pod_manager.tasks.task_rebuild_podcast_shell') as shell:
+            task_teardown_feed_auto_cross_publish(self.service.id, [self.dest1.id], 'http://n.test')
+        self.assertFalse(ep.cross_publications.exists())
+        shell.assert_called_once_with(self.dest1.id, 'http://n.test')
+
+    def test_tasks_tolerate_missing_source_feed(self):
+        from pod_manager.tasks import (
+            task_apply_feed_auto_cross_publish, task_teardown_feed_auto_cross_publish,
+        )
+        task_apply_feed_auto_cross_publish(999999, [self.dest1.id], 'http://n.test')
+        task_teardown_feed_auto_cross_publish(999999, [self.dest1.id], 'http://n.test')
+
+
+class AutoCrossPublishIngestHookTests(TestCase):
+    """commit_episode()'s feed-level auto cross-publish hook: fires for new
+    and updated episodes, skips the guid_update_only path, and the
+    auto-migration reeval swaps auto links to the new parent's targets."""
+
+    def setUp(self):
+        self.network = Network.objects.create(name='Net', slug='acp-ingest')
+        self.service = Podcast.objects.create(network=self.network, title='Service', slug='acpi-service')
+        self.dest = Podcast.objects.create(network=self.network, title='Dest', slug='acpi-dest')
+        self.service.auto_crosspublish_targets.set([self.dest])
+
+    def _entry(self, **kw):
+        base = dict(id='guid-acp-1', title='Ep 1')
+        base.update(kw)
+        return _FakeEntry(**base)
+
+    def _commit(self, podcast, pub_entry):
+        from pod_manager.ingesters.default import commit_episode
+        stdout = mock.Mock()
+        with mock.patch('pod_manager.ingesters.default.task_rebuild_episode_fragments'):
+            commit_episode(podcast, pub_entry, None, 'Test', stdout)
+        return stdout
+
+    def _stdout_lines(self, stdout):
+        return [c.args[0] for c in stdout.write.call_args_list]
+
+    def test_new_episode_auto_cross_publishes_and_logs(self):
+        stdout = self._commit(self.service, self._entry())
+        ep = Episode.objects.get(guid_public='guid-acp-1')
+        self.assertTrue(ep.cross_publications.filter(podcast=self.dest, auto_created=True).exists())
+        self.assertTrue(any('[AUTO-CP]' in line for line in self._stdout_lines(stdout)))
+
+    def test_updated_episode_heals_missing_auto_link(self):
+        self._commit(self.service, self._entry())
+        EpisodeCrossPublication.objects.all().delete()
+        self._commit(self.service, self._entry())
+        ep = Episode.objects.get(guid_public='guid-acp-1')
+        self.assertTrue(ep.cross_publications.filter(podcast=self.dest, auto_created=True).exists())
+
+    def test_guid_update_only_path_skips_auto_cp(self):
+        owner = Podcast.objects.create(network=self.network, title='Owner', slug='acpi-owner')
+        owner_dest = Podcast.objects.create(network=self.network, title='OwnerDest', slug='acpi-odest')
+        owner.auto_crosspublish_targets.set([owner_dest])
+        Episode.objects.create(
+            podcast=owner, title='Ep 1', pub_date=timezone.now(),
+            raw_description='x', clean_description='x', guid_public='guid-acp-1',
+        )
+        low = Podcast.objects.create(
+            network=self.network, title='Low', slug='acpi-low', is_low_priority=True)
+        low.auto_crosspublish_targets.set([self.dest])
+        self._commit(low, self._entry())
+        self.assertFalse(EpisodeCrossPublication.objects.exists())
+
+    def test_auto_migration_swaps_auto_links_to_new_parent(self):
+        low = Podcast.objects.create(
+            network=self.network, title='Low', slug='acpi-low2', is_low_priority=True)
+        low_dest = Podcast.objects.create(network=self.network, title='LowDest', slug='acpi-lowdest')
+        low.auto_crosspublish_targets.set([low_dest])
+        ep = Episode.objects.create(
+            podcast=low, title='Ep 1', pub_date=timezone.now(),
+            raw_description='x', clean_description='x', guid_public='guid-acp-1',
+        )
+        EpisodeCrossPublication.objects.create(episode=ep, podcast=low_dest, auto_created=True)
+        manual_dest = Podcast.objects.create(network=self.network, title='Manual', slug='acpi-manual')
+        manual = EpisodeCrossPublication.objects.create(episode=ep, podcast=manual_dest)
+
+        self._commit(self.service, self._entry())
+
+        ep.refresh_from_db()
+        self.assertEqual(ep.podcast_id, self.service.id)
+        self.assertFalse(ep.cross_publications.filter(podcast=low_dest).exists())
+        self.assertTrue(ep.cross_publications.filter(podcast=self.dest, auto_created=True).exists())
+        self.assertTrue(EpisodeCrossPublication.objects.filter(id=manual.id, auto_created=False).exists())
+
+
+class AutoCrossPublishPublishHookTests(TestCase):
+    """Manually published episodes never pass through commit_episode — the
+    publish flow's _sync_cross applies feed-level auto cross-publish itself."""
+
+    def setUp(self):
+        self.network = Network.objects.create(name='Net', slug='acp-pub')
+        self.podcast = Podcast.objects.create(network=self.network, title='Show', slug='acpp-show')
+        self.dest = Podcast.objects.create(network=self.network, title='Dest', slug='acpp-dest')
+        self.podcast.auto_crosspublish_targets.set([self.dest])
+        self.owner = User.objects.create_user('acppowner', password='x')
+        self.network.owners.add(self.owner)
+        self.client.force_login(self.owner)
+
+    def _post_publish(self, action, **extra):
+        data = {'action': action, 'network_slug': self.network.slug,
+                'podcast_id': self.podcast.id, 'title': 'New Ep',
+                'tags_json': '[]', 'chapters_json': 'null'}
+        data.update(extra)
+        with mock.patch('pod_manager.views.creator.publish.task_rebuild_episode_fragments'):
+            return self.client.post(reverse('publish_episode'), data)
+
+    def test_published_episode_gets_auto_links(self):
+        self._post_publish('publish')
+        ep = Episode.objects.get(title='New Ep')
+        self.assertTrue(ep.cross_publications.filter(podcast=self.dest, auto_created=True).exists())
+
+    def test_draft_episode_gets_auto_links(self):
+        self._post_publish('draft')
+        ep = Episode.objects.get(title='New Ep')
+        self.assertTrue(ep.cross_publications.filter(podcast=self.dest, auto_created=True).exists())
+
+
+@override_settings(CACHES=TEST_CACHES)
+class HiddenFeedVisibilityTests(TestCase):
+    """Rollout step 7: listener-facing visibility of hidden feeds.
+
+    user_feeds (the Your Feeds directory) drops every hidden feed for
+    non-owners; home (the Dashboard) drops a hidden feed's chip AND episodes
+    ONLY when the feed is not cross-published (D6). The owner show-hidden toggle
+    (D5) reveals hidden feeds on both pages, scoped per network so a co-viewed
+    non-owned network stays filtered.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.factory = RequestFactory()
+        self.owner = User.objects.create_user('hf-owner', password='x')
+
+        self.netA = Network.objects.create(name='Net A', slug='hf-a')
+        self.netA.owners.add(self.owner)
+        self.netB = Network.objects.create(name='Net B', slug='hf-b',
+                                           custom_domain='netb.example.com')
+        # Owner is a paying member (not owner) of B, so ?network=all merges both.
+        NetworkMembership.objects.create(user=self.owner, network=self.netB,
+                                         is_active_patron=True)
+
+        # Network A feeds.
+        self.vis_a = Podcast.objects.create(network=self.netA, title='Visible A', slug='vis-a')
+        self.xp_a = Podcast.objects.create(network=self.netA, title='Hidden XP A', slug='xp-a', is_hidden=True)
+        self.xplink_a = Podcast.objects.create(network=self.netA, title='Hidden Link A', slug='xplink-a', is_hidden=True)
+        self.plain_a = Podcast.objects.create(network=self.netA, title='Hidden Plain A', slug='plain-a', is_hidden=True)
+        # xp_a is cross-published via a feed-level auto target; xplink_a via an
+        # actual per-episode link — exercising both arms of the D6 predicate.
+        self.xp_a.auto_crosspublish_targets.set([self.vis_a])
+
+        # Network B feeds.
+        self.vis_b = Podcast.objects.create(network=self.netB, title='Visible B', slug='vis-b')
+        self.plain_b = Podcast.objects.create(network=self.netB, title='Hidden Plain B', slug='plain-b', is_hidden=True)
+
+        self.eps = {}
+        for pod in (self.vis_a, self.xp_a, self.xplink_a, self.plain_a, self.vis_b, self.plain_b):
+            self.eps[pod.slug] = Episode.objects.create(
+                podcast=pod, title=f'Ep {pod.slug}', pub_date=timezone.now(),
+                is_published=True, raw_description='x', clean_description='x')
+        EpisodeCrossPublication.objects.create(episode=self.eps['xplink-a'], podcast=self.vis_a)
+
+        self.mix = NetworkMix.objects.create(network=self.netA, name='Super A', slug='super-a')
+
+    # -- helpers -----------------------------------------------------------
+
+    def _anon(self):
+        from django.contrib.auth.models import AnonymousUser
+        return AnonymousUser()
+
+    def _ctx(self, view, user, *, session=None, req_network=None, **params):
+        req = _make_tenant_request(self.factory, req_network or self.netA,
+                                   path='/', data=params, user=user)
+        if session is not None:
+            req.session = session
+        with mock.patch('pod_manager.views.listener.main.render') as m:
+            view(req)
+        return m.call_args.args[2], req
+
+    def _home(self, user, **kw):
+        return self._ctx(views.home, user, **kw)
+
+    def _feeds(self, user, **kw):
+        return self._ctx(views.user_feeds, user, **kw)
+
+    @staticmethod
+    def _chip_slugs(ctx):
+        return {p.slug for p in ctx['podcasts']}
+
+    @staticmethod
+    def _stream_titles(ctx):
+        return {e.title for e in ctx['episodes']}
+
+    @staticmethod
+    def _dir_slugs(ctx):
+        return {p['podcast'].slug for p in ctx['available_podcasts']}
+
+    # -- user_feeds (Your Feeds directory) ---------------------------------
+
+    def test_user_feeds_excludes_all_hidden_for_non_owner(self):
+        ctx, _ = self._feeds(self._anon())
+        slugs = self._dir_slugs(ctx)
+        self.assertIn('vis-a', slugs)
+        # Section 1: the directory drops EVERY hidden feed, even a cross-
+        # published one (the cross-pub exception is Dashboard-only).
+        self.assertNotIn('xp-a', slugs)
+        self.assertNotIn('xplink-a', slugs)
+        self.assertNotIn('plain-a', slugs)
+
+    def test_user_feeds_networkmix_unaffected(self):
+        ctx, _ = self._feeds(self._anon())
+        mix_names = {f['mix'].slug for f in ctx['feed_data'] if f['is_network_mix']}
+        self.assertIn('super-a', mix_names)
+
+    def test_user_feeds_owner_toggle_off_matches_listener(self):
+        ctx, _ = self._feeds(self.owner)
+        self.assertFalse(ctx['show_hidden'])
+        self.assertNotIn('plain-a', self._dir_slugs(ctx))
+        self.assertNotIn('xp-a', self._dir_slugs(ctx))
+
+    def test_user_feeds_owner_toggle_on_reveals_hidden(self):
+        ctx, _ = self._feeds(self.owner, show_hidden='1')
+        self.assertTrue(ctx['show_hidden'])
+        self.assertTrue(ctx['show_hidden_available'])
+        slugs = self._dir_slugs(ctx)
+        self.assertIn('plain-a', slugs)
+        self.assertIn('xp-a', slugs)
+
+    def test_user_feeds_owner_toggle_renders_hidden_badge(self):
+        req = _make_tenant_request(self.factory, self.netA, path='/',
+                                   data={'show_hidden': '1'}, user=self.owner)
+        resp = views.user_feeds(req)
+        self.assertIn(b'HIDDEN', resp.content)
+        self.assertIn(b'Hide hidden feeds', resp.content)
+
+    def test_user_feeds_non_owner_cannot_force_param(self):
+        ctx, _ = self._feeds(self._anon(), show_hidden='1')
+        self.assertFalse(ctx['show_hidden_available'])
+        self.assertNotIn('plain-a', self._dir_slugs(ctx))
+
+    def test_user_feeds_toggle_is_per_network(self):
+        ctx, _ = self._feeds(self.owner, network='all', show_hidden='1')
+        slugs = self._dir_slugs(ctx)
+        # Owned network A: hidden feed revealed. Member-only network B: stays
+        # filtered even though the toggle is on.
+        self.assertIn('plain-a', slugs)
+        self.assertIn('vis-b', slugs)
+        self.assertNotIn('plain-b', slugs)
+
+    # -- home (Dashboard) --------------------------------------------------
+
+    def test_home_hidden_cross_published_keeps_chip_and_episodes(self):
+        ctx, _ = self._home(self._anon())
+        chips = self._chip_slugs(ctx)
+        titles = self._stream_titles(ctx)
+        self.assertIn('xp-a', chips)
+        self.assertIn('xplink-a', chips)
+        self.assertIn('Ep xp-a', titles)
+        self.assertIn('Ep xplink-a', titles)
+
+    def test_home_hidden_not_cross_published_dropped(self):
+        ctx, _ = self._home(self._anon())
+        self.assertNotIn('plain-a', self._chip_slugs(ctx))
+        self.assertNotIn('Ep plain-a', self._stream_titles(ctx))
+
+    def test_home_non_hidden_unchanged(self):
+        ctx, _ = self._home(self._anon())
+        self.assertIn('vis-a', self._chip_slugs(ctx))
+        self.assertIn('Ep vis-a', self._stream_titles(ctx))
+
+    def test_home_owner_toggle_reveals_hidden_not_cross_published(self):
+        ctx, _ = self._home(self.owner, show_hidden='1')
+        self.assertIn('plain-a', self._chip_slugs(ctx))
+        self.assertIn('Ep plain-a', self._stream_titles(ctx))
+
+    def test_home_owner_toggle_off_hides(self):
+        ctx, _ = self._home(self.owner)
+        self.assertNotIn('plain-a', self._chip_slugs(ctx))
+        self.assertNotIn('Ep plain-a', self._stream_titles(ctx))
+
+    def test_home_non_owner_cannot_force_param(self):
+        ctx, _ = self._home(self._anon(), show_hidden='1')
+        self.assertNotIn('plain-a', self._chip_slugs(ctx))
+        self.assertNotIn('Ep plain-a', self._stream_titles(ctx))
+
+    def test_home_toggle_persisted_in_session(self):
+        _, req1 = self._home(self.owner, show_hidden='1')
+        ctx2, _ = self._home(self.owner, session=req1.session)
+        self.assertTrue(ctx2['podcasts'].exists())
+        self.assertIn('plain-a', self._chip_slugs(ctx2))
+
+    def test_home_renders_crosspub_toggle(self):
+        req = _make_tenant_request(self.factory, self.netA, path='/', user=self.owner)
+        resp = views.home(req)
+        self.assertIn(b'crosspubToggle', resp.content)
+        self.assertIn(b'Include cross-published episodes', resp.content)
+
+    def test_home_show_filter_includes_cross_published_by_default(self):
+        # xplink-a's episode is cross-published INTO vis-a; filtering by vis-a
+        # surfaces it alongside vis-a's own episode when the toggle is on.
+        ctx, _ = self._home(self._anon(), show='vis-a')
+        self.assertTrue(ctx['include_cross_published'])
+        titles = self._stream_titles(ctx)
+        self.assertIn('Ep vis-a', titles)
+        self.assertIn('Ep xplink-a', titles)
+
+    def test_home_show_filter_crosspub_off_restricts_to_parent(self):
+        ctx, _ = self._home(self._anon(), show='vis-a', crosspub='0')
+        self.assertFalse(ctx['include_cross_published'])
+        titles = self._stream_titles(ctx)
+        self.assertIn('Ep vis-a', titles)
+        self.assertNotIn('Ep xplink-a', titles)
+
+    def test_home_toggle_is_per_network(self):
+        ctx, _ = self._home(self.owner, network='all', show_hidden='1')
+        chips = self._chip_slugs(ctx)
+        titles = self._stream_titles(ctx)
+        self.assertIn('plain-a', chips)
+        self.assertIn('Ep plain-a', titles)
+        # Member-only network B: its hidden feed stays filtered.
+        self.assertNotIn('plain-b', chips)
+        self.assertNotIn('Ep plain-b', titles)
 
 
 class VendoredAssetTests(SimpleTestCase):

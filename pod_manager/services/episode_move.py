@@ -9,6 +9,7 @@ before calling, like sync_cross_publications) and their own user messages.
 import logging
 
 from django.conf import settings
+from django.core.cache import cache
 from django.utils import timezone
 
 from ..models import Episode, EpisodeCrossPublication
@@ -41,6 +42,15 @@ def move_episodes(episode_ids, target_podcast, *, base_url, moved_by=None,
     # self-reference — drop the redundant links.
     EpisodeCrossPublication.objects.filter(
         episode_id__in=episode_ids, podcast=target_podcast).delete()
+
+    # Parent changed: tear down auto links created for the old parents and
+    # apply the new parent's auto_crosspublish_targets (manual links carry
+    # across untouched). Destination membership is composed live at serve
+    # time, so busting the touched shells is the whole refresh.
+    from .cross_publish import reeval_auto_cross_publish
+    for dest_id in reeval_auto_cross_publish(episode_ids, target_podcast):
+        cache.delete(f"feed_shell_public_{dest_id}")
+        cache.delete(f"feed_shell_private_{dest_id}")
 
     # Re-key any mirrored episodes so their R2 object lands under the new
     # parent's network_id/podcast_id (backup accuracy — section J). Async;

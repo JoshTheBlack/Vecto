@@ -9,7 +9,7 @@ import os
 from django.conf import settings
 from django.contrib.auth.decorators import login_required
 from django.core.paginator import Paginator
-from django.db.models import Q
+from django.db.models import Q, Exists, OuterRef
 from django.http import Http404
 from django.shortcuts import redirect, get_object_or_404, render
 from django.urls import reverse
@@ -18,7 +18,7 @@ from django.utils.dateparse import parse_date
 
 from ...models import (
     PatronProfile, NetworkMembership, Podcast, Episode, NetworkMix, UserMix,
-    EpisodeEditSuggestion, Transcript,
+    EpisodeEditSuggestion, Transcript, EpisodeCrossPublication,
 )
 from ...services.access import (_evaluate_access, _build_episode_description,
                                 _evaluate_mix_access, can_view_transcript)
@@ -53,12 +53,46 @@ def _build_feed_base_url(podcast, request):
     return None
 
 
+_SHOW_HIDDEN_SESSION_KEY = 'show_hidden_feeds'
+
+
+def _resolve_show_hidden(request):
+    """Owner 'reveal hidden feeds' toggle (D5), persisted in the session.
+
+    ?show_hidden=1 (or =0) sets it; when the param is absent the stored value is
+    reused. Per-network scoping (reveal only feeds of networks the user owns) is
+    enforced at the queryset, so this returning True for a user who owns none of
+    the viewed networks reveals nothing — the param is effectively ignored.
+    """
+    param = request.GET.get('show_hidden')
+    if param is not None:
+        value = param == '1'
+        request.session[_SHOW_HIDDEN_SESSION_KEY] = value
+        return value
+    return bool(request.session.get(_SHOW_HIDDEN_SESSION_KEY, False))
+
+
+def _feed_cross_published_exists():
+    """Two Exists() subqueries keyed on the OUTER podcast id: whether that feed
+    has >=1 auto_crosspublish_targets, and whether any EpisodeCrossPublication
+    exists on its episodes. Used to keep a hidden-but-cross-published feed (and
+    its episodes) on the Dashboard per D6."""
+    has_auto = Exists(Podcast.objects.filter(
+        pk=OuterRef('pk'), auto_crosspublish_targets__isnull=False))
+    has_links = Exists(EpisodeCrossPublication.objects.filter(
+        episode__podcast=OuterRef('pk')))
+    return has_auto, has_links
+
+
 def home(request):
     show_slugs = request.GET.getlist('show')
     search_query = request.GET.get('q', '').strip()
     older_than = request.GET.get('older_than', '').strip()
     newer_than = request.GET.get('newer_than', '').strip()
     include_transcripts = request.GET.get('transcripts') == '1'
+    # Defaults ON: a show chip surfaces episodes cross-published INTO that feed,
+    # not just those whose parent IS that feed. ?crosspub=0 restricts to parent.
+    include_cross_published = request.GET.get('crosspub', '1') != '0'
 
     tenant_profile = getattr(request, 'tenant_profile', None)
 
@@ -74,11 +108,50 @@ def home(request):
         target_network_slugs = [request.network.slug]
         selected_networks = [request.network.slug]
 
-    query = Episode.objects.select_related('podcast', 'podcast__network', 'podcast__required_tier', 'transcript').prefetch_related('cross_publications__podcast').filter(podcast__network__slug__in=target_network_slugs, is_published=True)
-    podcasts = Podcast.objects.filter(network__slug__in=target_network_slugs).order_by('title')
+    if request.user.is_authenticated:
+        owned_network_ids = set(request.user.owned_networks.values_list('id', flat=True))
+    else:
+        owned_network_ids = set()
+    show_hidden = _resolve_show_hidden(request)
+
+    # D6 dashboard visibility: a feed is visible when it is not hidden, OR it is
+    # cross-published (>=1 auto target OR any link on its episodes), OR the owner
+    # revealed it — the last arm scoped to networks the requester owns. Applied
+    # identically to the episode stream and the chip queryset so they stay in
+    # lockstep.
+    ep_has_auto = Exists(Podcast.objects.filter(
+        pk=OuterRef('podcast_id'), auto_crosspublish_targets__isnull=False))
+    ep_has_links = Exists(EpisodeCrossPublication.objects.filter(
+        episode__podcast=OuterRef('podcast_id')))
+    ep_visible = Q(podcast__is_hidden=False) | Q(_feed_has_auto=True) | Q(_feed_has_links=True)
+    if show_hidden and owned_network_ids:
+        ep_visible |= Q(podcast__network_id__in=owned_network_ids)
+
+    feed_has_auto, feed_has_links = _feed_cross_published_exists()
+    chip_visible = Q(is_hidden=False) | Q(_feed_has_auto=True) | Q(_feed_has_links=True)
+    if show_hidden and owned_network_ids:
+        chip_visible |= Q(network_id__in=owned_network_ids)
+
+    query = (Episode.objects
+             .select_related('podcast', 'podcast__network', 'podcast__required_tier', 'transcript')
+             .prefetch_related('cross_publications__podcast')
+             .filter(podcast__network__slug__in=target_network_slugs, is_published=True)
+             .annotate(_feed_has_auto=ep_has_auto, _feed_has_links=ep_has_links)
+             .filter(ep_visible))
+    podcasts = (Podcast.objects
+                .filter(network__slug__in=target_network_slugs)
+                .annotate(_feed_has_auto=feed_has_auto, _feed_has_links=feed_has_links)
+                .filter(chip_visible)
+                .order_by('title'))
 
     if show_slugs:
-        query = query.filter(podcast__slug__in=show_slugs)
+        if include_cross_published:
+            query = query.filter(
+                Q(podcast__slug__in=show_slugs)
+                | Q(cross_publications__podcast__slug__in=show_slugs)
+            ).distinct()
+        else:
+            query = query.filter(podcast__slug__in=show_slugs)
     if search_query:
         base_q = Q(title__icontains=search_query) | Q(clean_description__icontains=search_query)
         if include_transcripts:
@@ -106,7 +179,7 @@ def home(request):
             m.network_id: m
             for m in request.user.network_memberships.filter(network_id__in=page_network_ids)
         }
-        home_owned_ids = set(request.user.owned_networks.values_list('id', flat=True))
+        home_owned_ids = owned_network_ids
     else:
         home_memberships = {}
         home_owned_ids = set()
@@ -126,6 +199,7 @@ def home(request):
         'search_query': search_query, 'tenant_profile': tenant_profile,
         'older_than': older_than, 'newer_than': newer_than,
         'include_transcripts': include_transcripts,
+        'include_cross_published': include_cross_published,
         'custom_page_range': custom_page_range,
         'user_networks': user_networks,
         'selected_networks': selected_networks,
@@ -174,6 +248,17 @@ def user_feeds(request):
         memberships_by_network = {}
         owned_network_ids = set()
 
+    show_hidden = _resolve_show_hidden(request)
+    show_hidden_available = bool(owned_network_ids) and request.user.owned_networks.filter(
+        slug__in=target_network_slugs).exists()
+
+    # Directory visibility (section 1): hidden feeds drop out for everyone, but
+    # an owner with the toggle on sees them back — scoped to the networks they
+    # own, so hidden feeds of a co-viewed non-owned network stay filtered.
+    visible_feed = Q(is_hidden=False)
+    if show_hidden and owned_network_ids:
+        visible_feed |= Q(network_id__in=owned_network_ids)
+
     feed_data = []
     available_podcasts = []
 
@@ -193,7 +278,7 @@ def user_feeds(request):
             'has_access': mix.has_access, 'feed_url': mix.feed_url,
         })
 
-    for podcast in Podcast.objects.filter(network__slug__in=target_network_slugs).select_related('network', 'required_tier'):
+    for podcast in Podcast.objects.filter(network__slug__in=target_network_slugs).filter(visible_feed).select_related('network', 'required_tier'):
         has_access, _ = _evaluate_access(
             request.user, podcast, podcast.network,
             membership=memberships_by_network.get(podcast.network_id),
@@ -221,6 +306,8 @@ def user_feeds(request):
         'available_podcasts': available_podcasts,
         'user_networks': user_networks,
         'selected_networks': selected_networks,
+        'show_hidden': show_hidden,
+        'show_hidden_available': show_hidden_available,
     }
     return render(request, 'pod_manager/user_feeds.html', context)
 

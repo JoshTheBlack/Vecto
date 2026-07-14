@@ -239,5 +239,5 @@ def baldmove_enhancer(episode, pub_entry, sub_entry, is_new, stdout):
     if merged_tags:
         episode.tags = merged_tags
 
-def run_ingest(podcast, stdout):
-    default_run_ingest(podcast, stdout, enhancer=baldmove_enhancer)
+def run_ingest(podcast, stdout, force=False):
+    default_run_ingest(podcast, stdout, enhancer=baldmove_enhancer, force=force)

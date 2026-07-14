@@ -482,23 +482,26 @@ def commit_episode(podcast, pub_entry, sub_entry, match_reason, stdout, enhancer
     stdout.write(f"  -> [{status}] {episode.title}")
     return episode
 
-def run_ingest(podcast, stdout, enhancer=None):
+def run_ingest(podcast, stdout, enhancer=None, force=False):
     logger.info(f"Starting Ingest Strategy for podcast: {podcast.title} (ID: {podcast.id})")
     stdout.write(f"--- Harvesting: {podcast.title} ---")
+    if force:
+        stdout.write("  [FORCE] Ignoring ETag/Last-Modified cache; fetching full feed bodies.")
 
     sub_data = None
     public_data = None
-    
-    # 1. Initial Conditional Fetch
+
+    # 1. Initial Conditional Fetch. force=True skips the conditional cache
+    # headers so the server can't answer 304, forcing a full re-ingest.
     if podcast.subscriber_feed_url:
-        sub_data = get_feed(podcast.subscriber_feed_url, "PRIVATE", podcast.id, stdout)
+        sub_data = get_feed(podcast.subscriber_feed_url, "PRIVATE", podcast.id, stdout, force_fetch=force)
         if hasattr(sub_data, 'status') and sub_data.status == 401:
             logger.error(f"Auth Failed on Private Feed for podcast: {podcast.title}")
             stdout.write("[ERROR] Auth Failed on Private Feed.")
             return
 
     if podcast.public_feed_url:
-        public_data = get_feed(podcast.public_feed_url, "PUBLIC", podcast.id, stdout)
+        public_data = get_feed(podcast.public_feed_url, "PUBLIC", podcast.id, stdout, force_fetch=force)
 
     # 2. Evaluate 304 Statuses
     is_sub_304 = (sub_data == 304)

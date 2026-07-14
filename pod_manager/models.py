@@ -554,6 +554,29 @@ class CalendarEntry(models.Model):
         return f"{self.network.slug} | {self.title} @ {self.scheduled_at:%Y-%m-%d %H:%M}"
 
 
+class LiveSchedulePost(models.Model):
+    """A Discord `/schedule` message that re-renders itself as episodes publish.
+    The bot posts it and records the channel/message id; a Celery task PATCHes
+    the embed (via Discord REST) whenever an episode in this network goes live,
+    until `window_end` passes. Window bounds are frozen at post time so the
+    displayed range stays stable — `window_end` is both the display edge and the
+    expiry (see services/discord_schedule.py)."""
+    network = models.ForeignKey(Network, on_delete=models.CASCADE, related_name='live_schedule_posts')
+    channel_id = models.CharField(max_length=32, db_index=True)
+    message_id = models.CharField(max_length=32, unique=True)
+    guild_id = models.CharField(max_length=32, blank=True)
+    window_kind = models.CharField(max_length=8, default='week')  # 'week' | 'range'
+    window_start = models.DateTimeField()
+    window_end = models.DateTimeField(db_index=True, help_text="Exclusive window edge; also the live-update expiry.")
+    subtitle = models.CharField(max_length=200, blank=True, help_text="Frozen human window label shown on the embed.")
+    created_by_discord_id = models.CharField(max_length=32, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return f"{self.network.slug} live schedule (msg {self.message_id}) until {self.window_end:%Y-%m-%d}"
+
+
 class EpisodeCrossPublication(models.Model):
     """Places an episode into another podcast's feeds in addition to its
     parent. The episode stays a single entity (one parent podcast, one set of

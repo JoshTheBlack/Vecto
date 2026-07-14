@@ -22,7 +22,7 @@ from ...services.cross_publish import (
     validate_cross_targets,
 )
 from ...services.release_calendar import ensure_calendar_entry_for_episode
-from ...tasks import task_rebuild_episode_fragments
+from ...tasks import task_rebuild_episode_fragments, task_refresh_live_schedules
 from ...utils import sanitize_user_html
 
 logger = logging.getLogger(__name__)
@@ -236,6 +236,7 @@ def _handle_publish_post(request, current_network, podcasts, networks):
         logger.info(f"[publish] Episode {ep.id} '{ep.title}' published to '{ep.podcast.title}' by {request.user.username}")
         base_url = request.build_absolute_uri('/')
         task_rebuild_episode_fragments.delay(ep.id, base_url)
+        task_refresh_live_schedules.delay(ep.podcast.network_id)
         messages.success(request, f'"{ep.title}" published.')
         return redirect(f"{reverse('publish_episode')}?network={current_network.slug}")
 
@@ -324,6 +325,7 @@ def manage_episode(request, episode_id):
         cache.delete(f"ep_frag_private_{ep.id}")
         base_url = request.build_absolute_uri('/')
         task_rebuild_episode_fragments.delay(ep.id, base_url)
+        task_refresh_live_schedules.delay(ep.podcast.network_id)
         messages.success(request, f'"{ep.title}" published.')
 
     elif action == 'unpublish':

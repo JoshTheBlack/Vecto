@@ -521,6 +521,26 @@ def task_publish_scheduled_episodes():
             cache.delete(f"feed_shell_private_{target_id}")
     logger.info(f"Published {len(episodes)} scheduled episode(s).")
 
+    # Refresh any live /schedule embeds whose network just had an episode go
+    # live, so planned rows convert to published links (event-driven, no poll).
+    from .models import LiveSchedulePost
+    network_ids = {ep.podcast.network_id for ep in episodes}
+    live_ids = set(
+        LiveSchedulePost.objects.filter(network_id__in=network_ids)
+        .values_list('network_id', flat=True)
+    )
+    for nid in live_ids:
+        task_refresh_live_schedules.delay(nid)
+
+
+@shared_task
+def task_refresh_live_schedules(network_id):
+    """Re-render every active live /schedule post for a network and PATCH the
+    Discord message. Called when an episode in the network publishes — never on
+    a timer. See services.discord_schedule.refresh_live_posts for the logic."""
+    from .services.discord_schedule import refresh_live_posts
+    refresh_live_posts(network_id)
+
 
 @shared_task
 def task_prune_logs():

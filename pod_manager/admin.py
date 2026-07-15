@@ -7,7 +7,7 @@ from django.contrib.auth.models import User
 from django.db.models import Q, F, BooleanField, ExpressionWrapper
 from django.utils.html import format_html, mark_safe
 from django.urls import reverse
-from .models import Network, PatreonTier, Podcast, Episode, EpisodeCrossPublication, UserMix, NetworkMix, PatronProfile, EpisodeEditSuggestion, NetworkMembership, LogEntry, Transcript, R2OrphanedObject, CalendarEntry
+from .models import Network, PatreonTier, Podcast, Episode, EpisodeCrossPublication, UserMix, NetworkMix, PatronProfile, EpisodeEditSuggestion, NetworkMembership, LogEntry, Transcript, R2OrphanedObject, CalendarEntry, LiveSchedulePost
 
 class S3SubscriberAudioFilter(SimpleListFilter):
     title = 'S3 Hosted Audio (Affected)'
@@ -329,6 +329,18 @@ class CalendarEntryAdmin(admin.ModelAdmin):
     date_hierarchy = 'scheduled_at'
     raw_id_fields = ('episode', 'podcast', 'created_by')
     list_select_related = ('network', 'podcast', 'episode', 'created_by')
+
+
+@admin.register(LiveSchedulePost)
+class LiveSchedulePostAdmin(admin.ModelAdmin):
+    list_display = ('id', 'network', 'window_kind', 'subtitle', 'window_start',
+                    'window_end', 'channel_id', 'message_id', 'created_at')
+    list_filter = ('network', 'window_kind')
+    search_fields = ('subtitle', 'channel_id', 'message_id', 'created_by_discord_id')
+    date_hierarchy = 'window_end'
+    raw_id_fields = ('network',)
+    list_select_related = ('network',)
+    readonly_fields = ('created_at', 'updated_at')
 
 class _MixCoverAdminMixin:
     """Shared inspection columns for the two mix types. Surfaces the exact

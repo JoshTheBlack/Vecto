@@ -32,13 +32,13 @@
             <a class="list-group-item list-group-item-action border-secondary {% if not request.GET.tab or request.GET.tab == 'network' %}active{% endif %}" id="list-networks-list" data-bs-toggle="list" href="#list-networks" role="tab">
                 <i class="bi bi-globe2 me-2"></i> Network Profile
             </a>
-            <a class="list-group-item list-group-item-action border-secondary" id="list-shows-list" data-bs-toggle="list" href="#list-shows" role="tab">
+            <a class="list-group-item list-group-item-action border-secondary {% if request.GET.tab == 'shows' %}active{% endif %}" id="list-shows-list" data-bs-toggle="list" href="#list-shows" role="tab">
                 <i class="bi bi-mic me-2"></i> Manage Podcasts
             </a>
-            <a class="list-group-item list-group-item-action border-secondary" id="list-mixes-list" data-bs-toggle="list" href="#list-mixes" role="tab">
+            <a class="list-group-item list-group-item-action border-secondary {% if request.GET.tab == 'mixes' %}active{% endif %}" id="list-mixes-list" data-bs-toggle="list" href="#list-mixes" role="tab">
                 <i class="bi bi-collection-play me-2"></i> Network Mixes
             </a>
-            <a class="list-group-item list-group-item-action border-secondary" id="list-merge-list" data-bs-toggle="list" href="#list-merge" role="tab">
+            <a class="list-group-item list-group-item-action border-secondary {% if request.GET.tab == 'merge' %}active{% endif %}" id="list-merge-list" data-bs-toggle="list" href="#list-merge" role="tab">
                 <i class="bi bi-intersect me-2"></i> Merge Desk
             </a>
             <a class="list-group-item list-group-item-action border-secondary {% if request.GET.tab == 'move' %}active{% endif %}" id="list-move-list" data-bs-toggle="list" href="#list-move" role="tab">

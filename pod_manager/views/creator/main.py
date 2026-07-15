@@ -63,7 +63,7 @@ def creator_settings(request):
         'networks': allowed_networks,
         'current_network': current_network,
         'theme_config_json': json.dumps(current_network.theme_config, indent=2),
-        **gather_manage_podcasts(current_network),
+        **gather_manage_podcasts(request, current_network),
         **gather_inbox(current_network),
         **gather_merge_desk(request, current_network),
         **gather_audit_log(request, current_network),

@@ -1,4 +1,4 @@
-            <div class="tab-pane fade" id="list-shows" role="tabpanel">
+            <div class="tab-pane fade {% if request.GET.tab == 'shows' %}show active{% endif %}" id="list-shows" role="tabpanel">
                 <div class="card shadow-sm mb-4 border-secondary bg-dark">
                     <div class="card-body">
                         
@@ -81,7 +81,7 @@
                                             </div>
                                         </div>
                                         
-                                        <form method="POST" action="{% url 'creator_settings' %}?network={{ current_network.slug }}">
+                                        <form method="POST" action="{% url 'creator_settings' %}?network={{ current_network.slug }}&tab=shows">
                                             {% csrf_token %}
                                             <input type="hidden" name="action" value="update_show">
                                             <input type="hidden" name="show_id" value="{{ show.id }}">
@@ -290,7 +290,7 @@
                     <h5 class="modal-title fw-bold"><i class="bi bi-mic text-warning"></i> Add New Podcast</h5>
                     <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
                   </div>
-                  <form method="POST" action="{% url 'creator_settings' %}?network={{ current_network.slug }}">
+                  <form method="POST" action="{% url 'creator_settings' %}?network={{ current_network.slug }}&tab=shows">
                       <div class="modal-body p-4">
                           {% csrf_token %}
                           <input type="hidden" name="action" value="add_show">

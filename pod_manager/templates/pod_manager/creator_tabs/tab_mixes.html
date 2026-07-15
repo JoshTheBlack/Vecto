@@ -1,4 +1,4 @@
-            <div class="tab-pane fade" id="list-mixes" role="tabpanel">
+            <div class="tab-pane fade {% if request.GET.tab == 'mixes' %}show active{% endif %}" id="list-mixes" role="tabpanel">
                 <div class="card shadow-sm mb-4 border-secondary bg-dark">
                     <div class="card-body">
                         
@@ -22,7 +22,7 @@
                                             <li><a class="dropdown-item text-info" href="#" data-bs-toggle="modal" data-bs-target="#editNetworkMixModal-{{ mix.id }}"><i class="bi bi-pencil-square me-2"></i> Edit Mix</a></li>
                                             <li><hr class="dropdown-divider border-secondary"></li>
                                             <li>
-                                                <form method="POST" action="{% url 'creator_settings' %}?network={{ current_network.slug }}">
+                                                <form method="POST" action="{% url 'creator_settings' %}?network={{ current_network.slug }}&tab=mixes">
                                                     {% csrf_token %}
                                                     <input type="hidden" name="action" value="delete_network_mix">
                                                     <input type="hidden" name="mix_id" value="{{ mix.id }}">
@@ -72,7 +72,7 @@
                                             <h5 class="modal-title fw-bold"><i class="bi bi-pencil-square text-info"></i> Edit "{{ mix.name }}"</h5>
                                             <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
                                         </div>
-                                        <form method="POST" action="{% url 'creator_settings' %}?network={{ current_network.slug }}" enctype="multipart/form-data" hx-boost="false">
+                                        <form method="POST" action="{% url 'creator_settings' %}?network={{ current_network.slug }}&tab=mixes" enctype="multipart/form-data" hx-boost="false">
                                             <div class="modal-body p-4">
                                                 {% csrf_token %}
                                                 <input type="hidden" name="action" value="edit_network_mix">
@@ -151,7 +151,7 @@
                             <h5 class="modal-title fw-bold"><i class="bi bi-collection-play text-warning"></i> Create Network Mix</h5>
                             <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
                         </div>
-                        <form method="POST" action="{% url 'creator_settings' %}?network={{ current_network.slug }}" enctype="multipart/form-data" hx-boost="false">
+                        <form method="POST" action="{% url 'creator_settings' %}?network={{ current_network.slug }}&tab=mixes" enctype="multipart/form-data" hx-boost="false">
                             <div class="modal-body p-4">
                                 {% csrf_token %}
                                 <input type="hidden" name="action" value="add_network_mix">
@@ -221,7 +221,7 @@
                             <h5 class="modal-title fw-bold"><i class="bi bi-collection-play text-warning"></i> Create Network Mix</h5>
                             <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
                         </div>
-                        <form method="POST" action="{% url 'creator_settings' %}?network={{ current_network.slug }}" enctype="multipart/form-data" hx-boost="false">
+                        <form method="POST" action="{% url 'creator_settings' %}?network={{ current_network.slug }}&tab=mixes" enctype="multipart/form-data" hx-boost="false">
                             <div class="modal-body p-4">
                                 {% csrf_token %}
                                 <input type="hidden" name="action" value="add_network_mix">

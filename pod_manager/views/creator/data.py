@@ -9,7 +9,7 @@ import os
 
 from django.conf import settings
 from django.core.paginator import Paginator
-from django.db.models import Q, Case, When, CharField, Max, Count
+from django.db.models import Q, Case, When, CharField, Max, Count, F
 from django.db.models.functions import Substr, Lower
 
 from ...models import EpisodeEditSuggestion, NetworkMembership, Episode
@@ -78,8 +78,12 @@ def _section_base(edit):
 
 
 #@diagnostic_timer("1. Gather Manage Podcasts")
-def gather_manage_podcasts(current_network):
-    podcasts = list(current_network.podcasts.annotate(
+def gather_manage_podcasts(request, current_network):
+    show_q = request.GET.get('show_q', '').strip()
+    show_sort = request.GET.get('show_sort', 'alpha')
+    show_mix = request.GET.get('show_mix', '')
+
+    manage_podcasts = current_network.podcasts.annotate(
         clean_title=Case(When(title__istartswith='The ', then=Substr('title', 5)), default='title', output_field=CharField()),
         latest_episode_date=Max('episodes__pub_date'),
         episode_count=Count('episodes', distinct=True),
@@ -88,10 +92,46 @@ def gather_manage_podcasts(current_network):
             filter=Q(episodes__audio_url_subscriber__icontains='s3.amazonaws.com'),
             distinct=True,
         ),
-    ).order_by(Lower('clean_title')).prefetch_related('auto_crosspublish_targets'))
+    )
+
+    if show_q:
+        manage_podcasts = manage_podcasts.filter(
+            Q(title__icontains=show_q) | Q(slug__icontains=show_q)
+        )
+
+    if show_mix:
+        try:
+            mix = current_network.mixes.get(id=show_mix)
+            manage_podcasts = manage_podcasts.filter(id__in=mix.selected_podcasts.all())
+        except Exception:
+            pass
+
+    if show_sort == 'recent':
+        manage_podcasts = manage_podcasts.order_by(F('latest_episode_date').desc(nulls_last=True))
+    elif show_sort == 'oldest':
+        manage_podcasts = manage_podcasts.order_by(F('latest_episode_date').asc(nulls_last=True))
+    elif show_sort == 'count_desc':
+        manage_podcasts = manage_podcasts.order_by('-episode_count')
+    else:
+        manage_podcasts = manage_podcasts.order_by(Lower('clean_title'))
+
+    podcasts = list(manage_podcasts.prefetch_related('auto_crosspublish_targets'))
     for pod in podcasts:
         pod.auto_cp_target_ids = [t.id for t in pod.auto_crosspublish_targets.all()]
-    return {'manage_podcasts': podcasts, 'network_podcasts': podcasts}
+
+    # Cross-publish destination picker must always list every feed in the
+    # network, independent of the current search/sort/mix filter above.
+    network_podcasts = list(current_network.podcasts.order_by(
+        Lower(Case(When(title__istartswith='The ', then=Substr('title', 5)),
+                   default='title', output_field=CharField()))
+    ))
+    return {
+        'manage_podcasts': podcasts,
+        'network_podcasts': network_podcasts,
+        'show_q': show_q,
+        'show_sort': show_sort,
+        'show_mix': show_mix,
+    }
 
 
 #@diagnostic_timer("2. Gather Inbox")

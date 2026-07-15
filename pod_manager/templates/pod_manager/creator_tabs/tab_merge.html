@@ -1,4 +1,4 @@
-<div class="tab-pane fade" id="list-merge" role="tabpanel">
+<div class="tab-pane fade {% if request.GET.tab == 'merge' %}show active{% endif %}" id="list-merge" role="tabpanel">
                 <div class="card shadow-sm border-secondary bg-dark mb-4">
                     <div class="card-body">
                         
@@ -9,10 +9,10 @@
                             </div>
                             
                             <div class="btn-group" role="group">
-                                <a href="?network={{ current_network.slug }}&merge_view=orphans&merge_q={{ merge_q|urlencode }}&merge_podcast_id={{ merge_podcast_id }}" class="btn btn-sm fw-bold {% if merge_view == 'orphans' %}btn-warning text-dark{% else %}btn-outline-secondary{% endif %}">
+                                <a href="?network={{ current_network.slug }}&tab=merge&merge_view=orphans&merge_q={{ merge_q|urlencode }}&merge_podcast_id={{ merge_podcast_id }}" class="btn btn-sm fw-bold {% if merge_view == 'orphans' %}btn-warning text-dark{% else %}btn-outline-secondary{% endif %}">
                                     <i class="bi bi-link-45deg"></i> Merge Orphans
                                 </a>
-                                <a href="?network={{ current_network.slug }}&merge_view=matched&merge_q={{ merge_q|urlencode }}&merge_podcast_id={{ merge_podcast_id }}" class="btn btn-sm fw-bold {% if merge_view == 'matched' %}btn-warning text-dark{% else %}btn-outline-secondary{% endif %}">
+                                <a href="?network={{ current_network.slug }}&tab=merge&merge_view=matched&merge_q={{ merge_q|urlencode }}&merge_podcast_id={{ merge_podcast_id }}" class="btn btn-sm fw-bold {% if merge_view == 'matched' %}btn-warning text-dark{% else %}btn-outline-secondary{% endif %}">
                                     <i class="bi bi-scissors"></i> Split Matched
                                 </a>
                             </div>
@@ -20,6 +20,7 @@
 
                         <form method="GET" class="row gx-2 mb-4">
                             <input type="hidden" name="network" value="{{ current_network.slug }}">
+                            <input type="hidden" name="tab" value="merge">
                             <input type="hidden" name="merge_view" value="{{ merge_view }}">
                             
                             <div class="col-md-{% if merge_view == 'matched' %}3{% else %}4{% endif %} mb-2">
@@ -53,7 +54,7 @@
                         </form>
 
                         {% if merge_view == 'orphans' %}
-                        <form method="POST" action="{% url 'creator_settings' %}?network={{ current_network.slug }}">
+                        <form method="POST" action="{% url 'creator_settings' %}?network={{ current_network.slug }}&tab=merge">
                             {% csrf_token %}
                             <input type="hidden" name="action" value="merge_episodes">
                             <input type="hidden" name="merge_podcast_id" value="{{ merge_podcast_id }}">
@@ -85,10 +86,10 @@
                                         <small class="text-muted">Pg {{ public_orphans.number }} of {{ public_orphans.paginator.num_pages }}</small>
                                         <div class="btn-group">
                                             {% if public_orphans.has_previous %}
-                                            <a href="?network={{ current_network.slug }}&merge_view=orphans&merge_podcast_id={{ merge_podcast_id }}&merge_q={{ merge_q|urlencode }}&pub_page={{ public_orphans.previous_page_number }}&priv_page={{ private_orphans.number }}" class="btn btn-sm btn-outline-secondary"><i class="bi bi-chevron-left"></i></a>
+                                            <a href="?network={{ current_network.slug }}&tab=merge&merge_view=orphans&merge_podcast_id={{ merge_podcast_id }}&merge_q={{ merge_q|urlencode }}&pub_page={{ public_orphans.previous_page_number }}&priv_page={{ private_orphans.number }}" class="btn btn-sm btn-outline-secondary"><i class="bi bi-chevron-left"></i></a>
                                             {% endif %}
                                             {% if public_orphans.has_next %}
-                                            <a href="?network={{ current_network.slug }}&merge_view=orphans&merge_podcast_id={{ merge_podcast_id }}&merge_q={{ merge_q|urlencode }}&pub_page={{ public_orphans.next_page_number }}&priv_page={{ private_orphans.number }}" class="btn btn-sm btn-outline-secondary"><i class="bi bi-chevron-right"></i></a>
+                                            <a href="?network={{ current_network.slug }}&tab=merge&merge_view=orphans&merge_podcast_id={{ merge_podcast_id }}&merge_q={{ merge_q|urlencode }}&pub_page={{ public_orphans.next_page_number }}&priv_page={{ private_orphans.number }}" class="btn btn-sm btn-outline-secondary"><i class="bi bi-chevron-right"></i></a>
                                             {% endif %}
                                         </div>
                                     </div>
@@ -120,10 +121,10 @@
                                         <small class="text-muted">Pg {{ private_orphans.number }} of {{ private_orphans.paginator.num_pages }}</small>
                                         <div class="btn-group">
                                             {% if private_orphans.has_previous %}
-                                            <a href="?network={{ current_network.slug }}&merge_view=orphans&merge_podcast_id={{ merge_podcast_id }}&merge_q={{ merge_q|urlencode }}&pub_page={{ public_orphans.number }}&priv_page={{ private_orphans.previous_page_number }}" class="btn btn-sm btn-outline-secondary"><i class="bi bi-chevron-left"></i></a>
+                                            <a href="?network={{ current_network.slug }}&tab=merge&merge_view=orphans&merge_podcast_id={{ merge_podcast_id }}&merge_q={{ merge_q|urlencode }}&pub_page={{ public_orphans.number }}&priv_page={{ private_orphans.previous_page_number }}" class="btn btn-sm btn-outline-secondary"><i class="bi bi-chevron-left"></i></a>
                                             {% endif %}
                                             {% if private_orphans.has_next %}
-                                            <a href="?network={{ current_network.slug }}&merge_view=orphans&merge_podcast_id={{ merge_podcast_id }}&merge_q={{ merge_q|urlencode }}&pub_page={{ public_orphans.number }}&priv_page={{ private_orphans.next_page_number }}" class="btn btn-sm btn-outline-secondary"><i class="bi bi-chevron-right"></i></a>
+                                            <a href="?network={{ current_network.slug }}&tab=merge&merge_view=orphans&merge_podcast_id={{ merge_podcast_id }}&merge_q={{ merge_q|urlencode }}&pub_page={{ public_orphans.number }}&priv_page={{ private_orphans.next_page_number }}" class="btn btn-sm btn-outline-secondary"><i class="bi bi-chevron-right"></i></a>
                                             {% endif %}
                                         </div>
                                     </div>
@@ -154,7 +155,7 @@
                                     <small class="text-muted">{{ ep.pub_date|date:"M j, Y" }}</small>
                                 </div>
                                 
-                                <form method="POST" action="{% url 'creator_settings' %}?network={{ current_network.slug }}">
+                                <form method="POST" action="{% url 'creator_settings' %}?network={{ current_network.slug }}&tab=merge">
                                     {% csrf_token %}
                                     <input type="hidden" name="action" value="split_episode">
                                     <input type="hidden" name="episode_id" value="{{ ep.id }}">
@@ -173,10 +174,10 @@
                             <small class="text-muted">Page {{ matched_episodes.number }} of {{ matched_episodes.paginator.num_pages }}</small>
                             <div class="btn-group">
                                 {% if matched_episodes.has_previous %}
-                                <a href="?network={{ current_network.slug }}&merge_view=matched&merge_podcast_id={{ merge_podcast_id }}&merge_q={{ merge_q|urlencode }}&merge_reason={{ merge_reason|urlencode }}&match_page={{ matched_episodes.previous_page_number }}" class="btn btn-outline-secondary"><i class="bi bi-chevron-left"></i> Prev</a>
+                                <a href="?network={{ current_network.slug }}&tab=merge&merge_view=matched&merge_podcast_id={{ merge_podcast_id }}&merge_q={{ merge_q|urlencode }}&merge_reason={{ merge_reason|urlencode }}&match_page={{ matched_episodes.previous_page_number }}" class="btn btn-outline-secondary"><i class="bi bi-chevron-left"></i> Prev</a>
                                 {% endif %}
                                 {% if matched_episodes.has_next %}
-                                <a href="?network={{ current_network.slug }}&merge_view=matched&merge_podcast_id={{ merge_podcast_id }}&merge_q={{ merge_q|urlencode }}&merge_reason={{ merge_reason|urlencode }}&match_page={{ matched_episodes.next_page_number }}" class="btn btn-outline-secondary">Next <i class="bi bi-chevron-right"></i></a>
+                                <a href="?network={{ current_network.slug }}&tab=merge&merge_view=matched&merge_podcast_id={{ merge_podcast_id }}&merge_q={{ merge_q|urlencode }}&merge_reason={{ merge_reason|urlencode }}&match_page={{ matched_episodes.next_page_number }}" class="btn btn-outline-secondary">Next <i class="bi bi-chevron-right"></i></a>
                                 {% endif %}
                             </div>
                         </div>

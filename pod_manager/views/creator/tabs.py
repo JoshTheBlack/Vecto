@@ -10,8 +10,12 @@ Two tabs stay eager in the shell and are intentionally absent here:
   - network  : the default tab (small; would load immediately anyway) and its
                form-validation JS binds at page load.
   - gdrive   : already self-lazy — its JS fetches the file list on tab show.
-Merge is lazy too but keeps its own endpoint (merge_desk_partial) because its
-in-tab navigation re-fetches the same body.
+
+Merge is in the registry like everything else (S2.4). It used to keep its own
+endpoint, merge_desk_partial, on the grounds that its in-tab navigation
+re-fetches the same body — but that endpoint was this router with the tab
+hardcoded: same owner gate, same non-HX redirect, same context build. Its
+in-tab links now point at ?tab=merge and the endpoint is gone.
 """
 from django.contrib.auth.decorators import login_required
 from django.http import Http404
@@ -37,6 +41,10 @@ def _move(request, net):
 
 def _crosspub(request, net):
     return {**_data.gather_cross_publish_context(request, net), 'network_podcasts': _data.network_podcast_list(net)}
+
+
+def _merge(request, net):
+    return {**_data.gather_merge_desk(request, net), 'network_podcasts': _data.network_podcast_list(net)}
 
 
 def _sync(request, net):
@@ -66,6 +74,7 @@ def _notfound(request, net):
 TAB_CONTENT = {
     'shows':       (_shows,                   'pod_manager/creator_tabs/tab_podcasts.html'),
     'mixes':       (_mixes,                   'pod_manager/creator_tabs/tab_mixes.html'),
+    'merge':       (_merge,                   'pod_manager/creator_tabs/_merge_desk_body.html'),
     'move':        (_move,                    'pod_manager/creator_tabs/tab_move.html'),
     'crosspub':    (_crosspub,                'pod_manager/creator_tabs/tab_cross_publish.html'),
     'sync':        (_sync,                    'pod_manager/creator_tabs/tab_sync.html'),

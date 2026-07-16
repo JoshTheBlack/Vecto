@@ -41,7 +41,6 @@ from .feeds import (
 
 from .creator import (
     creator_settings,
-    merge_desk_partial,
     creator_show_form,
     creator_mix_form,
     creator_audit_edit,

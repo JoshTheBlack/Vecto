@@ -2103,12 +2103,17 @@ class CreatorMergeAndMoveTests(TestCase):
         self.assertEqual(Episode.objects.filter(podcast=self.podcast, title='Paired').count(), 2)
 
     def _merge_partial(self, data, *, hx=True, user=None):
+        # S2.4 folded merge_desk_partial into the creator_tab_partial registry —
+        # that endpoint was this router with the tab hardcoded (same owner gate,
+        # same non-HX redirect, same context build). These tests are unchanged
+        # otherwise: they still pin the fragment/redirect contract, now via the
+        # router.
         req = _make_tenant_request(self.factory, self.network,
-                                   method='get', path='/creator/merge-desk/',
+                                   method='get', path='/creator/tab/merge/',
                                    data=data, user=user or self.owner)
         if hx:
             req.META['HTTP_HX_REQUEST'] = 'true'
-        return views.merge_desk_partial(req)
+        return views.creator_tab_partial(req, 'merge')
 
     def test_merge_partial_hx_returns_body_fragment_only(self):
         self._ep(title='LonelyPublic', guid_public='pub-guid')  # a public orphan

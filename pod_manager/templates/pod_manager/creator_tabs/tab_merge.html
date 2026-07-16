@@ -1,6 +1,6 @@
 <div class="tab-pane fade {% if request.GET.tab == 'merge' %}show active{% endif %}" id="list-merge" role="tabpanel">
     <div id="merge-desk-body"
-         hx-get="{% url 'merge_desk_partial' %}?network={{ current_network.slug }}&{{ request.GET.urlencode }}"
+         hx-get="{% url 'creator_tab_partial' 'merge' %}?network={{ current_network.slug }}&{{ request.GET.urlencode }}"
          hx-trigger="{% if request.GET.tab == 'merge' %}load{% else %}shown.bs.tab from:#list-merge-list once{% endif %}"
          hx-target="#merge-desk-body" hx-select="unset" hx-swap="innerHTML show:window:top" hx-push-url="false">
         <div class="text-center py-5 text-muted">

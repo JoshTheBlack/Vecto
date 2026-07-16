@@ -24,7 +24,6 @@ from ...utils import diagnostic_page, sanitize_user_html
 from .actions import ACTION_HANDLERS
 from .data import (
     annotate_audit_edit,
-    gather_merge_desk,
     network_podcast_list,
 )
 
@@ -76,32 +75,6 @@ def _resolve_creator_network(request):
         return None, HttpResponseForbidden("No creator access.")
     current_network = allowed_networks.filter(slug=request.GET.get('network')).first() or allowed_networks.first()
     return current_network, None
-
-
-@login_required(login_url='/login/')
-@diagnostic_page("Merge Desk (partial)")
-def merge_desk_partial(request):
-    """Lightweight AJAX endpoint backing the Merge Desk tab. On an htmx request
-    it runs only gather_merge_desk and renders the merge body fragment, so a
-    mode switch / search / pagination no longer re-runs the entire settings
-    view. A direct hit (reload, bookmark, no-JS) redirects to the full page on
-    the merge tab so the URL stays reloadable."""
-    current_network, forbidden = _resolve_creator_network(request)
-    if forbidden:
-        return forbidden
-
-    if not request.headers.get('HX-Request'):
-        params = request.GET.copy()
-        params.pop('network', None)
-        params['tab'] = 'merge'
-        return redirect(f"{reverse('creator_settings')}?network={current_network.slug}&{params.urlencode()}")
-
-    context = {
-        'current_network': current_network,
-        'network_podcasts': network_podcast_list(current_network),
-        **gather_merge_desk(request, current_network),
-    }
-    return render(request, 'pod_manager/creator_tabs/_merge_desk_body.html', context)
 
 
 @login_required(login_url='/login/')

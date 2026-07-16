@@ -20,7 +20,6 @@ urlpatterns = [
     
     # Creator Route
     path('creator/', views.creator_settings, name='creator_settings'),
-    path('creator/merge-desk/', views.merge_desk_partial, name='merge_desk_partial'),
     path('creator/show/<int:show_id>/form/', views.creator_show_form, name='creator_show_form'),
     path('creator/mix/<int:mix_id>/form/', views.creator_mix_form, name='creator_mix_form'),
     path('creator/audit/<int:edit_id>/diff/', views.creator_audit_edit, name='creator_audit_edit'),

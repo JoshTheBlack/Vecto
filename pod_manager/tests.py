@@ -10058,6 +10058,25 @@ class HomeBaseSwapTests(BaseSwapRolloutMixin, TestCase):
         self.url = reverse('home')
 
 
+@override_settings(ALLOWED_HOSTS=['*'])
+class UserFeedsBaseSwapTests(BaseSwapRolloutMixin, TestCase):
+    """user_feeds renders the authenticated listener dashboard; its content block
+    carries a big <style> + the feed grid, all of which must ride along in the
+    fragment while the chrome does not."""
+
+    CONTENT_MARKER = 'id="feedGrid"'
+
+    def setUp(self):
+        cache.clear()
+        self.network = Network.objects.create(
+            name='FeedNet', slug='feednet', custom_domain='feednet.example.test')
+        self.user = User.objects.create_user(username='feeduser', password='pw')
+        PatronProfile.objects.create(user=self.user, patreon_id=None)
+        self.client.force_login(self.user)
+        self.host = 'feednet.example.test'
+        self.url = reverse('user_feeds')
+
+
 class LazyPaneBoostTargetTests(TestCase):
     """_lazy_pane must hand #boosted-region down to the forms/links in the loaded
     tab body, so a boosted action inside a creator tab (e.g. approving a

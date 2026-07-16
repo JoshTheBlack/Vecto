@@ -10082,6 +10082,51 @@ class UserFeedsBaseSwapTests(BaseSwapRolloutMixin, TestCase):
         self.url = reverse('user_feeds')
 
 
+@override_settings(ALLOWED_HOSTS=['*'])
+class UserProfileBaseSwapTests(BaseSwapRolloutMixin, TestCase):
+    """user_profile is login_required, so this also covers a converted view whose
+    content is gated — the fragment must still be the region, not a redirect."""
+
+    CONTENT_MARKER = 'id="profileTabs"'
+
+    def setUp(self):
+        cache.clear()
+        self.network = Network.objects.create(
+            name='ProfNet', slug='profnet', custom_domain='profnet.example.test')
+        self.user = User.objects.create_user(username='profuser', password='pw')
+        PatronProfile.objects.create(user=self.user, patreon_id=None)
+        self.client.force_login(self.user)
+        self.host = 'profnet.example.test'
+        self.url = reverse('user_profile')
+
+
+@override_settings(ALLOWED_HOSTS=['*'])
+class LogViewerBaseSwapTests(BaseSwapRolloutMixin, TestCase):
+    """log_viewer is staff-gated and its content block carries live JS (the SSE
+    log stream + the resource-monitor poller). The base-swap conversion is what
+    keeps that script in the fragment: it lives in {% block content %}, so it
+    rides along on a boosted swap exactly as it does on a full load."""
+
+    CONTENT_MARKER = 'id="log-feed"'
+
+    def setUp(self):
+        cache.clear()
+        self.network = Network.objects.create(
+            name='LogNet', slug='lognet', custom_domain='lognet.example.test')
+        self.user = User.objects.create_user(
+            username='staffuser', password='pw', is_staff=True)
+        self.client.force_login(self.user)
+        self.host = 'lognet.example.test'
+        self.url = reverse('log_viewer')
+
+    def test_fragment_carries_the_in_content_scripts(self):
+        # The live log stream + resource monitor only work if their in-content
+        # script survives the swap. Guard that the fragment isn't just markup.
+        body = self._get(boosted=True).content.decode('utf-8')
+        self.assertIn('<script', body)
+        self.assertIn('id="res-panel"', body)
+
+
 class LazyPaneBoostTargetTests(TestCase):
     """_lazy_pane must hand #boosted-region down to the forms/links in the loaded
     tab body, so a boosted action inside a creator tab (e.g. approving a

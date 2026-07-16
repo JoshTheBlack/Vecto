@@ -13,10 +13,23 @@ Params:
   exclude_id       (optional) a single podcast id to omit from the list
                    entirely (used to keep a feed out of its own destination
                    picker)
+  shared_template  (optional) when true, render ONLY the selected options up
+                   front and lazily clone the full option list from a shared
+                   <template data-sms-options-template="field_name"> on first
+                   open. Use on pages with many widgets over the same
+                   podcast_list (e.g. the 88-show Manage Podcasts accordion) to
+                   avoid an O(widgets x shows) DOM. Requires that page to also
+                   include show_multiselect_options_template.html once.
+  selected_rows    (optional) when true, render a list of the selected shows as
+                   rows (artwork + title + remove) below the bar, kept in sync
+                   with the checkboxes. Use where the selection itself is the
+                   point (curating a mix / a transcription queue) rather than a
+                   compact secondary picker.
 
 Include 'pod_manager/snippets/show_multiselect_assets.html' once per page.
 {% endcomment %}
-<div class="sms" data-sms{% if parent_select_id %} data-sms-parent-select="{{ parent_select_id }}"{% endif %}>
+<div class="sms" data-sms{% if parent_select_id %} data-sms-parent-select="{{ parent_select_id }}"{% endif %}{% if shared_template %} data-sms-shared="1" data-sms-field="{{ field_name }}" data-sms-exclude="{{ exclude_id }}"{% endif %}>
+    <div class="sms-combo">
     <div class="sms-bar" tabindex="0" role="combobox" aria-expanded="false" aria-haspopup="listbox" aria-label="Select shows">
         <span class="show-filter-lead"><i class="bi bi-broadcast"></i></span>
         <span class="show-filter-chips" data-sms-chips>
@@ -32,17 +45,9 @@ Include 'pod_manager/snippets/show_multiselect_assets.html' once per page.
         <div class="show-filter-list" data-sms-list role="listbox" aria-multiselectable="true">
             {% for podcast in podcast_list %}
             {% if podcast.id != exclude_id %}
-            <label class="show-filter-option" data-title="{{ podcast.title|lower }}" data-pod-id="{{ podcast.id }}">
-                <input type="checkbox" class="form-check-input show-filter-check" name="{{ field_name }}" value="{{ podcast.id }}"
-                       data-pod-title="{{ podcast.title }}" data-pod-img="{{ podcast.image_url }}"
-                       {% if podcast.id in selected_ids %}checked{% endif %}>
-                {% if podcast.image_url %}
-                    <img src="{{ podcast.image_url }}" alt="" class="show-filter-option-img" loading="lazy">
-                {% else %}
-                    <span class="show-filter-option-img show-filter-option-fallback"><i class="bi bi-mic-fill"></i></span>
-                {% endif %}
-                <span class="show-filter-option-title">{{ podcast.title }}</span>
-            </label>
+            {% if not shared_template or podcast.id in selected_ids %}
+            {% include 'pod_manager/snippets/_sms_option.html' %}
+            {% endif %}
             {% endif %}
             {% endfor %}
             <div class="show-filter-empty d-none" data-sms-empty>No shows match.</div>
@@ -52,4 +57,6 @@ Include 'pod_manager/snippets/show_multiselect_assets.html' once per page.
             <span class="show-filter-count" data-sms-count></span>
         </div>
     </div>
+    </div>
+    {% if selected_rows %}<div class="sms-rows" data-sms-rows></div>{% endif %}
 </div>

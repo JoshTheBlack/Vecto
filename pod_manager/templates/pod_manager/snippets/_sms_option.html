@@ -1,0 +1,13 @@
+<label class="show-filter-option" data-title="{{ podcast.title|lower }}" data-pod-id="{{ podcast.id }}">
+    <input type="checkbox" class="form-check-input show-filter-check" name="{{ field_name }}" value="{{ podcast.id }}"
+           data-pod-title="{{ podcast.title }}" data-pod-img="{{ podcast.image_url }}"
+           data-pod-episodes="{{ podcast.episode_count|default:'' }}"
+           data-pod-lastpub="{% if podcast.latest_episode_date %}{{ podcast.latest_episode_date|date:'M j, Y' }}{% endif %}"
+           {% if selected_ids and podcast.id in selected_ids %}checked{% endif %}>
+    {% if podcast.image_url %}
+        <img src="{{ podcast.image_url }}" alt="" class="show-filter-option-img" loading="lazy">
+    {% else %}
+        <span class="show-filter-option-img show-filter-option-fallback"><i class="bi bi-mic-fill"></i></span>
+    {% endif %}
+    <span class="show-filter-option-title">{{ podcast.title }}</span>
+</label>

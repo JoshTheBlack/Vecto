@@ -217,16 +217,48 @@ function refreshAllHiddenWarnings() {
     accordion.querySelectorAll('form').forEach(refreshHiddenWarning);
 }
 
-(function () {
+// Bind the Manage Podcasts accordion. Idempotent (guarded by a dataset flag)
+// and re-callable: the tab is lazy-loaded, so #showsAccordion may not exist at
+// page load and only arrives via htmx:load.
+function initShowsAccordion() {
     const accordion = document.getElementById('showsAccordion');
-    if (!accordion) return;
+    if (!accordion || accordion.dataset.accordionInit) return;
+    accordion.dataset.accordionInit = '1';
+
     accordion.addEventListener('change', (e) => {
         if (e.target.matches('.cp-hidden-toggle') || e.target.matches('input[name="auto_crosspublish_target_ids"]')) {
             refreshHiddenWarning(e.target.closest('form'));
         }
     });
+
+    // Bring the expanded show's header row to the top of the viewport (just
+    // below the sticky nav). window.scrollTo clamps to the max scroll, so near
+    // the page bottom it simply lands as close to the top as it can.
+    accordion.addEventListener('shown.bs.collapse', (e) => {
+        const item = e.target.closest('.accordion-item');
+        if (!item) return;
+        const nav = document.querySelector('.sticky-top');
+        const offset = (nav ? nav.offsetHeight : 0) + 8;
+        const y = item.getBoundingClientRect().top + window.pageYOffset - offset;
+        window.scrollTo({ top: Math.max(0, y), behavior: 'smooth' });
+    });
+
     refreshAllHiddenWarnings();
-})();
+}
+
+initShowsAccordion();
+
+// The Manage Podcasts tab and each show form arrive later via htmx: (re)bind the
+// accordion, and refresh any freshly-swapped show form's hidden-feed warning.
+// VectoPage.on tears the listener down before the next boosted swap.
+if (window.VectoPage) {
+    window.VectoPage.on(document.body, 'htmx:load', (e) => {
+        initShowsAccordion();
+        if (e.target && e.target.querySelectorAll) {
+            e.target.querySelectorAll('form').forEach(refreshHiddenWarning);
+        }
+    });
+}
 
 // ==========================================
 // LIVE FILTERING (AJAX)
@@ -242,18 +274,16 @@ function applyLiveFilter() {
     // 300ms debounce so we don't spam requests on every single keystroke
     filterTimeout = setTimeout(() => {
         const form = document.getElementById('manage-podcasts-form');
-        const url = new URL(window.location.pathname, window.location.origin);
-
-        // Grab all inputs from the form automatically
         const params = new URLSearchParams(new FormData(form));
 
-        fetch(url.pathname + '?' + params.toString())
+        // The Manage Podcasts tab is lazy — its accordion lives in the shows
+        // partial now, not the full page — so fetch that fragment directly.
+        fetch('/creator/tab/shows/?' + params.toString(), { headers: { 'HX-Request': 'true' } })
             .then(response => response.text())
             .then(html => {
                 const parser = new DOMParser();
                 const doc = parser.parseFromString(html, 'text/html');
 
-                // Extract just the new accordion HTML and replace the old one
                 const newAccordion = doc.getElementById('showsAccordion');
                 if (newAccordion) {
                     accordion.innerHTML = newAccordion.innerHTML;
@@ -261,8 +291,8 @@ function applyLiveFilter() {
 
                 refreshAllHiddenWarnings();
                 accordion.style.opacity = '1';
-                // Silently update the URL bar so browser back-buttons still work
-                window.history.replaceState({}, '', url.pathname + '?' + params.toString() + '#list-shows');
+                // Mirror the filter into the address bar so a reload restores it.
+                window.history.replaceState({}, '', window.location.pathname + '?' + params.toString() + '&tab=shows#list-shows');
             })
             .catch(error => {
                 console.error("Live filter failed:", error);

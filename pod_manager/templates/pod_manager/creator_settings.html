@@ -53,10 +53,10 @@
             <a class="list-group-item list-group-item-action border-secondary {% if request.GET.tab == 'audit' %}active{% endif %}" id="list-audit-list" data-bs-toggle="list" href="#list-audit" role="tab">
                 <i class="bi bi-shield-check me-2"></i> Audit Log
             </a>
-            <a class="list-group-item list-group-item-action border-secondary" id="list-sync-list" data-bs-toggle="list" href="#list-sync" role="tab">
+            <a class="list-group-item list-group-item-action border-secondary {% if request.GET.tab == 'sync' %}active{% endif %}" id="list-sync-list" data-bs-toggle="list" href="#list-sync" role="tab">
                 <i class="bi bi-people me-2"></i> Patreon Sync
             </a>
-            <a class="list-group-item list-group-item-action border-secondary" id="list-gdrive-recovery-list" data-bs-toggle="list" href="#list-gdrive-recovery" role="tab">
+            <a class="list-group-item list-group-item-action border-secondary {% if request.GET.tab == 'gdrive' %}active{% endif %}" id="list-gdrive-recovery-list" data-bs-toggle="list" href="#list-gdrive-recovery" role="tab">
                 <i class="bi bi-cloud-arrow-down me-2 text-warning"></i> GDrive Recovery
             </a>
             <a class="list-group-item list-group-item-action border-secondary {% if request.GET.tab == 'transcripts' %}active{% endif %}" id="list-transcripts-list" data-bs-toggle="list" href="#list-transcripts" role="tab">
@@ -73,32 +73,33 @@
             
             {% include 'pod_manager/creator_tabs/tab_network.html' %}
 
-            {% include 'pod_manager/creator_tabs/tab_podcasts.html' %}
+            {% include 'pod_manager/creator_tabs/_lazy_pane.html' with tab_name='shows' pane_id='list-shows' link_id='list-shows-list' active_tab=request.GET.tab %}
 
-            {% include 'pod_manager/creator_tabs/tab_mixes.html' %}
+            {% include 'pod_manager/creator_tabs/_lazy_pane.html' with tab_name='mixes' pane_id='list-mixes' link_id='list-mixes-list' active_tab=request.GET.tab %}
 
             {% include 'pod_manager/creator_tabs/tab_merge.html' %}
 
-            {% include 'pod_manager/creator_tabs/tab_move.html' %}
+            {% include 'pod_manager/creator_tabs/_lazy_pane.html' with tab_name='move' pane_id='list-move' link_id='list-move-list' active_tab=request.GET.tab %}
 
-            {% include 'pod_manager/creator_tabs/tab_cross_publish.html' %}
+            {% include 'pod_manager/creator_tabs/_lazy_pane.html' with tab_name='crosspub' pane_id='list-crosspub' link_id='list-crosspub-list' active_tab=request.GET.tab %}
 
-            {% include 'pod_manager/creator_tabs/tab_sync.html' %}
+            {% include 'pod_manager/creator_tabs/_lazy_pane.html' with tab_name='sync' pane_id='list-sync' link_id='list-sync-list' active_tab=request.GET.tab %}
 
-            {% include 'pod_manager/creator_tabs/tab_inbox.html' %}
+            {% include 'pod_manager/creator_tabs/_lazy_pane.html' with tab_name='inbox' pane_id='list-inbox' link_id='list-inbox-list' active_tab=request.GET.tab %}
 
-            {% include 'pod_manager/creator_tabs/tab_audit_log.html' %}
+            {% include 'pod_manager/creator_tabs/_lazy_pane.html' with tab_name='audit' pane_id='list-audit' link_id='list-audit-list' active_tab=request.GET.tab %}
 
             {% include 'pod_manager/creator_tabs/tab_gdrive_recovery.html' %}
 
-            {% include 'pod_manager/creator_tabs/tab_transcripts.html' %}
+            {% include 'pod_manager/creator_tabs/_lazy_pane.html' with tab_name='transcripts' pane_id='list-transcripts' link_id='list-transcripts-list' active_tab=request.GET.tab %}
 
-            {% include 'pod_manager/creator_tabs/tab_notfound.html' %}
+            {% include 'pod_manager/creator_tabs/_lazy_pane.html' with tab_name='notfound' pane_id='list-notfound' link_id='list-notfound-list' active_tab=request.GET.tab %}
 
         </div>
     </div>
 </div>
-<script src="{% static 'pod_manager/js/creator_tabs.js' %}?v=3"></script>
+{% include 'pod_manager/snippets/show_multiselect_assets.html' %}
+<script src="{% static 'pod_manager/js/creator_tabs.js' %}?v=5"></script>
 <script src="{% static 'pod_manager/js/gdrive_recovery.js' %}?v=2"></script>
 
 <style>

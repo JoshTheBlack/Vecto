@@ -2101,6 +2101,107 @@ class CreatorMergeAndMoveTests(TestCase):
         # A new episode with the same title must exist
         self.assertEqual(Episode.objects.filter(podcast=self.podcast, title='Paired').count(), 2)
 
+    def _merge_partial(self, data, *, hx=True, user=None):
+        req = _make_tenant_request(self.factory, self.network,
+                                   method='get', path='/creator/merge-desk/',
+                                   data=data, user=user or self.owner)
+        if hx:
+            req.META['HTTP_HX_REQUEST'] = 'true'
+        return views.merge_desk_partial(req)
+
+    def test_merge_partial_hx_returns_body_fragment_only(self):
+        self._ep(title='LonelyPublic', guid_public='pub-guid')  # a public orphan
+        resp = self._merge_partial({'network': self.network.slug, 'merge_view': 'orphans'})
+        self.assertEqual(resp.status_code, 200)
+        html = resp.content.decode()
+        self.assertIn('Data Reconciliation', html)
+        self.assertIn('LonelyPublic', html)
+        # The fragment must be ONLY the merge body — not the whole settings page.
+        self.assertNotIn('id="list-tab"', html)
+        self.assertNotIn('id="networkSettingsForm"', html)
+
+    def test_merge_partial_direct_get_redirects_to_full_page(self):
+        resp = self._merge_partial(
+            {'network': self.network.slug, 'merge_view': 'matched', 'merge_q': 'x'},
+            hx=False,
+        )
+        self.assertEqual(resp.status_code, 302)
+        self.assertIn('/creator/?', resp['Location'])
+        self.assertIn('tab=merge', resp['Location'])
+        self.assertIn('merge_view=matched', resp['Location'])
+
+    def test_merge_partial_forbidden_for_non_owner(self):
+        stranger = User.objects.create_user(username='stranger')
+        resp = self._merge_partial({'network': self.network.slug}, user=stranger)
+        self.assertEqual(resp.status_code, 403)
+
+    def _show_form(self, show, *, user=None):
+        req = _make_tenant_request(self.factory, self.network,
+                                   method='get', path='/creator/show/%d/form/' % show.id,
+                                   data={'network': self.network.slug}, user=user or self.owner)
+        return views.creator_show_form(req, show.id)
+
+    def test_show_form_renders_for_owner(self):
+        resp = self._show_form(self.podcast)
+        self.assertEqual(resp.status_code, 200)
+        html = resp.content.decode()
+        self.assertIn('value="update_show"', html)
+        self.assertIn('name="show_id"', html)
+        self.assertIn('Transcription Overrides', html)
+        # It's a fragment, not the whole page.
+        self.assertNotIn('id="list-tab"', html)
+
+    def test_show_form_404_for_show_outside_network(self):
+        from django.http import Http404
+        other = Network.objects.create(name='Other', slug='o2')
+        other.owners.add(self.owner)
+        stray = Podcast.objects.create(network=other, title='Stray', slug='stray')
+        # Requested with ?network=n (self.network), so the stray show must 404.
+        with self.assertRaises(Http404):
+            self._show_form(stray)
+
+    def test_show_form_forbidden_for_non_owner(self):
+        stranger = User.objects.create_user(username='stranger2')
+        resp = self._show_form(self.podcast, user=stranger)
+        self.assertEqual(resp.status_code, 403)
+
+    def _tab_partial(self, tab, *, hx=True, user=None):
+        req = _make_tenant_request(self.factory, self.network,
+                                   method='get', path='/creator/tab/%s/' % tab,
+                                   data={'network': self.network.slug}, user=user or self.owner)
+        if hx:
+            req.META['HTTP_HX_REQUEST'] = 'true'
+        return views.creator_tab_partial(req, tab)
+
+    def test_tab_partial_hx_renders_fragment(self):
+        resp = self._tab_partial('audit')
+        self.assertEqual(resp.status_code, 200)
+        self.assertNotIn('id="list-tab"', resp.content.decode())
+
+    def test_tab_partial_direct_get_redirects_to_full_page(self):
+        resp = self._tab_partial('audit', hx=False)
+        self.assertEqual(resp.status_code, 302)
+        self.assertIn('tab=audit', resp['Location'])
+
+    def test_tab_partial_unknown_tab_404(self):
+        from django.http import Http404
+        with self.assertRaises(Http404):
+            self._tab_partial('bogus')
+
+    def test_tab_partial_renders_every_registered_tab(self):
+        from pod_manager.views.creator.tabs import TAB_CONTENT
+        for name in TAB_CONTENT:
+            resp = self._tab_partial(name)
+            self.assertEqual(resp.status_code, 200, "tab %r failed to render" % name)
+            # Body-only fragment: the tab-pane wrapper belongs to the shell.
+            self.assertNotIn('tab-pane fade', resp.content.decode(),
+                             "tab %r leaked its pane wrapper" % name)
+
+    def test_tab_partial_forbidden_for_non_owner(self):
+        stranger = User.objects.create_user(username='stranger3')
+        resp = self._tab_partial('audit', user=stranger)
+        self.assertEqual(resp.status_code, 403)
+
     def test_move_episodes_to_existing_podcast(self):
         target = Podcast.objects.create(network=self.network, title='Target', slug='target')
         ep = self._ep(title='Traveller')

@@ -20,6 +20,9 @@ urlpatterns = [
     
     # Creator Route
     path('creator/', views.creator_settings, name='creator_settings'),
+    path('creator/merge-desk/', views.merge_desk_partial, name='merge_desk_partial'),
+    path('creator/show/<int:show_id>/form/', views.creator_show_form, name='creator_show_form'),
+    path('creator/tab/<str:tab>/', views.creator_tab_partial, name='creator_tab_partial'),
 
     # Public per-network release calendar (Feature 4, A14)
     path('calendar/', views.calendar_page, name='calendar'),

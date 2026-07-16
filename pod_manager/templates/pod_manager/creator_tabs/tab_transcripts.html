@@ -1,4 +1,3 @@
-<div class="tab-pane fade {% if request.GET.tab == 'transcripts' %}show active{% endif %}" id="list-transcripts" role="tabpanel" aria-labelledby="list-transcripts-list">
 
     <div class="card bg-dark border-secondary shadow-sm mt-4 mb-4">
         <div class="card-body">
@@ -11,8 +10,8 @@
                 Episodes already pending, processing, or completed are skipped automatically.
             </p>
 
-            <!-- Podcast picker -->
-            <div class="mb-4">
+            {{ transcript_slug_map|json_script:"transcript-slug-map" }}
+            <div class="mb-4" id="transcriptPicker">
                 <div class="d-flex justify-content-between align-items-center mb-2">
                     <label class="form-label text-light fw-semibold mb-0">Podcasts to backfill</label>
                     <div class="d-flex gap-1">
@@ -20,31 +19,10 @@
                         <button type="button" id="transcriptDeselectAll" class="btn btn-sm btn-outline-secondary py-0 px-2">Deselect All</button>
                     </div>
                 </div>
-                <div class="row row-cols-1 row-cols-md-2 g-2" id="podcastCheckboxes">
-                    {% for podcast in network_podcasts %}
-                    <div class="col">
-                        <label class="podcast-check-label d-flex align-items-center gap-2 border border-secondary rounded px-3 py-2 h-100 cursor-pointer"
-                               for="pc_{{ podcast.slug }}" style="cursor:pointer;">
-                            <input class="form-check-input flex-shrink-0 podcast-check mt-0"
-                                   type="checkbox"
-                                   value="{{ podcast.slug }}"
-                                   id="pc_{{ podcast.slug }}"
-                                   checked>
-                            <span class="text-light small">
-                                {{ podcast.title }}
-                                <span class="text-muted ms-1">({{ podcast.episode_count }} ep{{ podcast.episode_count|pluralize }})</span>
-                            </span>
-                        </label>
-                    </div>
-                    {% empty %}
-                    <div class="col">
-                        <p class="text-muted small mb-0">No podcasts found for this network.</p>
-                    </div>
-                    {% endfor %}
-                </div>
+                {% include 'pod_manager/snippets/show_multiselect.html' with field_name='backfill_podcasts' podcast_list=network_podcasts selected_ids=transcript_all_ids placeholder='No podcasts selected' selected_rows=True %}
             </div>
 
-            <!-- Stagger setting -->
+            {# Stagger setting #}
             <div class="mb-4" style="max-width:300px;">
                 <label for="backfillStagger" class="form-label text-light fw-semibold mb-1">
                     Dispatch stagger
@@ -62,7 +40,7 @@
                 </div>
             </div>
 
-            <!-- Transcription options panel -->
+            {# Transcription options panel #}
             <div class="mb-3">
                 <button type="button" class="btn btn-sm btn-outline-secondary" id="toggleBackfillOptions">
                     <i class="bi bi-sliders me-1"></i>Transcription Options
@@ -121,7 +99,7 @@
                 </div>
             </div>
 
-            <!-- Run button + spinner -->
+            {# Run button + spinner #}
             <div class="d-flex align-items-center gap-3 flex-wrap mb-3">
                 <button type="button" id="runBackfillBtn"
                         class="btn fw-bold"
@@ -135,7 +113,7 @@
                 </div>
             </div>
 
-            <!-- Result panel -->
+            {# Result panel #}
             <div id="backfillResult" class="d-none">
                 <div class="border border-secondary rounded p-3">
                     <div class="d-flex align-items-center gap-2 mb-2">
@@ -147,7 +125,7 @@
                 </div>
             </div>
 
-            <!-- Error panel -->
+            {# Error panel #}
             <div id="backfillErrorPanel" class="d-none mt-2">
                 <div class="alert alert-danger border-0 py-2 small mb-0" id="backfillErrorText"></div>
             </div>
@@ -155,7 +133,6 @@
         </div>
     </div>
 
-</div>
 
 <script>
 (function () {
@@ -195,31 +172,21 @@
             new bootstrap.Tooltip(el, { trigger: 'hover' });
         });
 
-        document.getElementById('transcriptSelectAll').addEventListener('click', () => {
-            document.querySelectorAll('.podcast-check').forEach(c => c.checked = true);
-            syncCheckboxStyles();
-        });
-        document.getElementById('transcriptDeselectAll').addEventListener('click', () => {
-            document.querySelectorAll('.podcast-check').forEach(c => c.checked = false);
-            syncCheckboxStyles();
-        });
-
-        // Highlight selected rows
-        function syncCheckboxStyles() {
-            document.querySelectorAll('.podcast-check').forEach(cb => {
-                const label = cb.closest('.podcast-check-label');
-                if (!label) return;
-                label.style.borderColor = cb.checked ? 'var(--vecto-primary)' : '';
-                label.style.backgroundColor = cb.checked ? 'rgba(255,193,7,0.05)' : '';
-            });
+        // The picker is the shared chip widget — toggle its checkboxes and fire
+        // a change so its chips/rows/count re-sync.
+        function setAllBackfill(state) {
+            document.querySelectorAll('#transcriptPicker .show-filter-check').forEach(c => { c.checked = state; });
+            const list = document.querySelector('#transcriptPicker [data-sms-list]');
+            if (list) list.dispatchEvent(new Event('change', { bubbles: true }));
         }
-        document.querySelectorAll('.podcast-check').forEach(cb => {
-            cb.addEventListener('change', syncCheckboxStyles);
-        });
-        syncCheckboxStyles();
+        document.getElementById('transcriptSelectAll').addEventListener('click', () => setAllBackfill(true));
+        document.getElementById('transcriptDeselectAll').addEventListener('click', () => setAllBackfill(false));
 
         runBtn.addEventListener('click', async () => {
-            const slugs = [...document.querySelectorAll('.podcast-check:checked')].map(c => c.value);
+            const slugMapEl = document.getElementById('transcript-slug-map');
+            const slugMap = slugMapEl ? JSON.parse(slugMapEl.textContent) : {};
+            const slugs = [...document.querySelectorAll('#transcriptPicker .show-filter-check:checked')]
+                .map(c => slugMap[c.value]).filter(Boolean);
             if (!slugs.length) {
                 errorPanel.classList.remove('d-none');
                 errorText.textContent = 'Select at least one podcast before queuing.';

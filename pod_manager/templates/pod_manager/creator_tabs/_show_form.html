@@ -1,0 +1,195 @@
+{% comment %}
+One show's settings form, lazy-loaded into its accordion row on first expand
+via the creator_show_form endpoint, so the Manage Podcasts tab ships 88
+lightweight headers instead of 88 full forms. The small Data Ingestion panel
+(import button + terminal) stays inline in tab_podcasts so "Import All" can
+reach every show without expanding it first. Context: show, current_network,
+network_podcasts.
+{% endcomment %}
+<form method="POST" action="{% url 'creator_settings' %}?network={{ current_network.slug }}&tab=shows">
+    {% csrf_token %}
+    <input type="hidden" name="action" value="update_show">
+    <input type="hidden" name="show_id" value="{{ show.id }}">
+
+    <div class="row">
+        <div class="col-md-6 mb-3">
+            <label class="form-label text-muted small fw-bold">Public Feed RSS URL</label>
+            <input type="url" name="public_feed_url" class="form-control bg-dark text-light border-secondary" value="{{ show.public_feed_url|default_if_none:'' }}" placeholder="https://... (Leave blank if Premium-Only)">
+        </div>
+        <div class="col-md-6 mb-3">
+            <label class="form-label text-muted small fw-bold">Subscriber Feed URL (Base)</label>
+            <input type="url" name="subscriber_feed_url" class="form-control bg-dark text-light border-secondary" value="{{ show.subscriber_feed_url|default_if_none:'' }}" placeholder="https://... (Leave blank if Public-Only)">
+        </div>
+    </div>
+
+    <div class="mb-3">
+        <label class="form-label text-muted small fw-bold">Required Patreon Tier</label>
+        <select name="tier_id" class="form-select bg-dark text-light border-secondary">
+            <option value="">Public / Free</option>
+            {% for tier in current_network.tiers.all %}
+                <option value="{{ tier.id }}" {% if show.required_tier_id == tier.id %}selected{% endif %}>
+                    ${{ tier.minimum_dollars|floatformat:2 }} - {{ tier.name }}
+                </option>
+            {% endfor %}
+        </select>
+    </div>
+
+    <div class="mb-3">
+        <label class="form-label text-muted small fw-bold">Show-Specific Public Footer (Optional)</label>
+        <textarea name="show_footer_public" class="form-control bg-dark text-light border-secondary" rows="2">{{ show.show_footer_public }}</textarea>
+    </div>
+
+    <div class="mb-4">
+        <label class="form-label text-muted small fw-bold">Show-Specific Private Footer (Optional)</label>
+        <textarea name="show_footer_private" class="form-control bg-dark text-light border-secondary" rows="2">{{ show.show_footer_private }}</textarea>
+    </div>
+
+    <h6 class="fw-semibold mb-2 mt-3 text-warning border-bottom border-secondary pb-1">
+        <i class="bi bi-file-earmark-text me-1"></i>Transcription Overrides
+        <span class="text-muted fw-normal small ms-1">(leave blank to inherit network defaults)</span>
+    </h6>
+    <div class="row g-2 mb-2">
+        <div class="col-md-5">
+            <label class="form-label text-muted small fw-bold mb-1">Whisper Model</label>
+            <select name="whisper_model" class="form-select form-select-sm bg-dark text-light border-secondary">
+                <option value="">— inherit network ({{ current_network.whisper_model }}) —</option>
+                <option value="tiny"      {% if show.whisper_model == "tiny" %}selected{% endif %}>tiny</option>
+                <option value="base"      {% if show.whisper_model == "base" %}selected{% endif %}>base</option>
+                <option value="small"     {% if show.whisper_model == "small" %}selected{% endif %}>small</option>
+                <option value="medium"    {% if show.whisper_model == "medium" %}selected{% endif %}>medium</option>
+                <option value="medium.en" {% if show.whisper_model == "medium.en" %}selected{% endif %}>medium.en</option>
+                <option value="large"     {% if show.whisper_model == "large" %}selected{% endif %}>large</option>
+                <option value="large-v2"  {% if show.whisper_model == "large-v2" %}selected{% endif %}>large-v2</option>
+                <option value="large-v3"  {% if show.whisper_model == "large-v3" %}selected{% endif %}>large-v3</option>
+            </select>
+        </div>
+        <div class="col-md-3">
+            <label class="form-label text-muted small fw-bold mb-1">Language</label>
+            <input type="text" name="whisper_language"
+                   value="{{ show.whisper_language|default:'' }}"
+                   class="form-control form-control-sm bg-dark text-light border-secondary"
+                   placeholder="inherit ({{ current_network.whisper_language }})" maxlength="10">
+        </div>
+    </div>
+    <div class="row g-2 mb-2">
+        <div class="col-md-3">
+            <label class="form-label text-muted small fw-bold mb-1">Min Speakers</label>
+            <input type="number" name="whisper_min_speakers"
+                   value="{{ show.whisper_min_speakers|default:'' }}"
+                   class="form-control form-control-sm bg-dark text-light border-secondary"
+                   placeholder="{{ current_network.whisper_min_speakers }}" min="1" max="20">
+        </div>
+        <div class="col-md-3">
+            <label class="form-label text-muted small fw-bold mb-1">Default</label>
+            <input type="number" name="whisper_num_speakers"
+                   value="{{ show.whisper_num_speakers|default:'' }}"
+                   class="form-control form-control-sm bg-dark text-light border-secondary"
+                   placeholder="{{ current_network.whisper_num_speakers }}" min="1" max="20">
+        </div>
+        <div class="col-md-3">
+            <label class="form-label text-muted small fw-bold mb-1">Max Speakers</label>
+            <input type="number" name="whisper_max_speakers"
+                   value="{{ show.whisper_max_speakers|default:'' }}"
+                   class="form-control form-control-sm bg-dark text-light border-secondary"
+                   placeholder="{{ current_network.whisper_max_speakers }}" min="1" max="20">
+        </div>
+    </div>
+    <div class="mb-3">
+        <label class="form-label text-muted small fw-bold mb-1">Initial Prompt</label>
+        <textarea name="whisper_initial_prompt" rows="2"
+                  class="form-control form-control-sm bg-dark text-light border-secondary"
+                  placeholder="inherit network prompt (or leave blank)">{{ show.whisper_initial_prompt|default:'' }}</textarea>
+    </div>
+
+    <h6 class="fw-semibold mb-2 mt-3 text-warning border-bottom border-secondary pb-1">
+        <i class="bi bi-cloud-arrow-up me-1"></i>Audio Delivery
+    </h6>
+    <div class="form-check form-switch mb-4">
+        <input class="form-check-input" type="checkbox" role="switch"
+               id="force_r2_serve_{{ show.id }}" name="force_r2_serve"
+               {% if show.force_r2_serve %}checked{% endif %}>
+        <label class="form-check-label text-light small fw-bold" for="force_r2_serve_{{ show.id }}">
+            Serve audio from the R2 mirror
+            <span class="d-block text-muted fw-normal">
+                On = always serve this show's audio from R2 when a mirror exists.
+                Off = serve from the original host (Libsyn etc.) and keep R2 as backup only.
+                Turn on for feeds whose source URLs are ephemeral (e.g. Patreon).
+            </span>
+        </label>
+    </div>
+
+    <div class="form-check form-switch mb-4">
+        <input class="form-check-input" type="checkbox" role="switch"
+               id="allow_public_transcripts_{{ show.id }}" name="allow_public_transcripts"
+               {% if show.allow_public_transcripts %}checked{% endif %}>
+        <label class="form-check-label text-light small fw-bold" for="allow_public_transcripts_{{ show.id }}">
+            Public transcripts
+            <span class="d-block text-muted fw-normal">
+                On = serve transcripts (and the feed transcript tag) to listeners without premium access.
+                Turn off for feeds whose private audio contains content never released publicly (e.g. extended spoiler sections) —
+                the transcript is always generated from the private audio.
+            </span>
+        </label>
+    </div>
+
+    <h6 class="fw-semibold mb-2 mt-3 text-warning border-bottom border-secondary pb-1">
+        <i class="bi bi-rss me-1"></i>Feed Ingest
+    </h6>
+    <div class="form-check form-switch mb-4">
+        <input class="form-check-input" type="checkbox" role="switch"
+               id="is_low_priority_{{ show.id }}" name="is_low_priority"
+               {% if show.is_low_priority %}checked{% endif %}>
+        <label class="form-check-label text-light small fw-bold" for="is_low_priority_{{ show.id }}">
+            Low-priority feed
+            <span class="d-block text-muted fw-normal">
+                On = this feed is polled slightly after normal feeds, and any
+                episode it picks up first is auto-migrated to its real home
+                feed once that feed ingests the same GUID.
+            </span>
+        </label>
+    </div>
+
+    <h6 class="fw-semibold mb-2 mt-3 text-warning border-bottom border-secondary pb-1">
+        <i class="bi bi-eye-slash me-1"></i>Feed Visibility &amp; Cross-Publish
+    </h6>
+    <div class="form-check form-switch mb-3">
+        <input class="form-check-input cp-hidden-toggle" type="checkbox" role="switch"
+               id="is_hidden_{{ show.id }}" name="is_hidden"
+               data-cp-scope="{{ show.id }}"
+               {% if show.is_hidden %}checked{% endif %}>
+        <label class="form-check-label text-light small fw-bold" for="is_hidden_{{ show.id }}">
+            Hide from Your Feeds directory
+            <span class="d-block text-muted fw-normal">
+                On = this feed no longer shows as a card in the Your Feeds directory.
+                Its RSS URL keeps working and existing subscribers are unaffected.
+            </span>
+        </label>
+    </div>
+
+    <div class="mb-2">
+        <label class="form-label text-muted small fw-bold">Auto Cross-Publish Destinations</label>
+        {% include 'pod_manager/snippets/show_multiselect.html' with field_name='auto_crosspublish_target_ids' podcast_list=network_podcasts selected_ids=show.auto_cp_target_ids exclude_id=show.id placeholder='No auto cross-publish destinations' shared_template=True %}
+        <div class="form-text text-muted cp-target-scope" data-cp-scope="{{ show.id }}">
+            Every episode in this feed is automatically cross-published into the selected
+            feeds, now and as new episodes arrive. Not transitive — if this feed also
+            cross-publishes into a feed that has its own destinations, those don't chain.
+        </div>
+    </div>
+
+    <div class="mb-3">
+        <label class="form-label text-muted small fw-bold mb-1">Auto Cross-Publish Access Mode</label>
+        <select name="auto_crosspublish_access_mode" class="form-select form-select-sm bg-dark text-light border-secondary">
+            <option value="inherit" {% if show.auto_crosspublish_access_mode == 'inherit' %}selected{% endif %}>Inherit — keep this feed's own tier</option>
+            <option value="target" {% if show.auto_crosspublish_access_mode == 'target' %}selected{% endif %}>Target — adopt the destination feed's tier</option>
+        </select>
+    </div>
+
+    <div class="alert alert-warning bg-black border-warning small d-none cp-hidden-warning" data-cp-scope="{{ show.id }}">
+        <i class="bi bi-exclamation-triangle me-1"></i>
+        This feed will be hidden but is not cross-published anywhere — its episodes will
+        drop off the Dashboard show filter and listeners won't find it in the directory.
+        Add a cross-publish destination above to keep it reachable.
+    </div>
+
+    <button type="submit" class="btn btn-outline-warning btn-sm fw-bold"><i class="bi bi-floppy"></i> Save Show Settings</button>
+</form>

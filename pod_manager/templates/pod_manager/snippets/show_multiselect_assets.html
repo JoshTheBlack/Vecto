@@ -208,25 +208,104 @@ page, after the page's own <style> block.
 
     /* ── data-sms widget wrapper (form-embedded variant of the filter) ── */
     .sms { position: relative; }
+    /* The bar + dropdown share one positioning context so the panel anchors to
+       the bar (not the whole widget) and overlays the selected-rows list below. */
+    .sms-combo { position: relative; }
+    /* A step lighter than the surrounding surface so the control reads as a
+       raised panel against a card or (darker) modal background. */
     .sms-bar {
         display: flex;
         align-items: center;
         gap: 10px;
         padding: 8px 12px;
         min-height: 46px;
-        background: var(--vecto-bg);
+        background: color-mix(in srgb, var(--vecto-surface-bg) 85%, gray);
         border: 1px solid var(--bs-border-color);
         border-radius: var(--vecto-radius-md);
         cursor: pointer;
         transition: border-color 0.15s, background 0.15s;
     }
-    .sms-bar:hover { background: rgba(255,255,255,0.03); }
+    .sms-bar:hover { background: color-mix(in srgb, var(--vecto-surface-bg) 78%, gray); }
     .sms-bar:focus-visible,
     .sms-bar[aria-expanded="true"] {
         outline: none;
         border-color: var(--vecto-primary);
     }
     .sms-excluded { display: none !important; }
+
+    /* Optional selected-shows list (data-sms-rows) rendered below the bar. */
+    .sms-rows {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+        margin-top: 8px;
+    }
+    .sms-rows:empty { display: none; }
+    .sms-row {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 7px 10px;
+        background: color-mix(in srgb, var(--vecto-surface-bg) 85%, gray);
+        border: 1px solid var(--bs-border-color);
+        border-radius: var(--vecto-radius-md);
+    }
+    .sms-row-img {
+        width: 34px;
+        height: 34px;
+        border-radius: var(--vecto-radius-sm);
+        object-fit: cover;
+        flex-shrink: 0;
+    }
+    .sms-row-fallback {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        background: rgba(255,255,255,0.08);
+        color: var(--vecto-surface-muted);
+        font-size: 0.8rem;
+    }
+    .sms-row-text {
+        flex: 1;
+        min-width: 0;
+        display: flex;
+        flex-direction: column;
+        line-height: 1.25;
+    }
+    .sms-row-title {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        color: color-mix(in srgb, var(--vecto-primary) 60%, white);
+        font-weight: 600;
+        font-size: 0.9rem;
+    }
+    .sms-row-meta {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        color: var(--vecto-surface-muted);
+        font-size: 0.75rem;
+    }
+    .sms-row-remove {
+        flex-shrink: 0;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 26px;
+        height: 26px;
+        padding: 0;
+        border: 1px solid var(--bs-border-color);
+        border-radius: var(--vecto-radius-sm);
+        background: transparent;
+        color: var(--vecto-surface-muted);
+        transition: background 0.15s, color 0.15s, border-color 0.15s;
+    }
+    .sms-row-remove:hover {
+        background: var(--vecto-primary);
+        border-color: var(--vecto-primary);
+        color: var(--vecto-primary-text);
+    }
 
     /* ── "Also on" artwork strip (episode cards + episode detail) ── */
     .also-on {
@@ -253,7 +332,29 @@ page, after the page's own <style> block.
 
 <script>
 (() => {
-    document.querySelectorAll('[data-sms]').forEach(initShowMultiselect);
+    // Init any not-yet-wired widget under `root`. Idempotent (guarded by
+    // data-sms-init) so it's safe to call repeatedly — on first load and again
+    // on htmx:load when a lazily-fetched fragment (e.g. a Manage Podcasts show
+    // form) brings a fresh widget into the DOM.
+    function initAll(root) {
+        root = root || document;
+        if (root.matches && root.matches('[data-sms]:not([data-sms-init])')) {
+            root.setAttribute('data-sms-init', '');
+            initShowMultiselect(root);
+        }
+        if (root.querySelectorAll) {
+            root.querySelectorAll('[data-sms]:not([data-sms-init])').forEach(w => {
+                w.setAttribute('data-sms-init', '');
+                initShowMultiselect(w);
+            });
+        }
+    }
+    initAll(document);
+    // Route through VectoPage.on so the listener is torn down before the next
+    // boosted swap instead of stacking (this script re-runs on every swap).
+    if (window.VectoPage) {
+        window.VectoPage.on(document.body, 'htmx:load', (e) => initAll(e.target));
+    }
 
     function initShowMultiselect(wrap) {
         const bar         = wrap.querySelector('.sms-bar');
@@ -265,9 +366,32 @@ page, after the page's own <style> block.
         const clearBtn    = wrap.querySelector('[data-sms-clear]');
         const chipsEl     = wrap.querySelector('[data-sms-chips]');
         const placeholder = wrap.querySelector('[data-sms-placeholder]');
+        const rowsEl      = wrap.querySelector('[data-sms-rows]');  // optional selected-rows list
 
         const checks    = () => [...list.querySelectorAll('.show-filter-check')];
         const available = () => checks().filter(c => !c.closest('.show-filter-option').classList.contains('sms-excluded'));
+
+        // Shared-template widgets render only their selected options up front and
+        // clone the full option list from a page-level <template> the first time
+        // they open — keeps pages with many widgets (the 88-show Manage Podcasts
+        // accordion) from emitting an O(widgets x shows) DOM.
+        const isShared = !!wrap.dataset.smsShared;
+        let hydrated = false;
+        function hydrateShared() {
+            hydrated = true;
+            const field = wrap.dataset.smsField || '';
+            const tmpl = document.querySelector('template[data-sms-options-template="' + field.replace(/"/g, '\\"') + '"]');
+            if (!tmpl) return;
+            const excludeId = wrap.dataset.smsExclude || '';
+            const present = new Set(checks().map(c => c.value));  // already-rendered selected ids
+            const frag = tmpl.content.cloneNode(true);
+            frag.querySelectorAll('.show-filter-option').forEach(opt => {
+                const id = opt.dataset.podId;
+                if (id === excludeId || present.has(id)) opt.remove();
+            });
+            list.insertBefore(frag, emptyMsg);
+            updateCount();
+        }
 
         function buildChip(check) {
             const chip = document.createElement('span');
@@ -301,6 +425,54 @@ page, after the page's own <style> block.
             const selected = checks().filter(c => c.checked);
             placeholder.style.display = selected.length ? 'none' : '';
             selected.forEach(c => chipsEl.insertBefore(buildChip(c), placeholder));
+            syncRows();
+        }
+
+        // Optional list of selected shows as rows (artwork + title + remove),
+        // shown below the bar when the widget opts in with data-sms-rows.
+        function syncRows() {
+            if (!rowsEl) return;
+            rowsEl.innerHTML = '';
+            checks().filter(c => c.checked).forEach(c => {
+                const row = document.createElement('div');
+                row.className = 'sms-row';
+                if (c.dataset.podImg) {
+                    const img = document.createElement('img');
+                    img.className = 'sms-row-img';
+                    img.src = c.dataset.podImg;
+                    img.alt = '';
+                    row.appendChild(img);
+                } else {
+                    const fb = document.createElement('span');
+                    fb.className = 'sms-row-img sms-row-fallback';
+                    fb.innerHTML = '<i class="bi bi-mic-fill"></i>';
+                    row.appendChild(fb);
+                }
+                const text = document.createElement('span');
+                text.className = 'sms-row-text';
+                const title = document.createElement('span');
+                title.className = 'sms-row-title';
+                title.textContent = c.dataset.podTitle;
+                text.appendChild(title);
+                const bits = [];
+                if (c.dataset.podEpisodes) bits.push(c.dataset.podEpisodes + ' episode' + (c.dataset.podEpisodes === '1' ? '' : 's'));
+                if (c.dataset.podLastpub) bits.push('Latest: ' + c.dataset.podLastpub);
+                if (bits.length) {
+                    const meta = document.createElement('span');
+                    meta.className = 'sms-row-meta';
+                    meta.textContent = bits.join('  •  ');
+                    text.appendChild(meta);
+                }
+                row.appendChild(text);
+                const rm = document.createElement('button');
+                rm.type = 'button';
+                rm.className = 'sms-row-remove';
+                rm.dataset.id = c.value;
+                rm.setAttribute('aria-label', 'Remove ' + c.dataset.podTitle);
+                rm.innerHTML = '<i class="bi bi-x-lg"></i>';
+                row.appendChild(rm);
+                rowsEl.appendChild(row);
+            });
         }
 
         function updateCount() {
@@ -326,6 +498,7 @@ page, after the page's own <style> block.
         }
 
         function openPanel() {
+            if (isShared && !hydrated) hydrateShared();
             [...list.querySelectorAll('.show-filter-option')]
                 .sort((a, b) => b.querySelector('input').checked - a.querySelector('input').checked)
                 .forEach(o => list.insertBefore(o, emptyMsg));
@@ -374,6 +547,17 @@ page, after the page's own <style> block.
             updateCount();
             notifyChange();
         });
+        if (rowsEl) {
+            rowsEl.addEventListener('click', (e) => {
+                const rm = e.target.closest('.sms-row-remove');
+                if (!rm) return;
+                const check = checks().find(c => c.value === rm.dataset.id);
+                if (check) check.checked = false;
+                syncChips();
+                updateCount();
+                notifyChange();
+            });
+        }
 
         window.VectoPage.on(document, 'click', (e) => {
             if (!wrap.contains(e.target)) closePanel();

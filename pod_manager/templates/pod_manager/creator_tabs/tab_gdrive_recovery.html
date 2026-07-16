@@ -1,5 +1,5 @@
 {% load static %}
-<div class="tab-pane fade" id="list-gdrive-recovery" role="tabpanel">
+<div class="tab-pane fade {% if request.GET.tab == 'gdrive' %}show active{% endif %}" id="list-gdrive-recovery" role="tabpanel">
     <h4 class="fw-bold mb-1"><i class="bi bi-cloud-arrow-down me-2 text-warning"></i>GDrive Audio Recovery</h4>
     <p class="text-muted small mb-3">Recover subscriber audio from Google Drive. Select an input CSV, choose target podcasts, and stream the results live.</p>
 

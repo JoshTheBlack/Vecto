@@ -23,20 +23,15 @@ from ...tasks import task_rebuild_episode_fragments
 from ...utils import diagnostic_page, sanitize_user_html
 from .actions import ACTION_HANDLERS
 from .data import (
-    gather_audit_log,
-    gather_cross_publish_context,
-    gather_inbox,
-    gather_manage_podcasts,
     gather_merge_desk,
-    gather_move_context,
-    gather_notfound_context,
-    gather_reports_data,
+    network_podcast_list,
 )
 
 logger = logging.getLogger(__name__)
 
 
 @login_required(login_url='/login/')
+@diagnostic_page("Creator Settings")
 def creator_settings(request):
     allowed_networks = Network.objects.all() if request.user.is_superuser else Network.objects.filter(owners=request.user)
     if not allowed_networks.exists():
@@ -58,22 +53,73 @@ def creator_settings(request):
             redirect_url += f"&tab={target_tab}"
         return redirect(redirect_url)
 
-    # GET
+    # GET — every tab except Network Profile and GDrive Recovery lazy-loads its
+    # body via creator_tab_partial, so the shell only needs what those two
+    # eager tabs render: the theme JSON and the network's feed roster.
     context = {
         'networks': allowed_networks,
         'current_network': current_network,
         'theme_config_json': json.dumps(current_network.theme_config, indent=2),
-        **gather_manage_podcasts(request, current_network),
-        **gather_inbox(current_network),
-        **gather_merge_desk(request, current_network),
-        **gather_audit_log(request, current_network),
-        **gather_move_context(request, current_network),
-        **gather_cross_publish_context(request, current_network),
-        **gather_notfound_context(current_network),
-        **gather_reports_data(),
+        'network_podcasts': network_podcast_list(current_network),
     }
 
     return render(request, 'pod_manager/creator_settings.html', context)
+
+
+def _resolve_creator_network(request):
+    """Shared network resolution + owner gate for creator_settings and its
+    per-tab partial endpoints. Returns (allowed_networks, current_network) or
+    an HttpResponseForbidden when the user has no creator access."""
+    allowed_networks = Network.objects.all() if request.user.is_superuser else Network.objects.filter(owners=request.user)
+    if not allowed_networks.exists():
+        return None, HttpResponseForbidden("No creator access.")
+    current_network = allowed_networks.filter(slug=request.GET.get('network')).first() or allowed_networks.first()
+    return current_network, None
+
+
+@login_required(login_url='/login/')
+@diagnostic_page("Merge Desk (partial)")
+def merge_desk_partial(request):
+    """Lightweight AJAX endpoint backing the Merge Desk tab. On an htmx request
+    it runs only gather_merge_desk and renders the merge body fragment, so a
+    mode switch / search / pagination no longer re-runs the entire settings
+    view. A direct hit (reload, bookmark, no-JS) redirects to the full page on
+    the merge tab so the URL stays reloadable."""
+    current_network, forbidden = _resolve_creator_network(request)
+    if forbidden:
+        return forbidden
+
+    if not request.headers.get('HX-Request'):
+        params = request.GET.copy()
+        params.pop('network', None)
+        params['tab'] = 'merge'
+        return redirect(f"{reverse('creator_settings')}?network={current_network.slug}&{params.urlencode()}")
+
+    context = {
+        'current_network': current_network,
+        'network_podcasts': network_podcast_list(current_network),
+        **gather_merge_desk(request, current_network),
+    }
+    return render(request, 'pod_manager/creator_tabs/_merge_desk_body.html', context)
+
+
+@login_required(login_url='/login/')
+@diagnostic_page("Show Form (partial)")
+def creator_show_form(request, show_id):
+    """One show's settings form for the Manage Podcasts accordion, fetched on
+    first expand. Keeps that tab's initial render to 88 lightweight headers
+    instead of 88 full forms. Owner-gated via the show's network."""
+    current_network, forbidden = _resolve_creator_network(request)
+    if forbidden:
+        return forbidden
+
+    show = get_object_or_404(current_network.podcasts, id=show_id)
+    show.auto_cp_target_ids = [t.id for t in show.auto_crosspublish_targets.all()]
+    return render(request, 'pod_manager/creator_tabs/_show_form.html', {
+        'current_network': current_network,
+        'show': show,
+        'network_podcasts': network_podcast_list(current_network),
+    })
 
 
 @require_POST

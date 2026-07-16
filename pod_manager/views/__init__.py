@@ -41,6 +41,9 @@ from .feeds import (
 
 from .creator import (
     creator_settings,
+    merge_desk_partial,
+    creator_show_form,
+    creator_tab_partial,
     submit_episode_edit,
     submit_speaker_labels,
     publish_episode,

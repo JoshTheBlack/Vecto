@@ -1,0 +1,14 @@
+{% comment %}
+Renders the full option list ONCE as an inert <template>, keyed by field_name.
+Widgets rendered with `shared_template=True` clone from this on first open
+instead of each emitting the whole list (avoids an O(widgets x shows) DOM).
+
+Include once per page, passing the same podcast_list and field_name the shared
+widgets use, e.g.:
+  {% include 'pod_manager/snippets/show_multiselect_options_template.html' with podcast_list=network_podcasts field_name='auto_crosspublish_target_ids' %}
+{% endcomment %}
+<template data-sms-options-template="{{ field_name }}">
+    {% for podcast in podcast_list %}
+    {% include 'pod_manager/snippets/_sms_option.html' with selected_ids=None %}
+    {% endfor %}
+</template>

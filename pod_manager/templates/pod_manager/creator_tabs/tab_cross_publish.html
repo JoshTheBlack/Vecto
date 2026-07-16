@@ -10,7 +10,17 @@
 
             <div class="mb-4">
                 <label class="form-label text-light fw-bold">1. Select Source Podcast</label>
-                <select class="form-select bg-black text-light border-secondary" onchange="window.location.href='?tab=crosspub&cross_source_id=' + this.value;">
+                {% comment %}
+                Swaps just this pane (S2.4). Was
+                onchange="window.location.href='?tab=crosspub&cross_source_id='+value",
+                a HARD navigation that killed the floating player and dropped
+                ?network=, bouncing multi-network accounts to their first network.
+                {% endcomment %}
+                <select class="form-select bg-black text-light border-secondary"
+                        name="cross_source_id"
+                        hx-get="{% url 'creator_tab_partial' 'crosspub' %}?network={{ current_network.slug }}"
+                        hx-trigger="change"
+                        hx-target="#list-crosspub" hx-swap="innerHTML" hx-select="unset" hx-push-url="false">
                     <option value="">-- Choose a podcast to pull episodes from --</option>
                     {% for pod in network_podcasts %}
                         <option value="{{ pod.id }}" {% if cross_source_id == pod.id|stringformat:"s" %}selected{% endif %}>{{ pod.title }}</option>

@@ -8,7 +8,19 @@
     </div>
 
     <div class="card p-3 mb-4 shadow-sm" style="background-color: var(--vecto-surface-bg); border-color: var(--bs-border-color) !important;">
-        <form method="GET" class="row g-2 align-items-center">
+        {% comment %}
+        Searching swaps just this pane (S2.4). Before, it inherited the pane's
+        #boosted-region target, so a search re-rendered the whole settings shell
+        and then the audit pane re-fetched its body — two requests to filter a
+        list. Now one hx-get replaces #list-audit's contents.
+
+        method="GET" + the hidden tab stay as the no-JS fallback: htmx intercepts
+        the submit when it is available, and without it the form still navigates
+        to the full page on the audit tab exactly as it used to.
+        {% endcomment %}
+        <form method="GET" class="row g-2 align-items-center"
+              hx-get="{% url 'creator_tab_partial' 'audit' %}"
+              hx-target="#list-audit" hx-swap="innerHTML" hx-select="unset" hx-push-url="false">
             <input type="hidden" name="network" value="{{ current_network.slug }}">
             <input type="hidden" name="tab" value="audit">
             

@@ -7,7 +7,19 @@
 
             <div class="mb-4">
                 <label class="form-label text-light fw-bold">1. Select Source Podcast</label>
-                <select class="form-select bg-black text-light border-secondary" onchange="window.location.href='?tab=move&source_pod_id=' + this.value;">
+                {% comment %}
+                Swaps just this pane (S2.4). It used to be
+                onchange="window.location.href='?tab=move&source_pod_id='+value",
+                a HARD navigation, which killed the floating player mid-playback
+                and dropped ?network= — so on a multi-network account picking a
+                source podcast silently bounced you to your first network. The
+                hx-get carries the network and re-renders only #list-move.
+                {% endcomment %}
+                <select class="form-select bg-black text-light border-secondary"
+                        name="source_pod_id"
+                        hx-get="{% url 'creator_tab_partial' 'move' %}?network={{ current_network.slug }}"
+                        hx-trigger="change"
+                        hx-target="#list-move" hx-swap="innerHTML" hx-select="unset" hx-push-url="false">
                     <option value="">-- Choose a podcast to extract from --</option>
                     {% for pod in network_podcasts %}
                         <option value="{{ pod.id }}" {% if source_pod_id == pod.id|stringformat:"s" %}selected{% endif %}>{{ pod.title }}</option>

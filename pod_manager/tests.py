@@ -10784,3 +10784,86 @@ class MixFormLazyLoadTests(TestCase):
         # The picker clones its full option list from this; it must stay in the
         # tab body, since a lazily-loaded modal is not present at tab render.
         self.assertIn('data-sms-options-template', self._tab().content.decode('utf-8'))
+
+
+@override_settings(ALLOWED_HOSTS=['*'])
+class InTabFilterPaneSwapTests(TestCase):
+    """S2.4 — the in-tab filters re-render only their own pane instead of doing a
+    full round-trip through the settings shell.
+
+    The two source-podcast selectors were worse than slow: they were
+    onchange="window.location.href='?tab=move&source_pod_id='+value", a HARD
+    navigation, which destroyed the out-of-region floating player mid-playback
+    AND dropped ?network= from the URL — so on a multi-network account choosing a
+    source silently bounced the owner to their first network."""
+
+    def setUp(self):
+        cache.clear()
+        # Another network the owner also has. Network has no Meta.ordering, so
+        # allowed_networks.first() is effectively lowest-PK — create this one
+        # FIRST so it is what the resolver falls back to when ?network= is
+        # missing, which is the bug the selectors used to cause.
+        self.other = Network.objects.create(name='OtherPaneNet', slug='other-panenet')
+        self.network = Network.objects.create(
+            name='PaneNet', slug='panenet', custom_domain='panenet.example.test')
+        self.owner = User.objects.create_user(username='paneowner', password='pw')
+        self.other.owners.add(self.owner)
+        self.network.owners.add(self.owner)
+        self.podcast = Podcast.objects.create(
+            network=self.network, title='PaneShow', slug='panenet-show')
+        self.client.force_login(self.owner)
+        self.host = 'panenet.example.test'
+
+    def _tab(self, tab):
+        return self.client.get(reverse('creator_tab_partial', args=[tab]),
+                               {'network': self.network.slug},
+                               HTTP_HOST=self.host, HTTP_HX_REQUEST='true')
+
+    def test_move_selector_swaps_its_own_pane_and_keeps_the_network(self):
+        body = self._tab('move').content.decode('utf-8')
+        self.assertNotIn('window.location.href', body)      # no hard navigation
+        self.assertIn(reverse('creator_tab_partial', args=['move']), body)
+        self.assertIn('network=%s' % self.network.slug, body)  # the dropped param
+        self.assertIn('hx-target="#list-move"', body)
+        self.assertIn('hx-select="unset"', body)
+        self.assertIn('name="source_pod_id"', body)
+
+    def test_crosspub_selector_swaps_its_own_pane_and_keeps_the_network(self):
+        body = self._tab('crosspub').content.decode('utf-8')
+        self.assertNotIn('window.location.href', body)
+        self.assertIn(reverse('creator_tab_partial', args=['crosspub']), body)
+        self.assertIn('network=%s' % self.network.slug, body)
+        self.assertIn('hx-target="#list-crosspub"', body)
+        self.assertIn('name="cross_source_id"', body)
+
+    def test_audit_search_swaps_its_own_pane(self):
+        body = self._tab('audit').content.decode('utf-8')
+        self.assertIn(reverse('creator_tab_partial', args=['audit']), body)
+        self.assertIn('hx-target="#list-audit"', body)
+        self.assertIn('hx-push-url="false"', body)
+
+    def test_audit_search_keeps_its_no_js_fallback(self):
+        # htmx intercepts the submit when present; without JS the form must still
+        # navigate to the full page ON THE AUDIT TAB, which the hidden tab does.
+        body = self._tab('audit').content.decode('utf-8')
+        self.assertIn('method="GET"', body)
+        self.assertIn('name="tab" value="audit"', body)
+
+    def test_the_selectors_actually_filter_through_the_router(self):
+        # Drive the request the swap makes and prove the pane comes back scoped
+        # to the chosen source — and to the RIGHT network.
+        resp = self.client.get(
+            reverse('creator_tab_partial', args=['move']),
+            {'network': self.network.slug, 'source_pod_id': str(self.podcast.id)},
+            HTTP_HOST=self.host, HTTP_HX_REQUEST='true')
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.context['current_network'], self.network)
+        self.assertEqual(resp.context['source_pod_id'], str(self.podcast.id))
+
+    def test_dropping_the_network_param_would_pick_the_wrong_network(self):
+        # Pins WHY the selectors must carry ?network=: without it the resolver
+        # falls back to allowed_networks.first(), which is a different network.
+        resp = self.client.get(reverse('creator_tab_partial', args=['move']),
+                               HTTP_HOST=self.host, HTTP_HX_REQUEST='true')
+        self.assertEqual(resp.context['current_network'], self.other)
+        self.assertNotEqual(resp.context['current_network'], self.network)

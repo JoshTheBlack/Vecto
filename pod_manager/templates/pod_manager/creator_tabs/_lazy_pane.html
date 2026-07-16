@@ -1,16 +1,29 @@
 {% comment %}
-Reusable empty tab-pane that lazily fetches its body from creator_tab_partial
-the first time its tab is shown (or immediately when it's the active tab).
+Reusable lazy tab-pane, split into two nested elements with distinct jobs:
+
+  • The OUTER .tab-pane carries the #boosted-region swap target/select/swap, so
+    forms and links inside the lazily-loaded body boost against #boosted-region —
+    a clean region swap that preserves the out-of-region floating player. It
+    fires no request itself; it is purely the inheritance source for the loaded
+    content. (Boost itself is inherited from the app-wide hx-boost wrapper.)
+
+  • The INNER loader does the one-shot GET of the tab body into the pane. Its
+    self-targeting attrs (hx-target = this pane, innerHTML, select=unset) live on
+    this SEPARATE child and are marked hx-disinherit="*" so they never cascade to
+    the loaded content. The previous single-div version put those on the pane and
+    used hx-disinherit to hide them — but disinherit blocks inheritance entirely,
+    so boosted forms in the body inherited NO target and fell back to htmx's
+    boosted default (<body>), whose innerHTML swap nuked the floating player.
+
 Params: tab_name, pane_id, link_id, active_tab (= request.GET.tab).
-hx-disinherit keeps forms/links inside the loaded body from inheriting this
-pane's swap target, so they boost against #boosted-region as normal.
 {% endcomment %}
 <div class="tab-pane fade {% if active_tab == tab_name %}show active{% endif %}" id="{{ pane_id }}" role="tabpanel" aria-labelledby="{{ link_id }}"
-     hx-get="{% url 'creator_tab_partial' tab_name %}?network={{ current_network.slug }}&{{ request.GET.urlencode }}"
-     hx-trigger="{% if active_tab == tab_name %}load{% else %}shown.bs.tab from:#{{ link_id }} once{% endif %}"
-     hx-target="this" hx-swap="innerHTML" hx-select="unset" hx-push-url="false"
-     hx-disinherit="hx-target hx-swap hx-select">
-    <div class="text-center py-5 text-muted">
-        <span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span> Loading…
+     hx-target="#boosted-region" hx-select="#boosted-region" hx-swap="outerHTML show:window:top" hx-push-url="false">
+    <div hx-get="{% url 'creator_tab_partial' tab_name %}?network={{ current_network.slug }}&{{ request.GET.urlencode }}"
+         hx-trigger="{% if active_tab == tab_name %}load{% else %}shown.bs.tab from:#{{ link_id }} once{% endif %}"
+         hx-target="#{{ pane_id }}" hx-swap="innerHTML" hx-select="unset" hx-push-url="false" hx-disinherit="*">
+        <div class="text-center py-5 text-muted">
+            <span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span> Loading…
+        </div>
     </div>
 </div>

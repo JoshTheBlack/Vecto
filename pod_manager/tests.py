@@ -9986,3 +9986,41 @@ class EpisodeDetailBaseSwapTests(TestCase):
         resp = self._get(boosted=False)
         self.assertIn('HX-Request', resp.get('Vary', ''))
 
+
+class LazyPaneBoostTargetTests(TestCase):
+    """_lazy_pane must hand #boosted-region down to the forms/links in the loaded
+    tab body, so a boosted action inside a creator tab (e.g. approving a
+    community edit) does a clean #boosted-region swap instead of htmx's boosted
+    <body> default — which innerHTML-swaps the whole body and destroys the
+    out-of-region floating player (audio stops, player renders blank)."""
+
+    def _render(self, active_tab='inbox'):
+        from django.template.loader import render_to_string
+        net = Network.objects.create(name='LP', slug='lp-pane')
+        req = RequestFactory().get('/creator/settings/?tab=inbox')
+        return render_to_string('pod_manager/creator_tabs/_lazy_pane.html', {
+            'tab_name': 'inbox', 'pane_id': 'list-inbox', 'link_id': 'list-inbox-list',
+            'active_tab': active_tab, 'current_network': net,
+        }, request=req)
+
+    def test_outer_pane_hands_region_target_to_children(self):
+        html = self._render()
+        # Children of the pane inherit the region swap target — a boosted form in
+        # the loaded body swaps #boosted-region, preserving the floating player.
+        self.assertIn('hx-target="#boosted-region"', html)
+        self.assertIn('hx-select="#boosted-region"', html)
+
+    def test_inner_loader_self_targets_the_pane(self):
+        html = self._render()
+        # The one-shot body GET loads into the pane itself and hides its own swap
+        # attrs from the loaded content, so they never cascade to the body.
+        self.assertIn('hx-target="#list-inbox"', html)
+        self.assertIn('hx-select="unset"', html)
+        self.assertIn('hx-disinherit="*"', html)
+
+    def test_pane_does_not_disinherit_the_swap_target(self):
+        html = self._render()
+        # Regression guard: the old single-div pane disinherited hx-target/select,
+        # which is exactly what forced boosted forms to fall back to <body>.
+        self.assertNotIn('hx-disinherit="hx-target', html)
+

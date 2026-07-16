@@ -9987,6 +9987,77 @@ class EpisodeDetailBaseSwapTests(TestCase):
         self.assertIn('HX-Request', resp.get('Vary', ''))
 
 
+class BaseSwapRolloutMixin:
+    """Shared S1.7 assertions for each view converted to base-swap after the
+    episode_detail prototype (see EpisodeDetailBaseSwapTests for the fuller
+    guards on the region/nav/hx-boost shape, which are structural and only need
+    asserting once). A subclass sets CONTENT_MARKER and defines setUp to build
+    its fixtures, self.host and self.url.
+
+    The three invariants per view: an HX request returns the skinny fragment,
+    a normal request returns the full document, and both carry Vary: HX-Request
+    so no cache can serve one shape to a request wanting the other."""
+
+    NAV_MARKER = 'id="navbarNav"'          # base.html nav — outside the region
+    PLAYER_MARKER = 'id="floatingPlayer"'  # persistent chrome — outside the region
+    CONTENT_MARKER = None                  # subclass: a marker inside block content
+
+    def _get(self, *, boosted):
+        extra = {'HTTP_HX_REQUEST': 'true'} if boosted else {}
+        return self.client.get(self.url, HTTP_HOST=self.host, **extra)
+
+    def test_boosted_request_returns_fragment(self):
+        resp = self._get(boosted=True)
+        self.assertEqual(resp.status_code, 200)
+        body = resp.content.decode('utf-8')
+        self.assertNotIn('<html', body)
+        self.assertNotIn(self.NAV_MARKER, body)
+        self.assertNotIn(self.PLAYER_MARKER, body)
+        self.assertIn('id="boosted-region"', body)
+        self.assertIn('hx-history-elt', body)
+        self.assertIn(self.CONTENT_MARKER, body)
+
+    def test_normal_request_returns_full_page(self):
+        resp = self._get(boosted=False)
+        self.assertEqual(resp.status_code, 200)
+        body = resp.content.decode('utf-8')
+        self.assertIn('<html', body)
+        self.assertIn(self.NAV_MARKER, body)
+        self.assertIn(self.PLAYER_MARKER, body)
+        self.assertIn('id="boosted-region"', body)
+        self.assertIn(self.CONTENT_MARKER, body)
+
+    def test_fragment_is_smaller_than_full_page(self):
+        self.assertLess(len(self._get(boosted=True).content),
+                        len(self._get(boosted=False).content))
+
+    def test_vary_hx_request_on_both_shapes(self):
+        self.assertIn('HX-Request', self._get(boosted=True).get('Vary', ''))
+        self.assertIn('HX-Request', self._get(boosted=False).get('Vary', ''))
+
+
+@override_settings(ALLOWED_HOSTS=['*'])
+class HomeBaseSwapTests(BaseSwapRolloutMixin, TestCase):
+    """home is the highest-traffic boosted view; converting it sheds the ~40 KB
+    of fixed chrome from every boosted nav into it."""
+
+    CONTENT_MARKER = 'id="episodes-container"'
+
+    def setUp(self):
+        cache.clear()
+        self.network = Network.objects.create(
+            name='HomeNet', slug='homenet', custom_domain='homenet.example.test')
+        self.podcast = Podcast.objects.create(
+            network=self.network, title='Home Show', slug='homenet-show')
+        Episode.objects.create(
+            podcast=self.podcast, title='HomeSwapEpisode', pub_date=timezone.now(),
+            raw_description='x', clean_description='x',
+            audio_url_public='https://cdn.example.com/pub.mp3',
+        )
+        self.host = 'homenet.example.test'
+        self.url = reverse('home')
+
+
 class LazyPaneBoostTargetTests(TestCase):
     """_lazy_pane must hand #boosted-region down to the forms/links in the loaded
     tab body, so a boosted action inside a creator tab (e.g. approving a

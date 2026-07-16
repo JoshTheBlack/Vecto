@@ -135,13 +135,28 @@ const TAB_ID_MAP = Object.fromEntries(Object.entries(TAB_PARAM_MAP).map(([k, v])
     const urlParams = new URLSearchParams(window.location.search);
     let activeTabId = null;
 
-    // 1. Force specific tabs based on URL context clues
+    // 1. Force specific tabs based on URL context clues.
+    //
+    // ORDER MATTERS. An explicit ?tab= is the user's actual intent and must beat
+    // the show_* sniffing below, which is only a fallback for links that carry a
+    // filter but no tab. It used to be checked last, which broke audit-log
+    // pagination: applyLiveFilter leaves show_q/show_sort/show_mix in the URL,
+    // the shown.bs.tab handler carries them onto every later tab switch, and the
+    // lazy panes set hx-push-url="false" — so a boosted nav inside a tab swaps
+    // the region without ever refreshing the address bar. The server rendered
+    // audit page 2 correctly (audit_page=2 is in the link's href), and then this
+    // block read the STALE show_q and dragged the user back to Podcasts.
+    //
+    // A tab name absent from TAB_PARAM_MAP resolves to null on purpose: the
+    // server already marks that tab active from request.GET.tab, so there is
+    // nothing for us to override.
+    const hasFilter = (key) => (urlParams.get(key) || '') !== '';
     if (urlParams.has('merge_view')) {
         activeTabId = '#list-merge';
-    } else if (urlParams.has('auto_import') || urlParams.has('show_q') || urlParams.has('show_sort') || urlParams.has('show_mix')) {
-        activeTabId = '#list-shows';
     } else if (urlParams.get('tab')) {
         activeTabId = TAB_PARAM_MAP[urlParams.get('tab')] || null;
+    } else if (urlParams.has('auto_import') || hasFilter('show_q') || hasFilter('show_sort') || hasFilter('show_mix')) {
+        activeTabId = '#list-shows';
     } else if (window.location.hash) {
         activeTabId = window.location.hash;
     }
@@ -260,6 +275,13 @@ function applyLiveFilter() {
     filterTimeout = setTimeout(() => {
         const form = document.getElementById('manage-podcasts-form');
         const params = new URLSearchParams(new FormData(form));
+        // Drop empty filters instead of writing show_q=&show_mix= into the URL.
+        // These params outlive the tab (the shown.bs.tab handler copies the whole
+        // query string onto every later tab switch), so a CLEARED search box was
+        // still leaving evidence of a filter behind for the rest of the session.
+        for (const key of ['show_q', 'show_mix', 'show_sort']) {
+            if (!params.get(key)) params.delete(key);
+        }
 
         // The Manage Podcasts tab is lazy — its accordion lives in the shows
         // partial now, not the full page — so fetch that fragment directly.

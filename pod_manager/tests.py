@@ -10611,3 +10611,77 @@ class AuditLogSummaryTests(TestCase):
         self.edit.status = EpisodeEditSuggestion.Status.REJECTED
         self.edit.save()
         self.assertIn('-%d' % REJECT_PENALTY, self._tab().content.decode('utf-8'))
+
+
+class BaseTemplateContractTests(SimpleTestCase):
+    """S1.5 removed hx-select="#boosted-region" from base.html's boost wrapper.
+    That attribute was a no-op (an HX response IS the region), but it was also an
+    accidental safety net: had any template still returned a whole document on an
+    HX request, hx-select would have quietly pulled the region out of it. Without
+    it, a boosted nav swaps the response WHOLE — so a template that renders the
+    full page on an HX request would nest an entire <html> inside the region.
+
+    These pin the contract that makes the removal safe, so it can't rot by
+    someone adding a template the ordinary way."""
+
+    @property
+    def TEMPLATE_ROOT(self):
+        from django.conf import settings as django_settings
+        return Path(django_settings.BASE_DIR) / 'pod_manager' / 'templates'
+
+    def _templates(self):
+        return sorted(self.TEMPLATE_ROOT.rglob('*.html'))
+
+    def test_no_template_hardcodes_the_full_base(self):
+        # Every template in the app shell must go through base_template so an HX
+        # request renders base_htmx.html (the region alone). Hardcoding base.html
+        # would return a whole document to a boosted nav.
+        offenders = []
+        for path in self._templates():
+            text = path.read_text(encoding='utf-8')
+            for m in re.finditer(r'{%\s*extends\s+([^%]+?)\s*%}', text):
+                arg = m.group(1).strip()
+                if re.fullmatch(r"""['"]pod_manager/base(_htmx)?\.html['"]""", arg):
+                    offenders.append(f'{path.relative_to(self.TEMPLATE_ROOT)}: {{% extends {arg} %}}')
+        self.assertEqual(offenders, [], msg=(
+            'These templates hardcode a base instead of '
+            "{% extends base_template|default:'pod_manager/base.html' %}. "
+            'A boosted nav to one would swap a whole <html> into #boosted-region '
+            '(see S1.5 in planned_features_htmx_base_swap.txt):\n  '
+            + '\n  '.join(offenders)))
+
+    def test_every_extending_template_uses_base_template_with_a_default(self):
+        # The |default is what keeps a normal (non-HX) request rendering the full
+        # page, and what let the rollout land one view at a time.
+        bad = []
+        for path in self._templates():
+            text = path.read_text(encoding='utf-8')
+            m = re.search(r'{%\s*extends\s+([^%]+?)\s*%}', text)
+            if not m:
+                continue                      # partials / standalone pages
+            arg = m.group(1).strip()
+            if arg.startswith('"admin/') or arg.startswith("'admin/"):
+                continue                      # Django admin, boost-opted-out
+            if not re.match(r"""base_template\|default:['"]pod_manager/base\.html['"]""", arg):
+                bad.append(f'{path.relative_to(self.TEMPLATE_ROOT)}: {arg}')
+        self.assertEqual(bad, [], msg='Unexpected {% extends %} target(s):\n  ' + '\n  '.join(bad))
+
+    def test_the_boost_wrapper_does_not_select(self):
+        # The point of S1.5. If this comes back, either the removal was reverted
+        # or someone re-added a no-op that implies the server returns full pages.
+        base = (self.TEMPLATE_ROOT / 'pod_manager' / 'base.html').read_text(encoding='utf-8')
+        wrapper = re.search(r'<div hx-boost="true"[^>]*>', base)
+        self.assertIsNotNone(wrapper, 'base.html lost its hx-boost wrapper')
+        self.assertNotIn('hx-select', wrapper.group(0))
+        # ...but it must still target and swap the region.
+        self.assertIn('hx-target="#boosted-region"', wrapper.group(0))
+        self.assertIn('hx-swap="outerHTML show:window:top"', wrapper.group(0))
+
+    def test_lazy_loaders_still_unset_the_select_they_no_longer_inherit(self):
+        # hx-select="unset" on a partial loader is NOT made redundant by S1.5:
+        # _lazy_pane and the other split loaders set hx-select="#boosted-region"
+        # on their own outer element, so their children still inherit a select
+        # that must be unset for a bare-fragment response.
+        pane = (self.TEMPLATE_ROOT / 'pod_manager' / 'creator_tabs' / '_lazy_pane.html').read_text(encoding='utf-8')
+        self.assertIn('hx-select="#boosted-region"', pane)
+        self.assertIn('hx-select="unset"', pane)

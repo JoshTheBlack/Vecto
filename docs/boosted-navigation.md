@@ -15,11 +15,13 @@ This is not cosmetic plumbing. It changes the runtime contract for **every inlin
 2. **The boost wrapper** — an unstyled `<div>` that encloses *both* the nav and the swap region, and carries the boost:
 
    ```html
-   <div hx-boost="true" hx-target="#boosted-region" hx-select="#boosted-region"
+   <div hx-boost="true" hx-target="#boosted-region"
         hx-swap="outerHTML show:window:top" hx-push-url="true">
    ```
 
    These attributes are **not** on `#boosted-region`, and moving them there is a regression. The nav must stay *outside* the swapped region (so it persists, and so an HX fragment carries no navbar), but it must stay *inside* the boost (or nav links would hard-navigate and destroy the out-of-region player). Only a wrapper enclosing both satisfies both constraints. Boosted links inside a swapped-in region inherit these attributes from here.
+
+   **There is deliberately no `hx-select`.** Under base-swap an HX response *is* the region, so selecting `#boosted-region` out of it only re-found the response's own root. Its absence makes the contract in the next section mandatory rather than merely expected: a template that returns a whole document to a boosted nav now visibly nests an `<html>` inside the region instead of being silently rescued. `BaseTemplateContractTests` is what enforces it now.
 
 3. **The swap region** — `<div id="boosted-region" hx-history-elt>`, holding the `.container`, flash messages, `{% block content %}`, and the approval badge. This is the only thing that is ever swapped.
 
@@ -36,8 +38,9 @@ The server is **not** htmx-agnostic (it was until the base-swap rollout; that se
 - `base_htmx.html` emits *only* the region. Both bases build that region from `snippets/_boosted_region_open.html` / `_close.html`, so the two can never drift.
 - **`Vary: HX-Request` is on every response** and is non-negotiable: without it any shared/browser/proxy cache can serve a fragment to a full-page request or vice versa.
 
-Two constraints this puts on new templates:
+Three constraints this puts on new templates:
 
+- **Never hardcode a base.** Any template in the app shell extends `base_template|default:'pod_manager/base.html'` — no exceptions. Since the wrapper no longer selects, a hardcoded `base.html` returns a full document to a boosted nav and nests it inside the region. `BaseTemplateContractTests` fails the build if you do. (A standalone page outside the shell — `vecto_landing.html`, served only to unknown hosts at `/` — extends nothing and is unreachable by a boost, which is why it's exempt.)
 - **Only fill `{% block content %}`.** `base.html`'s `navbar_extra` / `navbar_extra_mobile` blocks render outside the region, so the skinny base drops them silently. Check with `grep -o "{% block [a-z_]* %}" <template>` before converting anything.
 - **In-content `<script>`/`<link>` ride along** precisely because they sit inside the content block. That's deliberate, and `LogViewerBaseSwapTests` / `AdminConsoleBaseSwapTests` guard it — losing such a script yields a dead-but-rendered page, not an obvious break.
 

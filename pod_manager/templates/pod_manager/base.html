@@ -573,9 +573,10 @@ window.VectoPage = (function () {
         e.preventDefault();
         const region = document.getElementById('boosted-region');
         if (typeof htmx === 'undefined' || !region) { window.location.href = link; return; }
+        // No `select` here, mirroring the wrapper (S1.5): htmx.ajax sends
+        // HX-Request, so the response is already the region and nothing else.
         htmx.ajax('GET', link, {
             target: '#boosted-region',
-            select: '#boosted-region',
             swap: 'outerHTML show:window:top',
         }).then(() => history.pushState({ htmx: true }, '', link));
     });
@@ -807,8 +808,16 @@ floating player, which lives outside the region. The nav is outside the region
 so it persists across swaps (it's static per session — navbar_extra is never
 filled and the network is fixed by host); only #boosted-region is swapped.
 Boosted links inside a swapped-in region inherit these attributes from here.
+
+There is deliberately NO hx-select (S1.5). Base-swap means an HX response IS the
+region and nothing else, so selecting #boosted-region out of it only re-found the
+response's own root — a no-op that read as though the server still returned whole
+pages. Dropping it makes the base-swap contract explicit: EVERY template in the
+app shell must extend base_template|default:'pod_manager/base.html', or a boosted
+nav would swap a whole <html> document into the region. BaseTemplateContractTests
+enforces that; hx-select used to paper over it at runtime.
 {% endcomment %}
-<div hx-boost="true" hx-target="#boosted-region" hx-select="#boosted-region" hx-swap="outerHTML show:window:top" hx-push-url="true">
+<div hx-boost="true" hx-target="#boosted-region" hx-swap="outerHTML show:window:top" hx-push-url="true">
 <div class="sticky-top mb-4 shadow-sm header-wrapper">
     
     <nav class="navbar navbar-expand-lg navbar-dark border-0">

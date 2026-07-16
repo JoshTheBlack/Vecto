@@ -10177,6 +10177,109 @@ class AdminConsoleBaseSwapTests(BaseSwapRolloutMixin, TestCase):
 
 
 @override_settings(ALLOWED_HOSTS=['*'])
+class CalendarBaseSwapTests(BaseSwapRolloutMixin, TestCase):
+    """calendar hosts FullCalendar, whose init script is in the content block."""
+
+    CONTENT_MARKER = 'id="calendar"'
+
+    def setUp(self):
+        cache.clear()
+        self.network = Network.objects.create(
+            name='CalNet', slug='calnet', custom_domain='calnet.example.test')
+        self.user = User.objects.create_user(username='caluser', password='pw')
+        self.client.force_login(self.user)
+        self.host = 'calnet.example.test'
+        self.url = reverse('calendar')
+
+
+@override_settings(ALLOWED_HOSTS=['*'])
+class PublishEpisodeBaseSwapTests(BaseSwapRolloutMixin, TestCase):
+    """publish_episode is the creator publish form (Quill editor + tabs)."""
+
+    CONTENT_MARKER = 'id="pubTabs"'
+
+    def setUp(self):
+        cache.clear()
+        self.network = Network.objects.create(
+            name='PubNet', slug='pubnet', custom_domain='pubnet.example.test')
+        self.user = User.objects.create_user(username='pubuser', password='pw')
+        self.network.owners.add(self.user)
+        Podcast.objects.create(network=self.network, title='P', slug='pubnet-show')
+        self.client.force_login(self.user)
+        self.host = 'pubnet.example.test'
+        self.url = reverse('publish_episode')
+
+
+@override_settings(ALLOWED_HOSTS=['*'])
+class LoginRequestBaseSwapTests(BaseSwapRolloutMixin, TestCase):
+    """login_request is a redirect target: a boosted nav to a gated page 302s
+    here with HX-Request still set, so it must return the region fragment for
+    the swap rather than a full document."""
+
+    CONTENT_MARKER = 'name="email"'
+
+    def setUp(self):
+        cache.clear()
+        self.network = Network.objects.create(
+            name='LoginNet', slug='loginnet', custom_domain='loginnet.example.test')
+        self.host = 'loginnet.example.test'
+        # login_request.html is served by RecurlyLoginView, routed as
+        # 'recurly_login' — 'patreon_login' is the OAuth bounce and only 302s.
+        self.url = reverse('recurly_login')
+
+
+@override_settings(ALLOWED_HOSTS=['*'])
+class VerifyAuthenticatorBaseSwapTests(BaseSwapRolloutMixin, TestCase):
+    """The TOTP enrolment page. Note verify_authenticator.html is rendered by
+    generate_qr_code, not by the verify_authenticator view — that one only ever
+    redirects (it POST-handles the code), so /auth/totp/setup/ is the URL that
+    actually renders this template."""
+
+    CONTENT_MARKER = 'id="manualSetup"'
+
+    def setUp(self):
+        cache.clear()
+        self.network = Network.objects.create(
+            name='TotpNet', slug='totpnet', custom_domain='totpnet.example.test')
+        self.user = User.objects.create_user(username='totpuser', password='pw')
+        self.client.force_login(self.user)
+        self.host = 'totpnet.example.test'
+        self.url = reverse('generate_qr_code')
+
+
+@override_settings(ALLOWED_HOSTS=['*'])
+class Custom404BaseSwapTests(TestCase):
+    """The custom 404 renders through base-swap like any other view, but it is
+    NOT part of the swap contract: htmx never swaps a non-2xx, and base.html's
+    htmx:responseError handler forces a real navigation instead — which arrives
+    as a normal request and gets the full page. These assert both halves:
+    the direct hit still full-loads (the plan's S1.6 invariant), and the boosted
+    404 keeps its 404 status so the error path stays triggered."""
+
+    def setUp(self):
+        cache.clear()
+        self.network = Network.objects.create(
+            name='NotFoundNet', slug='nfnet', custom_domain='nfnet.example.test')
+        self.host = 'nfnet.example.test'
+        self.url = '/this-path-does-not-exist/'
+
+    @override_settings(DEBUG=False)
+    def test_direct_hit_renders_the_full_404_page(self):
+        resp = self.client.get(self.url, HTTP_HOST=self.host)
+        self.assertEqual(resp.status_code, 404)
+        body = resp.content.decode('utf-8')
+        self.assertIn('<html', body)
+        self.assertIn('id="navbarNav"', body)
+
+    @override_settings(DEBUG=False)
+    def test_boosted_404_keeps_its_status_so_the_error_path_fires(self):
+        resp = self.client.get(self.url, HTTP_HOST=self.host, HTTP_HX_REQUEST='true')
+        # Status must stay 404: htmx declines to swap it and base.html's
+        # responseError handler does a real navigation to the full page.
+        self.assertEqual(resp.status_code, 404)
+
+
+@override_settings(ALLOWED_HOSTS=['*'])
 class UpdateAvatarPreferenceTests(TestCase):
     """update_avatar_preference must accept every source the model offers and
     return the resulting avatar URL, which the profile page pushes into the

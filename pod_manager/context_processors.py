@@ -31,3 +31,12 @@ def pending_approvals(request):
         status=EpisodeEditSuggestion.Status.PENDING,
     ).count()
     return {'pending_approval_count': count}
+
+
+def htmx(request):
+    """Exposes the base template chosen by HtmxBaseTemplateMiddleware so
+    converted templates can `{% extends base_template|default:... %}`: the skinny
+    base_htmx.html on an htmx-boosted request, the full base.html otherwise.
+    Falls back to base.html if the middleware didn't run (e.g. a bare
+    RequestFactory request in a unit test)."""
+    return {'base_template': getattr(request, 'base_template', 'pod_manager/base.html')}

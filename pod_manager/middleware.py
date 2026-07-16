@@ -4,11 +4,39 @@ from django.http import Http404
 from django.shortcuts import render
 from django.contrib.auth.models import User
 from django.utils import timezone
+from django.utils.cache import patch_vary_headers
 from django.utils.deprecation import MiddlewareMixin
 from .models import Network, NetworkMembership
 from .services.tenant_hosts import live_tenant_domains
 
 logger = logging.getLogger(__name__)
+
+
+class HtmxBaseTemplateMiddleware:
+    """Base-swap: on an htmx-boosted request, converted templates extend the
+    skinny base_htmx.html (just the #boosted-region swap unit) instead of the
+    full base.html (whole document + chrome). Converted templates read the base
+    via base_template|default:'pod_manager/base.html' (exposed to the template
+    layer by the htmx context processor), so un-converted templates that still
+    hardcode base.html keep rendering the full page unchanged.
+
+    Vary: HX-Request is NON-NEGOTIABLE and applied to every response: without
+    it, any shared/browser/proxy cache (or bfcache) could serve a fragment to a
+    full-page request or vice versa. This is the single most important
+    correctness line in the base-swap stage.
+    """
+    def __init__(self, get_response):
+        self.get_response = get_response
+
+    def __call__(self, request):
+        request.base_template = (
+            'pod_manager/base_htmx.html'
+            if request.headers.get('HX-Request') else
+            'pod_manager/base.html'
+        )
+        response = self.get_response(request)
+        patch_vary_headers(response, ('HX-Request',))
+        return response
 
 class NetworkMiddleware:
     def __init__(self, get_response):

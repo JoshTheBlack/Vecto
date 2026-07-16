@@ -1,0 +1,30 @@
+{% comment %}
+Opening of the boosted swap region — shared by base.html (full page) and
+base_htmx.html (skinny HX fragment) so the #boosted-region wrapper and its hx-*
+attributes are single-sourced and can never drift between the two bases.
+
+It emits the #boosted-region div plus the .container that lays out flash
+messages and the page's {% block content %}. Pairs with
+_boosted_region_close.html, which closes both.
+
+Pass history_elt=True on the FULL base only: the full page's region is the htmx
+history element, but the skinny HX fragment is not a history element (a history
+restore is a normal, non-HX request that re-renders the whole page).
+{% endcomment %}
+<div id="boosted-region" hx-boost="true" hx-target="#boosted-region" hx-select="#boosted-region" hx-swap="outerHTML show:window:top" hx-push-url="true"{% if history_elt %} hx-history-elt{% endif %}>
+<div class="container mt-3">
+    {% if messages %}
+        {% for message in messages %}
+            <div class="alert alert-{% if 'error' in message.tags %}danger{% elif 'success' in message.tags %}success{% elif 'warning' in message.tags %}warning{% else %}info{% endif %} alert-dismissible fade show shadow-sm" role="alert">
+
+                {% if 'log' in message.tags %}
+                    <h6 class="alert-heading fw-bold"><i class="bi bi-terminal"></i> Terminal Output</h6>
+                    <pre class="mb-0 bg-black text-light p-3 rounded border border-secondary font-monospace" style="white-space: pre-wrap; font-size: 0.85rem; max-height: 400px; overflow-y: auto;">{{ message }}</pre>
+                {% else %}
+                    {{ message }}
+                {% endif %}
+
+                <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+            </div>
+        {% endfor %}
+    {% endif %}

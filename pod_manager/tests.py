@@ -9896,3 +9896,74 @@ class HandleUpdateShowRekeyDispatchTests(TestCase):
         # R2_MEDIA_ENABLED is forced False in tests — the guard must hold.
         self.assertFalse(self._post(flag_on=False).delay.called)
 
+
+@override_settings(ALLOWED_HOSTS=['*'])
+class EpisodeDetailBaseSwapTests(TestCase):
+    """Stage 1 base-swap prototype (S1.7): episode_detail returns the skinny
+    #boosted-region fragment on an htmx-boosted request and the full document on
+    a normal request, chosen by HtmxBaseTemplateMiddleware. Vary: HX-Request is
+    on every response so no cache crosses the two shapes. Requests route through
+    the real middleware via an HTTP_HOST matching the network's custom_domain."""
+
+    NAV_MARKER = 'id="navbarNav"'          # lives in base.html nav, outside the region
+    PLAYER_MARKER = 'id="floatingPlayer"'  # persistent chrome, outside the region
+    CONTENT_MARKER = 'BaseSwapEpisodeMarker'
+
+    def setUp(self):
+        cache.clear()
+        self.network = Network.objects.create(
+            name='SwapNet', slug='swapnet', custom_domain='swapnet.example.test')
+        self.podcast = Podcast.objects.create(
+            network=self.network, title='Show', slug='swapnet-show')
+        self.ep = Episode.objects.create(
+            podcast=self.podcast, title=self.CONTENT_MARKER, pub_date=timezone.now(),
+            raw_description='x', clean_description='x',
+            audio_url_public='https://cdn.example.com/pub.mp3',
+        )
+        self.host = 'swapnet.example.test'
+        self.url = reverse('episode_detail', args=[self.ep.id])
+
+    def _get(self, *, boosted):
+        extra = {'HTTP_HX_REQUEST': 'true'} if boosted else {}
+        return self.client.get(self.url, HTTP_HOST=self.host, **extra)
+
+    def test_boosted_request_returns_fragment(self):
+        resp = self._get(boosted=True)
+        self.assertEqual(resp.status_code, 200)
+        body = resp.content.decode('utf-8')
+        # Fragment: no document chrome — no <html>, no navbar, no floating player.
+        self.assertNotIn('<html', body)
+        self.assertNotIn(self.NAV_MARKER, body)
+        self.assertNotIn(self.PLAYER_MARKER, body)
+        # ...but it IS the #boosted-region swap unit wrapping the episode content
+        # inside the shared .container so layout is preserved on swap.
+        self.assertIn('id="boosted-region"', body)
+        self.assertIn('class="container mt-3"', body)
+        self.assertIn(self.CONTENT_MARKER, body)
+
+    def test_normal_request_returns_full_page(self):
+        resp = self._get(boosted=False)
+        self.assertEqual(resp.status_code, 200)
+        body = resp.content.decode('utf-8')
+        # Full document: doctype/html, navbar, floating player, and the content.
+        self.assertIn('<html', body)
+        self.assertIn(self.NAV_MARKER, body)
+        self.assertIn(self.PLAYER_MARKER, body)
+        self.assertIn('id="boosted-region"', body)
+        self.assertIn(self.CONTENT_MARKER, body)
+
+    def test_fragment_is_smaller_than_full_page(self):
+        full = self._get(boosted=False).content
+        frag = self._get(boosted=True).content
+        # Base-swap only pays off if the boosted response actually sheds the
+        # chrome — the fragment must be materially smaller than the full page.
+        self.assertLess(len(frag), len(full))
+
+    def test_vary_hx_request_on_boosted_response(self):
+        resp = self._get(boosted=True)
+        self.assertIn('HX-Request', resp.get('Vary', ''))
+
+    def test_vary_hx_request_on_full_response(self):
+        resp = self._get(boosted=False)
+        self.assertIn('HX-Request', resp.get('Vary', ''))
+

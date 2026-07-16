@@ -1,0 +1,53 @@
+{% comment %}
+Closing of the boosted swap region — shared by base.html and base_htmx.html.
+Closes the .container, emits the floating approval badge (kept inside the region
+so its count re-renders on every boosted swap and stays live), then closes
+#boosted-region. Pairs with _boosted_region_open.html.
+{% endcomment %}
+</div>
+
+{% if pending_approval_count %}
+<style>
+    #approvalBadge {
+        position: fixed;
+        right: 20px; bottom: 20px;
+        z-index: 1050;
+        width: 52px; height: 52px;
+        border-radius: 50%;
+        display: flex; align-items: center; justify-content: center;
+        background: rgba(8, 8, 10, 0.92);
+        backdrop-filter: blur(24px);
+        -webkit-backdrop-filter: blur(24px);
+        border: 1px solid color-mix(in srgb, var(--vecto-primary) 30%, transparent);
+        box-shadow: 0 4px 20px rgba(0,0,0,0.5);
+        color: #f8f9fa;
+        font-size: 1.3rem;
+        text-decoration: none;
+        transition: transform 0.15s, border-color 0.15s;
+    }
+    #approvalBadge:hover {
+        color: var(--vecto-primary);
+        border-color: color-mix(in srgb, var(--vecto-primary) 60%, transparent);
+        transform: scale(1.06);
+    }
+    #approvalBadge .approval-badge-count {
+        position: absolute;
+        top: -4px; right: -4px;
+        min-width: 20px; height: 20px;
+        padding: 0 5px;
+        border-radius: 10px;
+        background: var(--vecto-primary, #ffc107);
+        color: var(--vecto-primary-text, #000);
+        font-size: 0.7rem;
+        font-weight: 700;
+        display: flex; align-items: center; justify-content: center;
+        line-height: 1;
+        border: 2px solid rgba(8, 8, 10, 0.92);
+    }
+</style>
+<a href="{% url 'creator_settings' %}?tab=inbox" id="approvalBadge" title="{{ pending_approval_count }} edit{{ pending_approval_count|pluralize }} awaiting approval">
+    <i class="bi bi-chat-square-text-fill"></i>
+    <span class="approval-badge-count">{{ pending_approval_count }}</span>
+</a>
+{% endif %}
+</div>

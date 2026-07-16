@@ -191,6 +191,7 @@ MIDDLEWARE = [
     'pod_manager.middleware.RequestUserLogMiddleware',  # after Impersonation — captures effective user
     'pod_manager.middleware.NetworkMiddleware',
     'pod_manager.middleware.BillingPresenceMiddleware',
+    'pod_manager.middleware.HtmxBaseTemplateMiddleware',  # after auth: picks base_htmx.html on HX requests + Vary: HX-Request
 ]
 
 ROOT_URLCONF = 'config.urls'
@@ -207,6 +208,7 @@ TEMPLATES = [
                 'django.contrib.messages.context_processors.messages',
                 'pod_manager.context_processors.current_network',
                 'pod_manager.context_processors.pending_approvals',
+                'pod_manager.context_processors.htmx',
             ],
         },
     },

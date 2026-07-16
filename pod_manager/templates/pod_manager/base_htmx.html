@@ -1,0 +1,19 @@
+{% comment %}
+Skinny base for htmx-boosted (HX) requests. Emits ONLY the #boosted-region swap
+unit — the .container + flash messages + {% block content %} + floating approval
+badge — and nothing else: no <html>/<head>, no navbar, no floating player, no
+scripts. All of that is persistent chrome that lives OUTSIDE the region in
+base.html and survives the swap, so it must not be re-sent on every boost.
+
+HtmxBaseTemplateMiddleware points request.base_template (and thus the
+base_template context var) here on HX requests; episode_detail.html and any
+other converted view extend base_template|default:'pod_manager/base.html', so a
+full (non-HX) request still renders the whole page via base.html unchanged.
+
+The region wrapper is shared with base.html via the snippet includes below so
+its hx-* attributes never drift. history_elt is intentionally omitted here: the
+skinny fragment is not an htmx history element (history restores are non-HX and
+re-render the full page).
+{% endcomment %}{% include 'pod_manager/snippets/_boosted_region_open.html' %}
+    {% block content %}{% endblock %}
+{% include 'pod_manager/snippets/_boosted_region_close.html' %}

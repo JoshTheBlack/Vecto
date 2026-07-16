@@ -799,7 +799,10 @@ document.addEventListener('click', (e) => {
         }
     </style>
 {% endif %}
-<div id="boosted-region" hx-boost="true" hx-target="#boosted-region" hx-select="#boosted-region" hx-swap="outerHTML show:window:top" hx-push-url="true" hx-history-elt>
+{# The header/nav + social bar live OUTSIDE the boosted region so they persist
+   across htmx swaps (the region is replaced wholesale on every boost). They are
+   static per session — navbar_extra blocks are never filled and the network is
+   fixed by host — so nothing here needs to re-render on navigation. #}
 <div class="sticky-top mb-4 shadow-sm header-wrapper">
     
     <nav class="navbar navbar-expand-lg navbar-dark border-0">
@@ -972,72 +975,10 @@ document.addEventListener('click', (e) => {
 
 </div>
 
-<div class="container mt-3">
-    {% if messages %}
-        {% for message in messages %}
-            <div class="alert alert-{% if 'error' in message.tags %}danger{% elif 'success' in message.tags %}success{% elif 'warning' in message.tags %}warning{% else %}info{% endif %} alert-dismissible fade show shadow-sm" role="alert">
-                
-                {% if 'log' in message.tags %}
-                    <h6 class="alert-heading fw-bold"><i class="bi bi-terminal"></i> Terminal Output</h6>
-                    <pre class="mb-0 bg-black text-light p-3 rounded border border-secondary font-monospace" style="white-space: pre-wrap; font-size: 0.85rem; max-height: 400px; overflow-y: auto;">{{ message }}</pre>
-                {% else %}
-                    {{ message }}
-                {% endif %}
-
-                <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
-            </div>
-        {% endfor %}
-    {% endif %}
-
+{% include 'pod_manager/snippets/_boosted_region_open.html' with history_elt=True %}
     {% block content %}
     {% endblock %}
-</div>
-
-{% if pending_approval_count %}
-<style>
-    #approvalBadge {
-        position: fixed;
-        right: 20px; bottom: 20px;
-        z-index: 1050;
-        width: 52px; height: 52px;
-        border-radius: 50%;
-        display: flex; align-items: center; justify-content: center;
-        background: rgba(8, 8, 10, 0.92);
-        backdrop-filter: blur(24px);
-        -webkit-backdrop-filter: blur(24px);
-        border: 1px solid color-mix(in srgb, var(--vecto-primary) 30%, transparent);
-        box-shadow: 0 4px 20px rgba(0,0,0,0.5);
-        color: #f8f9fa;
-        font-size: 1.3rem;
-        text-decoration: none;
-        transition: transform 0.15s, border-color 0.15s;
-    }
-    #approvalBadge:hover {
-        color: var(--vecto-primary);
-        border-color: color-mix(in srgb, var(--vecto-primary) 60%, transparent);
-        transform: scale(1.06);
-    }
-    #approvalBadge .approval-badge-count {
-        position: absolute;
-        top: -4px; right: -4px;
-        min-width: 20px; height: 20px;
-        padding: 0 5px;
-        border-radius: 10px;
-        background: var(--vecto-primary, #ffc107);
-        color: var(--vecto-primary-text, #000);
-        font-size: 0.7rem;
-        font-weight: 700;
-        display: flex; align-items: center; justify-content: center;
-        line-height: 1;
-        border: 2px solid rgba(8, 8, 10, 0.92);
-    }
-</style>
-<a href="{% url 'creator_settings' %}?tab=inbox" id="approvalBadge" title="{{ pending_approval_count }} edit{{ pending_approval_count|pluralize }} awaiting approval">
-    <i class="bi bi-chat-square-text-fill"></i>
-    <span class="approval-badge-count">{{ pending_approval_count }}</span>
-</a>
-{% endif %}
-</div>
+{% include 'pod_manager/snippets/_boosted_region_close.html' %}
 
 
 {% if request.is_impersonating %}

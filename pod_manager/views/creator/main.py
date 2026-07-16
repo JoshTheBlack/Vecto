@@ -124,6 +124,29 @@ def creator_show_form(request, show_id):
 
 
 @login_required(login_url='/login/')
+@diagnostic_page("Mix Form (partial)")
+def creator_mix_form(request, mix_id):
+    """One network mix's edit-modal body, fetched when the modal first opens.
+    Keeps the Mixes tab to a list of cards instead of a full curation form (with
+    its show picker) per mix. Owner-gated via the mix's network."""
+    current_network, forbidden = _resolve_creator_network(request)
+    if forbidden:
+        return forbidden
+
+    mix = get_object_or_404(
+        current_network.mixes.select_related('required_tier').prefetch_related('selected_podcasts'),
+        id=mix_id,
+    )
+    # The picker renders its pre-checked rows from this; O(1) membership tests.
+    mix.selected_ids = {p.id for p in mix.selected_podcasts.all()}
+    return render(request, 'pod_manager/creator_tabs/_mix_form.html', {
+        'current_network': current_network,
+        'mix': mix,
+        'network_podcasts': network_podcast_list(current_network),
+    })
+
+
+@login_required(login_url='/login/')
 @diagnostic_page("Audit Edit Diff (partial)")
 def creator_audit_edit(request, edit_id):
     """One resolved edit's before/after diff for the Audit Log accordion, fetched

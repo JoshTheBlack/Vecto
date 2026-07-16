@@ -10685,3 +10685,97 @@ class BaseTemplateContractTests(SimpleTestCase):
         pane = (self.TEMPLATE_ROOT / 'pod_manager' / 'creator_tabs' / '_lazy_pane.html').read_text(encoding='utf-8')
         self.assertIn('hx-select="#boosted-region"', pane)
         self.assertIn('hx-select="unset"', pane)
+
+
+@override_settings(ALLOWED_HOSTS=['*'])
+class MixFormLazyLoadTests(TestCase):
+    """S2.3 — the Mixes tab renders cards; each mix's edit form (and its show
+    picker) loads on modal open via creator_mix_form. Rendering a curation form
+    per mix up front was most of that tab's weight."""
+
+    def setUp(self):
+        cache.clear()
+        self.network = Network.objects.create(
+            name='MixNet', slug='mixnet', custom_domain='mixnet.example.test')
+        self.owner = User.objects.create_user(username='mixowner', password='pw')
+        self.network.owners.add(self.owner)
+        self.pods = [
+            Podcast.objects.create(network=self.network, title='MixShow %d' % i,
+                                   slug='mixnet-show-%d' % i)
+            for i in range(4)
+        ]
+        self.mix = NetworkMix.objects.create(
+            network=self.network, name='My Mix', slug='my-mix')
+        self.mix.selected_podcasts.set(self.pods[:3])
+        self.client.force_login(self.owner)
+        self.host = 'mixnet.example.test'
+        self.tab_url = reverse('creator_tab_partial', args=['mixes'])
+        self.form_url = reverse('creator_mix_form', args=[self.mix.id])
+
+    def _tab(self):
+        return self.client.get(self.tab_url, {'network': self.network.slug},
+                               HTTP_HOST=self.host, HTTP_HX_REQUEST='true')
+
+    def _form(self, url=None):
+        return self.client.get(url or self.form_url, {'network': self.network.slug},
+                               HTTP_HOST=self.host, HTTP_HX_REQUEST='true')
+
+    def test_tab_renders_the_card_without_the_edit_form(self):
+        body = self._tab().content.decode('utf-8')
+        self.assertIn('My Mix', body)
+        # The card's own facts stay eager...
+        self.assertIn('3 Shows Included', body)
+        # ...but the edit form does not render until the modal opens.
+        self.assertNotIn('edit_network_mix', body)
+
+    def test_card_count_survived_the_switch_off_selected_ids(self):
+        # Regression guard: the card used {{ mix.selected_ids|length }}, and
+        # gather_mixes no longer sets selected_ids. A missing attribute renders
+        # as an empty string in a Django template, so |length would have shown
+        # "0 Shows Included" silently rather than raising.
+        body = self._tab().content.decode('utf-8')
+        self.assertNotIn('0 Shows Included', body)
+        self.assertIn('3 Shows Included', body)
+
+    def test_tab_defers_the_form_to_the_modal_open(self):
+        body = self._tab().content.decode('utf-8')
+        self.assertIn(self.form_url, body)
+        self.assertIn('show.bs.modal from:#editNetworkMixModal-%d once' % self.mix.id, body)
+        self.assertIn('hx-select="unset"', body)
+
+    def test_form_endpoint_renders_the_mix_with_its_selection(self):
+        body = self._form().content.decode('utf-8')
+        self.assertIn('edit_network_mix', body)
+        self.assertIn('value="My Mix"', body)
+        # The picker pre-checks the mix's three shows and not the fourth.
+        self.assertEqual(body.count('checked'), 3)
+
+    def test_form_loader_hands_boosted_children_the_region(self):
+        # The mix form is hx-boost="false" today (multipart), so nothing inherits
+        # — but the split is what keeps this correct if that opt-out ever goes.
+        body = self._tab().content.decode('utf-8')
+        self.assertIn('hx-target="#boosted-region"', body)
+        self.assertIn('hx-target="#mix-form-%d"' % self.mix.id, body)
+        self.assertIn('hx-disinherit="*"', body)
+
+    def test_form_endpoint_404s_for_a_mix_outside_the_network(self):
+        other = Network.objects.create(name='OtherMixNet', slug='othermixnet')
+        foreign = NetworkMix.objects.create(network=other, name='Foreign', slug='foreign')
+        resp = self._form(url=reverse('creator_mix_form', args=[foreign.id]))
+        self.assertEqual(resp.status_code, 404)
+
+    def test_form_endpoint_403s_for_a_non_owner(self):
+        stranger = User.objects.create_user(username='mixstranger', password='pw')
+        self.client.force_login(stranger)
+        self.assertEqual(self._form().status_code, 403)
+
+    def test_form_endpoint_requires_login(self):
+        self.client.logout()
+        resp = self._form()
+        self.assertEqual(resp.status_code, 302)
+        self.assertIn('/login/', resp['Location'])
+
+    def test_tab_keeps_the_shared_options_template(self):
+        # The picker clones its full option list from this; it must stay in the
+        # tab body, since a lazily-loaded modal is not present at tab render.
+        self.assertIn('data-sms-options-template', self._tab().content.decode('utf-8'))

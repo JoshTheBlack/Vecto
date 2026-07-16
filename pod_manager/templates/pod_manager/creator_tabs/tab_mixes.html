@@ -43,7 +43,7 @@
                                             {% endif %}
                                             <div>
                                                 <h5 class="fw-bold mb-0 text-light">{{ mix.name }}</h5>
-                                                <small class="text-muted">{{ mix.selected_ids|length }} Shows Included</small>
+                                                <small class="text-muted">{{ mix.selected_count }} Shows Included</small>
                                             </div>
                                         </div>
                                         
@@ -72,52 +72,29 @@
                                             <h5 class="modal-title fw-bold"><i class="bi bi-pencil-square text-info"></i> Edit "{{ mix.name }}"</h5>
                                             <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
                                         </div>
-                                        <form method="POST" action="{% url 'creator_settings' %}?network={{ current_network.slug }}&tab=mixes" enctype="multipart/form-data" hx-boost="false">
-                                            <div class="modal-body p-4">
-                                                {% csrf_token %}
-                                                <input type="hidden" name="action" value="edit_network_mix">
-                                                <input type="hidden" name="mix_id" value="{{ mix.id }}">
-                                                
-                                                <div class="row">
-                                                    <div class="col-md-6 mb-3">
-                                                        <label class="form-label text-muted small fw-bold">Mix Name</label>
-                                                        <input type="text" name="name" value="{{ mix.name }}" class="form-control bg-black text-light border-secondary" required>
-                                                    </div>
-                                                    <div class="col-md-6 mb-3">
-                                                        <label class="form-label text-muted small fw-bold">URL Slug</label>
-                                                        <input type="text" name="slug" value="{{ mix.slug }}" class="form-control bg-black text-light border-secondary" required>
-                                                    </div>
-                                                </div>
+                                        {% comment %}
+                                        Body loads on first open (S2.3). Rendering a
+                                        curation form + show picker for EVERY mix up
+                                        front was most of this tab's weight.
 
-                                                <div class="mb-3">
-                                                    <label class="form-label text-muted small fw-bold">Require Patreon Tier? (Optional)</label>
-                                                    <select name="tier_id" class="form-select bg-black text-light border-secondary">
-                                                        <option value="">No - Base feed is Public</option>
-                                                        {% for tier in current_network.tiers.all %}
-                                                            <option value="{{ tier.id }}" {% if mix.required_tier.id == tier.id %}selected{% endif %}>${{ tier.minimum_dollars|floatformat:2 }} - {{ tier.name }}</option>
-                                                        {% endfor %}
-                                                    </select>
+                                        Divergence C's outer/inner split: the OUTER div
+                                        hands #boosted-region to anything boosted in the
+                                        loaded body, the INNER loader keeps its
+                                        self-targeting attrs behind hx-disinherit="*".
+                                        The mix form itself is hx-boost="false" (multipart
+                                        upload), so nothing inherits today — the split is
+                                        what keeps that true if the opt-out ever goes.
+                                        {% endcomment %}
+                                        <div id="mix-form-{{ mix.id }}"
+                                             hx-target="#boosted-region" hx-select="#boosted-region" hx-swap="outerHTML show:window:top" hx-push-url="false">
+                                            <div hx-get="{% url 'creator_mix_form' mix.id %}?network={{ current_network.slug }}"
+                                                 hx-trigger="show.bs.modal from:#editNetworkMixModal-{{ mix.id }} once"
+                                                 hx-target="#mix-form-{{ mix.id }}" hx-swap="innerHTML" hx-select="unset" hx-push-url="false" hx-disinherit="*">
+                                                <div class="modal-body p-4 text-center text-muted">
+                                                    <span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span> Loading…
                                                 </div>
-
-                                                <div class="row mb-4">
-                                                    <div class="col-md-6">
-                                                        <label class="form-label text-muted small fw-bold">Artwork URL</label>
-                                                        <input type="url" name="mix_image" value="{{ mix.image_url }}" class="form-control bg-black text-light border-secondary" placeholder="https://...">
-                                                    </div>
-                                                    <div class="col-md-6">
-                                                        <label class="form-label text-muted small fw-bold">Or Upload Image</label>
-                                                        <input type="file" name="mix_image_upload" class="form-control bg-black text-light border-secondary" accept="image/*">
-                                                    </div>
-                                                </div>
-
-                                                <label class="form-label text-info small fw-bold border-bottom border-secondary w-100 pb-2 mb-3">Select Shows for this Mix</label>
-                                                {% include 'pod_manager/snippets/show_multiselect.html' with field_name='podcasts' podcast_list=network_podcasts selected_ids=mix.selected_ids placeholder='No shows in this mix yet' shared_template=True selected_rows=True %}
                                             </div>
-                                            <div class="modal-footer border-top border-secondary">
-                                                <button type="button" class="btn btn-outline-light" data-bs-dismiss="modal">Cancel</button>
-                                                <button type="submit" class="btn btn-info fw-bold"><i class="bi bi-floppy"></i> Save Changes</button>
-                                            </div>
-                                        </form>
+                                        </div>
                                     </div>
                                 </div>
                             </div>

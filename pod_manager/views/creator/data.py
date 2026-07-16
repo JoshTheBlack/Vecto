@@ -173,13 +173,16 @@ def gather_manage_podcasts(request, current_network):
 
 @diagnostic_timer("1b. Gather Network Mixes")
 def gather_mixes(current_network):
-    """Mixes with a precomputed selected-podcast id SET each, so the edit-mix
-    modals can render 'is this show in the mix?' as an O(1) membership test
-    instead of re-querying mix.selected_podcasts.all once per show per mix."""
-    mixes = list(current_network.mixes.select_related('required_tier').prefetch_related('selected_podcasts'))
-    for mix in mixes:
-        mix.selected_ids = {p.id for p in mix.selected_podcasts.all()}
-    return {'network_mixes': mixes}
+    """Mix CARDS only — name, tier, artwork, feed URL and a show count. Each
+    mix's edit form (and its show picker) loads on modal open via
+    creator_mix_form, so this no longer prefetches every mix's podcasts just to
+    build the selected-id set the form needed: a Count does the card's job in
+    the query."""
+    return {'network_mixes': list(
+        current_network.mixes
+        .select_related('required_tier')
+        .annotate(selected_count=Count('selected_podcasts', distinct=True))
+    )}
 
 
 @diagnostic_timer("2. Gather Inbox")

@@ -799,10 +799,12 @@ document.addEventListener('click', (e) => {
         }
     </style>
 {% endif %}
-{# The header/nav + social bar live OUTSIDE the boosted region so they persist
-   across htmx swaps (the region is replaced wholesale on every boost). They are
-   static per session — navbar_extra blocks are never filled and the network is
-   fixed by host — so nothing here needs to re-render on navigation. #}
+{% comment %}
+The header/nav + social bar live OUTSIDE the boosted region so they persist
+across htmx swaps (the region is replaced wholesale on every boost). They are
+static per session — navbar_extra blocks are never filled and the network is
+fixed by host — so nothing here needs to re-render on navigation.
+{% endcomment %}
 <div class="sticky-top mb-4 shadow-sm header-wrapper">
     
     <nav class="navbar navbar-expand-lg navbar-dark border-0">

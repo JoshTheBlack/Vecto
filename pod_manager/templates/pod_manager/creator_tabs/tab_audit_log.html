@@ -63,11 +63,13 @@
                                     <span class="badge bg-warning bg-opacity-25 text-warning border border-warning me-2">Rolled Back</span>
                                 {% endif %}
                                 
-                                {# Informational only — must NOT be a link. A boosted <a> here sits
-                                   inside the accordion's expand <button>, so clicking a header to
-                                   expand would fire a filter navigation (audit_user=<this user>) and
-                                   re-render the tab. Filter by user via the "Filter by username" box
-                                   above instead. #}
+                                {% comment %}
+                                Informational only — must NOT be a link. A boosted <a> here sits
+                                inside the accordion's expand <button>, so clicking a header to
+                                expand would fire a filter navigation (audit_user=<this user>) and
+                                re-render the tab. Filter by user via the "Filter by username" box
+                                above instead.
+                                {% endcomment %}
                                 <span class="badge me-2" style="border: 1px solid var(--bs-border-color); background-color: rgba(128,128,128,0.1); color: var(--vecto-surface-text);">
                                     <i class="bi bi-person ms-0 me-1"></i>{{ edit.user.username }}
                                 </span>

@@ -10128,6 +10128,55 @@ class LogViewerBaseSwapTests(BaseSwapRolloutMixin, TestCase):
 
 
 @override_settings(ALLOWED_HOSTS=['*'])
+class CreatorSettingsBaseSwapTests(BaseSwapRolloutMixin, TestCase):
+    """The /creator shell is the biggest proportional win: it already ships a
+    light shell (the tabs lazy-load), so nearly all of its boosted response was
+    the chrome. Its lazy panes live inside the region and creator_tabs.js is
+    written to re-run on a boosted region swap, so the shell converts like any
+    other view."""
+
+    CONTENT_MARKER = 'id="list-tab"'
+
+    def setUp(self):
+        cache.clear()
+        self.network = Network.objects.create(
+            name='CreatorNet', slug='creatornet',
+            custom_domain='creatornet.example.test')
+        self.user = User.objects.create_user(username='creatoruser', password='pw')
+        self.network.owners.add(self.user)
+        self.client.force_login(self.user)
+        self.host = 'creatornet.example.test'
+        self.url = reverse('creator_settings')
+
+
+@override_settings(ALLOWED_HOSTS=['*'])
+class AdminConsoleBaseSwapTests(BaseSwapRolloutMixin, TestCase):
+    """admin_console is a superuser shell whose panes populate from JSON
+    endpoints; its stylesheet + admin_console.js are inside the content block,
+    so they ride along in the fragment."""
+
+    CONTENT_MARKER = 'id="ac-sidebar"'
+
+    def setUp(self):
+        cache.clear()
+        self.network = Network.objects.create(
+            name='ConsoleNet', slug='consolenet',
+            custom_domain='consolenet.example.test')
+        self.user = User.objects.create_superuser(
+            username='consoleroot', password='pw', email='root@example.test')
+        self.client.force_login(self.user)
+        self.host = 'consolenet.example.test'
+        self.url = reverse('admin_console')
+
+    def test_fragment_carries_the_console_assets(self):
+        # The console is inert without its JS; the stylesheet + script live in
+        # the content block precisely so a boosted swap brings them along.
+        body = self._get(boosted=True).content.decode('utf-8')
+        self.assertIn('admin_console.js', body)
+        self.assertIn('admin_console.css', body)
+
+
+@override_settings(ALLOWED_HOSTS=['*'])
 class UpdateAvatarPreferenceTests(TestCase):
     """update_avatar_preference must accept every source the model offers and
     return the resulting avatar URL, which the profile page pushes into the

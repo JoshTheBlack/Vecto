@@ -131,6 +131,38 @@ const TAB_PARAM_MAP = {
 };
 const TAB_ID_MAP = Object.fromEntries(Object.entries(TAB_PARAM_MAP).map(([k, v]) => [v, k]));
 
+// Query params owned by exactly one tab. Everything not listed here (network,
+// tab) is global and always survives.
+//
+// These used to accumulate forever: the shown.bs.tab handler copied the whole
+// query string onto each switch, so filtering shows left show_q in the URL for
+// the rest of the session — through the audit tab, the inbox, everywhere. They
+// are meaningless off their own tab and actively harmful: a leftover show_q is
+// what dragged audit pagination back to Podcasts.
+const TAB_SCOPED_PARAMS = {
+    'shows':    ['show_q', 'show_sort', 'show_mix', 'show_page', 'auto_import'],
+    'audit':    ['audit_q', 'audit_status', 'audit_user', 'audit_page'],
+    'merge':    ['merge_view', 'merge_podcast_id', 'merge_q', 'merge_reason',
+                 'pub_page', 'priv_page', 'match_page'],
+    'move':     ['source_pod_id'],
+    'crosspub': ['cross_source_id'],
+};
+const ALL_TAB_SCOPED_PARAMS = [].concat(...Object.values(TAB_SCOPED_PARAMS));
+
+// Drop every tab-scoped param that does not belong to tabParam. Returns true if
+// anything was actually removed, so callers can skip a pointless replaceState.
+function stripForeignTabParams(params, tabParam) {
+    const mine = TAB_SCOPED_PARAMS[tabParam] || [];
+    let changed = false;
+    ALL_TAB_SCOPED_PARAMS.forEach(key => {
+        if (mine.indexOf(key) === -1 && params.has(key)) {
+            params.delete(key);
+            changed = true;
+        }
+    });
+    return changed;
+}
+
 (function () {
     const urlParams = new URLSearchParams(window.location.search);
     let activeTabId = null;
@@ -147,9 +179,9 @@ const TAB_ID_MAP = Object.fromEntries(Object.entries(TAB_PARAM_MAP).map(([k, v])
     // audit page 2 correctly (audit_page=2 is in the link's href), and then this
     // block read the STALE show_q and dragged the user back to Podcasts.
     //
-    // A tab name absent from TAB_PARAM_MAP resolves to null on purpose: the
-    // server already marks that tab active from request.GET.tab, so there is
-    // nothing for us to override.
+    // The two tabs absent from TAB_PARAM_MAP (crosspub, notfound) resolve to
+    // null, which is fine: the server already marks the active tab from
+    // request.GET.tab, so a null here just means "don't override it".
     const hasFilter = (key) => (urlParams.get(key) || '') !== '';
     if (urlParams.has('merge_view')) {
         activeTabId = '#list-merge';
@@ -167,7 +199,22 @@ const TAB_ID_MAP = Object.fromEntries(Object.entries(TAB_PARAM_MAP).map(([k, v])
         const triggerEl = document.querySelector(`a[href="${activeTabId}"][data-bs-toggle="list"]`);
         if (triggerEl) {
             const tab = new bootstrap.Tab(triggerEl);
-            tab.show();
+            tab.show();  // fires shown.bs.tab -> normalizes the URL via the handler below
+        }
+    }
+
+    // 2b. Scrub a URL we arrived on rather than switched to. Step 2 only
+    //     normalizes tabs it activates: a server-rendered tab (crosspub,
+    //     notfound) fires no shown.bs.tab, and a boosted nav inside a pane
+    //     doesn't push a URL at all, so stale params from another tab would sit
+    //     in the address bar untouched.
+    const landedTab = urlParams.get('tab');
+    if (landedTab) {
+        const cleaned = new URLSearchParams(window.location.search);
+        if (stripForeignTabParams(cleaned, landedTab)) {
+            const qs = cleaned.toString();
+            history.replaceState(null, null,
+                window.location.pathname + (qs ? '?' + qs : '') + (window.location.hash || ''));
         }
     }
 
@@ -180,6 +227,10 @@ const TAB_ID_MAP = Object.fromEntries(Object.entries(TAB_PARAM_MAP).map(([k, v])
             const tabParam = TAB_ID_MAP[targetHref] || targetHref.replace('#list-', '');
             const params = new URLSearchParams(window.location.search);
             params.set('tab', tabParam);
+            // Leave the tab, leave its params behind. Without this the query
+            // string only ever grows, and another tab's filter follows you around
+            // for the rest of the session.
+            stripForeignTabParams(params, tabParam);
             history.replaceState(null, null, window.location.pathname + '?' + params.toString() + targetHref);
         });
     });

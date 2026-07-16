@@ -204,6 +204,17 @@ REGISTRY = {
         # Idempotent SET; previews unless --apply. Banks per-edit rollback deltas
         # onto historical APPROVED edits; does not touch membership aggregates.
     ),
+    "refresh_live_schedules": CommandSpec(
+        name="refresh_live_schedules",
+        category="Maintenance",
+        # No --apply/--yes by design (conventions §1.4, operational action): it is
+        # idempotent and does exactly what task_refresh_live_schedules already does
+        # unprompted on every episode publish — re-render each live /schedule embed
+        # and PATCH it. --list is the preview. Not danger: the only deletes are of
+        # the LiveSchedulePost tracking row when its window has passed or its
+        # Discord message is already gone; no Discord message is ever deleted.
+        # --network / --list infer their widgets (Network dropdown + checkbox).
+    ),
     # --- Reports -----------------------------------------------------------
     "generate_s3_report": CommandSpec(
         name="generate_s3_report",

@@ -99,7 +99,16 @@
     </div>
 </div>
 {% include 'pod_manager/snippets/show_multiselect_assets.html' %}
-<script src="{% static 'pod_manager/js/creator_tabs.js' %}?v=5"></script>
+{% comment %}
+v=6: Stage 2 changed this file's execution contract — applyLiveFilter now calls
+htmx.process on the rows it injects, tab resolution lets ?tab= outrank the show_*
+params, tab-scoped params are stripped on leaving a tab, and startAllLiveImports
+is gone. Static filenames are NOT hashed (CompressedStaticFilesStorage, not the
+Manifest variant), so this query param is the only cache-bust: without the bump a
+returning browser runs the v=5 copy against these templates and every one of
+those fixes silently reverts for that user.
+{% endcomment %}
+<script src="{% static 'pod_manager/js/creator_tabs.js' %}?v=6"></script>
 <script src="{% static 'pod_manager/js/gdrive_recovery.js' %}?v=2"></script>
 
 <style>

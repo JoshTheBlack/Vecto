@@ -296,7 +296,16 @@
             method: 'POST',
             body: formData,
             headers: { 'X-Requested-With': 'XMLHttpRequest' }
-        });
+        })
+            .then(r => r.ok ? r.json() : null)
+            .then(data => {
+                // The navbar avatar lives outside #boosted-region and so is never
+                // re-rendered by a boosted nav — push the new src into it here or
+                // it stays stale until a full page load.
+                const navAvatar = document.getElementById('navbarAvatar');
+                if (data && data.avatar_url && navAvatar) navAvatar.src = data.avatar_url;
+            })
+            .catch(() => {});
     }
 
     function openUploadModal(event) {

@@ -866,7 +866,13 @@ Boosted links inside a swapped-in region inherit these attributes from here.
 
                             <a class="nav-link p-0 d-flex align-items-center" href="{% url 'user_profile' %}" title="View Profile">
                                 {% if request.tenant_profile %}
+                                    {% comment %}
+                                    id is the handle the profile page uses to push a new avatar
+                                    here after a source change: this nav sits outside
+                                    #boosted-region, so no boosted swap re-renders it.
+                                    {% endcomment %}
                                     <img src="{{ request.tenant_profile.display_avatar }}"
+                                        id="navbarAvatar"
                                         alt="Profile"
                                         class="rounded-circle border"
                                         style="width: 38px; height: 38px; object-fit: cover; border-color: var(--vecto-primary, #ffc107) !important; border-width: 2px !important; transition: transform 0.2s ease, filter 0.2s ease;"

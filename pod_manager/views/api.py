@@ -47,11 +47,30 @@ def process_mix_image_url(image_url, mix_instance):
 @login_required(login_url='/login/')
 @require_POST
 def update_avatar_preference(request):
+    """Set the avatar source and hand back the resulting avatar URL.
+
+    The URL is returned because the navbar avatar lives OUTSIDE #boosted-region
+    (it persists across boosted swaps), so nothing re-renders it after this POST
+    — the profile page pushes the new src itself. Without it the navbar keeps
+    the old avatar until a full page load.
+    """
     source = request.POST.get('source')
-    if source in ['patreon', 'discord', 'custom']:
-        NetworkMembership.objects.filter(user=request.user, network=request.network).update(preferred_avatar_source=source)
-        return JsonResponse({'status': 'success'})
-    return JsonResponse({'status': 'error', 'message': 'Invalid source'}, status=400)
+    # Validate against the model's own choices: this list used to be hardcoded
+    # as patreon/discord/custom, which silently 400'd the Gravatar option the
+    # profile UI offers and display_avatar honours.
+    if source not in dict(NetworkMembership.AVATAR_CHOICES):
+        return JsonResponse({'status': 'error', 'message': 'Invalid source'}, status=400)
+
+    membership = get_membership(request)
+    if not membership:
+        return JsonResponse({'status': 'error', 'message': 'No membership'}, status=404)
+
+    # .update() rather than .save() so the model's upload-processing save path
+    # stays out of a preference-only write; mirror it onto the in-memory copy
+    # so display_avatar below reflects the new source.
+    NetworkMembership.objects.filter(pk=membership.pk).update(preferred_avatar_source=source)
+    membership.preferred_avatar_source = source
+    return JsonResponse({'status': 'success', 'avatar_url': membership.display_avatar})
 
 
 @login_required(login_url='/login/')

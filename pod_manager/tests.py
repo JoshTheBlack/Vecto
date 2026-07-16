@@ -10127,6 +10127,59 @@ class LogViewerBaseSwapTests(BaseSwapRolloutMixin, TestCase):
         self.assertIn('id="res-panel"', body)
 
 
+@override_settings(ALLOWED_HOSTS=['*'])
+class UpdateAvatarPreferenceTests(TestCase):
+    """update_avatar_preference must accept every source the model offers and
+    return the resulting avatar URL, which the profile page pushes into the
+    navbar avatar — that element sits outside #boosted-region, so nothing else
+    re-renders it after the POST."""
+
+    def setUp(self):
+        cache.clear()
+        self.network = Network.objects.create(
+            name='AvNet', slug='avnet', custom_domain='avnet.example.test')
+        self.user = User.objects.create_user(username='avuser', password='pw')
+        self.membership = NetworkMembership.objects.create(
+            user=self.user, network=self.network, preferred_avatar_source='discord')
+        self.client.force_login(self.user)
+        self.host = 'avnet.example.test'
+        self.url = reverse('update_avatar_preference')
+
+    def _post(self, source):
+        return self.client.post(self.url, {'source': source}, HTTP_HOST=self.host)
+
+    def test_every_model_choice_is_accepted(self):
+        # Regression guard: the view used to hardcode patreon/discord/custom, so
+        # 'gravatar' 400'd even though the UI offers it and display_avatar
+        # honours it. Drive the list off the model so they can't drift again.
+        for source, _label in NetworkMembership.AVATAR_CHOICES:
+            with self.subTest(source=source):
+                resp = self._post(source)
+                self.assertEqual(resp.status_code, 200)
+                self.membership.refresh_from_db()
+                self.assertEqual(self.membership.preferred_avatar_source, source)
+
+    def test_response_carries_the_new_avatar_url(self):
+        resp = self._post('gravatar')
+        body = resp.json()
+        self.assertEqual(body['status'], 'success')
+        # Non-empty and the gravatar URL the new preference resolves to, so the
+        # navbar push has something to use.
+        self.assertIn('avatar_url', body)
+        self.assertIn('gravatar.com', body['avatar_url'])
+
+    def test_invalid_source_rejected(self):
+        resp = self._post('myspace')
+        self.assertEqual(resp.status_code, 400)
+        self.membership.refresh_from_db()
+        self.assertEqual(self.membership.preferred_avatar_source, 'discord')
+
+    def test_navbar_avatar_has_the_push_target_id(self):
+        # The push is a no-op without this id on the nav <img>.
+        resp = self.client.get(reverse('user_profile'), HTTP_HOST=self.host)
+        self.assertIn('id="navbarAvatar"', resp.content.decode('utf-8'))
+
+
 class LazyPaneBoostTargetTests(TestCase):
     """_lazy_pane must hand #boosted-region down to the forms/links in the loaded
     tab body, so a boosted action inside a creator tab (e.g. approving a

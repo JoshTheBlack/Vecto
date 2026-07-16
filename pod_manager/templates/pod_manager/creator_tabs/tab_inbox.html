@@ -1,26 +1,7 @@
 {% load static %}
 <style>
-    /* Per-section trust-point chip on the approve desk. */
-    .pts-badge {
-        display: inline-block;
-        margin-left: 0.4rem;
-        padding: 0 0.4rem;
-        font-size: 0.7rem;
-        font-weight: 700;
-        line-height: 1.5;
-        color: var(--vecto-surface-text);
-        background-color: rgba(25, 135, 84, 0.18);
-        border: 1px solid rgba(25, 135, 84, 0.45);
-        border-radius: var(--vecto-radius-sm);
-    }
-    /* Section toggled off — its points don't count toward the total. */
-    .pts-badge.pts-badge-off {
-        opacity: 0.4;
-        text-decoration: line-through;
-        background-color: transparent;
-        border-color: var(--vecto-surface-muted);
-        color: var(--vecto-surface-muted);
-    }
+    /* .pts-badge / .pts-badge-off live in creator_settings.html now (shared with
+       the audit log, which is a separate lazy pane). */
     /* ============================================================
        INBOX DIFF LAYOUT — section-based, conflict-aware
        Two columns by default; three (.conflicted) when the live

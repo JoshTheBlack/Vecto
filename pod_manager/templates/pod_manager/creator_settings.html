@@ -105,6 +105,31 @@
 <style>
     /* Shared styles for Community Edits (inbox) and Audit Log tabs. */
 
+    /* Per-section trust-point chip. Shared here (not in a tab body) because the
+       inbox and audit log are now separate lazy panes — the audit log renders
+       .pts-badge chips but only the inbox body would carry the CSS, so an audit
+       tab opened on its own showed unstyled "TITLE+1" instead of "TITLE (+1)". */
+    .pts-badge {
+        display: inline-block;
+        margin-left: 0.4rem;
+        padding: 0 0.4rem;
+        font-size: 0.7rem;
+        font-weight: 700;
+        line-height: 1.5;
+        color: var(--vecto-surface-text);
+        background-color: rgba(25, 135, 84, 0.18);
+        border: 1px solid rgba(25, 135, 84, 0.45);
+        border-radius: var(--vecto-radius-sm);
+    }
+    /* Section toggled off (inbox only) — its points don't count toward the total. */
+    .pts-badge.pts-badge-off {
+        opacity: 0.4;
+        text-decoration: line-through;
+        background-color: transparent;
+        border-color: var(--vecto-surface-muted);
+        color: var(--vecto-surface-muted);
+    }
+
     .accordion-button:not(.collapsed) {
         background-color: rgba(128, 128, 128, 0.05) !important;
         color: var(--vecto-surface-text) !important;

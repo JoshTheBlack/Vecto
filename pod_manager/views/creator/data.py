@@ -18,6 +18,10 @@ from ...utils import diagnostic_timer
 
 logger = logging.getLogger(__name__)
 
+# Manage Podcasts renders one window of collapsed headers per request; "Load
+# more" fetches the next. Filters/sort still run over the FULL set server-side.
+SHOW_PAGE_SIZE = 25
+
 
 def _annotate_edit_changes(edit):
     """Per-field "did the suggester actually change this?" flags plus
@@ -127,30 +131,44 @@ def gather_manage_podcasts(request, current_network):
         except Exception:
             pass
 
+    # Every sort gets 'id' as a tiebreaker: latest_episode_date and
+    # episode_count tie freely across 88 shows, and an unstable order makes a
+    # paginated window drop or repeat rows between pages.
     if show_sort == 'recent':
-        manage_podcasts = manage_podcasts.order_by(F('latest_episode_date').desc(nulls_last=True))
+        manage_podcasts = manage_podcasts.order_by(F('latest_episode_date').desc(nulls_last=True), 'id')
     elif show_sort == 'oldest':
-        manage_podcasts = manage_podcasts.order_by(F('latest_episode_date').asc(nulls_last=True))
+        manage_podcasts = manage_podcasts.order_by(F('latest_episode_date').asc(nulls_last=True), 'id')
     elif show_sort == 'count_desc':
-        manage_podcasts = manage_podcasts.order_by('-episode_count')
+        manage_podcasts = manage_podcasts.order_by('-episode_count', 'id')
     else:
-        manage_podcasts = manage_podcasts.order_by(Lower('clean_title'))
+        manage_podcasts = manage_podcasts.order_by(Lower('clean_title'), 'id')
 
     # Only the collapsed accordion headers render here — title, tier, counts.
     # Each show's full form (and its cross-publish selection) is fetched lazily
     # on expand via creator_show_form, so no auto_crosspublish prefetch needed.
-    podcasts = list(manage_podcasts.select_related('required_tier'))
+    # Even collapsed, 88 headers + their Data-Ingestion panels were most of this
+    # tab's weight, so only SHOW_PAGE_SIZE of them render per request.
+    paginator = Paginator(manage_podcasts.select_related('required_tier'), SHOW_PAGE_SIZE)
+    show_page_obj = paginator.get_page(request.GET.get('show_page', 1))
+    # Page 2+ is a "load more" append: it returns just the next slice of rows,
+    # so it needs none of the surrounding tab chrome.
+    show_append = show_page_obj.number > 1
 
-    # The lazily-loaded forms' cross-publish pickers clone their options from a
-    # single page-level <template>, which still needs the full network roster.
-    network_podcasts = network_podcast_list(current_network)
-    return {
-        'manage_podcasts': podcasts,
-        'network_podcasts': network_podcasts,
+    context = {
+        'manage_podcasts': show_page_obj.object_list,
+        'show_page_obj': show_page_obj,
+        'show_remaining': paginator.count - show_page_obj.end_index(),
+        'show_append': show_append,
         'show_q': show_q,
         'show_sort': show_sort,
         'show_mix': show_mix,
     }
+    if not show_append:
+        # The lazily-loaded forms' cross-publish pickers clone their options from
+        # a single page-level <template>, which needs the full network roster.
+        # It renders once with the tab, so an append never pays for it.
+        context['network_podcasts'] = network_podcast_list(current_network)
+    return context
 
 
 @diagnostic_timer("1b. Gather Network Mixes")
@@ -308,6 +326,58 @@ def gather_merge_desk(request, current_network):
     }
 
 
+def _audit_points(edit):
+    """Net trust impact shown on the collapsed audit row: a rollback washes to
+    0, a rejection is the flat penalty, approved/superseded keep their banked
+    points. Reads only status + points, so a summary never has to touch
+    suggested_data."""
+    if edit.status == EpisodeEditSuggestion.Status.ROLLED_BACK:
+        return 0
+    if edit.status == EpisodeEditSuggestion.Status.REJECTED:
+        return -REJECT_PENALTY
+    return edit.points or 0
+
+
+def annotate_audit_edit(edit, current_network):
+    """Full annotation for ONE audit edit's before/after diff body, which the
+    audit accordion loads on expand via creator_audit_edit. gather_audit_log
+    deliberately does none of this: rendering every edit's diff (chapters, tags,
+    description, speakers) up front was the entire weight of that tab."""
+    edit.membership = NetworkMembership.objects.filter(
+        user_id=edit.user_id, network=current_network
+    ).first()
+    # Trust after an exact-wash rollback (clamped at 0, mirroring _reverse_award),
+    # shown right where the reviewer acts.
+    if edit.membership is not None:
+        edit.trust_after_revert = max(0, (edit.membership.trust_score or 0) - (edit.points or 0))
+
+    _annotate_edit_changes(edit)
+
+    # Section + bonus tally derived from the BANKED award (counter_deltas +
+    # points) so it reconciles exactly with what Revert reverses (edit.points).
+    cd = edit.counter_deltas or {}
+    edit.pts_speaker = cd.get('edits_speakers') or 0
+    edit.total_points = edit.points or 0
+    if edit.total_points <= 0:
+        # Legacy/unbanked edits reverse nothing, so don't attribute phantom
+        # per-section points or a bonus (badges + breakdown are suppressed).
+        edit.pts_title = edit.pts_desc = edit.pts_tags = edit.pts_chapters = 0
+        edit.pts_season = edit.pts_epnum = edit.pts_eptype = edit.pts_speaker = 0
+        edit.base_points = edit.sweep_bonus = edit.fr_bonus = 0
+    else:
+        edit.base_points = _section_base(edit)
+        edit.fr_bonus = FIRST_RESPONDER_BONUS if 'first_responder_count' in cd else 0
+        edit.sweep_bonus = max(0, edit.total_points - edit.base_points - edit.fr_bonus)
+    edit.audit_points = _audit_points(edit)
+
+    if edit.cross_publish_changed:
+        titles = dict(current_network.podcasts.values_list('id', 'title'))
+        _titles = lambda ids: [titles.get(i, f'#{i}') for i in ids]
+        edit.cross_publish_original_titles = _titles((edit.original_data or {}).get('cross_publish_podcast_ids') or [])
+        edit.cross_publish_suggested_titles = _titles(edit.suggested_data.get('cross_publish_podcast_ids') or [])
+    return edit
+
+
 @diagnostic_timer("4. Gather Audit Log")
 def gather_audit_log(request, current_network):
     audit_query = EpisodeEditSuggestion.objects.filter(
@@ -325,48 +395,16 @@ def gather_audit_log(request, current_network):
     if audit_user:
         audit_query = audit_query.filter(user__username__icontains=audit_user)
 
-    audit_page_obj = Paginator(audit_query.order_by('-resolved_at'), 20).get_page(request.GET.get('audit_page', 1))
-    audit_podcast_titles = dict(current_network.podcasts.values_list('id', 'title'))
-    # Current trust per author so the revert button can show the exact-wash math
-    # (current trust − this edit's points) right where the reviewer acts.
-    audit_user_ids = [e.user_id for e in audit_page_obj]
-    audit_memberships = {
-        m.user_id: m
-        for m in NetworkMembership.objects.filter(user_id__in=audit_user_ids, network=current_network)
-    }
+    # Ordering tiebreaker: resolved_at is null for legacy rows and can tie, and
+    # an unstable order shuffles edits between pages.
+    audit_page_obj = Paginator(
+        audit_query.order_by('-resolved_at', '-id'), 20
+    ).get_page(request.GET.get('audit_page', 1))
+    # SUMMARIES ONLY — who / what / when / status / net trust. Each edit's
+    # before/after diff loads on expand via creator_audit_edit (annotate_audit_edit),
+    # so this render never touches suggested_data or queries memberships.
     for edit in audit_page_obj:
-        edit.membership = audit_memberships.get(edit.user_id)
-        # Trust after an exact-wash rollback (clamped at 0, mirroring _reverse_award).
-        if edit.membership is not None:
-            edit.trust_after_revert = max(0, (edit.membership.trust_score or 0) - (edit.points or 0))
-        _annotate_edit_changes(edit)
-        # Section + bonus tally derived from the BANKED award (counter_deltas +
-        # points) so it reconciles exactly with what Revert reverses (edit.points).
-        cd = edit.counter_deltas or {}
-        edit.pts_speaker = cd.get('edits_speakers') or 0
-        edit.total_points = edit.points or 0
-        if edit.total_points <= 0:
-            # Legacy/unbanked edits reverse nothing, so don't attribute phantom
-            # per-section points or a bonus (badges + breakdown are suppressed).
-            edit.pts_title = edit.pts_desc = edit.pts_tags = edit.pts_chapters = 0
-            edit.pts_season = edit.pts_epnum = edit.pts_eptype = edit.pts_speaker = 0
-            edit.base_points = edit.sweep_bonus = edit.fr_bonus = 0
-        else:
-            edit.base_points = _section_base(edit)
-            edit.fr_bonus = FIRST_RESPONDER_BONUS if 'first_responder_count' in cd else 0
-            edit.sweep_bonus = max(0, edit.total_points - edit.base_points - edit.fr_bonus)
-        # Net trust impact shown in the collapsed row: rolled-back washes to 0,
-        # rejected is the penalty, approved/superseded keep their banked points.
-        if edit.status == EpisodeEditSuggestion.Status.ROLLED_BACK:
-            edit.audit_points = 0
-        elif edit.status == EpisodeEditSuggestion.Status.REJECTED:
-            edit.audit_points = -REJECT_PENALTY
-        else:
-            edit.audit_points = edit.total_points
-        if edit.cross_publish_changed:
-            _titles = lambda ids: [audit_podcast_titles.get(i, f'#{i}') for i in ids]
-            edit.cross_publish_original_titles = _titles((edit.original_data or {}).get('cross_publish_podcast_ids') or [])
-            edit.cross_publish_suggested_titles = _titles(edit.suggested_data.get('cross_publish_podcast_ids') or [])
+        edit.audit_points = _audit_points(edit)
     return {'audit_page_obj': audit_page_obj}
 
 

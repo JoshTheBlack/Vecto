@@ -23,6 +23,7 @@ from ...tasks import task_rebuild_episode_fragments
 from ...utils import diagnostic_page, sanitize_user_html
 from .actions import ACTION_HANDLERS
 from .data import (
+    annotate_audit_edit,
     gather_merge_desk,
     network_podcast_list,
 )
@@ -119,6 +120,30 @@ def creator_show_form(request, show_id):
         'current_network': current_network,
         'show': show,
         'network_podcasts': network_podcast_list(current_network),
+    })
+
+
+@login_required(login_url='/login/')
+@diagnostic_page("Audit Edit Diff (partial)")
+def creator_audit_edit(request, edit_id):
+    """One resolved edit's before/after diff for the Audit Log accordion, fetched
+    on first expand. Keeps that tab's initial render to a page of one-line
+    summaries instead of a page of full diffs. Owner-gated via the edit's
+    network: a non-owner gets 403 from the gate, and an edit outside the
+    resolved network 404s because the lookup is scoped to it."""
+    current_network, forbidden = _resolve_creator_network(request)
+    if forbidden:
+        return forbidden
+
+    edit = get_object_or_404(
+        EpisodeEditSuggestion.objects.select_related(
+            'episode', 'episode__podcast', 'user'),
+        id=edit_id, episode__podcast__network=current_network,
+    )
+    annotate_audit_edit(edit, current_network)
+    return render(request, 'pod_manager/creator_tabs/_audit_edit_diff.html', {
+        'current_network': current_network,
+        'edit': edit,
     })
 
 

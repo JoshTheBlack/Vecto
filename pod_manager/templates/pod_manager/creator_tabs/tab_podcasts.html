@@ -1,6 +1,13 @@
+{% comment %}
+show_append is a "load more" window (show_page > 1): return just the next slice
+of rows, which the button swaps in over itself inside the live #showsAccordion.
+Everything below it — filters, the cross-publish <template>, the Add Show modal —
+is the tab's one-time chrome and must not be re-sent per window.
+{% endcomment %}
+{% if show_append %}{% include 'pod_manager/creator_tabs/_show_rows.html' %}{% else %}
                 <div class="card shadow-sm mb-4 border-secondary bg-dark">
                     <div class="card-body">
-                        
+
                         <div class="d-flex justify-content-between align-items-center mb-4">
                             <h4 class="fw-bold mb-0">Podcasts in {{ current_network.name }}</h4>
                             <div>
@@ -45,63 +52,12 @@
                         {% include 'pod_manager/snippets/show_multiselect_options_template.html' with podcast_list=network_podcasts field_name='auto_crosspublish_target_ids' %}
 
                         <div class="accordion accordion-flush" id="showsAccordion">
-                            {% for show in manage_podcasts %} <div class="accordion-item bg-black border-secondary mb-2 rounded">
-                                <h2 class="accordion-header" id="heading-{{ show.id }}">
-                                    <button class="accordion-button collapsed bg-black text-light border-secondary" type="button" data-bs-toggle="collapse" data-bs-target="#collapse-{{ show.id }}">
-                                        {% if show.image_url %}
-                                            <img src="{{ show.image_url }}" alt="cover" class="rounded me-3" style="width: 40px; height: 40px; object-fit: cover;">
-                                        {% endif %}
-                                        <div class="d-flex flex-column">
-                                            <span class="fw-bold">{{ show.title }}</span>
-                                            <small class="text-muted text-uppercase" style="font-size: 0.7rem;">
-                                                Tier: ${{ show.required_tier.minimum_dollars|default:0|floatformat:2 }} &bull; 
-                                                {{ show.episode_count }} Episodes &bull; 
-                                                Latest: {% if show.latest_episode_date %}{{ show.latest_episode_date|date:"M j, Y" }}{% else %}<span class="text-danger">Never</span>{% endif %}
-                                            </small>
-                                        </div>
-                                    </button>
-                                </h2>
-                                <div id="collapse-{{ show.id }}" class="accordion-collapse collapse" data-bs-parent="#showsAccordion">
-                                    <div class="accordion-body">
-
-                                        <div class="mb-4 border-bottom border-secondary pb-3">
-                                            <div class="d-flex justify-content-between align-items-center mb-2">
-                                                <span class="text-muted small fw-bold text-uppercase">Data Ingestion</span>
-                                                <button type="button" class="btn btn-sm btn-success text-dark fw-bold" id="btn-import-{{ show.id }}" onclick="startLiveImport({{ show.id }})">
-                                                    <i class="bi bi-cloud-arrow-down-fill"></i> Run Live Import
-                                                </button>
-                                            </div>
-
-                                            <div id="terminal-container-{{ show.id }}" class="d-none mt-3">
-                                                <div class="text-end mb-1">
-                                                    <button type="button" class="btn btn-sm text-muted text-hover-warning p-0" onclick="document.getElementById('terminal-container-{{ show.id }}').classList.add('d-none')">
-                                                        <i class="bi bi-x-circle"></i> Close Log
-                                                    </button>
-                                                </div>
-                                                <pre id="terminal-{{ show.id }}" class="bg-black text-light p-3 rounded border border-secondary font-monospace" style="height: 250px; overflow-y: auto; font-size: 0.85rem; white-space: pre-wrap;"></pre>
-                                            </div>
-                                        </div>
-
-                                        <div hx-get="{% url 'creator_show_form' show.id %}?network={{ current_network.slug }}"
-                                             hx-trigger="shown.bs.collapse from:closest .accordion-collapse once"
-                                             hx-target="this" hx-swap="innerHTML" hx-select="unset" hx-push-url="false">
-                                            <div class="text-center py-4 text-muted">
-                                                <span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span> Loading…
-                                            </div>
-                                        </div>
-                                    </div>
-                                </div>
-                            </div>
-                            {% empty %}
-                            <div class="text-center py-5">
-                                <p class="text-muted mb-0">No shows added to this network yet.</p>
-                            </div>
-                            {% endfor %}
+                            {% include 'pod_manager/creator_tabs/_show_rows.html' %}
                         </div>
 
                     </div>
                 </div>
-            
+
             <div class="modal fade" id="addShowModal" tabindex="-1" aria-hidden="true">
               <div class="modal-dialog modal-lg">
                 <div class="modal-content bg-dark text-light border-secondary">
@@ -160,4 +116,4 @@
                 </div>
               </div>
             </div>
-            
+{% endif %}

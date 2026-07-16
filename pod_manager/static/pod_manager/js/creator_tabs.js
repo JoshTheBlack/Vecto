@@ -287,6 +287,11 @@ function applyLiveFilter() {
                 const newAccordion = doc.getElementById('showsAccordion');
                 if (newAccordion) {
                     accordion.innerHTML = newAccordion.innerHTML;
+                    // Assigning innerHTML does NOT register hx-* attrs — htmx only
+                    // scans content it swapped in itself. Without this every row in
+                    // a filtered list is inert: expanding a show never fetches its
+                    // form (spinner forever) and "Load more shows" does nothing.
+                    if (window.htmx) window.htmx.process(accordion);
                 }
 
                 refreshAllHiddenWarnings();

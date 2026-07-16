@@ -79,295 +79,28 @@
                     </button>
                 </h2>
                 <div id="collapseAudit{{ edit.id }}" class="accordion-collapse collapse" data-bs-parent="#auditAccordion">
-                    <div class="accordion-body diff-wrapper" style="background-color: var(--vecto-surface-bg); border-top: 1px solid var(--bs-border-color);">
-                        
-                        <div class="row g-0 mb-3">
-                            <div class="col-md-6 p-2 border-end" style="border-color: var(--bs-border-color) !important;">
-                                <h6 class="text-danger fw-bold mb-0"><i class="bi bi-clock-history"></i> Previous Data</h6>
-                            </div>
-                            <div class="col-md-6 p-2 ps-3">
-                                <h6 class="text-success fw-bold mb-0"><i class="bi bi-check-circle"></i> Suggested Data</h6>
-                            </div>
+                {% comment %}
+                Divergence C's outer-pane / inner-loader split (see
+                planned_features_htmx_base_swap.txt). The OUTER body carries the
+                #boosted-region swap target so the Revert / Bulk Rollback forms in
+                the loaded diff boost against the region — preserving the
+                out-of-region floating player. The INNER loader keeps its
+                self-targeting GET attrs behind hx-disinherit="*" so they never
+                cascade to those forms.
+
+                The loader URL forwards this tab's GET params so the diff's
+                rollback forms round-trip the reviewer's page/filter state.
+                {% endcomment %}
+                <div class="accordion-body" id="auditBody{{ edit.id }}" style="background-color: var(--vecto-surface-bg); border-top: 1px solid var(--bs-border-color);"
+                     hx-target="#boosted-region" hx-select="#boosted-region" hx-swap="outerHTML show:window:top" hx-push-url="false">
+                    <div hx-get="{% url 'creator_audit_edit' edit.id %}?network={{ current_network.slug }}&{{ request.GET.urlencode }}"
+                         hx-trigger="shown.bs.collapse from:closest .accordion-collapse once"
+                         hx-target="#auditBody{{ edit.id }}" hx-swap="innerHTML" hx-select="unset" hx-push-url="false" hx-disinherit="*">
+                        <div class="text-center py-4" style="color: var(--vecto-surface-muted);">
+                            <span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span> Loading…
                         </div>
-
-                        {% if edit.suggested_data.speaker_mappings and not edit.suggested_data.title and not edit.suggested_data.description and not edit.suggested_data.tags and not edit.suggested_data.chapters %}
-                        <div class="mb-2 mt-2">
-                            <strong class="small d-block mb-2" style="color: var(--vecto-surface-muted);">
-                                <i class="bi bi-person-badge me-1"></i>SPEAKER LABELS{% if edit.pts_speaker %}<span class="pts-badge">+{{ edit.pts_speaker }}</span>{% endif %}
-                            </strong>
-                            {% for sid, before, after in edit.speaker_diff %}
-                            <div class="small mb-1">
-                                <span class="font-monospace" style="color: var(--vecto-primary);">{{ sid }}</span>
-                                {% if before and before != sid %}<span style="color: var(--vecto-surface-muted);">{{ before }}</span>{% endif %}
-                                <i class="bi bi-arrow-right mx-1" style="color: var(--vecto-surface-muted);"></i>
-                                <span style="color: var(--vecto-surface-text);">{{ after }}</span>
-                            </div>
-                            {% endfor %}
-                        </div>
-                        {% else %}
-                        <div class="diff-grid">
-
-                            {% if not edit.has_changes %}
-                            <div class="diff-box" style="grid-column: 1 / -1;">
-                                <em class="small" style="opacity:0.6;">This suggestion contained no actual changes.</em>
-                            </div>
-                            {% endif %}
-
-                            {% if edit.title_changed %}
-                            <div class="diff-box">
-                                <strong class="small d-block mb-2" style="color: var(--vecto-surface-muted);">TITLE</strong>
-                                <div class="diff-title-original fw-bold">{{ edit.original_data.title|default:"" }}</div>
-                            </div>
-                            <div class="diff-box">
-                                <strong class="small d-block mb-2" style="color: var(--vecto-surface-muted);">TITLE{% if edit.pts_title %}<span class="pts-badge">+{{ edit.pts_title }}</span>{% endif %}</strong>
-                                <div class="diff-title-suggested fw-bold">{{ edit.suggested_data.title|default:"" }}</div>
-                            </div>
-                            {% endif %}
-
-                            {% if edit.tags_changed %}
-                            <div class="diff-box">
-                                <strong class="small d-block mb-2" style="color: var(--vecto-surface-muted);">TAGS</strong>
-                                <div class="diff-tags-original tag-pill-list">
-                                    {% for tag in edit.original_data.tags %}
-                                        <span class="tag-pill" data-tag="{{ tag }}">{{ tag }}</span>
-                                    {% empty %}
-                                        <em style="opacity:0.5;">None</em>
-                                    {% endfor %}
-                                </div>
-                            </div>
-                            <div class="diff-box">
-                                <strong class="small d-block mb-2" style="color: var(--vecto-surface-muted);">TAGS{% if edit.pts_tags %}<span class="pts-badge">+{{ edit.pts_tags }}</span>{% endif %}</strong>
-                                <div class="diff-tags-suggested tag-pill-list">
-                                    {% for tag in edit.suggested_data.tags %}
-                                        <span class="tag-pill" data-tag="{{ tag }}">{{ tag }}</span>
-                                    {% empty %}
-                                        <em style="opacity:0.5;">None</em>
-                                    {% endfor %}
-                                </div>
-                            </div>
-                            {% endif %}
-
-                            {% if edit.chapters_changed %}
-                            {# orig/sugg_chapter_list are normalized to plain lists in gather_audit_log — never iterate the raw v1.2 wrapper dict here. #}
-                            {% with orig_chap_list=edit.orig_chapter_list sugg_chap_list=edit.sugg_chapter_list %}
-
-                            <div class="diff-box">
-                                <strong class="small d-block mb-2" style="color: var(--vecto-surface-muted);">CHAPTERS ({{ orig_chap_list|length }})</strong>
-                                {% for chap in orig_chap_list %}
-                                    <div class="chapter-row {% if chap not in sugg_chap_list %}chapter-removed{% endif %}">
-                                        <div class="row g-2 align-items-center">
-                                            <div class="col-md-4">
-                                                <label class="form-label small text-surface-muted mb-1">Start</label>
-                                                <input type="text" class="form-control form-control-sm" value="{{ chap.startTime|default:0 }}s" disabled>
-                                            </div>
-                                            <div class="col-md-4">
-                                                <label class="form-label small text-surface-muted mb-1">End</label>
-                                                <input type="text" class="form-control form-control-sm" value="{% if chap.endTime %}{{ chap.endTime }}s{% endif %}" disabled>
-                                            </div>
-                                            <div class="col-md-4">
-                                                <label class="form-label small text-surface-muted mb-1">TOC</label>
-                                                <div class="form-check form-switch ms-1 mt-1">
-                                                    <input class="form-check-input" type="checkbox" role="switch" {% if chap.toc != False %}checked{% endif %} disabled>
-                                                </div>
-                                            </div>
-                                            <div class="col-12 mt-2">
-                                                <label class="form-label small text-surface-muted mb-1">Title</label>
-                                                <input type="text" class="form-control form-control-sm" value="{{ chap.title|default:'' }}" disabled>
-                                            </div>
-                                            {% if chap.url %}
-                                            <div class="col-md-6 mt-2">
-                                                <input type="url" class="form-control form-control-sm" value="{{ chap.url }}" disabled>
-                                            </div>
-                                            {% endif %}
-                                            {% if chap.img %}
-                                            <div class="col-md-6 mt-2">
-                                                <input type="url" class="form-control form-control-sm" value="{{ chap.img }}" disabled>
-                                            </div>
-                                            {% endif %}
-                                            {% if chap.location.name or chap.location.geo %}
-                                            <div class="col-12 mt-2">
-                                                <div class="p-2 border rounded d-flex gap-2 flex-wrap" style="border-color: var(--bs-border-color) !important;">
-                                                    <div class="flex-grow-1" style="min-width: 10rem;">
-                                                        <input type="text" class="form-control form-control-sm" value="{{ chap.location.name|default:'' }}" placeholder="Location Name" disabled>
-                                                    </div>
-                                                    <div class="flex-grow-1" style="min-width: 10rem;">
-                                                        <input type="text" class="form-control form-control-sm" value="{{ chap.location.geo|default:'' }}" placeholder="GeoURI" disabled>
-                                                    </div>
-                                                    {% if chap.location.osm %}
-                                                    <div class="flex-grow-1" style="min-width: 10rem;">
-                                                        <input type="text" class="form-control form-control-sm" value="{{ chap.location.osm }}" placeholder="OSM URL" disabled>
-                                                    </div>
-                                                    {% endif %}
-                                                </div>
-                                            </div>
-                                            {% endif %}
-                                        </div>
-                                    </div>
-                                {% empty %}
-                                    <em style="opacity:0.5;">No chapters</em>
-                                {% endfor %}
-                            </div>
-                            <div class="diff-box">
-                                <strong class="small d-block mb-2" style="color: var(--vecto-surface-muted);">CHAPTERS ({{ sugg_chap_list|length }}){% if edit.pts_chapters %}<span class="pts-badge">+{{ edit.pts_chapters }}</span>{% endif %}</strong>
-                                {% for chap in sugg_chap_list %}
-                                    <div class="chapter-row {% if chap not in orig_chap_list %}chapter-added{% endif %}">
-                                        <div class="row g-2 align-items-center">
-                                            <div class="col-md-4">
-                                                <label class="form-label small text-surface-muted mb-1">Start</label>
-                                                <input type="text" class="form-control form-control-sm" value="{{ chap.startTime|default:0 }}s" disabled>
-                                            </div>
-                                            <div class="col-md-4">
-                                                <label class="form-label small text-surface-muted mb-1">End</label>
-                                                <input type="text" class="form-control form-control-sm" value="{% if chap.endTime %}{{ chap.endTime }}s{% endif %}" disabled>
-                                            </div>
-                                            <div class="col-md-4">
-                                                <label class="form-label small text-surface-muted mb-1">TOC</label>
-                                                <div class="form-check form-switch ms-1 mt-1">
-                                                    <input class="form-check-input" type="checkbox" role="switch" {% if chap.toc != False %}checked{% endif %} disabled>
-                                                </div>
-                                            </div>
-                                            <div class="col-12 mt-2">
-                                                <label class="form-label small text-surface-muted mb-1">Title</label>
-                                                <input type="text" class="form-control form-control-sm" value="{{ chap.title|default:'' }}" disabled>
-                                            </div>
-                                            {% if chap.url %}
-                                            <div class="col-md-6 mt-2">
-                                                <input type="url" class="form-control form-control-sm" value="{{ chap.url }}" disabled>
-                                            </div>
-                                            {% endif %}
-                                            {% if chap.img %}
-                                            <div class="col-md-6 mt-2">
-                                                <input type="url" class="form-control form-control-sm" value="{{ chap.img }}" disabled>
-                                            </div>
-                                            {% endif %}
-                                            {% if chap.location.name or chap.location.geo %}
-                                            <div class="col-12 mt-2">
-                                                <div class="p-2 border rounded d-flex gap-2 flex-wrap" style="border-color: var(--bs-border-color) !important;">
-                                                    <div class="flex-grow-1" style="min-width: 10rem;">
-                                                        <input type="text" class="form-control form-control-sm" value="{{ chap.location.name|default:'' }}" placeholder="Location Name" disabled>
-                                                    </div>
-                                                    <div class="flex-grow-1" style="min-width: 10rem;">
-                                                        <input type="text" class="form-control form-control-sm" value="{{ chap.location.geo|default:'' }}" placeholder="GeoURI" disabled>
-                                                    </div>
-                                                    {% if chap.location.osm %}
-                                                    <div class="flex-grow-1" style="min-width: 10rem;">
-                                                        <input type="text" class="form-control form-control-sm" value="{{ chap.location.osm }}" placeholder="OSM URL" disabled>
-                                                    </div>
-                                                    {% endif %}
-                                                </div>
-                                            </div>
-                                            {% endif %}
-                                        </div>
-                                    </div>
-                                {% empty %}
-                                    <em style="opacity:0.5;">No chapters</em>
-                                {% endfor %}
-                            </div>
-
-                            {% endwith %}
-                            {% endif %}
-
-                            {% if edit.desc_changed %}
-                            <div class="diff-box">
-                                <strong class="small d-block mb-2" style="color: var(--vecto-surface-muted);">DESCRIPTION</strong>
-                                <div class="diff-desc-original">{{ edit.original_data.description|safe }}</div>
-                            </div>
-                            <div class="diff-box">
-                                <strong class="small d-block mb-2" style="color: var(--vecto-surface-muted);">DESCRIPTION{% if edit.pts_desc %}<span class="pts-badge">+{{ edit.pts_desc }}</span>{% endif %}</strong>
-                                <div class="diff-desc-suggested">{{ edit.suggested_data.description|safe }}</div>
-                            </div>
-                            {% endif %}
-
-                            {% if edit.cross_publish_changed %}
-                            <div class="diff-box">
-                                <strong class="small d-block mb-2" style="color: var(--vecto-surface-muted);">FEED PLACEMENT</strong>
-                                <div class="small">{{ edit.cross_publish_original_titles|join:", "|default:"Parent feed only" }}</div>
-                            </div>
-                            <div class="diff-box">
-                                <strong class="small d-block mb-2" style="color: var(--vecto-surface-muted);">FEED PLACEMENT</strong>
-                                <div class="small">{{ edit.cross_publish_suggested_titles|join:", "|default:"Parent feed only" }}</div>
-                            </div>
-                            {% endif %}
-
-                            {% with sugg_season=edit.suggested_data.season_number sugg_epnum=edit.suggested_data.episode_number sugg_type=edit.suggested_data.episode_type %}
-                            {% if edit.season_changed or edit.epnum_changed or edit.eptype_changed %}
-                            <div class="diff-grid mt-2" style="grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: .75rem;">
-                                {% if edit.season_changed %}
-                                <div class="diff-box">
-                                    <strong class="small d-block mb-1" style="color: var(--vecto-surface-muted);">SEASON #{% if edit.pts_season %}<span class="pts-badge">+{{ edit.pts_season }}</span>{% endif %}</strong>
-                                    <div>{{ edit.original_data.season_number|default:"—" }} → {{ sugg_season|default:"—" }}</div>
-                                </div>
-                                {% endif %}
-                                {% if edit.epnum_changed %}
-                                <div class="diff-box">
-                                    <strong class="small d-block mb-1" style="color: var(--vecto-surface-muted);">EPISODE #{% if edit.pts_epnum %}<span class="pts-badge">+{{ edit.pts_epnum }}</span>{% endif %}</strong>
-                                    <div>{{ edit.original_data.episode_number|default:"—" }} → {{ sugg_epnum|default:"—" }}</div>
-                                </div>
-                                {% endif %}
-                                {% if edit.eptype_changed %}
-                                <div class="diff-box">
-                                    <strong class="small d-block mb-1" style="color: var(--vecto-surface-muted);">EPISODE TYPE{% if edit.pts_eptype %}<span class="pts-badge">+{{ edit.pts_eptype }}</span>{% endif %}</strong>
-                                    <div>{{ edit.original_data.episode_type|default:"—" }} → {{ sugg_type|default:"—" }}</div>
-                                </div>
-                                {% endif %}
-                            </div>
-                            {% endif %}
-                            {% endwith %}
-
-                        </div>
-                        {% endif %}{# end speaker-only guard #}
-
-                        {% if edit.status == 'approved' %}
-                        {% if edit.total_points %}
-                        <div class="trust-breakdown d-flex justify-content-end align-items-center flex-wrap small mt-3 gap-2" style="color: var(--vecto-surface-muted);">
-                            <span>Sections <strong style="color: var(--vecto-surface-text);">+{{ edit.base_points }}</strong></span>
-                            {% if edit.sweep_bonus %}<span>· Bonus <strong style="color: var(--vecto-surface-text);">+{{ edit.sweep_bonus }}</strong></span>{% endif %}
-                            {% if edit.fr_bonus %}<span>· First responder <strong style="color: var(--vecto-surface-text);">+{{ edit.fr_bonus }}</strong></span>{% endif %}
-                            <span>= <strong style="color:#198754;">+{{ edit.total_points }} Trust</strong></span>
-                        </div>
-                        {% endif %}
-                        <div class="mt-4 pt-3 border-top d-flex justify-content-between align-items-center" style="border-color: var(--bs-border-color) !important;">
-                            <form method="POST" class="d-inline" onsubmit="return confirm('WARNING: This will revert EVERY approved edit this user has ever made on this network, and drop their trust score to 0. Proceed?');">
-                                {% csrf_token %}
-                                <input type="hidden" name="action" value="bulk_rollback">
-                                <input type="hidden" name="spammer_id" value="{{ edit.user.id }}">
-                                <input type="hidden" name="network_id" value="{{ current_network.id }}">
-                                <input type="hidden" name="current_tab" value="audit">
-                                <input type="hidden" name="audit_page" value="{{ request.GET.audit_page }}">
-                                <input type="hidden" name="audit_q" value="{{ request.GET.audit_q }}">
-                                <input type="hidden" name="audit_status" value="{{ request.GET.audit_status }}">
-                                <input type="hidden" name="audit_user" value="{{ request.GET.audit_user }}">
-                                <button type="submit" class="btn btn-sm btn-outline-danger" title="Ban User & Revert All Their Edits">
-                                    <i class="bi bi-radioactive"></i> Bulk Rollback User
-                                </button>
-                            </form>
-
-                            <div class="d-flex align-items-center gap-2">
-                            {% if edit.membership %}
-                            <span class="small" style="color: var(--vecto-surface-muted);" title="Rollback reverses exactly the points this edit earned">
-                                Trust: {{ edit.membership.trust_score|default:0 }}<i class="bi bi-arrow-right mx-1"></i>{{ edit.trust_after_revert }}
-                            </span>
-                            {% endif %}
-                            <form method="POST" class="d-inline" onsubmit="return confirm('Are you sure you want to roll back this specific edit? The user will lose {{ edit.points|default:0 }} trust point{{ edit.points|default:0|pluralize }} (the exact amount this edit earned).');">
-                                {% csrf_token %}
-                                <input type="hidden" name="action" value="rollback_single_edit">
-                                <input type="hidden" name="edit_id" value="{{ edit.id }}">
-                                <input type="hidden" name="network_id" value="{{ current_network.id }}">
-                                <input type="hidden" name="current_tab" value="audit">
-                                <input type="hidden" name="audit_page" value="{{ request.GET.audit_page }}">
-                                <input type="hidden" name="audit_q" value="{{ request.GET.audit_q }}">
-                                <input type="hidden" name="audit_status" value="{{ request.GET.audit_status }}">
-                                <input type="hidden" name="audit_user" value="{{ request.GET.audit_user }}">
-                                <button type="submit" class="btn btn-sm" title="Revert this specific edit"
-                                        style="background-color: transparent; border: 1px solid var(--vecto-surface-muted); color: var(--vecto-surface-muted); border-radius: var(--vecto-radius-md);">
-                                    <i class="bi bi-arrow-counterclockwise"></i> Revert Edit (-{{ edit.points|default:0 }} Trust)
-                                </button>
-                            </form>
-                            </div>
-                        </div>
-                        {% endif %}
-
                     </div>
+                </div>
                 </div>
             </div>
             {% endfor %}
@@ -462,7 +195,8 @@
             return { leftHtml, rightHtml };
         }
 
-        auditAccordion.querySelectorAll('.diff-wrapper').forEach(wrapper => {
+        function renderDiffs(root) {
+            root.querySelectorAll('.diff-wrapper').forEach(wrapper => {
             // ---- TITLE: text diff ----
             const titleOrig = wrapper.querySelector('.diff-title-original');
             const titleSugg = wrapper.querySelector('.diff-title-suggested');
@@ -527,6 +261,15 @@
             // CHAPTERS are already diff-highlighted at template render time
             // by template logic that toggles a Bootstrap class when a chapter
             // is missing from the other side's list. No JS needed here.
-        });
+            });
+        }
+
+        // Diffs arrive one at a time now (creator_audit_edit, on expand), so
+        // highlight each as it lands rather than once over the whole page.
+        // htmx events bubble, so this catches every descendant swap — and the
+        // listener is on #auditAccordion itself, so it dies with the accordion
+        // instead of accumulating on document/window across tab reloads.
+        auditAccordion.addEventListener('htmx:afterSwap', (e) => renderDiffs(e.target));
+        renderDiffs(auditAccordion);
     })();
 </script>

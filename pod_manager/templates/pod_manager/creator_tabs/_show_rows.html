@@ -1,0 +1,88 @@
+{% comment %}
+One window of Manage Podcasts accordion headers, plus the "load more" control
+that fetches the next one. Rendered inside #showsAccordion on the tab's first
+load and returned ON ITS OWN for every window after that (tab_podcasts.html
+branches on show_append), so the button swaps itself out for the next slice.
+
+The button self-targets with outerHTML, which is safe despite divergence C in
+planned_features_htmx_base_swap.txt: the swap REPLACES the button, so the loaded
+rows land as children of #showsAccordion and inherit the pane's #boosted-region
+target — never the button's. hx-select="unset" is what stops the inherited
+hx-select="#boosted-region" from trying to find a region in a rows-only response.
+{% endcomment %}
+{% for show in manage_podcasts %}
+<div class="accordion-item bg-black border-secondary mb-2 rounded">
+    <h2 class="accordion-header" id="heading-{{ show.id }}">
+        <button class="accordion-button collapsed bg-black text-light border-secondary" type="button" data-bs-toggle="collapse" data-bs-target="#collapse-{{ show.id }}">
+            {% if show.image_url %}
+                <img src="{{ show.image_url }}" alt="cover" class="rounded me-3" style="width: 40px; height: 40px; object-fit: cover;">
+            {% endif %}
+            <div class="d-flex flex-column">
+                <span class="fw-bold">{{ show.title }}</span>
+                <small class="text-muted text-uppercase" style="font-size: 0.7rem;">
+                    Tier: ${{ show.required_tier.minimum_dollars|default:0|floatformat:2 }} &bull;
+                    {{ show.episode_count }} Episodes &bull;
+                    Latest: {% if show.latest_episode_date %}{{ show.latest_episode_date|date:"M j, Y" }}{% else %}<span class="text-danger">Never</span>{% endif %}
+                </small>
+            </div>
+        </button>
+    </h2>
+    <div id="collapse-{{ show.id }}" class="accordion-collapse collapse" data-bs-parent="#showsAccordion">
+        <div class="accordion-body">
+
+            <div class="mb-4 border-bottom border-secondary pb-3">
+                <div class="d-flex justify-content-between align-items-center mb-2">
+                    <span class="text-muted small fw-bold text-uppercase">Data Ingestion</span>
+                    <button type="button" class="btn btn-sm btn-success text-dark fw-bold" id="btn-import-{{ show.id }}" onclick="startLiveImport({{ show.id }})">
+                        <i class="bi bi-cloud-arrow-down-fill"></i> Run Live Import
+                    </button>
+                </div>
+
+                <div id="terminal-container-{{ show.id }}" class="d-none mt-3">
+                    <div class="text-end mb-1">
+                        <button type="button" class="btn btn-sm text-muted text-hover-warning p-0" onclick="document.getElementById('terminal-container-{{ show.id }}').classList.add('d-none')">
+                            <i class="bi bi-x-circle"></i> Close Log
+                        </button>
+                    </div>
+                    <pre id="terminal-{{ show.id }}" class="bg-black text-light p-3 rounded border border-secondary font-monospace" style="height: 250px; overflow-y: auto; font-size: 0.85rem; white-space: pre-wrap;"></pre>
+                </div>
+            </div>
+
+            {% comment %}
+            Divergence C's outer/inner split: the OUTER div hands #boosted-region
+            to the loaded form (so saving a show swaps the region and leaves the
+            out-of-region floating player alone), the INNER loader keeps its
+            self-targeting GET attrs behind hx-disinherit="*".
+            {% endcomment %}
+            <div id="show-form-{{ show.id }}"
+                 hx-target="#boosted-region" hx-select="#boosted-region" hx-swap="outerHTML show:window:top" hx-push-url="false">
+                <div hx-get="{% url 'creator_show_form' show.id %}?network={{ current_network.slug }}"
+                     hx-trigger="shown.bs.collapse from:closest .accordion-collapse once"
+                     hx-target="#show-form-{{ show.id }}" hx-swap="innerHTML" hx-select="unset" hx-push-url="false" hx-disinherit="*">
+                    <div class="text-center py-4 text-muted">
+                        <span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span> Loading…
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% empty %}
+{% if not show_append %}
+<div class="text-center py-5">
+    <p class="text-muted mb-0">No shows added to this network yet.</p>
+</div>
+{% endif %}
+{% endfor %}
+
+{% if show_page_obj.has_next %}
+<div class="text-center py-3">
+    <button type="button" class="btn btn-outline-light btn-sm"
+            hx-get="{% url 'creator_tab_partial' 'shows' %}?network={{ current_network.slug }}&show_page={{ show_page_obj.next_page_number }}&show_q={{ show_q|urlencode }}&show_sort={{ show_sort|urlencode }}&show_mix={{ show_mix|urlencode }}"
+            hx-trigger="click" hx-target="this" hx-swap="outerHTML"
+            hx-select="unset" hx-push-url="false" hx-indicator="this">
+        <span class="spinner-border spinner-border-sm htmx-indicator" role="status" aria-hidden="true"></span>
+        Load more shows ({{ show_remaining }} remaining)
+    </button>
+</div>
+{% endif %}

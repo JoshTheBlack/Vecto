@@ -50,8 +50,9 @@ from pod_manager.models import (
 )
 from pod_manager.services.edits import (
     apply_approved_edit, chapter_items, parse_chapter_payload, snapshot_episode,
-    update_contribution_stats,
+    update_contribution_stats, REJECT_PENALTY,
 )
+from pod_manager.views.creator.data import SHOW_PAGE_SIZE
 from pod_manager.services.episode_move import move_episodes
 from pod_manager.services.release_calendar import (
     ensure_calendar_entry_for_episode,
@@ -4047,9 +4048,15 @@ class TrustBreakdownTallyTests(TestCase):
     Revert button reverses (edit.points for banked rows)."""
 
     def setUp(self):
-        from pod_manager.views.creator.data import gather_inbox, gather_audit_log
+        from pod_manager.views.creator.data import (
+            gather_inbox, gather_audit_log, annotate_audit_edit,
+        )
         self._gather_inbox = gather_inbox
         self._gather_audit_log = gather_audit_log
+        # The audit breakdown moved out of gather_audit_log with S2.2: that
+        # gather now emits collapsed summaries and this tally is computed per
+        # expanded edit, by the lazy diff endpoint.
+        self._annotate_audit_edit = annotate_audit_edit
         self.factory = RequestFactory()
         self.user = User.objects.create_user(username='tally-user')
         self.network = Network.objects.create(name='Net', slug='tally-net')
@@ -4085,8 +4092,8 @@ class TrustBreakdownTallyTests(TestCase):
             points=7, counter_deltas={'edits_title': 1},
         )
         NetworkMembership.objects.create(user=self.user, network=self.network, trust_score=10)
-        req = self.factory.get('/', {'network': self.network.slug})
-        edit = list(self._gather_audit_log(req, self.network)['audit_page_obj'])[0]
+        edit = self._annotate_audit_edit(
+            EpisodeEditSuggestion.objects.get(user=self.user), self.network)
         self.assertEqual(edit.total_points, 7)
         self.assertEqual(edit.base_points + edit.sweep_bonus + edit.fr_bonus, edit.total_points)
         self.assertEqual(edit.trust_after_revert, 3)  # 10 - 7
@@ -4121,8 +4128,8 @@ class TrustBreakdownTallyTests(TestCase):
             points=0, counter_deltas={},
         )
         NetworkMembership.objects.create(user=self.user, network=self.network, trust_score=4)
-        req = self.factory.get('/', {'network': self.network.slug})
-        edit = list(self._gather_audit_log(req, self.network)['audit_page_obj'])[0]
+        edit = self._annotate_audit_edit(
+            EpisodeEditSuggestion.objects.get(user=self.user), self.network)
         self.assertEqual(edit.total_points, 0)
         self.assertEqual(edit.base_points, 0)
         self.assertEqual(edit.pts_title, 0)
@@ -10369,3 +10376,232 @@ class LazyPaneBoostTargetTests(TestCase):
         # which is exactly what forced boosted forms to fall back to <body>.
         self.assertNotIn('hx-disinherit="hx-target', html)
 
+
+
+@override_settings(ALLOWED_HOSTS=['*'])
+class ShowsAccordionPaginationTests(TestCase):
+    """S2.1 — Manage Podcasts renders one SHOW_PAGE_SIZE window of collapsed
+    headers per request instead of the network's whole roster, and "Load more"
+    appends the next window. Filters/sort still run over the FULL set
+    server-side, so a search always reflects every show rather than the slice
+    already on screen."""
+
+    def setUp(self):
+        cache.clear()
+        self.network = Network.objects.create(
+            name='ShowPageNet', slug='showpagenet',
+            custom_domain='showpagenet.example.test')
+        self.user = User.objects.create_user(username='showowner', password='pw')
+        self.network.owners.add(self.user)
+        self.client.force_login(self.user)
+        self.host = 'showpagenet.example.test'
+        # One full window plus a partial second one.
+        self.total = SHOW_PAGE_SIZE + 5
+        for i in range(self.total):
+            Podcast.objects.create(
+                network=self.network, title='Show %03d' % i, slug='showpage-%d' % i)
+        self.url = reverse('creator_tab_partial', args=['shows'])
+
+    def _get(self, **params):
+        params.setdefault('network', self.network.slug)
+        return self.client.get(self.url, params, HTTP_HOST=self.host,
+                               HTTP_HX_REQUEST='true')
+
+    def _row_count(self, body):
+        return body.count('class="accordion-item bg-black')
+
+    def test_first_load_renders_only_one_window(self):
+        body = self._get().content.decode('utf-8')
+        self.assertEqual(self._row_count(body), SHOW_PAGE_SIZE)
+        # ...and advertises the rest behind the load-more control.
+        self.assertIn('Load more shows (5 remaining)', body)
+
+    def test_load_more_returns_the_next_window_as_rows_only(self):
+        body = self._get(show_page=2).content.decode('utf-8')
+        self.assertEqual(self._row_count(body), 5)
+        # An append must carry NONE of the tab's one-time chrome, or the swap
+        # would duplicate the filter form / modal inside the live accordion.
+        self.assertNotIn('id="manage-podcasts-form"', body)
+        self.assertNotIn('id="addShowModal"', body)
+        self.assertNotIn('id="showsAccordion"', body)
+        # Last window: nothing left to load.
+        self.assertNotIn('Load more shows', body)
+
+    def test_load_more_button_self_targets_and_unsets_the_region_select(self):
+        body = self._get().content.decode('utf-8')
+        # outerHTML on itself: the button is REPLACED by the next window, so the
+        # rows land in #showsAccordion and inherit the pane's region target
+        # rather than anything of the button's.
+        self.assertIn('hx-target="this" hx-swap="outerHTML"', body)
+        # Without unset, the inherited hx-select="#boosted-region" would look for
+        # a region in a rows-only response and swap in nothing.
+        self.assertIn('hx-select="unset"', body)
+        self.assertIn('show_page=2', body)
+
+    def test_filters_run_over_the_full_set_not_the_loaded_window(self):
+        # 'Show 029' sorts past the first window; a search must still find it.
+        body = self._get(show_q='Show 029').content.decode('utf-8')
+        self.assertEqual(self._row_count(body), 1)
+        self.assertIn('Show 029', body)
+        self.assertNotIn('Load more shows', body)
+
+    def test_load_more_preserves_the_active_filter(self):
+        # The next window must page through the FILTERED set, not the roster.
+        body = self._get(show_q='Show 0').content.decode('utf-8')
+        self.assertIn('show_q=Show', body.replace('%20', ' ').replace('+', ' '))
+
+    def test_paging_is_stable_across_windows(self):
+        # Every sort carries an 'id' tiebreaker; without one, equal
+        # latest_episode_date / episode_count values (all null/zero here) let the
+        # DB reorder rows between requests, so a window drops or repeats shows.
+        for sort in ('alpha', 'recent', 'oldest', 'count_desc'):
+            with self.subTest(sort=sort):
+                seen = []
+                for page in (1, 2):
+                    body = self._get(show_sort=sort, show_page=page).content.decode('utf-8')
+                    seen += re.findall(r'id="heading-(\d+)"', body)
+                self.assertEqual(len(seen), self.total)
+                self.assertEqual(len(set(seen)), self.total)
+
+    def test_show_form_loader_hands_the_region_down_to_the_loaded_form(self):
+        # Divergence C: the show form is a boosted POST. It must inherit
+        # #boosted-region from the OUTER div — when the loader's self-targeting
+        # attrs sat on the pane itself, the form inherited hx-target="this"
+        # (resolving to the loader) with hx-select unset, so saving a show
+        # innerHTML'd the entire creator page into the accordion body.
+        body = self._get().content.decode('utf-8')
+        self.assertIn('hx-target="#boosted-region"', body)
+        self.assertIn('hx-disinherit="*"', body)
+        first = Podcast.objects.filter(network=self.network).order_by('title').first()
+        self.assertIn('hx-target="#show-form-%d"' % first.id, body)
+
+
+@override_settings(ALLOWED_HOSTS=['*'])
+class AuditLogSummaryTests(TestCase):
+    """S2.2 — the audit tab renders collapsed one-line summaries; each edit's
+    before/after diff is fetched on expand by creator_audit_edit."""
+
+    def setUp(self):
+        cache.clear()
+        self.network = Network.objects.create(
+            name='AuditNet', slug='auditnet',
+            custom_domain='auditnet.example.test')
+        self.owner = User.objects.create_user(username='auditowner', password='pw')
+        self.network.owners.add(self.owner)
+        self.editor = User.objects.create_user(username='audieditor', password='pw')
+        NetworkMembership.objects.create(
+            user=self.editor, network=self.network, trust_score=9)
+        self.podcast = Podcast.objects.create(
+            network=self.network, title='Audit Show', slug='audit-show')
+        self.episode = Episode.objects.create(
+            podcast=self.podcast, title='Ep', pub_date=timezone.now(),
+            raw_description='x', clean_description='x',
+            audio_url_public='https://cdn.example.com/a.mp3',
+        )
+        self.edit = EpisodeEditSuggestion.objects.create(
+            episode=self.episode, user=self.editor,
+            status=EpisodeEditSuggestion.Status.APPROVED,
+            original_data={'title': 'BeforeTitleMarker', 'tags': ['old'], 'chapters': []},
+            suggested_data={'title': 'AfterTitleMarker', 'tags': ['new'], 'chapters': []},
+            points=2, counter_deltas={'edits_title': 1},
+            resolved_at=timezone.now(),
+        )
+        self.client.force_login(self.owner)
+        self.host = 'auditnet.example.test'
+        self.tab_url = reverse('creator_tab_partial', args=['audit'])
+        self.diff_url = reverse('creator_audit_edit', args=[self.edit.id])
+
+    def _tab(self):
+        return self.client.get(self.tab_url, {'network': self.network.slug},
+                               HTTP_HOST=self.host, HTTP_HX_REQUEST='true')
+
+    def _diff(self, url=None):
+        return self.client.get(url or self.diff_url, {'network': self.network.slug},
+                               HTTP_HOST=self.host, HTTP_HX_REQUEST='true')
+
+    def test_tab_renders_the_summary_without_the_diff(self):
+        body = self._tab().content.decode('utf-8')
+        # Summary facts: who / what / when / status / net trust.
+        self.assertIn('Audit Show', body)
+        self.assertIn('audieditor', body)
+        self.assertIn('Applied', body)
+        # ...but none of the edit's actual before/after payload.
+        self.assertNotIn('BeforeTitleMarker', body)
+        self.assertNotIn('AfterTitleMarker', body)
+
+    def test_tab_defers_each_diff_to_the_lazy_endpoint(self):
+        body = self._tab().content.decode('utf-8')
+        self.assertIn(self.diff_url, body)
+        self.assertIn('shown.bs.collapse from:closest .accordion-collapse once', body)
+        self.assertIn('hx-push-url="false"', body)
+
+    def test_diff_endpoint_renders_the_before_and_after(self):
+        body = self._diff().content.decode('utf-8')
+        self.assertIn('BeforeTitleMarker', body)
+        self.assertIn('AfterTitleMarker', body)
+        self.assertIn('diff-wrapper', body)
+
+    def test_diff_endpoint_carries_the_trust_math_and_revert_action(self):
+        body = self._diff().content.decode('utf-8')
+        # The revert control and its exact-wash math live in the diff body now.
+        self.assertIn('rollback_single_edit', body)
+        self.assertIn('Trust:', body)
+
+    def test_diff_body_hands_boosted_forms_the_region(self):
+        # Divergence C: the Revert / Bulk Rollback forms inside the loaded diff
+        # must boost against #boosted-region, not htmx's <body> default — a body
+        # swap destroys the out-of-region floating player mid-playback.
+        body = self._tab().content.decode('utf-8')
+        self.assertIn('hx-target="#boosted-region"', body)
+        self.assertIn('hx-target="#auditBody%d"' % self.edit.id, body)
+        self.assertIn('hx-disinherit="*"', body)
+        self.assertNotIn('hx-disinherit="hx-target', body)
+
+    def test_diff_endpoint_404s_for_an_edit_outside_the_network(self):
+        other_net = Network.objects.create(name='Other', slug='othernet')
+        other_pod = Podcast.objects.create(
+            network=other_net, title='Other Show', slug='other-show')
+        other_ep = Episode.objects.create(
+            podcast=other_pod, title='Other Ep', pub_date=timezone.now(),
+            raw_description='x', clean_description='x',
+            audio_url_public='https://cdn.example.com/b.mp3',
+        )
+        foreign = EpisodeEditSuggestion.objects.create(
+            episode=other_ep, user=self.editor,
+            status=EpisodeEditSuggestion.Status.APPROVED,
+            original_data={'title': 'a'}, suggested_data={'title': 'b'},
+            points=1, resolved_at=timezone.now(),
+        )
+        resp = self._diff(url=reverse('creator_audit_edit', args=[foreign.id]))
+        self.assertEqual(resp.status_code, 404)
+
+    def test_diff_endpoint_403s_for_a_non_owner(self):
+        self.client.force_login(self.editor)  # a member, but owns no network
+        self.assertEqual(self._diff().status_code, 403)
+
+    def test_diff_endpoint_requires_login(self):
+        self.client.logout()
+        resp = self._diff()
+        self.assertEqual(resp.status_code, 302)
+        self.assertIn('/login/', resp['Location'])
+
+    def test_summary_render_does_not_annotate_the_diff(self):
+        # The point of S2.2: gather_audit_log must not walk suggested_data or
+        # query memberships for edits nobody expanded.
+        from pod_manager.views.creator import data as creator_data
+        req = RequestFactory().get('/creator/tab/audit/')
+        req.user = self.owner
+        ctx = creator_data.gather_audit_log(req, self.network)
+        edit = list(ctx['audit_page_obj'])[0]
+        self.assertEqual(edit.audit_points, 2)
+        self.assertFalse(hasattr(edit, 'title_changed'))
+        self.assertFalse(hasattr(edit, 'membership'))
+
+    def test_rejected_and_rolled_back_summaries_score_without_the_diff(self):
+        self.edit.status = EpisodeEditSuggestion.Status.ROLLED_BACK
+        self.edit.save()
+        self.assertIn('+0', self._tab().content.decode('utf-8'))
+
+        self.edit.status = EpisodeEditSuggestion.Status.REJECTED
+        self.edit.save()
+        self.assertIn('-%d' % REJECT_PENALTY, self._tab().content.decode('utf-8'))

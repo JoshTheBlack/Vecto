@@ -5893,7 +5893,12 @@ class HiddenFeedVisibilityTests(TestCase):
                                    data={'show_hidden': '1'}, user=self.owner)
         resp = views.user_feeds(req)
         self.assertIn(b'HIDDEN', resp.content)
-        self.assertIn(b'Hide hidden feeds', resp.content)
+        # The control is a switch, so its label stays "Show hidden feeds" and the
+        # on-state is carried by aria-checked + the class; the href flips it back
+        # off. (It was a button whose label read "Hide hidden feeds" when on.)
+        self.assertIn(b'switch-toggle is-on', resp.content)
+        self.assertIn(b'aria-checked="true"', resp.content)
+        self.assertIn(b'href="?show_hidden=0', resp.content)
 
     def test_user_feeds_non_owner_cannot_force_param(self):
         ctx, _ = self._feeds(self._anon(), show_hidden='1')

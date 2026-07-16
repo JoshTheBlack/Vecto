@@ -212,7 +212,57 @@
         border: 1px solid var(--bs-border-color); border-radius: 6px; cursor: pointer; transition: all 0.15s;
     }
     .app-btn:hover { background: rgba(255,255,255,0.15); color: #fff; }
-    
+    .app-btn-primary {
+        background: var(--vecto-primary, #ffc107);
+        color: var(--vecto-primary-text, #000);
+        border-color: var(--vecto-primary, #ffc107);
+    }
+    .app-btn-primary:hover {
+        background: color-mix(in srgb, var(--vecto-primary, #ffc107) 85%, #fff);
+        color: var(--vecto-primary-text, #000);
+    }
+
+    /* ── Switch Toggle ──
+       A boosted <a> styled as a switch: state lives in the URL (?show_hidden=),
+       so it still works with JS off and swaps #boosted-region when boosted,
+       which a checkbox+JS handler would not. role/aria-checked carry the switch
+       semantics the anchor doesn't imply on its own.
+       Colors come from the --vecto-bg-* family because this sits on the page
+       background: --vecto-surface-* is for content on a card, and a theme with
+       light cards makes it dark — knob and label then vanish here. */
+    .switch-toggle {
+        display: inline-flex; align-items: center; gap: 8px;
+        padding: 6px 4px; font-size: 12px; font-weight: 600;
+        color: var(--vecto-bg-muted, #6c757d);
+        text-decoration: none; cursor: pointer; transition: color 0.15s;
+    }
+    .switch-toggle:hover, .switch-toggle.is-on { color: var(--vecto-bg-text, #f8f9fa); }
+    .switch-toggle .switch-track {
+        position: relative; flex-shrink: 0;
+        width: 34px; height: 18px; border-radius: 999px;
+        background: color-mix(in srgb, var(--vecto-bg-text, #f8f9fa) 18%, transparent);
+        border: 1px solid color-mix(in srgb, var(--vecto-bg-text, #f8f9fa) 35%, transparent);
+        transition: background 0.15s, border-color 0.15s;
+    }
+    .switch-toggle .switch-knob {
+        position: absolute; top: 2px; left: 2px;
+        width: 12px; height: 12px; border-radius: 50%;
+        background: var(--vecto-bg-text, #f8f9fa);
+        transition: transform 0.15s, background 0.15s;
+    }
+    .switch-toggle.is-on .switch-track {
+        background: var(--vecto-primary, #ffc107);
+        border-color: var(--vecto-primary, #ffc107);
+    }
+    .switch-toggle.is-on .switch-knob {
+        transform: translateX(16px);
+        background: var(--vecto-primary-text, #000);
+    }
+    .switch-toggle:focus-visible {
+        outline: 2px solid var(--vecto-primary, #ffc107);
+        outline-offset: 2px; border-radius: 4px;
+    }
+
     .dropdown-menu-apps { background: var(--vecto-surface-bg); border: 1px solid var(--bs-border-color); }
     .dropdown-menu-apps .dropdown-item { color: var(--vecto-surface-text); padding: 8px 16px; font-weight: 500; }
     .dropdown-menu-apps .dropdown-item:hover { background: rgba(255,255,255,0.08); color: #fff; }
@@ -305,12 +355,15 @@
         
         <div class="d-flex align-items-center gap-2 ms-auto">
             {% if show_hidden_available %}
-            <a class="app-btn shadow-sm{% if show_hidden %} copied{% endif %}" href="?show_hidden={% if show_hidden %}0{% else %}1{% endif %}{% for s in selected_networks %}&network={{ s }}{% endfor %}">
-                <i class="bi bi-eye{% if show_hidden %}-slash{% endif %}"></i> {% if show_hidden %}Hide hidden feeds{% else %}Show hidden feeds{% endif %}
+            <a class="switch-toggle{% if show_hidden %} is-on{% endif %}" role="switch"
+               aria-checked="{% if show_hidden %}true{% else %}false{% endif %}"
+               href="?show_hidden={% if show_hidden %}0{% else %}1{% endif %}{% for s in selected_networks %}&network={{ s }}{% endfor %}">
+                <span class="switch-track" aria-hidden="true"><span class="switch-knob"></span></span>
+                Show hidden feeds
             </a>
             {% endif %}
             {% if user.is_authenticated %}
-            <button class="app-btn shadow-sm" style="background: transparent; border: 1px solid var(--vecto-primary, #ffc107); color: var(--vecto-primary, #ffc107);" data-bs-toggle="modal" data-bs-target="#createMixModal">
+            <button class="app-btn app-btn-primary shadow-sm" data-bs-toggle="modal" data-bs-target="#createMixModal">
                 <i class="bi bi-plus-lg"></i> Create Mix
             </button>
             {% endif %}

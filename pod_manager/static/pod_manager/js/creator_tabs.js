@@ -114,21 +114,6 @@ function startLiveImport(showId) {
         .catch(() => fail('[ERROR] Could not start import.'));
 }
 
-function startAllLiveImports() {
-    const importButtons = document.querySelectorAll('[id^="btn-import-"]');
-    importButtons.forEach(btn => {
-        if(!btn.disabled) {
-            const showId = btn.id.replace('btn-import-', '');
-            const collapseElement = document.getElementById(`collapse-${showId}`);
-            if (collapseElement && !collapseElement.classList.contains('show')) {
-                const bsCollapse = new bootstrap.Collapse(collapseElement, {toggle: false});
-                bsCollapse.show();
-            }
-            startLiveImport(showId);
-        }
-    });
-}
-
 // ==========================================
 // TAB PERSISTENCE & AUTO-ACTIONS
 // ==========================================
@@ -308,7 +293,6 @@ function applyLiveFilter() {
 
 window.checkMergeState = checkMergeState;
 window.startLiveImport = startLiveImport;
-window.startAllLiveImports = startAllLiveImports;
 window.applyLiveFilter = applyLiveFilter;
 
 })();

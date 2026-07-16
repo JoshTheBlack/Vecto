@@ -11,9 +11,13 @@ is the tab's one-time chrome and must not be re-sent per window.
                         <div class="d-flex justify-content-between align-items-center mb-4">
                             <h4 class="fw-bold mb-0">Podcasts in {{ current_network.name }}</h4>
                             <div>
-                                <button type="button" class="btn btn-success btn-sm me-2 text-dark fw-bold" onclick="startAllLiveImports()">
-                                    <i class="bi bi-cloud-arrow-down-fill"></i> Import All
-                                </button>
+                                {% comment %}
+                                No "Import All" here: it dated from early feed
+                                testing, and a bulk import belongs on the CLI
+                                (manage.py ingest_feed <podcast_id>), not behind a
+                                button that fires N concurrent imports from a
+                                browser tab. Per-show "Run Live Import" stays.
+                                {% endcomment %}
                                 <button type="button" class="btn btn-warning btn-sm fw-bold" data-bs-toggle="modal" data-bs-target="#addShowModal">
                                     <i class="bi bi-plus-lg"></i> Add New Show
                                 </button>

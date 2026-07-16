@@ -1,10 +1,16 @@
 {% comment %}
 One show's settings form, lazy-loaded into its accordion row on first expand
-via the creator_show_form endpoint, so the Manage Podcasts tab ships 88
-lightweight headers instead of 88 full forms. The small Data Ingestion panel
-(import button + terminal) stays inline in tab_podcasts so "Import All" can
-reach every show without expanding it first. Context: show, current_network,
-network_podcasts.
+via the creator_show_form endpoint, so the Manage Podcasts tab ships a window of
+lightweight headers instead of a full form per show. Context: show,
+current_network, network_podcasts.
+
+The Data Ingestion panel (import button + terminal) still renders inline in
+_show_rows.html, but the reason it had to is gone: it sat outside this lazy form
+only so "Import All" could reach every show without expanding it, and that button
+was removed. Moving it in here would shed ~0.9 KB per unexpanded row; the catch
+is the auto_import flow (actions.py redirects with ?auto_import=<id> after Add
+New Show, and creator_tabs.js calls startLiveImport on a 500ms timer), which
+would then have to wait for this form to land instead of a fixed timeout.
 {% endcomment %}
 <form method="POST" action="{% url 'creator_settings' %}?network={{ current_network.slug }}&tab=shows">
     {% csrf_token %}

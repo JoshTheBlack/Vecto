@@ -76,13 +76,19 @@ hx-select="#boosted-region" from trying to find a region in a rows-only response
 {% endfor %}
 
 {% if show_page_obj.has_next %}
-<div class="text-center py-3">
-    <button type="button" class="btn btn-outline-light btn-sm"
-            hx-get="{% url 'creator_tab_partial' 'shows' %}?network={{ current_network.slug }}&show_page={{ show_page_obj.next_page_number }}&show_q={{ show_q|urlencode }}&show_sort={{ show_sort|urlencode }}&show_mix={{ show_mix|urlencode }}"
-            hx-trigger="click" hx-target="this" hx-swap="outerHTML"
-            hx-select="unset" hx-push-url="false" hx-indicator="this">
-        <span class="spinner-border spinner-border-sm htmx-indicator" role="status" aria-hidden="true"></span>
-        Load more shows ({{ show_remaining }} remaining)
-    </button>
-</div>
+{% comment %}
+The button MUST NOT sit in a styling wrapper. hx-swap="outerHTML" replaces the
+button and nothing else, so any wrapper would survive the swap and the appended
+rows would render inside it — inheriting its styles. A .text-center wrapper here
+centre-aligned every loaded-more show form. It centres itself (d-block mx-auto)
+so the swap leaves nothing behind and the rows land as direct children of
+#showsAccordion, exactly like the first window's.
+{% endcomment %}
+<button type="button" class="btn btn-outline-light btn-sm d-block mx-auto my-3"
+        hx-get="{% url 'creator_tab_partial' 'shows' %}?network={{ current_network.slug }}&show_page={{ show_page_obj.next_page_number }}&show_q={{ show_q|urlencode }}&show_sort={{ show_sort|urlencode }}&show_mix={{ show_mix|urlencode }}"
+        hx-trigger="click" hx-target="this" hx-swap="outerHTML"
+        hx-select="unset" hx-push-url="false" hx-indicator="this">
+    <span class="spinner-border spinner-border-sm htmx-indicator" role="status" aria-hidden="true"></span>
+    Load more shows ({{ show_remaining }} remaining)
+</button>
 {% endif %}

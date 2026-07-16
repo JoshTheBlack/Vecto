@@ -10433,6 +10433,12 @@ class ShowsAccordionPaginationTests(TestCase):
         # rows land in #showsAccordion and inherit the pane's region target
         # rather than anything of the button's.
         self.assertIn('hx-target="this" hx-swap="outerHTML"', body)
+        # ...which is only true if the button has NO wrapper. outerHTML replaces
+        # the button alone: a wrapper would survive and the appended rows would
+        # render inside it. A .text-center wrapper here centre-aligned every
+        # loaded-more show form, so the button must centre itself instead.
+        self.assertNotIn('<div class="text-center py-3">', body)
+        self.assertIn('d-block mx-auto', body)
         # Without unset, the inherited hx-select="#boosted-region" would look for
         # a region in a rows-only response and swap in nothing.
         self.assertIn('hx-select="unset"', body)

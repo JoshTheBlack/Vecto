@@ -1,17 +1,28 @@
 {% comment %}
 Opening of the boosted swap region — shared by base.html (full page) and
-base_htmx.html (skinny HX fragment) so the #boosted-region wrapper and its hx-*
-attributes are single-sourced and can never drift between the two bases.
+base_htmx.html (skinny HX fragment) so the #boosted-region wrapper is
+single-sourced and can never drift between the two bases.
 
 It emits the #boosted-region div plus the .container that lays out flash
 messages and the page's {% block content %}. Pairs with
 _boosted_region_close.html, which closes both.
 
-Pass history_elt=True on the FULL base only: the full page's region is the htmx
-history element, but the skinny HX fragment is not a history element (a history
-restore is a normal, non-HX request that re-renders the whole page).
+hx-history-elt is on the region in BOTH bases (not just the full page): htmx's
+getHistoryElement() is querySelector('[hx-history-elt]') || document.body, and a
+boosted nav REPLACES this element (hx-swap="outerHTML") with the swapped-in
+fragment. If the fragment's region lacked hx-history-elt, the live region would
+lose it after one swap, getHistoryElement() would fall back to <body>, and the
+next browser-back would overwrite the whole body — wiping the nav and the
+floating player. Keeping it here holds the history element stable at #boosted-
+region across swaps.
+
+The hx-boost / hx-target / hx-select / hx-swap / hx-push-url attributes live on
+an OUTER wrapper in base.html (enclosing the nav + this region), NOT on the
+region itself — so nav links, which sit outside the region, are still boosted
+(a full reload would destroy the out-of-region floating player). Boosted links
+inside the swapped-in region inherit those attributes from that wrapper.
 {% endcomment %}
-<div id="boosted-region" hx-boost="true" hx-target="#boosted-region" hx-select="#boosted-region" hx-swap="outerHTML show:window:top" hx-push-url="true"{% if history_elt %} hx-history-elt{% endif %}>
+<div id="boosted-region" hx-history-elt>
 <div class="container mt-3">
     {% if messages %}
         {% for message in messages %}

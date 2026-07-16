@@ -9940,6 +9940,15 @@ class EpisodeDetailBaseSwapTests(TestCase):
         self.assertIn('id="boosted-region"', body)
         self.assertIn('class="container mt-3"', body)
         self.assertIn(self.CONTENT_MARKER, body)
+        # The region carries hx-history-elt so that after a boosted outerHTML swap
+        # the LIVE region keeps it — otherwise htmx's history element falls back
+        # to <body> and the next browser-back overwrites the whole body (wiping
+        # the nav + floating player). Regression guard for that bug.
+        self.assertIn('hx-history-elt', body)
+        # hx-boost is NOT on the fragment: it lives on the persistent outer
+        # wrapper in base.html; the swapped-in region inherits it. A fragment
+        # that carried hx-boost would create a nested boost context on swap.
+        self.assertNotIn('hx-boost', body)
 
     def test_normal_request_returns_full_page(self):
         resp = self._get(boosted=False)
@@ -9950,7 +9959,17 @@ class EpisodeDetailBaseSwapTests(TestCase):
         self.assertIn(self.NAV_MARKER, body)
         self.assertIn(self.PLAYER_MARKER, body)
         self.assertIn('id="boosted-region"', body)
+        self.assertIn('hx-history-elt', body)
         self.assertIn(self.CONTENT_MARKER, body)
+        # The nav sits OUTSIDE #boosted-region but INSIDE the hx-boost wrapper, so
+        # its links stay boosted (a full-page nav would destroy the out-of-region
+        # floating player). Order: hx-boost wrapper -> navbar -> region. Regression
+        # guard for the "nav links do a full reload / player dies" bug.
+        boost_at = body.index('hx-boost="true"')
+        nav_at = body.index(self.NAV_MARKER)
+        region_at = body.index('id="boosted-region"')
+        self.assertLess(boost_at, nav_at)
+        self.assertLess(nav_at, region_at)
 
     def test_fragment_is_smaller_than_full_page(self):
         full = self._get(boosted=False).content

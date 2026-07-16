@@ -10,10 +10,13 @@ base_template context var) here on HX requests; episode_detail.html and any
 other converted view extend base_template|default:'pod_manager/base.html', so a
 full (non-HX) request still renders the whole page via base.html unchanged.
 
-The region wrapper is shared with base.html via the snippet includes below so
-its hx-* attributes never drift. history_elt is intentionally omitted here: the
-skinny fragment is not an htmx history element (history restores are non-HX and
-re-render the full page).
+The region wrapper is shared with base.html via the snippet includes below so it
+never drifts. Crucially the region carries hx-history-elt here too: a boosted nav
+replaces #boosted-region wholesale (outerHTML), so if the fragment's region
+lacked it the live region would lose the history element after one swap and
+browser-back would overwrite <body> (wiping nav + player). hx-boost itself is NOT
+here — it's on an outer wrapper in base.html so out-of-region nav links stay
+boosted; links in this swapped-in region inherit it from that wrapper.
 {% endcomment %}{% include 'pod_manager/snippets/_boosted_region_open.html' %}
     {% block content %}{% endblock %}
 {% include 'pod_manager/snippets/_boosted_region_close.html' %}

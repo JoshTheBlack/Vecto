@@ -800,11 +800,15 @@ document.addEventListener('click', (e) => {
     </style>
 {% endif %}
 {% comment %}
-The header/nav + social bar live OUTSIDE the boosted region so they persist
-across htmx swaps (the region is replaced wholesale on every boost). They are
-static per session — navbar_extra blocks are never filled and the network is
-fixed by host — so nothing here needs to re-render on navigation.
+hx-boost lives on THIS outer wrapper (not on #boosted-region) so it encloses
+both the nav and the swap region. That keeps the nav's links boosted even though
+the nav sits OUTSIDE #boosted-region — a plain full-page nav would destroy the
+floating player, which lives outside the region. The nav is outside the region
+so it persists across swaps (it's static per session — navbar_extra is never
+filled and the network is fixed by host); only #boosted-region is swapped.
+Boosted links inside a swapped-in region inherit these attributes from here.
 {% endcomment %}
+<div hx-boost="true" hx-target="#boosted-region" hx-select="#boosted-region" hx-swap="outerHTML show:window:top" hx-push-url="true">
 <div class="sticky-top mb-4 shadow-sm header-wrapper">
     
     <nav class="navbar navbar-expand-lg navbar-dark border-0">
@@ -977,10 +981,11 @@ fixed by host — so nothing here needs to re-render on navigation.
 
 </div>
 
-{% include 'pod_manager/snippets/_boosted_region_open.html' with history_elt=True %}
+{% include 'pod_manager/snippets/_boosted_region_open.html' %}
     {% block content %}
     {% endblock %}
 {% include 'pod_manager/snippets/_boosted_region_close.html' %}
+</div>{# /hx-boost wrapper (nav + region) #}
 
 
 {% if request.is_impersonating %}

@@ -50,6 +50,114 @@ def _versioned_image_url(fieldfile, version):
     url = fieldfile.url
     return f"{url}?v={version}" if version else url
 
+class ProcessedImage:
+    """Declarative spec for ONE processed image field on a ProcessedImageMixin
+    model. See the mixin for what it does with these.
+
+    field        the ImageField's attribute name
+    version_field the IntegerField holding its cache-bust counter
+    max_px       longest side of the output, in pixels
+    crop_square  centre-crop to a square first (the cover-art treatment). Pass
+                 False for imagery that must keep the whole frame — the 404 pool
+                 bakes captions into the art, and cropping ate them.
+    filename     the name handed to FileField.save(). Only the extension really
+                 matters (upload_to ignores the rest and returns the stable key),
+                 and it is ALWAYS .webp — see process_image_field.
+    """
+    __slots__ = ('field', 'version_field', 'max_px', 'crop_square', 'filename')
+
+    def __init__(self, field, version_field, max_px, crop_square=True, filename='image.webp'):
+        self.field = field
+        self.version_field = version_field
+        self.max_px = max_px
+        self.crop_square = crop_square
+        self.filename = filename
+
+
+class ProcessedImageMixin:
+    """The ImageField + <name>_version + process-on-save triad, once.
+
+    This was copy-pasted across NetworkMix, UserMix, NotFoundEntry, Network and
+    NetworkMembership: every save() re-implemented the same single-write, and
+    they drifted only in max_px, crop and the log message. Declare PROCESSED_IMAGES
+    instead and the mixin does the rest.
+
+    A plain Python mixin, NOT an abstract model: it declares no fields, so adding
+    it to a model is a no-op for the schema (`makemigrations --check` is what
+    proves that, and it is run in the test suite).
+
+    What each save does, and why:
+      - SINGLE WRITE. `_committed` is False only for a just-uploaded file, so a
+        plain row re-save never reprocesses or re-PUTs. Process to WebP first,
+        then hand the bytes to FileField.save(..., save=False) so the object is
+        written to storage exactly ONCE, at the stable key.
+      - VERSION BUMP. The stable key is CDN-cached immutable, so without the bump
+        a re-upload never reaches a browser — the URL is identical. This is not
+        optional decoration; it is the only cache-bust these images have.
+      - OVERWRITE, NEVER ORPHAN. upload_to returns a key whose extension is always
+        .webp, so a re-upload lands on the same key and replaces the object.
+        There is no GC pass to clean up strays.
+
+    Processing failures are logged and recorded in `image_processing_errors`
+    rather than raised, so one bad file cannot 500 a settings save. The field is
+    CLEARED on failure: persisting it would write the raw, unprocessed bytes
+    under a .webp key — the CDN would then serve a JPEG as image/webp, and the
+    caller would report success for an image the user never actually gets.
+    Callers that surface a message should check image_processing_errors — see
+    services.images.handle_image_upload.
+    """
+
+    PROCESSED_IMAGES = ()
+
+    @property
+    def image_processing_errors(self):
+        """Field names whose upload failed to process on the last save()."""
+        return getattr(self, '_image_processing_errors', [])
+
+    def process_pending_images(self):
+        errors = []
+        for spec in self.PROCESSED_IMAGES:
+            fieldfile = getattr(self, spec.field, None)
+            # _committed is False only for a fresh upload — plain re-saves skip.
+            if not fieldfile or fieldfile._committed:
+                continue
+            try:
+                data = process_image_field(fieldfile, spec.max_px, crop_square=spec.crop_square)
+                fieldfile.save(spec.filename, ContentFile(data), save=False)
+                setattr(self, spec.version_field,
+                        (getattr(self, spec.version_field) or 0) + 1)
+            except Exception as e:
+                logger.error(
+                    f"Image processing failed for {type(self).__name__}"
+                    f"(pk={self.pk}).{spec.field}: {e}", exc_info=True)
+                # Drop it rather than store raw bytes at a .webp key. Django's
+                # FileField.pre_save commits any still-uncommitted file on save,
+                # so leaving it set would PUT the unprocessed original at a key
+                # ending .webp — the CDN would serve a JPEG as image/webp, and
+                # the caller would report success for an image nobody can see.
+                # '' rather than None: not every one of these fields is nullable
+                # (NotFoundEntry.image_upload is required), and '' is the
+                # FileField-native empty that reads falsy either way.
+                setattr(self, spec.field, '')
+                errors.append(spec.field)
+        self._image_processing_errors = errors
+
+    def versioned_image_url(self, field):
+        """Cache-busted public URL for one of this model's processed images, or
+        None if it is empty. display_* properties layer their own fallbacks
+        (a legacy pasted URL, gravatar, ...) on top of this."""
+        fieldfile = getattr(self, field, None)
+        if not fieldfile:
+            return None
+        spec = next((s for s in self.PROCESSED_IMAGES if s.field == field), None)
+        version = getattr(self, spec.version_field, 0) if spec else 0
+        return _versioned_image_url(fieldfile, version)
+
+    def save(self, *args, **kwargs):
+        self.process_pending_images()
+        super().save(*args, **kwargs)
+
+
 def default_theme_config():
     return {
         "bg_color": "#121212",
@@ -136,7 +244,12 @@ def network_default_image_path(instance, filename):
     return f"network-defaults/{instance.slug}.webp"
 
 
-class Network(models.Model):
+class Network(ProcessedImageMixin, models.Model):
+    PROCESSED_IMAGES = (
+        ProcessedImage('default_image_upload', 'default_image_version', 500,
+                       filename='default.webp'),
+    )
+
     name = models.TextField()
     slug = models.SlugField(unique=True)
     owners = models.ManyToManyField(User, related_name="owned_networks", blank=True, help_text="Users who have admin access to this network's settings.")
@@ -239,22 +352,10 @@ class Network(models.Model):
         image if there is one, else the legacy pasted URL. Read this, never
         default_image_url — that field is now only the fallback, and reading it
         directly silently ignores an upload."""
-        if self.default_image_upload:
-            return _versioned_image_url(self.default_image_upload, self.default_image_version)
-        return self.default_image_url
+        return self.versioned_image_url('default_image_upload') or self.default_image_url
 
     def save(self, *args, **kwargs):
-        # Single-write, mirroring NetworkMix: process the fresh upload to WebP and
-        # write it ONCE at the stable key, then persist. _committed is False only
-        # for a just-uploaded file, so plain row re-saves never reprocess/re-PUT.
-        if self.default_image_upload and not self.default_image_upload._committed:
-            try:
-                data = process_image_field(self.default_image_upload, 500)
-                self.default_image_upload.save('default.webp', ContentFile(data), save=False)
-                self.default_image_version = (self.default_image_version or 0) + 1
-            except Exception as e:
-                logger.error(f"Default image processing failed for network {self.slug}: {e}", exc_info=True)
-
+        # ProcessedImageMixin.save() processes any pending upload before writing.
         super().save(*args, **kwargs)
 
         # Automatically invalidate podcast shells when the network is updated
@@ -706,8 +807,12 @@ def avatar_upload_path(instance, filename):
     return f"avatars/{instance.user_id}-{instance.network_id}.webp"
 
 
-class UserMix(models.Model):
+class UserMix(ProcessedImageMixin, models.Model):
     """A user's custom-built feed."""
+    PROCESSED_IMAGES = (
+        ProcessedImage('image_upload', 'image_version', 500, filename='cover.webp'),
+    )
+
     user = models.ForeignKey(User, on_delete=models.CASCADE)
     network = models.ForeignKey(Network, on_delete=models.CASCADE)
     
@@ -728,24 +833,14 @@ class UserMix(models.Model):
 
     @property
     def display_image(self):
-        if self.image_upload:
-            return _versioned_image_url(self.image_upload, self.image_version)
-        return self.image_url
+        return self.versioned_image_url('image_upload') or self.image_url
 
     def save(self, *args, **kwargs):
         logger.debug(f"Saving UserMix: '{self.name}' for user {self.user.username}")
-        # Single-write: process the fresh upload to WebP and write it ONCE at the
-        # stable key, then persist. _committed is False only for a just-uploaded
-        # file, so plain row re-saves never reprocess/re-PUT.
-        if self.image_upload and not self.image_upload._committed:
-            try:
-                data = process_image_field(self.image_upload, 500)
-                self.image_upload.save('cover.webp', ContentFile(data), save=False)
-                self.image_version = (self.image_version or 0) + 1
-            except Exception as e:
-                logger.error(f"Image processing failed for mix {self.unique_id}: {e}", exc_info=True)
+        # ProcessedImageMixin.save() processes any pending upload before writing.
         super().save(*args, **kwargs)
-    
+
+
 class PatronProfile(models.Model):
     user = models.OneToOneField(User, on_delete=models.CASCADE, related_name='patron_profile')
     # Nullable so Recurly-only users (no Patreon link) don't all collide on
@@ -772,7 +867,12 @@ class PatronProfile(models.Model):
     def __str__(self):
         return f"{self.user.email} - Profile"
 
-class NetworkMembership(models.Model):
+class NetworkMembership(ProcessedImageMixin, models.Model):
+    PROCESSED_IMAGES = (
+        ProcessedImage('custom_image_upload', 'image_version', 256,
+                       filename='avatar.webp'),
+    )
+
     user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='network_memberships')
     network = models.ForeignKey(Network, on_delete=models.CASCADE, related_name='memberships')
     
@@ -852,16 +952,13 @@ class NetworkMembership(models.Model):
         and routes pre-cutover legacy rows to local /media. display_avatar uses
         the same helper for the 'custom' branch.
         """
-        if self.custom_image_upload:
-            return _versioned_image_url(self.custom_image_upload, self.image_version)
-        return None
+        return self.versioned_image_url('custom_image_upload')
 
     @property
     def display_avatar(self):
         discord_url = self.discord_image_url
-        custom_url = (_versioned_image_url(self.custom_image_upload, self.image_version)
-                      if self.custom_image_upload else self.custom_image_url)
-        
+        custom_url = self.versioned_image_url('custom_image_upload') or self.custom_image_url
+
         patreon_url = None
         if hasattr(self.user, 'patron_profile') and self.user.patron_profile.profile_image_url:
             patreon_url = self.user.patron_profile.profile_image_url
@@ -886,18 +983,6 @@ class NetworkMembership(models.Model):
         
         return gravatar_url
 
-    def save(self, *args, **kwargs):
-        # Single-write: process the fresh upload to WebP and write it ONCE at the
-        # stable key, then persist. _committed is False only for a just-uploaded
-        # file, so plain row re-saves never reprocess/re-PUT.
-        if self.custom_image_upload and not self.custom_image_upload._committed:
-            try:
-                data = process_image_field(self.custom_image_upload, 256)
-                self.custom_image_upload.save('avatar.webp', ContentFile(data), save=False)
-                self.image_version = (self.image_version or 0) + 1
-            except Exception as e:
-                logger.error(f"Avatar processing failed for membership {self.id}: {e}", exc_info=True)
-        super().save(*args, **kwargs)
 
 @receiver(post_delete, sender=UserMix)
 def auto_delete_file_on_delete(sender, instance, **kwargs):
@@ -933,8 +1018,12 @@ class Invoice(models.Model):
     def __str__(self):
         return f"{self.network.name} - {self.created_at.strftime('%Y-%m')}"
     
-class NetworkMix(models.Model):
+class NetworkMix(ProcessedImageMixin, models.Model):
     """A curated super-feed managed by the network creators."""
+    PROCESSED_IMAGES = (
+        ProcessedImage('image_upload', 'image_version', 500, filename='cover.webp'),
+    )
+
     network = models.ForeignKey(Network, on_delete=models.CASCADE, related_name='mixes')
     name = models.CharField(max_length=200)
     slug = models.SlugField()
@@ -957,22 +1046,7 @@ class NetworkMix(models.Model):
 
     @property
     def display_image(self):
-        if self.image_upload:
-            return _versioned_image_url(self.image_upload, self.image_version)
-        return self.image_url
-
-    def save(self, *args, **kwargs):
-        # Single-write: process the fresh upload to WebP and write it ONCE at the
-        # stable key, then persist. _committed is False only for a just-uploaded
-        # file, so plain row re-saves never reprocess/re-PUT.
-        if self.image_upload and not self.image_upload._committed:
-            try:
-                data = process_image_field(self.image_upload, 500)
-                self.image_upload.save('cover.webp', ContentFile(data), save=False)
-                self.image_version = (self.image_version or 0) + 1
-            except Exception as e:
-                logger.error(f"Image processing failed for network mix {self.unique_id}: {e}", exc_info=True)
-        super().save(*args, **kwargs)
+        return self.versioned_image_url('image_upload') or self.image_url
 
 def notfound_image_path(instance, filename):
     """Stable R2 key for a 404-pool image: notfound/<UUID>.webp.
@@ -983,8 +1057,15 @@ def notfound_image_path(instance, filename):
     """
     return f"notfound/{instance.unique_id}.webp"
 
-class NotFoundEntry(models.Model):
+class NotFoundEntry(ProcessedImageMixin, models.Model):
     """One image+caption pair in a network's curated 404-page pool."""
+    PROCESSED_IMAGES = (
+        # Full frame, never cropped — 404 art often has text/captions baked in;
+        # only the longest side is bounded.
+        ProcessedImage('image_upload', 'image_version', 800, crop_square=False,
+                       filename='notfound.webp'),
+    )
+
     network = models.ForeignKey(Network, on_delete=models.CASCADE, related_name='notfound_entries')
     unique_id = models.UUIDField(default=uuid.uuid4, editable=False, unique=True)
     image_upload = models.ImageField(upload_to=notfound_image_path, storage=select_media_storage)
@@ -997,19 +1078,7 @@ class NotFoundEntry(models.Model):
 
     @property
     def display_image(self):
-        return _versioned_image_url(self.image_upload, self.image_version)
-
-    def save(self, *args, **kwargs):
-        if self.image_upload and not self.image_upload._committed:
-            try:
-                # Full frame, never cropped — 404 art often has text/captions
-                # baked in; only the longest side is bounded.
-                data = process_image_field(self.image_upload, 800, crop_square=False)
-                self.image_upload.save('notfound.webp', ContentFile(data), save=False)
-                self.image_version = (self.image_version or 0) + 1
-            except Exception as e:
-                logger.error(f"Image processing failed for notfound entry {self.unique_id}: {e}", exc_info=True)
-        super().save(*args, **kwargs)
+        return self.versioned_image_url('image_upload')
 
 class EpisodeEditSuggestion(models.Model):
     class Status(models.TextChoices):

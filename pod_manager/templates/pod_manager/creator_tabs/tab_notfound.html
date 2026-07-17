@@ -6,36 +6,28 @@
             <p class="text-muted small mb-4">A random image + caption pair from this pool is shown whenever a visitor hits a broken link on your network. Leave the pool empty for a plain themed fallback.</p>
 
             {% comment %}
-NOT boosted, and hx-encoding would be dead weight: the script at the bottom
-preventDefault()s this submit and sends its own XHR so it can show upload +
-processing progress (the server re-encodes, and animated GIFs take seconds).
-htmx never sees the submit. What that script must NOT do is finish with a hard
-navigation — it used to, which reloaded the page and killed playback. It now
-swaps #boosted-region instead.
+Boosted, upload and all. This form used to hx-boost="false" and hand-roll its own
+XHR to get an upload progress bar, which cost it a BoostOptOutContractTests
+allowlist entry and a hand-written htmx.ajax() region swap so that success didn't
+hard-navigate and kill playback. hx-encoding makes htmx send it as FormData over
+XHR, which gives the same progress (htmx:xhr:progress, read by the shared widget)
+with none of that machinery. enctype stays for the no-JS submit.
 {% endcomment %}
 <form method="POST" action="{% url 'creator_settings' %}?network={{ current_network.slug }}&tab=notfound"
-      enctype="multipart/form-data" hx-boost="false" id="notfoundAddForm" class="row g-3 align-items-end mb-4 pb-4 border-bottom border-secondary">
+      enctype="multipart/form-data" hx-encoding="multipart/form-data"
+      class="row g-3 align-items-start mb-4 pb-4 border-bottom border-secondary">
                 {% csrf_token %}
                 <input type="hidden" name="action" value="add_notfound_entry">
                 <div class="col-md-5">
-                    <label class="form-label text-muted small fw-bold">Image</label>
-                    <input type="file" name="image_upload" class="form-control bg-black text-light border-secondary" accept="image/*" required>
+                    {% include 'pod_manager/snippets/_image_upload.html' with name='image_upload' label='Image' required=True %}
                 </div>
                 <div class="col-md-5">
                     <label class="form-label text-muted small fw-bold">Caption</label>
                     <input type="text" name="caption" class="form-control bg-black text-light border-secondary" placeholder="e.g., I'm sorry Dave, I'm afraid I can't do that." maxlength="200" required>
                 </div>
                 <div class="col-md-2">
-                    <button type="submit" id="notfoundAddBtn" class="btn btn-warning fw-bold w-100"><i class="bi bi-plus-lg"></i> Add</button>
-                </div>
-                <div class="col-12 d-none" id="notfoundUploadStatus">
-                    <div class="d-flex align-items-center gap-2 mb-2">
-                        <div class="spinner-border spinner-border-sm text-warning" role="status"></div>
-                        <span class="text-light small" id="notfoundUploadLabel">Uploading… 0%</span>
-                    </div>
-                    <div class="progress" style="height: 6px; background: rgba(0,0,0,0.4);">
-                        <div class="progress-bar" id="notfoundUploadBar" style="width: 0%; background: var(--vecto-primary);"></div>
-                    </div>
+                    <label class="form-label text-muted small fw-bold d-none d-md-block">&nbsp;</label>
+                    <button type="submit" class="btn btn-warning fw-bold w-100"><i class="bi bi-plus-lg"></i> Add</button>
                 </div>
             </form>
 
@@ -76,62 +68,6 @@ swaps #boosted-region instead.
     </div>
 
 <script>
-(function () {
-    const form = document.getElementById('notfoundAddForm');
-    if (!form) return;
-    const btn = document.getElementById('notfoundAddBtn');
-    const status = document.getElementById('notfoundUploadStatus');
-    const label = document.getElementById('notfoundUploadLabel');
-    const bar = document.getElementById('notfoundUploadBar');
-
-    form.addEventListener('submit', function (e) {
-        // XHR instead of a native POST purely for feedback: an upload progress
-        // bar, then a processing state while the server re-encodes (animated
-        // GIFs take a few seconds) — the request itself is unchanged. Native
-        // required-field validation has already passed by the time this fires.
-        e.preventDefault();
-        btn.disabled = true;
-        status.classList.remove('d-none');
-
-        // form.action is shadowed by the <input name="action"> control (named
-        // form elements override built-in form properties) — read the literal
-        // attribute instead.
-        const actionUrl = form.getAttribute('action');
-        const xhr = new XMLHttpRequest();
-        xhr.open('POST', actionUrl);
-        xhr.upload.addEventListener('progress', function (ev) {
-            if (!ev.lengthComputable) return;
-            const pct = Math.round((ev.loaded / ev.total) * 100);
-            bar.style.width = pct + '%';
-            label.textContent = pct < 100
-                ? 'Uploading… ' + pct + '%'
-                : 'Processing image…';
-        });
-        const fail = function () {
-            btn.disabled = false;
-            status.classList.add('d-none');
-            bar.style.width = '0%';
-            label.textContent = 'Uploading… 0%';
-            alert('Upload failed — please try again.');
-        };
-        xhr.addEventListener('load', function () {
-            if (xhr.status >= 400) { fail(); return; }
-            // Re-render via a region swap, NOT window.location.href: a real
-            // navigation reloads the page and destroys the out-of-region
-            // floating player, so adding a 404 image stopped playback. GETting
-            // the same URL through htmx sends HX-Request, so the response is the
-            // region — the fresh pool and any messages render, audio keeps going.
-            if (typeof htmx === 'undefined') { window.location.href = actionUrl; return; }
-            htmx.ajax('GET', actionUrl, {
-                target: '#boosted-region',
-                swap: 'outerHTML show:window:top',
-            }).then(function () { history.pushState({ htmx: true }, '', actionUrl); });
-        });
-        xhr.addEventListener('error', fail);
-        xhr.send(new FormData(form));
-    });
-})();
-
 (function () {
     document.querySelectorAll('.notfound-edit-btn').forEach(function (btn) {
         btn.addEventListener('click', function () {

@@ -701,6 +701,259 @@ class NetworkMixCrudTests(TestCase):
         self.assertFalse(NetworkMix.objects.filter(id=mix.id).exists())
 
 
+class ProcessedImageMixinTests(TestCase):
+    """The ImageField + <name>_version + process-on-save triad, which used to be
+    copy-pasted across five models with drifting details."""
+
+    def setUp(self):
+        self.network = Network.objects.create(name='Net', slug='n')
+
+    def test_no_schema_change(self):
+        """The mixin is a plain Python mixin, not an abstract model, precisely so
+        that adding it to a model touches nothing in the database. If this fails,
+        it grew a field or a Meta and now needs a migration."""
+        from io import StringIO
+        from django.core.management import call_command
+        out = StringIO()
+        try:
+            call_command('makemigrations', '--check', '--dry-run', stdout=out, stderr=out)
+        except SystemExit:
+            self.fail('Model changes need a migration:\n' + out.getvalue())
+
+    def test_upload_is_processed_to_webp_and_bumps_the_version(self):
+        from PIL import Image
+        mix = NetworkMix.objects.create(network=self.network, name='M', slug='m',
+                                        image_upload=_tiny_image_upload())
+        self.assertEqual(mix.image_version, 1)
+        with mix.image_upload.open('rb') as f:
+            self.assertEqual(Image.open(f).format, 'WEBP')
+
+    def test_plain_resave_does_not_reprocess_or_rebump(self):
+        """The version bump is the ONLY cache-bust these CDN-immutable keys have,
+        so a bump per row-save would be a re-PUT and a pointless cache miss."""
+        mix = NetworkMix.objects.create(network=self.network, name='M', slug='m',
+                                        image_upload=_tiny_image_upload())
+        mix.name = 'Renamed'
+        mix.save()
+        self.assertEqual(mix.image_version, 1)
+
+    def test_reupload_overwrites_the_same_key_and_bumps_again(self):
+        """The stable .webp key means a re-upload REPLACES the object — there is
+        no GC pass, so a changing key would orphan the old one forever."""
+        mix = NetworkMix.objects.create(network=self.network, name='M', slug='m',
+                                        image_upload=_tiny_image_upload())
+        first_key = mix.image_upload.name
+        mix.image_upload = _tiny_image_upload(name='other.png')
+        mix.save()
+        self.assertEqual(mix.image_upload.name, first_key)
+        self.assertEqual(mix.image_version, 2)
+
+    def test_each_model_keeps_its_own_crop_and_size_rules(self):
+        """The specs are per-model for a reason: 404 art has captions baked in and
+        must keep its full frame, where cover art is centre-cropped square."""
+        from PIL import Image
+        import io
+        buf = io.BytesIO()
+        Image.new('RGB', (400, 100), color='red').save(buf, format='PNG')
+        wide = lambda: SimpleUploadedFile('w.png', buf.getvalue(), content_type='image/png')
+
+        entry = NotFoundEntry.objects.create(network=self.network, caption='c',
+                                             image_upload=wide())
+        with entry.image_upload.open('rb') as f:
+            self.assertEqual(Image.open(f).size, (400, 100))   # full frame
+
+        mix = NetworkMix.objects.create(network=self.network, name='M', slug='m',
+                                        image_upload=wide())
+        with mix.image_upload.open('rb') as f:
+            w, h = Image.open(f).size
+            self.assertEqual(w, h)                             # cropped square
+
+    def test_a_failed_upload_is_dropped_and_recorded_not_stored_raw(self):
+        """Django's FileField.pre_save commits any still-uncommitted file on
+        save, so leaving a file that failed to process would PUT the raw original
+        at a key ending .webp — the CDN then serves e.g. a JPEG as image/webp.
+        The old copies did exactly that AND reported success."""
+        junk = SimpleUploadedFile('bad.png', b'not an image at all',
+                                  content_type='image/png')
+        mix = NetworkMix(network=self.network, name='M', slug='m', image_upload=junk)
+        mix.save()
+        self.assertEqual(mix.image_processing_errors, ['image_upload'])
+        self.assertFalse(mix.image_upload)
+        self.assertEqual(mix.image_version, 0)
+
+    def test_a_failed_upload_does_not_raise(self):
+        """One bad file must not 500 a whole settings save."""
+        junk = SimpleUploadedFile('bad.png', b'nope', content_type='image/png')
+        self.network.default_image_upload = junk
+        self.network.save()   # must not raise
+        self.assertEqual(self.network.image_processing_errors, ['default_image_upload'])
+
+    def test_versioned_image_url_carries_the_cache_bust(self):
+        mix = NetworkMix.objects.create(network=self.network, name='M', slug='m',
+                                        image_upload=_tiny_image_upload())
+        self.assertIn('?v=1', mix.display_image)
+
+    def test_display_image_falls_back_to_the_pasted_url(self):
+        mix = NetworkMix.objects.create(network=self.network, name='M', slug='m',
+                                        image_url='https://example.com/a.png')
+        self.assertEqual(mix.display_image, 'https://example.com/a.png')
+
+
+class HandleImageUploadTests(TestCase):
+    """The one server-side entry point for every image upload."""
+
+    def setUp(self):
+        self.factory = RequestFactory()
+        self.owner = User.objects.create_user(username='owner', email='o@example.com')
+        self.network = Network.objects.create(name='Net', slug='n')
+        self.network.owners.add(self.owner)
+
+    def _request(self, data=None, files=None):
+        from django.contrib.messages.storage.fallback import FallbackStorage
+        req = self.factory.post('/creator/', data={**(data or {}), **(files or {})})
+        req.user = self.owner
+        setattr(req, 'session', {})
+        setattr(req, '_messages', FallbackStorage(req))
+        return req
+
+    def _messages(self, req):
+        return [str(m) for m in req._messages]
+
+    def test_upload_saves_and_reports_success(self):
+        from pod_manager.services.images import handle_image_upload
+        req = self._request(files={'default_image_upload': _tiny_image_upload()})
+        ok = handle_image_upload(req, self.network, 'default_image_upload',
+                                 label='Fallback image')
+        self.assertTrue(ok)
+        self.network.refresh_from_db()
+        self.assertTrue(self.network.default_image_upload)
+        self.assertEqual(self.network.default_image_version, 1)
+
+    def test_remove_deletes_the_file(self):
+        from pod_manager.services.images import handle_image_upload
+        self.network.default_image_upload = _tiny_image_upload()
+        self.network.save()
+        req = self._request(data={'remove': '1'})
+        ok = handle_image_upload(req, self.network, 'default_image_upload',
+                                 label='Fallback image')
+        self.assertTrue(ok)
+        self.network.refresh_from_db()
+        self.assertFalse(self.network.default_image_upload)
+
+    def test_missing_file_is_rejected(self):
+        from pod_manager.services.images import handle_image_upload
+        req = self._request()
+        self.assertFalse(handle_image_upload(req, self.network, 'default_image_upload'))
+        self.assertIn('No image selected.', self._messages(req))
+
+    def test_oversized_file_is_rejected_before_processing(self):
+        from pod_manager.services.images import handle_image_upload
+        big = SimpleUploadedFile('big.png', b'x' * (9 * 1024 * 1024), content_type='image/png')
+        req = self._request(files={'default_image_upload': big})
+        self.assertFalse(handle_image_upload(req, self.network, 'default_image_upload'))
+        self.network.refresh_from_db()
+        self.assertFalse(self.network.default_image_upload)
+
+    def test_an_unprocessable_image_reports_failure_not_success(self):
+        """The trap this helper exists to close: a silently dropped file still
+        'succeeded'. The copy it replaced checked `if instance.field` after
+        save(), which is always truthy, so its error branch never once ran."""
+        from pod_manager.services.images import handle_image_upload
+        junk = SimpleUploadedFile('bad.png', b'garbage', content_type='image/png')
+        req = self._request(files={'default_image_upload': junk})
+        ok = handle_image_upload(req, self.network, 'default_image_upload',
+                                 label='Fallback image')
+        self.assertFalse(ok)
+        msgs = self._messages(req)
+        self.assertIn('That image could not be processed — try another file.', msgs)
+        self.assertNotIn('Fallback image saved.', msgs)
+
+    def test_clear_fields_blanks_the_url_an_upload_supersedes(self):
+        from pod_manager.services.images import handle_image_upload
+        mix = NetworkMix.objects.create(network=self.network, name='M', slug='m',
+                                        image_url='https://example.com/old.png')
+        req = self._request(files={'image_upload': _tiny_image_upload()})
+        handle_image_upload(req, mix, 'image_upload', clear_fields=('image_url',))
+        mix.refresh_from_db()
+        self.assertEqual(mix.image_url, '')
+        self.assertTrue(mix.image_upload)
+
+
+class ImageUploadWidgetContractTests(SimpleTestCase):
+    """snippets/_image_upload.html — the one client widget. Its rules are the
+    boosted-navigation rules; breaking one silently stops playback or drops the
+    file, and neither announces itself."""
+
+    @property
+    def TEMPLATE_ROOT(self):
+        from django.conf import settings as django_settings
+        return Path(django_settings.BASE_DIR) / 'pod_manager' / 'templates' / 'pod_manager'
+
+    @property
+    def widget(self):
+        return (self.TEMPLATE_ROOT / 'snippets' / '_image_upload.html').read_text(encoding='utf-8')
+
+    @property
+    def widget_markup(self):
+        """The widget with its {% comment %} blocks stripped. The header documents
+        what NOT to do ('never bg-warning', 'a nested <form> is invalid'), so a
+        naive assertNotIn matches the prose warning against the thing rather than
+        the thing."""
+        return re.sub(r'{% comment %}.*?{% endcomment %}', '', self.widget, flags=re.S)
+
+    def test_progress_bar_is_themed_not_hardcoded(self):
+        """Every network sets its own primary, so bg-warning renders yellow on all
+        of them regardless of theme."""
+        txt = self.widget_markup
+        self.assertIn('var(--vecto-primary)', txt)
+        self.assertIn('var(--vecto-radius-sm)', txt)
+        self.assertNotIn('bg-warning', txt)
+
+    def test_widget_is_not_a_form_and_owns_no_submit(self):
+        """It must embed in a bigger form (the mix modals, the avatar picker),
+        and a nested <form> is invalid HTML. It also must not hand-roll an XHR:
+        that is what forced hx-boost="false" and a hard-navigation risk on the
+        copies it replaced."""
+        txt = self.widget_markup
+        self.assertNotIn('<form', txt)
+        self.assertNotIn('XMLHttpRequest', txt)
+        self.assertNotIn('hx-boost="false"', txt)
+
+    def test_progress_latches_at_100_percent(self):
+        """htmx triggers the SAME htmx:xhr:progress event for the xhr AND the
+        xhr.upload, with nothing in the detail to tell them apart — so without a
+        latch the response download rewinds the bar after the upload finishes."""
+        self.assertIn('htmx:xhr:progress', self.widget)
+        self.assertIn('uploaded = true', self.widget)
+
+    def test_every_form_hosting_the_widget_boosts_with_hx_encoding(self):
+        """The widget reads htmx's OWN xhr events, so a host form that does not
+        send via htmx shows no progress at all — and a multipart form that boosts
+        WITHOUT hx-encoding silently drops the file.
+
+        Checks the form ENCLOSING each include, not every form in the file: the
+        404 tab also carries plain caption-edit and delete forms, and those are
+        rightly neither multipart nor hosting an upload."""
+        offenders = []
+        includes = 0
+        for path in sorted(self.TEMPLATE_ROOT.rglob('*.html')):
+            text = path.read_text(encoding='utf-8')
+            for inc in re.finditer(r'{%\s*include\s+[\'"][^\'"]*_image_upload\.html[\'"]', text):
+                includes += 1
+                before = text[:inc.start()]
+                opens = list(re.finditer(r'<form[^>]*>', before))
+                line = before.count('\n') + 1
+                if not opens or before.rfind('</form>') > opens[-1].start():
+                    offenders.append((path.name, line, 'not inside any <form>'))
+                    continue
+                tag = opens[-1].group(0)
+                if 'hx-encoding="multipart/form-data"' not in tag or 'enctype' not in tag:
+                    offenders.append((path.name, line, tag[:70]))
+        self.assertEqual(offenders, [], msg=(
+            f'Form(s) hosting the image widget without enctype + hx-encoding: {offenders}'))
+        self.assertTrue(includes, 'No template includes the widget — did it get renamed?')
+
+
 class NotFoundEntryCrudTests(TestCase):
     """creator_settings add/delete handlers for the 404-page image+caption
     pool: owner-gated (via the standard allowed_networks check) and scoped
@@ -10885,16 +11138,13 @@ class BoostOptOutContractTests(SimpleTestCase):
     # finish with a region swap. Those are listed here with the reason. What is
     # banned is a form that opts out and then lets the BROWSER navigate.
     ALLOWED_FORM_OPT_OUTS = {
-        'tab_notfound.html': (
-            'Its own JS preventDefault()s and sends an XHR so it can show upload '
-            'and processing progress, so htmx must not boost it too. It finishes '
-            'with an htmx region swap, not a navigation — '
-            'test_js_owned_uploads_finish_with_a_region_swap pins that.'
-        ),
         'tab_network.html': (
-            'The fallback-image upload: same shape as tab_notfound — its own JS '
-            'owns the submit for upload/processing progress and finishes with a '
-            'region swap. The font form beside it IS boosted (hx-encoding).'
+            'The fallback-image upload: its own JS owns the submit for upload/'
+            'processing progress and finishes with a region swap. The font form '
+            'beside it IS boosted (hx-encoding). Due to move onto '
+            'snippets/_image_upload.html, which gets the same progress from '
+            'htmx:xhr:progress without opting out at all — tab_notfound already '
+            'did, which is what emptied its entry from this list.'
         ),
     }
 
@@ -10966,7 +11216,7 @@ class BoostOptOutContractTests(SimpleTestCase):
         # nothing stops them hard-navigating on success — and they did, with
         # window.location.href, reloading the page and stopping playback. The only
         # window.location.href allowed is the no-htmx fallback.
-        for name in ('tab_notfound.html', 'tab_network.html'):
+        for name in self.ALLOWED_FORM_OPT_OUTS:
             with self.subTest(template=name):
                 txt = (self.TEMPLATE_ROOT / 'pod_manager' / 'creator_tabs' / name).read_text(encoding='utf-8')
                 self.assertIn("htmx.ajax('GET', actionUrl", txt)

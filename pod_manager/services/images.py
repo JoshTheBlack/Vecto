@@ -1,9 +1,18 @@
 """
-Image processing utilities shared by model save() methods.
+Image processing utilities shared by model save() methods, plus the one request
+handler every image upload in the app goes through (handle_image_upload).
 """
+import logging
 from io import BytesIO
 
+from django.contrib import messages
 from PIL import Image, ImageSequence
+
+logger = logging.getLogger(__name__)
+
+# 8 MB. Generous for cover art but bounded — process_image_field decodes the
+# whole thing into memory, and an animated GIF decodes to every frame at once.
+MAX_IMAGE_BYTES = 8 * 1024 * 1024
 
 
 def _normalize_frame(img, max_px: int, crop_square: bool):
@@ -69,3 +78,73 @@ def process_image_field(field, max_px: int, crop_square: bool = True) -> bytes:
         buf = BytesIO()
         img.save(buf, format='WEBP', quality=85, method=6)
         return buf.getvalue()
+
+
+def handle_image_upload(request, instance, field, *, file_param=None, label='Image',
+                        clear_fields=(), max_bytes=MAX_IMAGE_BYTES, save=True):
+    """Upload or remove ONE processed image field. The single server-side entry
+    point for every image upload in the app.
+
+    There were four hand-rolled copies of this: the network fallback image, the
+    404 pool, both mix covers and the custom avatar. They differed in which
+    checks they bothered with and in how honestly they reported the result.
+
+    Shape borrowed from handle_update_network_font: ONE action does both jobs,
+    keyed on remove=1 in the POST.
+
+    Note what is NOT a parameter: max_px and crop. Those belong to the IMAGE, not
+    the request, so they live in the model's PROCESSED_IMAGES spec and the
+    mixin's save() applies them. That keeps one source of truth — a caller cannot
+    ask for a 500px crop of an image the model resizes to 256.
+
+    field        the ProcessedImage field name on `instance`
+    file_param   request.FILES key, if it differs from `field`
+    label        human name for the messages ("Fallback image", "Avatar", ...)
+    clear_fields attrs to blank when an upload lands — the paste-a-URL field an
+                 upload supersedes (e.g. NetworkMix.image_url)
+    save         False lets a caller batch this into its own later save()
+
+    Returns True if something changed and was saved, False on a rejected upload.
+    Callers reached through creator's ACTION_HANDLERS must not return this value:
+    that dispatcher returns any non-None handler result AS the response.
+    """
+    file_param = file_param or field
+
+    if request.POST.get('remove') == '1':
+        current = getattr(instance, field, None)
+        if current:
+            current.delete(save=False)
+        setattr(instance, field, None)
+        if save:
+            instance.save()
+        messages.success(request, f"{label} removed.")
+        return True
+
+    upload = request.FILES.get(file_param)
+    if not upload:
+        messages.error(request, "No image selected.")
+        return False
+    if upload.size > max_bytes:
+        messages.error(request, f"Image too large (max {max_bytes // (1024 * 1024)}MB).")
+        return False
+
+    # No pre-delete: the stable key is deterministic and storage overwrites in
+    # place, so save() PUTs over any existing object. An explicit delete would
+    # only add a round-trip and a momentary 404 gap before the PUT lands.
+    setattr(instance, field, upload)
+    for name in clear_fields:
+        setattr(instance, name, '')
+    if save:
+        instance.save()
+
+    # A silently dropped file must not report success. The mixin logs and records
+    # a processing failure rather than raising (one bad file must not 500 a
+    # settings save), so this is the only place the user hears about it — the
+    # copy this replaced tested `if instance.field` after save(), which was
+    # always truthy and so never once fired.
+    if field in getattr(instance, 'image_processing_errors', []):
+        messages.error(request, "That image could not be processed — try another file.")
+        return False
+
+    messages.success(request, f"{label} saved.")
+    return True

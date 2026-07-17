@@ -26,6 +26,7 @@ from ...services.cross_publish import (
     validate_feed_cross_targets, resync_feed_auto_access_mode,
 )
 from ...services.edits import chapter_items, score_contribution, REJECT_PENALTY
+from ...services.images import MAX_IMAGE_BYTES, handle_image_upload
 from ...services.episode_move import move_episodes
 from ...services.patreon import sync_network_patrons
 from ...tasks import (task_rebuild_episode_fragments,
@@ -843,12 +844,26 @@ def handle_delete_network_mix(request, current_network):
 
 
 def handle_add_notfound_entry(request, current_network):
+    image = request.FILES.get('image_upload')
+    if not image:
+        messages.error(request, "No image selected.")
+        return
+    if image.size > MAX_IMAGE_BYTES:
+        messages.error(request, f"Image too large (max {MAX_IMAGE_BYTES // (1024 * 1024)}MB).")
+        return
     try:
-        entry = NotFoundEntry.objects.create(
+        entry = NotFoundEntry(
             network=current_network,
             caption=request.POST.get('caption', '').strip(),
-            image_upload=request.FILES['image_upload'],
+            image_upload=image,
         )
+        entry.save()
+        # A 404 entry IS its image — if processing dropped it, the row is a
+        # broken <img> in the pool, and the old code reported success anyway.
+        if 'image_upload' in entry.image_processing_errors:
+            entry.delete()
+            messages.error(request, "That image could not be processed — try another file.")
+            return
         messages.success(request, f"404 pool entry '{entry.caption}' added.")
     except Exception as e:
         logger.error(f"Failed to add notfound entry: {e}", exc_info=True)

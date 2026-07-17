@@ -1238,6 +1238,75 @@ class EpisodeEditSuggestion(models.Model):
     def __str__(self):
         return f"Edit by {self.user.username} for {self.episode.title} ({self.status})"
 
+
+class EpisodeMatchSuggestion(models.Model):
+    """One persistent, reviewable row per detected ambiguous auto-migrate pair.
+
+    Born when the RSS ingester tries to auto-migrate an episode out of a
+    low-priority feed but the incoming public GUID and private GUID resolve to
+    TWO different existing rows (commit_episode's guids_diverge branch). Rather
+    than gamble a move — the old fallthrough minted duplicate GUIDs, see
+    planned_migration_match_suggestions.txt §1b — the ingester records the pair
+    here and skips. The owner reconciles via the Merge Desk (later chats).
+
+    Roles are fixed as detected and never re-derived: public_episode is the row
+    that matched the incoming public GUID (ep_pub), private_episode the row that
+    matched the incoming private GUID (ep_priv)."""
+
+    class Status(models.TextChoices):
+        PENDING = 'PENDING', 'Pending'
+        RESOLVED = 'RESOLVED', 'Resolved'
+        DISMISSED = 'DISMISSED', 'Dismissed'
+
+    network = models.ForeignKey(Network, on_delete=models.CASCADE, related_name='match_suggestions')
+    # CASCADE on both episode FKs: deleting either row (a merge commit deletes
+    # the loser; any independent deletion) removes the suggestion.
+    public_episode = models.ForeignKey(
+        Episode, on_delete=models.CASCADE, related_name='match_suggestions_as_public')
+    private_episode = models.ForeignKey(
+        Episode, on_delete=models.CASCADE, related_name='match_suggestions_as_private')
+    # GUID snapshots at detection — the sticky-dismiss key survives episode-row
+    # churn, so they are stored, never re-derived from the (mutable) FKs.
+    pub_guid = models.TextField()
+    priv_guid = models.TextField()
+    # The low-priority feed public_episode sits in.
+    source_podcast = models.ForeignKey(Podcast, on_delete=models.CASCADE, related_name='+')
+    # The normal-priority feed that was ingesting when the pair was detected.
+    target_podcast = models.ForeignKey(Podcast, on_delete=models.CASCADE, related_name='+')
+    detected_reason = models.CharField(
+        max_length=50,
+        help_text="'ambiguous_guid_divergence' from live ingest, "
+                  "'backfill_duplicate_guid' from the backfill command.")
+    status = models.CharField(max_length=20, choices=Status.choices, default=Status.PENDING)
+    created_at = models.DateTimeField(auto_now_add=True)
+    # Bumped on every re-detection so the queue sorts by freshness.
+    last_seen_at = models.DateTimeField(default=timezone.now)
+    resolved_at = models.DateTimeField(null=True, blank=True)
+    resolved_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='+')
+
+    class Meta:
+        constraints = [
+            # DEDUP GUARD. Detection runs inside Celery ingest workers; two polls
+            # can race a check-then-insert, so the database enforces "at most one
+            # PENDING row per pair." get_or_create can't express a conditional
+            # constraint — record_match_suggestion() catches the IntegrityError
+            # and bumps last_seen_at on the existing row instead.
+            models.UniqueConstraint(
+                fields=['public_episode', 'private_episode'],
+                condition=models.Q(status='PENDING'),
+                name='uniq_pending_match_suggestion_pair',
+            ),
+        ]
+        indexes = [
+            models.Index(fields=['network', 'status']),
+            models.Index(fields=['last_seen_at']),
+        ]
+
+    def __str__(self):
+        return (f"MatchSuggestion #{self.pk} "
+                f"{self.public_episode_id}/{self.private_episode_id} ({self.status})")
+
+
 class LogEntry(models.Model):
     class Level(models.TextChoices):
         DEBUG = 'DEBUG', 'Debug'

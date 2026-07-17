@@ -342,8 +342,19 @@ def commit_episode(podcast, pub_entry, sub_entry, match_reason, stdout, enhancer
                 # The pub/priv lookups landed on two DIFFERENT rows — the fuzzy
                 # matcher attempting an algorithmic cross-row merge. Ownership
                 # of the pair is genuinely ambiguous; never gamble a move on
-                # it. After a Merge Desk resolution the next ingest sees a
-                # clean single-row match and migrates normally.
+                # it. Persist the pair as a reviewable EpisodeMatchSuggestion
+                # and TRUE-SKIP: return immediately so neither row is touched
+                # while the pair is unresolved. Falling through here (the old
+                # behavior) stamped guid_private onto ep_pub while ep_priv still
+                # held it — minting duplicate GUIDs, see
+                # planned_migration_match_suggestions.txt §1b. After a Merge
+                # Desk resolution the next ingest sees a clean single-row match
+                # and migrates normally.
+                from pod_manager.services.match_suggestions import record_match_suggestion
+                record_match_suggestion(
+                    ep_pub, ep_priv, source=existing_owner, target=podcast,
+                    reason="ambiguous_guid_divergence",
+                )
                 logger.info(
                     f"[ingest] Skipping auto-migration: pub/priv GUIDs resolve "
                     f"to different episodes (ids {ep_pub.id}/{ep_priv.id}) — "
@@ -354,6 +365,7 @@ def commit_episode(podcast, pub_entry, sub_entry, match_reason, stdout, enhancer
                     f"episodes (ids {ep_pub.id}/{ep_priv.id}) — resolve via "
                     f"Merge Desk"
                 )
+                return None
             else:
                 from pod_manager.services.episode_move import move_episodes
                 move_episodes([episode.id], podcast,

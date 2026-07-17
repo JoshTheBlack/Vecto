@@ -46,7 +46,7 @@ from pod_manager import views
 from pod_manager.models import (
     CalendarEntry, Network, PatronProfile, PatreonTier, Podcast, Episode, EpisodeCrossPublication,
     NetworkMembership, NetworkMix, UserMix, EpisodeEditSuggestion, Transcript,
-    R2OrphanedObject, LogEntry, NotFoundEntry,
+    R2OrphanedObject, LogEntry, NotFoundEntry, EpisodeMatchSuggestion,
 )
 from pod_manager.services.edits import (
     apply_approved_edit, chapter_items, parse_chapter_payload, snapshot_episode,
@@ -12564,3 +12564,217 @@ class HtmxSettleClassStrippingTests(SimpleTestCase):
         self.assertIn('new FullCalendar.Calendar(mountEl', txt,
                       msg='FullCalendar must mount on the id-less inner div, or htmx '
                           'settle strips its fc-* root classes on a same-page swap.')
+
+
+class RecordMatchSuggestionServiceTests(TestCase):
+    """services/match_suggestions.py: record_match_suggestion() dedup/idempotency
+    via the partial unique constraint + IntegrityError path, GUID-triple sticky
+    dismissal (survives episode-row churn), exception safety, and the
+    dismiss/resolve helpers. See planned_migration_match_suggestions.txt §3.1."""
+
+    def setUp(self):
+        self.network = Network.objects.create(name='Net', slug='ms-svc')
+        self.low = Podcast.objects.create(
+            network=self.network, title='Low', slug='ms-low', is_low_priority=True)
+        self.target = Podcast.objects.create(
+            network=self.network, title='Target', slug='ms-target')
+        self.ep_pub = Episode.objects.create(
+            podcast=self.low, title='Pub', pub_date=timezone.now(),
+            raw_description='x', clean_description='x', guid_public='GX')
+        self.ep_priv = Episode.objects.create(
+            podcast=self.target, title='Priv', pub_date=timezone.now(),
+            raw_description='x', clean_description='x', guid_private='GY')
+
+    def _record(self, public_ep=None, private_ep=None):
+        from pod_manager.services.match_suggestions import record_match_suggestion
+        return record_match_suggestion(
+            public_ep or self.ep_pub, private_ep or self.ep_priv,
+            source=self.low, target=self.target,
+            reason='ambiguous_guid_divergence')
+
+    def test_first_record_creates_pending_row_with_snapshots(self):
+        s = self._record()
+        self.assertIsNotNone(s)
+        self.assertEqual(EpisodeMatchSuggestion.objects.filter(status='PENDING').count(), 1)
+        self.assertEqual(s.network_id, self.network.id)
+        self.assertEqual(s.public_episode_id, self.ep_pub.id)
+        self.assertEqual(s.private_episode_id, self.ep_priv.id)
+        self.assertEqual(s.pub_guid, 'GX')
+        self.assertEqual(s.priv_guid, 'GY')
+        self.assertEqual(s.source_podcast_id, self.low.id)
+        self.assertEqual(s.target_podcast_id, self.target.id)
+        self.assertEqual(s.detected_reason, 'ambiguous_guid_divergence')
+
+    def test_repeated_record_is_idempotent_and_bumps_last_seen(self):
+        t0 = timezone.now()
+        t1 = t0 + timedelta(minutes=7)
+        with mock.patch('pod_manager.services.match_suggestions.timezone.now') as now:
+            now.return_value = t0
+            first = self._record()
+            now.return_value = t1
+            second = self._record()
+        # Same row, single PENDING, last_seen bumped to the later poll's time.
+        self.assertEqual(first.pk, second.pk)
+        self.assertEqual(EpisodeMatchSuggestion.objects.filter(status='PENDING').count(), 1)
+        self.assertEqual(second.last_seen_at, t1)
+
+    def test_concurrent_insert_hits_integrityerror_path(self):
+        # Simulate a racing poll that already committed the PENDING row, then
+        # confirm record_() catches the partial-unique IntegrityError, fetches
+        # the existing row, and bumps last_seen instead of raising.
+        t0 = timezone.now()
+        existing = EpisodeMatchSuggestion.objects.create(
+            network=self.network, public_episode=self.ep_pub,
+            private_episode=self.ep_priv, pub_guid='GX', priv_guid='GY',
+            source_podcast=self.low, target_podcast=self.target,
+            detected_reason='ambiguous_guid_divergence',
+            status='PENDING', last_seen_at=t0)
+        later = t0 + timedelta(minutes=3)
+        with mock.patch('pod_manager.services.match_suggestions.timezone.now', return_value=later):
+            result = self._record()
+        self.assertEqual(result.pk, existing.pk)
+        self.assertEqual(EpisodeMatchSuggestion.objects.filter(status='PENDING').count(), 1)
+        result.refresh_from_db()
+        self.assertEqual(result.last_seen_at, later)
+
+    def test_sticky_dismiss_suppresses_new_pending(self):
+        EpisodeMatchSuggestion.objects.create(
+            network=self.network, public_episode=self.ep_pub,
+            private_episode=self.ep_priv, pub_guid='GX', priv_guid='GY',
+            source_podcast=self.low, target_podcast=self.target,
+            detected_reason='ambiguous_guid_divergence', status='DISMISSED',
+            resolved_at=timezone.now())
+        result = self._record()
+        self.assertIsNone(result)
+        self.assertFalse(EpisodeMatchSuggestion.objects.filter(status='PENDING').exists())
+
+    def test_sticky_dismiss_survives_row_churn_via_guid_triple(self):
+        # DISMISSED row references the ORIGINAL private episode. The private row
+        # is then re-created under a fresh pk carrying the same guid_private.
+        # A FK-pair check would miss it (new pair); the GUID triple still
+        # matches, so detection stays suppressed.
+        EpisodeMatchSuggestion.objects.create(
+            network=self.network, public_episode=self.ep_pub,
+            private_episode=self.ep_priv, pub_guid='GX', priv_guid='GY',
+            source_podcast=self.low, target_podcast=self.target,
+            detected_reason='ambiguous_guid_divergence', status='DISMISSED',
+            resolved_at=timezone.now())
+        new_priv = Episode.objects.create(
+            podcast=self.target, title='Priv Recreated', pub_date=timezone.now(),
+            raw_description='x', clean_description='x', guid_private='GY')
+        result = self._record(private_ep=new_priv)
+        self.assertIsNone(result)
+        self.assertFalse(EpisodeMatchSuggestion.objects.filter(status='PENDING').exists())
+
+    def test_record_is_exception_safe(self):
+        # Any unexpected persistence error is caught and logged, never raised,
+        # so a failing suggestion can't break an ingest poll.
+        with mock.patch(
+            'pod_manager.models.EpisodeMatchSuggestion.objects.create',
+            side_effect=RuntimeError('boom'),
+        ):
+            result = self._record()
+        self.assertIsNone(result)
+
+    def test_dismiss_helper_marks_dismissed_with_audit(self):
+        from pod_manager.services.match_suggestions import dismiss_match_suggestion
+        user = User.objects.create_user('dismisser', password='x')
+        s = self._record()
+        dismiss_match_suggestion(s, user=user)
+        s.refresh_from_db()
+        self.assertEqual(s.status, 'DISMISSED')
+        self.assertIsNotNone(s.resolved_at)
+        self.assertEqual(s.resolved_by_id, user.id)
+
+    def test_resolve_helper_marks_resolved_with_audit(self):
+        from pod_manager.services.match_suggestions import resolve_match_suggestion
+        user = User.objects.create_user('resolver', password='x')
+        s = self._record()
+        resolve_match_suggestion(s, user=user)
+        s.refresh_from_db()
+        self.assertEqual(s.status, 'RESOLVED')
+        self.assertIsNotNone(s.resolved_at)
+        self.assertEqual(s.resolved_by_id, user.id)
+
+
+class IngestGuidDivergenceTests(TestCase):
+    """commit_episode()'s guids_diverge branch (the §1b/Q8 fix): a divergent
+    auto-migrate attempt records an EpisodeMatchSuggestion, keeps both log lines,
+    and TRUE-SKIPS — touching neither row and never minting a duplicate GUID,
+    so the next poll re-detects instead of falsely auto-migrating."""
+
+    def setUp(self):
+        self.network = Network.objects.create(name='Net', slug='gd')
+        self.low = Podcast.objects.create(
+            network=self.network, title='Low', slug='gd-low', is_low_priority=True)
+        self.target = Podcast.objects.create(
+            network=self.network, title='Target', slug='gd-target')
+        # ep_pub sits in the low-priority feed and matches the incoming public
+        # GUID; ep_priv is a DIFFERENT row matching the incoming private GUID.
+        self.ep_pub = Episode.objects.create(
+            podcast=self.low, title='Pub Row', pub_date=timezone.now(),
+            raw_description='rp', clean_description='cp', guid_public='GX')
+        self.ep_priv = Episode.objects.create(
+            podcast=self.low, title='Priv Row', pub_date=timezone.now(),
+            raw_description='rq', clean_description='cq', guid_private='GY')
+
+    def _commit(self):
+        from pod_manager.ingesters.default import commit_episode
+        stdout = mock.Mock()
+        pub_entry = _FakeEntry(id='GX', title='Incoming Public')
+        sub_entry = _FakeEntry(id='GY', title='Incoming Private')
+        with mock.patch('pod_manager.ingesters.default.task_rebuild_episode_fragments'):
+            result = commit_episode(self.target, pub_entry, sub_entry, 'GUID Match', stdout)
+        return result, stdout
+
+    def _stdout_lines(self, stdout):
+        return [c.args[0] for c in stdout.write.call_args_list]
+
+    def test_divergence_records_suggestion_and_logs_skip(self):
+        result, stdout = self._commit()
+        self.assertIsNone(result)  # true skip
+        s = EpisodeMatchSuggestion.objects.get()
+        self.assertEqual(s.status, 'PENDING')
+        self.assertEqual(s.public_episode_id, self.ep_pub.id)
+        self.assertEqual(s.private_episode_id, self.ep_priv.id)
+        self.assertEqual(s.pub_guid, 'GX')
+        self.assertEqual(s.priv_guid, 'GY')
+        self.assertEqual(s.source_podcast_id, self.low.id)
+        self.assertEqual(s.target_podcast_id, self.target.id)
+        self.assertEqual(s.detected_reason, 'ambiguous_guid_divergence')
+        self.assertTrue(any('[SKIP MIGRATE]' in line for line in self._stdout_lines(stdout)))
+
+    def test_divergence_touches_neither_row_and_makes_no_duplicate_guid(self):
+        self._commit()
+        self.ep_pub.refresh_from_db()
+        self.ep_priv.refresh_from_db()
+        # The old fallthrough stamped guid_private onto ep_pub; the true skip
+        # must not.
+        self.assertIsNone(self.ep_pub.guid_private)
+        self.assertEqual(self.ep_pub.podcast_id, self.low.id)  # not migrated
+        self.assertEqual(self.ep_pub.title, 'Pub Row')          # metadata untouched
+        self.assertEqual(self.ep_priv.guid_private, 'GY')
+        # No second row anywhere in the network now carries guid_private='GY'.
+        self.assertEqual(
+            Episode.objects.filter(podcast__network=self.network, guid_private='GY').count(), 1)
+
+    def test_no_new_episode_row_created(self):
+        before = Episode.objects.count()
+        self._commit()
+        self.assertEqual(Episode.objects.count(), before)
+
+    def test_next_poll_redetects_and_bumps_last_seen_without_migrating(self):
+        self._commit()
+        s = EpisodeMatchSuggestion.objects.get()
+        later = timezone.now() + timedelta(minutes=5)
+        with mock.patch('pod_manager.services.match_suggestions.timezone.now', return_value=later):
+            result, stdout = self._commit()
+        self.assertIsNone(result)
+        # Still exactly one PENDING row (idempotent), last_seen bumped.
+        self.assertEqual(EpisodeMatchSuggestion.objects.filter(status='PENDING').count(), 1)
+        s.refresh_from_db()
+        self.assertEqual(s.last_seen_at, later)
+        # Still no false auto-migration on the re-poll.
+        self.ep_pub.refresh_from_db()
+        self.assertEqual(self.ep_pub.podcast_id, self.low.id)
+        self.assertTrue(any('[SKIP MIGRATE]' in line for line in self._stdout_lines(stdout)))

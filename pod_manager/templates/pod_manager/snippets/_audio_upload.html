@@ -1,0 +1,48 @@
+{% comment %}
+THE episode audio upload. Shared by episode_detail.html and publish_episode.html
+— Josh: "my upload options are missing on the publish page, I can only paste
+links... we're already doing this on the episode edit suggestion page for the same
+exact episode audio."
+
+No migration and no new action: it posts the EXISTING manage_episode
+action='upload_audio', which mirrors the file to R2, attaches it to the Premium /
+Ad-Free slot and re-queues transcription.
+
+Params:
+  action_url    manage_episode URL for the episode (required)
+  help_text     small print under the field
+  button_label  submit label (default "Upload & Mirror")
+
+IT IS A FORM, unlike snippets/_image_upload.html — the audio upload is always
+standalone, so it owns its <form> rather than embedding in one. That is what lets
+the publish page host it at all: its Audio Files card lives INSIDE the big publish
+form, and a nested form is invalid HTML, so this sits after that form closes.
+
+It is BOOSTED, upload and all. This form used to be hx-boost="false" on the
+episode page so the browser could "show upload progress" — but a browser shows NO
+progress for a form POST (you get a spinning tab and a dead page), and the hard
+navigation killed playback, which is the one thing the boosted-navigation system
+exists to prevent. enctype stays for the no-JS submit; hx-encoding is what makes
+htmx send it as FormData over XHR, which both keeps the player alive and exposes
+the progress events _upload_progress.html reads. See docs/boosted-navigation.md.
+{% endcomment %}
+<form method="POST" action="{{ action_url }}" class="mb-4" data-upload-scope
+      enctype="multipart/form-data" hx-encoding="multipart/form-data">
+    {% csrf_token %}
+    <input type="hidden" name="action" value="upload_audio">
+    <label class="form-label text-light">Upload Audio File</label>
+    <div class="input-group">
+        <input type="file" name="audio_file" accept=".mp3,.m4a,.wav,.aac,.ogg,audio/*"
+               class="form-control bg-dark text-light border-secondary" required>
+        <button type="submit" class="btn btn-outline-warning btn-sm">
+            <i class="bi bi-cloud-upload me-1"></i>{{ button_label|default:"Upload &amp; Mirror" }}
+        </button>
+    </div>
+    {% comment %}
+    "Mirroring to R2…" rather than the image widget's "Processing image…": at 100%
+    the bytes are up and the server is mirroring and re-queuing transcription,
+    which for a full episode is the longest part of the wait.
+    {% endcomment %}
+    {% include 'pod_manager/snippets/_upload_progress.html' with processing_label='Mirroring to R2…' %}
+    {% if help_text %}<div class="form-text text-muted">{{ help_text }}</div>{% endif %}
+</form>

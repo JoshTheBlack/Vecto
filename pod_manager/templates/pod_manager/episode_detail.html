@@ -813,66 +813,15 @@
                         </form>
 
                         {% comment %}
-                        The one upload where progress genuinely matters, and it is
-                        still boosted (docs/boosted-navigation.md). This used to be
-                        hx-boost="false" so the browser could "show upload progress"
-                        — but a browser shows NO progress for a form POST: you get a
-                        spinning tab and a dead page, and the hard navigation killed
-                        playback. hx-encoding sends it as FormData over XHR, which
-                        both keeps the player alive and exposes htmx:xhr:progress —
-                        a real percentage where there was none.
+                        Shared with publish_episode.html now — same episode, same
+                        manage_episode action='upload_audio'. This page's copy was
+                        the exemplar; the snippet keeps its shape and adds the 100%
+                        latch its hand-rolled script was missing (htmx fires the
+                        same htmx:xhr:progress for the response download, which
+                        rewound the bar once the upload finished).
                         {% endcomment %}
-                        <form method="POST" action="{% url 'manage_episode' ep.id %}" class="mb-4"
-                              enctype="multipart/form-data" hx-encoding="multipart/form-data"
-                              id="uploadAudioForm">
-                            {% csrf_token %}
-                            <input type="hidden" name="action" value="upload_audio">
-                            <label class="form-label text-light">Upload Audio File</label>
-                            <div class="input-group">
-                                <input type="file" name="audio_file" accept=".mp3,.m4a,.wav,.aac,.ogg,audio/*"
-                                       class="form-control bg-dark text-light border-secondary" required>
-                                <button type="submit" class="btn btn-outline-warning btn-sm">
-                                    <i class="bi bi-cloud-upload me-1"></i>Upload &amp; Mirror
-                                </button>
-                            </div>
-                            {% comment %}
-                            Themed off --vecto-primary, not bg-warning: every
-                            network sets its own primary, so a hardcoded Bootstrap
-                            colour ignores the theme. Radius comes from the token
-                            for the same reason.
-                            {% endcomment %}
-                            <div class="progress mt-2 d-none" id="uploadAudioProgress"
-                                 style="height: 0.5rem; border-radius: var(--vecto-radius-sm); background-color: rgba(128,128,128,0.2);"
-                                 role="progressbar" aria-label="Upload progress">
-                                <div class="progress-bar" style="width: 0%; background-color: var(--vecto-primary);"></div>
-                            </div>
-                            <div class="form-text text-muted">Attaches to the Premium / Ad-Free slot and mirrors to R2. Overwrites any existing premium audio and re-queues transcription.</div>
-                        </form>
-                        <script>
-                        (function () {
-                            // Listeners live on the form itself, which is inside
-                            // #boosted-region — they die with it, so no VectoPage
-                            // registration is needed (that is only for document /
-                            // window / other persistent targets).
-                            const form = document.getElementById('uploadAudioForm');
-                            if (!form) return;
-                            const wrap = document.getElementById('uploadAudioProgress');
-                            const bar = wrap.querySelector('.progress-bar');
-                            form.addEventListener('htmx:xhr:loadstart', () => {
-                                wrap.classList.remove('d-none');
-                                bar.style.width = '0%';
-                            });
-                            form.addEventListener('htmx:xhr:progress', (e) => {
-                                if (!e.detail.lengthComputable) return;
-                                const pct = Math.round((e.detail.loaded / e.detail.total) * 100);
-                                bar.style.width = pct + '%';
-                                wrap.setAttribute('aria-valuenow', pct);
-                            });
-                            // The swap replaces this form on success; this only
-                            // matters if the request errors and the form survives.
-                            form.addEventListener('htmx:xhr:loadend', () => wrap.classList.add('d-none'));
-                        })();
-                        </script>
+                        {% url 'manage_episode' ep.id as manage_episode_url %}
+                        {% include 'pod_manager/snippets/_audio_upload.html' with action_url=manage_episode_url help_text='Attaches to the Premium / Ad-Free slot and mirrors to R2. Overwrites any existing premium audio and re-queues transcription.' %}
 
                         <form method="POST" action="{% url 'manage_episode' ep.id %}" class="mb-4">
                             {% csrf_token %}

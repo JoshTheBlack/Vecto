@@ -1133,6 +1133,147 @@ class NavbarAvatarPushTests(TestCase):
         self.assertEqual(hx.count('id="navbarAvatar"'), 1)     # the OOB push, only
 
 
+class SharedAudioUploadTests(SimpleTestCase):
+    """Josh: "My upload options are missing on the publish page, I can only paste
+    links." The episode page's upload is the exemplar; both now render one
+    snippet, posting the EXISTING manage_episode action='upload_audio' — no new
+    action, no migration."""
+
+    @property
+    def TEMPLATE_ROOT(self):
+        from django.conf import settings as django_settings
+        return Path(django_settings.BASE_DIR) / 'pod_manager' / 'templates' / 'pod_manager'
+
+    AUDIO_PAGES = ('episode_detail.html', 'publish_episode.html')
+
+    def test_both_pages_use_the_shared_snippet(self):
+        for name in self.AUDIO_PAGES:
+            with self.subTest(template=name):
+                txt = (self.TEMPLATE_ROOT / name).read_text(encoding='utf-8')
+                self.assertIn('_audio_upload.html', txt)
+
+    def test_snippet_reuses_the_existing_action(self):
+        txt = (self.TEMPLATE_ROOT / 'snippets' / '_audio_upload.html').read_text(encoding='utf-8')
+        self.assertIn('name="action" value="upload_audio"', txt)
+
+    def test_snippet_boosts_with_hx_encoding(self):
+        """It used to be hx-boost="false" for "native progress" that does not
+        exist — and the hard navigation stopped playback mid-episode."""
+        txt = (self.TEMPLATE_ROOT / 'snippets' / '_audio_upload.html').read_text(encoding='utf-8')
+        self.assertIn('enctype="multipart/form-data"', txt)
+        self.assertIn('hx-encoding="multipart/form-data"', txt)
+        body = re.sub(r'{% comment %}.*?{% endcomment %}', '', txt, flags=re.S)
+        self.assertNotIn('hx-boost="false"', body)
+
+    def test_no_page_hand_rolls_the_audio_progress_bar(self):
+        for name in self.AUDIO_PAGES:
+            with self.subTest(template=name):
+                txt = (self.TEMPLATE_ROOT / name).read_text(encoding='utf-8')
+                self.assertNotIn('uploadAudioProgress', txt)
+                self.assertNotIn("getElementById('uploadAudioForm')", txt)
+
+
+class PublishPageAudioUploadTests(TestCase):
+    """Rendered rather than grepped: whether the upload is actually offered turns
+    on edit mode, and whether it can work at all turns on the form nesting."""
+
+    def setUp(self):
+        self.owner = User.objects.create_user(username='owner', email='o@example.com')
+        self.network = Network.objects.create(name='Net', slug='n')
+        self.network.owners.add(self.owner)
+        self.podcast = Podcast.objects.create(network=self.network, title='Show',
+                                              public_feed_url='https://e.com/f.xml')
+        self.ep = Episode.objects.create(podcast=self.podcast, title='Ep',
+                                         pub_date=timezone.now(),
+                                         raw_description='x', clean_description='x',
+                                         is_published=False)
+
+    def _render(self, edit_ep):
+        from django.template.loader import render_to_string
+        return render_to_string('pod_manager/publish_episode.html', {
+            'current_network': self.network,
+            'edit_ep': edit_ep,
+            'network_podcasts': [self.podcast],
+            'scheduled': [],
+        })
+
+    def test_edit_mode_offers_the_upload(self):
+        out = self._render(self.ep)
+        self.assertIn('name="audio_file"', out)
+        self.assertIn('name="action" value="upload_audio"', out)
+        self.assertIn(f'/episode/{self.ep.id}/manage', out.replace('\\', '/'))
+
+    def test_compose_mode_does_not_offer_it(self):
+        """upload_audio mirrors against an EXISTING episode id — a brand-new
+        compose has no episode to attach audio to, so the card points at Save as
+        Draft instead of rendering a form that could only fail."""
+        out = self._render(None)
+        self.assertNotIn('name="audio_file"', out)
+        self.assertIn('Save this as a draft first', out)
+
+    def test_the_audio_form_is_not_nested_inside_the_publish_form(self):
+        """A nested <form> is invalid HTML: the browser drops the inner one, so
+        the upload would silently post the publish action instead."""
+        out = self._render(self.ep)
+        upload_at = out.index('name="audio_file"')
+        opens = [m.start() for m in re.finditer(r'<form\b', out)]
+        closes = [m.start() for m in re.finditer(r'</form>', out)]
+        depth = sum(1 for o in opens if o < upload_at) - sum(1 for c in closes if c < upload_at)
+        self.assertEqual(depth, 1, msg='The audio upload is nested inside another form.')
+
+    def test_the_audio_form_boosts_and_carries_hx_encoding(self):
+        out = self._render(self.ep)
+        tag = re.search(r'<form[^>]*audio[^>]*>|<form[^>]*>(?=(?:(?!</form>).)*audio_file)',
+                        out, re.S).group(0)
+        self.assertIn('hx-encoding="multipart/form-data"', tag)
+        self.assertNotIn('hx-boost="false"', tag)
+
+    def test_the_progress_bar_is_themed(self):
+        out = self._render(self.ep)
+        self.assertIn('background-color: var(--vecto-primary)', out)
+        self.assertNotIn('progress-bar bg-warning', out)
+
+
+class UploadProgressSnippetTests(SimpleTestCase):
+    """One progress bar for every upload in the app, image and audio alike."""
+
+    @property
+    def snippet(self):
+        from django.conf import settings as django_settings
+        p = (Path(django_settings.BASE_DIR) / 'pod_manager' / 'templates' / 'pod_manager'
+             / 'snippets' / '_upload_progress.html')
+        return p.read_text(encoding='utf-8')
+
+    def test_bar_is_themed_off_the_network_primary(self):
+        body = re.sub(r'{% comment %}.*?{% endcomment %}', '', self.snippet, flags=re.S)
+        self.assertIn('var(--vecto-primary)', body)
+        self.assertIn('var(--vecto-radius-sm)', body)
+        self.assertNotIn('bg-warning', body)
+
+    def test_progress_latches_at_100_percent(self):
+        """htmx fires the SAME htmx:xhr:progress for the xhr AND the xhr.upload,
+        with nothing in the detail to tell them apart, so the response download
+        rewinds the bar after the upload completes. The episode page's hand-rolled
+        version had exactly this bug."""
+        self.assertIn('uploaded = true', self.snippet)
+
+    def test_bar_stays_hidden_when_the_field_has_no_file(self):
+        """Most saves of a form that merely CONTAINS a file field upload nothing;
+        without this the bar flashes straight to the processing state."""
+        self.assertIn('input.files.length', self.snippet)
+
+    def test_both_widgets_delegate_to_it(self):
+        from django.conf import settings as django_settings
+        root = Path(django_settings.BASE_DIR) / 'pod_manager' / 'templates' / 'pod_manager' / 'snippets'
+        for name in ('_image_upload.html', '_audio_upload.html'):
+            with self.subTest(snippet=name):
+                txt = (root / name).read_text(encoding='utf-8')
+                self.assertIn('_upload_progress.html', txt)
+                self.assertIn('data-upload-scope', txt)
+                # No second copy of the progress implementation.
+                self.assertNotIn('htmx:xhr:progress', txt)
+
+
 class ImageUploadWidgetContractTests(SimpleTestCase):
     """snippets/_image_upload.html — the one client widget. Its rules are the
     boosted-navigation rules; breaking one silently stops playback or drops the
@@ -1155,12 +1296,15 @@ class ImageUploadWidgetContractTests(SimpleTestCase):
         the thing."""
         return re.sub(r'{% comment %}.*?{% endcomment %}', '', self.widget, flags=re.S)
 
-    def test_progress_bar_is_themed_not_hardcoded(self):
-        """Every network sets its own primary, so bg-warning renders yellow on all
-        of them regardless of theme."""
+    def test_progress_comes_from_the_shared_snippet(self):
+        """The bar itself lives in _upload_progress.html, shared with the audio
+        upload — UploadProgressSnippetTests owns its behaviour. This widget is
+        just the image-specific chrome around it, and must not grow a second
+        copy."""
         txt = self.widget_markup
-        self.assertIn('var(--vecto-primary)', txt)
-        self.assertIn('var(--vecto-radius-sm)', txt)
+        self.assertIn('_upload_progress.html', txt)
+        self.assertIn('data-upload-scope', txt)
+        self.assertNotIn('htmx:xhr:progress', txt)
         self.assertNotIn('bg-warning', txt)
 
     def test_widget_is_not_a_form_and_owns_no_submit(self):
@@ -1172,13 +1316,6 @@ class ImageUploadWidgetContractTests(SimpleTestCase):
         self.assertNotIn('<form', txt)
         self.assertNotIn('XMLHttpRequest', txt)
         self.assertNotIn('hx-boost="false"', txt)
-
-    def test_progress_latches_at_100_percent(self):
-        """htmx triggers the SAME htmx:xhr:progress event for the xhr AND the
-        xhr.upload, with nothing in the detail to tell them apart — so without a
-        latch the response download rewinds the bar after the upload finishes."""
-        self.assertIn('htmx:xhr:progress', self.widget)
-        self.assertIn('uploaded = true', self.widget)
 
     def test_every_form_hosting_the_widget_boosts_with_hx_encoding(self):
         """The widget reads htmx's OWN xhr events, so a host form that does not

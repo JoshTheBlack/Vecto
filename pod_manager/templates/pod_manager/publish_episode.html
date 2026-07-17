@@ -200,6 +200,18 @@
                        placeholder="https://example.com/episode-adfree.mp3">
                 <div class="form-text text-muted">If set and different from public URL, served to paying subscribers. The feed ingestor will match this with the public URL on first sync.</div>
             </div>
+            {% comment %}
+            The upload itself CANNOT live here: this card is inside #publishForm,
+            and _audio_upload.html is a form of its own (nesting forms is invalid
+            HTML). It renders just below this form instead — see the note there.
+            {% endcomment %}
+            <div class="form-text text-muted mt-3">
+                {% if edit_ep %}
+                <i class="bi bi-arrow-down-circle"></i> Or upload a file instead of pasting a link — see <strong>Upload Audio</strong> below.
+                {% else %}
+                <i class="bi bi-info-circle"></i> Want to upload a file instead? Save this as a draft first — an upload has to attach to an episode that exists.
+                {% endif %}
+            </div>
         </div>
     </div>
 
@@ -342,6 +354,37 @@
         </button>
     </div>
 </form>
+
+{% if edit_ep %}
+{% comment %}
+Josh: "my upload options are missing on the publish page, I can only paste links."
+Same snippet, same action, same episode as the episode page — no new server code.
+
+WHY IT IS DOWN HERE rather than up in the Audio Files card where it belongs
+visually: that card is inside #publishForm above, and this snippet is a <form> of
+its own, so putting it there would nest forms. (HTML5's form="..." attribute would
+let the controls sit up there and submit down here — that is exactly what the
+network fallback image used to do, and untangling it was most of item 4. Not
+worth re-introducing.)
+
+ONLY IN EDIT MODE, and that is a hard constraint, not a choice: upload_audio
+mirrors the file against an EXISTING episode id. A brand-new compose has no
+episode yet, so there is nothing to attach audio to — the Audio Files card says
+so and points at Save as Draft.
+
+Uploading re-renders this page from the DATABASE, so it discards anything typed
+into the publish form but not yet saved. Hence the warning in help_text.
+{% endcomment %}
+<div class="card border-secondary mb-3">
+    <div class="card-header border-secondary py-2">
+        <span class="fw-bold text-light"><i class="bi bi-cloud-upload me-1 text-warning"></i>Upload Audio</span>
+    </div>
+    <div class="card-body">
+        {% url 'manage_episode' edit_ep.id as manage_episode_url %}
+        {% include 'pod_manager/snippets/_audio_upload.html' with action_url=manage_episode_url help_text='Attaches to the Premium / Ad-Free slot and mirrors to R2. Overwrites any existing premium audio and re-queues transcription. Save any pending edits above first — uploading reloads this form from the saved draft.' %}
+    </div>
+</div>
+{% endif %}
 </div><!-- /compose -->
 
 <!-- ── Scheduled & Drafts tab ──────────────────────────────────────── -->

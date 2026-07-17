@@ -22,6 +22,11 @@ Params:
   preview_px    preview box size (default 96)
   processing_label  the >=100% state (default "Processing image…")
 
+The progress bar itself is NOT here — it lives in snippets/_upload_progress.html,
+shared with the audio upload. This snippet is the image-specific chrome (preview,
+accept list, remove) wrapped around it; the data-upload-scope marker below is how
+that snippet finds this widget's own file input.
+
 IT IS A FIELD, NOT A FORM. Most consumers embed it in a bigger form (the mix
 modals, the 404 add row, the avatar picker), and a nested <form> is invalid HTML.
 It binds to its ENCLOSING form, which MUST be:
@@ -43,8 +48,7 @@ entry, and a hand-written htmx.ajax() region swap to avoid hard-navigating on
 success. Riding htmx's own XHR gets identical progress with none of that — and
 took both of the allowlist's entries back out.
 {% endcomment %}
-<div data-image-upload
-     data-image-upload-processing="{{ processing_label|default:'Processing image…' }}">
+<div data-image-upload data-upload-scope>
     {% if label %}<label class="form-label text-muted small fw-bold">{{ label }}</label>{% endif %}
 
     <div class="d-flex align-items-start gap-3">
@@ -56,7 +60,7 @@ took both of the allowlist's entries back out.
         {% endif %}
 
         <div class="flex-grow-1">
-            <input type="file" name="{{ name }}" data-image-upload-input
+            <input type="file" name="{{ name }}"
                    accept="{{ accept|default:'image/*' }}"{% if required %} required{% endif %}
                    class="{{ input_class|default:'form-control bg-black text-light border-secondary' }}">
 
@@ -75,93 +79,7 @@ took both of the allowlist's entries back out.
 
             {% if help_text %}<div class="form-text text-muted">{{ help_text }}</div>{% endif %}
 
-            {% comment %}
-            Themed off --vecto-primary, never bg-warning: every network sets its
-            own primary, so a hardcoded Bootstrap colour ignores the theme and
-            renders yellow on all of them. Radius comes from the token for the
-            same reason — see the radius/surface token notes in base.html.
-            {% endcomment %}
-            <div class="progress mt-2 d-none" data-image-upload-progress
-                 style="height: 0.5rem; border-radius: var(--vecto-radius-sm);
-                        background-color: rgba(128,128,128,0.2);"
-                 role="progressbar" aria-label="Upload progress"
-                 aria-valuemin="0" aria-valuemax="100">
-                <div class="progress-bar" data-image-upload-bar
-                     style="width: 0%; background-color: var(--vecto-primary);"></div>
-            </div>
-            <div class="small text-light mt-1 d-none" data-image-upload-label></div>
+            {% include 'pod_manager/snippets/_upload_progress.html' with processing_label=processing_label|default:'Processing image…' %}
         </div>
     </div>
-<script>
-(function () {
-    /* Resolve from this script's own position: the widget can appear more than
-       once on a page, and during a same-page swap both copies of the page are in
-       the document. Must be read synchronously — currentScript is null later. */
-    const script = document.currentScript;
-    const widget = script && script.closest('[data-image-upload]');
-    const form = script && script.closest('form');
-    if (!widget || !form) return;
-
-    const input = widget.querySelector('[data-image-upload-input]');
-    const wrap = widget.querySelector('[data-image-upload-progress]');
-    const bar = widget.querySelector('[data-image-upload-bar]');
-    const label = widget.querySelector('[data-image-upload-label]');
-    // Via a data attribute rather than templated into this script: Django
-    // escapes it for an attribute, where interpolating it into JS would need
-    // escapejs and would break on a stray quote.
-    const PROCESSING = widget.dataset.imageUploadProcessing || 'Processing image…';
-
-    /* Listeners on the form itself, which lives inside #boosted-region — they
-       die with it, so no VectoPage registration (that is only for document /
-       window / other persistent targets). */
-    let uploaded = false;
-
-    const hide = () => {
-        wrap.classList.add('d-none');
-        label.classList.add('d-none');
-        bar.style.width = '0%';
-    };
-
-    form.addEventListener('htmx:xhr:loadstart', (e) => {
-        if (e.target !== form) return;
-        // Only when this widget actually has a file. Otherwise every plain save
-        // of a form that merely CONTAINS an image field (the mix modals, most
-        // of the time) would flash a bar straight to "Processing image…".
-        if (!input || !input.files || !input.files.length) return;
-        uploaded = false;
-        wrap.classList.remove('d-none');
-        label.classList.remove('d-none');
-        label.textContent = 'Uploading… 0%';
-        bar.style.width = '0%';
-    });
-
-    form.addEventListener('htmx:xhr:progress', (e) => {
-        if (e.target !== form) return;
-        if (wrap.classList.contains('d-none')) return;
-        /* htmx registers "progress" on BOTH the xhr and the xhr.upload and
-           triggers the SAME htmx:xhr:progress event name for each, with no way
-           to tell them apart in the detail. So once the upload completes, the
-           RESPONSE download starts firing this too and would rewind the bar to a
-           few percent. Latch at 100%: the server is re-encoding by then anyway
-           (an animated GIF takes seconds), which is what the user wants told. */
-        if (uploaded || !e.detail.lengthComputable) return;
-        const pct = Math.round((e.detail.loaded / e.detail.total) * 100);
-        bar.style.width = pct + '%';
-        wrap.setAttribute('aria-valuenow', pct);
-        if (pct >= 100) {
-            uploaded = true;
-            label.textContent = PROCESSING;
-        } else {
-            label.textContent = 'Uploading… ' + pct + '%';
-        }
-    });
-
-    // The swap replaces this widget on success; this only matters when the
-    // request errors and the form survives.
-    form.addEventListener('htmx:xhr:loadend', (e) => {
-        if (e.target !== form) return;
-        hide();
-    });
-})();
-</script>
 </div>

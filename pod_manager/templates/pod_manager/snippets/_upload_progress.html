@@ -1,0 +1,104 @@
+{% comment %}
+THE upload progress bar. One implementation, shared by every upload in the app —
+snippets/_image_upload.html (network logo + fallback, the 404 pool, both mix
+covers, the avatar) and snippets/_audio_upload.html (episode audio, on both the
+episode page and the publish page).
+
+Params:
+  processing_label   the >=100% state (default "Processing…")
+
+CONTRACT. Include this inside an element marked data-upload-scope, which must
+contain exactly one <input type="file"> and must itself be inside the form that
+does the uploading. The scope is what lets two widgets in one form each track
+their own field. The form MUST carry:
+
+    enctype="multipart/form-data" hx-encoding="multipart/form-data"
+
+and must NOT set hx-boost="false". hx-encoding is not optional decoration: it is
+what makes htmx send the form as FormData over XHR, which is BOTH what keeps the
+out-of-region audio player alive on submit AND the only reason there are progress
+events to read. A browser shows NO progress for a native form POST — the "native
+progress" this replaced never existed. See docs/boosted-navigation.md.
+{% endcomment %}
+<div class="progress mt-2 d-none" data-upload-progress
+     data-upload-processing="{{ processing_label|default:'Processing…' }}"
+     style="height: 0.5rem; border-radius: var(--vecto-radius-sm);
+            background-color: rgba(128,128,128,0.2);"
+     role="progressbar" aria-label="Upload progress"
+     aria-valuemin="0" aria-valuemax="100">
+    {% comment %}
+    Themed off --vecto-primary, never bg-warning: every network sets its own
+    primary, so a hardcoded Bootstrap colour renders yellow on all of them
+    regardless of theme. Radius comes from the token for the same reason.
+    {% endcomment %}
+    <div class="progress-bar" data-upload-bar
+         style="width: 0%; background-color: var(--vecto-primary);"></div>
+</div>
+<div class="small text-light mt-1 d-none" data-upload-label></div>
+<script>
+(function () {
+    /* Resolve from this script's own position: a page can host several uploads,
+       and during a same-page swap both copies of the page are in the document,
+       so a document-wide query can find the wrong one. Must be read
+       synchronously — currentScript is null inside any later callback. */
+    const script = document.currentScript;
+    const scope = script && script.closest('[data-upload-scope]');
+    const form = script && script.closest('form');
+    if (!scope || !form) return;
+
+    const input = scope.querySelector('input[type="file"]');
+    const wrap = scope.querySelector('[data-upload-progress]');
+    const bar = scope.querySelector('[data-upload-bar]');
+    const label = scope.querySelector('[data-upload-label]');
+    if (!input || !wrap || !bar || !label) return;
+    const PROCESSING = wrap.dataset.uploadProcessing || 'Processing…';
+
+    /* Listeners on the form, which lives inside #boosted-region — they die with
+       it, so no VectoPage registration (that is only for document / window /
+       other persistent targets). */
+    let uploaded = false;
+
+    form.addEventListener('htmx:xhr:loadstart', (e) => {
+        if (e.target !== form) return;
+        // Only when THIS widget has a file. Otherwise every plain save of a form
+        // that merely contains a file field (the mix modals, most of the time)
+        // flashes a bar straight to "Processing…".
+        if (!input.files || !input.files.length) return;
+        uploaded = false;
+        wrap.classList.remove('d-none');
+        label.classList.remove('d-none');
+        label.textContent = 'Uploading… 0%';
+        bar.style.width = '0%';
+    });
+
+    form.addEventListener('htmx:xhr:progress', (e) => {
+        if (e.target !== form) return;
+        if (wrap.classList.contains('d-none')) return;
+        /* htmx registers "progress" on BOTH the xhr and the xhr.upload and fires
+           the SAME htmx:xhr:progress for each, with nothing in the detail to tell
+           them apart. So once the upload finishes, the RESPONSE download starts
+           firing this too and would rewind the bar to a few percent. Latch at
+           100%: by then the server is re-encoding / mirroring anyway, which is
+           the more honest thing to say. */
+        if (uploaded || !e.detail.lengthComputable) return;
+        const pct = Math.round((e.detail.loaded / e.detail.total) * 100);
+        bar.style.width = pct + '%';
+        wrap.setAttribute('aria-valuenow', pct);
+        if (pct >= 100) {
+            uploaded = true;
+            label.textContent = PROCESSING;
+        } else {
+            label.textContent = 'Uploading… ' + pct + '%';
+        }
+    });
+
+    // The swap replaces this widget on success; this only matters when the
+    // request errors and the form survives.
+    form.addEventListener('htmx:xhr:loadend', (e) => {
+        if (e.target !== form) return;
+        wrap.classList.add('d-none');
+        label.classList.add('d-none');
+        bar.style.width = '0%';
+    });
+})();
+</script>

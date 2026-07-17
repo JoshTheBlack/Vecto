@@ -11,6 +11,7 @@ from django.core.cache import cache
 from django.shortcuts import get_object_or_404
 
 from ...models import UserMix
+from ...services.images import image_size_error
 from ...utils import validate_public_url
 
 logger = logging.getLogger(__name__)
@@ -30,8 +31,13 @@ def _handle_create_mix(request):
         name=mix_name,
         image_url=raw_image_url,
     )
-    if 'mix_image_upload' in request.FILES:
-        mix.image_upload = request.FILES['mix_image_upload']
+    upload = request.FILES.get('mix_image_upload')
+    if upload:
+        size_err = image_size_error(upload)   # 8 MB — cover art
+        if size_err:
+            messages.error(request, size_err)   # skip the cover, keep the mix
+        else:
+            mix.image_upload = upload
     mix.selected_podcasts.set(request.POST.getlist('podcasts'))
     mix.save()
     messages.success(request, f"Mix '{mix.name}' created successfully!")
@@ -40,10 +46,14 @@ def _handle_create_mix(request):
 def _handle_edit_mix(request):
     mix = get_object_or_404(UserMix, id=request.POST.get('mix_id'), user=request.user, network=request.network)
     mix.name = request.POST.get('mix_name', '').strip() or mix.name
-    if 'mix_image_upload' in request.FILES and request.FILES['mix_image_upload']:
+    upload = request.FILES.get('mix_image_upload')
+    if upload and image_size_error(upload):
+        messages.error(request, image_size_error(upload))   # keep the existing cover
+        upload = None
+    if upload:
         if mix.image_upload:
             mix.image_upload.delete(save=False)
-        mix.image_upload = request.FILES['mix_image_upload']
+        mix.image_upload = upload
         mix.image_url = ""
     elif request.POST.get('mix_image'):
         raw_image_url = request.POST.get('mix_image').strip()

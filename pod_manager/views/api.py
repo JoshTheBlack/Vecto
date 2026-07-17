@@ -20,6 +20,7 @@ from django.views.decorators.http import require_POST
 from django.shortcuts import get_object_or_404
 
 from ..models import NetworkMembership, Network, PatronProfile, Podcast, Episode, Transcript
+from ..services.images import image_size_error
 from ..utils import get_membership, validate_public_url
 
 logger = logging.getLogger(__name__)
@@ -78,12 +79,17 @@ def update_avatar_preference(request):
 def upload_custom_avatar(request):
     membership = get_membership(request)
     if membership:
-        if 'custom_image_upload' in request.FILES and request.FILES['custom_image_upload']:
+        upload = request.FILES.get('custom_image_upload')
+        if upload and image_size_error(upload):
+            # 8 MB — an avatar is small art. Keep the existing one.
+            messages.error(request, image_size_error(upload))
+            return redirect('user_profile')
+        if upload:
             # No pre-delete: the stable key is deterministic and storage
             # overwrites in place, so save() PUTs over any existing object —
             # an explicit delete would just add a round-trip and a momentary
             # 404 gap before the PUT lands.
-            membership.custom_image_upload = request.FILES['custom_image_upload']
+            membership.custom_image_upload = upload
             membership.custom_image_url = ""
 
         elif request.POST.get('custom_image_url'):

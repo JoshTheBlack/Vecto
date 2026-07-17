@@ -26,7 +26,9 @@ from ...services.cross_publish import (
     validate_feed_cross_targets, resync_feed_auto_access_mode,
 )
 from ...services.edits import chapter_items, score_contribution, REJECT_PENALTY
-from ...services.images import MAX_IMAGE_BYTES, handle_image_upload
+from ...services.images import (
+    MAX_ANIMATED_IMAGE_BYTES, handle_image_upload, image_size_error,
+)
 from ...services.episode_move import move_episodes
 from ...services.patreon import sync_network_patrons
 from ...tasks import (task_rebuild_episode_fragments,
@@ -793,8 +795,13 @@ def handle_add_network_mix(request, current_network):
             image_url=request.POST.get('mix_image', '').strip(),
             required_tier=req_tier,
         )
-        if 'mix_image_upload' in request.FILES and request.FILES['mix_image_upload']:
-            mix.image_upload = request.FILES['mix_image_upload']
+        upload = request.FILES.get('mix_image_upload')
+        if upload:
+            size_err = image_size_error(upload)   # 8 MB — cover art
+            if size_err:
+                messages.error(request, size_err)   # skip the cover, keep the mix
+            else:
+                mix.image_upload = upload
         mix.selected_podcasts.set(request.POST.getlist('podcasts'))
         mix.save()
         messages.success(request, f"Network mix '{mix.name}' created.")
@@ -813,10 +820,14 @@ def handle_edit_network_mix(request, current_network):
     tier_id = request.POST.get('tier_id') or None
     mix.required_tier = get_object_or_404(PatreonTier, id=tier_id, network=current_network) if tier_id else None
 
-    if 'mix_image_upload' in request.FILES and request.FILES['mix_image_upload']:
+    upload = request.FILES.get('mix_image_upload')
+    if upload and image_size_error(upload):
+        messages.error(request, image_size_error(upload))   # keep the existing cover
+        upload = None
+    if upload:
         if mix.image_upload:
             mix.image_upload.delete(save=False)
-        mix.image_upload = request.FILES['mix_image_upload']
+        mix.image_upload = upload
         mix.image_url = ""
     else:
         posted_url = request.POST.get('mix_image', '').strip()
@@ -844,8 +855,11 @@ def handle_add_notfound_entry(request, current_network):
     if not image:
         messages.error(request, "No image selected.")
         return
-    if image.size > MAX_IMAGE_BYTES:
-        messages.error(request, f"Image too large (max {MAX_IMAGE_BYTES // (1024 * 1024)}MB).")
+    # The 404 pool is the big-GIF surface — a much higher cap than the small-art
+    # surfaces (logo/fallback/mix/avatar), which stay at MAX_IMAGE_BYTES.
+    size_err = image_size_error(image, MAX_ANIMATED_IMAGE_BYTES)
+    if size_err:
+        messages.error(request, size_err)
         return
     try:
         entry = NotFoundEntry(

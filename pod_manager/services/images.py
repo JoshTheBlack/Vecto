@@ -10,14 +10,30 @@ from PIL import Image, ImageSequence
 
 logger = logging.getLogger(__name__)
 
-# 25 MB. The OUTPUT is always a bounded WebP (≤500px cover, ≤512px logo, ≤800px
-# 404 art), so the source only needs a high enough ceiling to accept a phone
-# photo or a large GIF and downscale it — an 8 MB cap rejected exactly the files
-# users most wanted us to shrink for them. Still bounded, not unbounded:
-# process_image_field decodes the whole source into memory, and an animated GIF
-# decodes to every frame at once, so a truly huge upload is a memory risk. 25 MB
-# is the balance.
-MAX_IMAGE_BYTES = 25 * 1024 * 1024
+# The cap is PER-SURFACE, not global — the limit is the caller's to choose (it
+# knows what kind of image this is), so it's a parameter, not a constant baked
+# into the pipeline. The OUTPUT is always a bounded WebP (≤500px cover, ≤512px
+# logo, ≤800px 404 art) regardless, so the cap is a memory guard on the DECODE,
+# not on the stored result: process_image_field reads the whole source into
+# memory, and an animated GIF decodes to every frame at once.
+#
+# MAX_IMAGE_BYTES — the default: logos, fallback images, mix covers, avatars.
+#   These are small static art; 8 MB is generous and keeps the decode cheap.
+# MAX_ANIMATED_IMAGE_BYTES — the 404 pool, which is built around animated GIFs
+#   (Josh has a 42 MB one). Much higher, accepting the heavier decode as the
+#   price of the feature. Not applied to the small-art surfaces above.
+MAX_IMAGE_BYTES = 8 * 1024 * 1024
+MAX_ANIMATED_IMAGE_BYTES = 100 * 1024 * 1024
+
+
+def image_size_error(upload, max_bytes=MAX_IMAGE_BYTES):
+    """Return a user-facing error string if `upload` exceeds `max_bytes`, else
+    None. The single size-limit check — every upload surface calls it with the
+    limit that surface allows, so the cap lives with the caller rather than being
+    a global the pipeline imposes."""
+    if upload and upload.size > max_bytes:
+        return f"Image too large (max {max_bytes // (1024 * 1024)}MB)."
+    return None
 
 
 def _normalize_frame(img, max_px: int, crop_square: bool):
@@ -129,8 +145,9 @@ def handle_image_upload(request, instance, field, *, file_param=None, label='Ima
     if not upload:
         messages.error(request, "No image selected.")
         return False
-    if upload.size > max_bytes:
-        messages.error(request, f"Image too large (max {max_bytes // (1024 * 1024)}MB).")
+    size_err = image_size_error(upload, max_bytes)
+    if size_err:
+        messages.error(request, size_err)
         return False
 
     # Process and commit the new image BEFORE touching the instance. If it can't

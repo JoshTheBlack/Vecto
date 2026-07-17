@@ -1186,10 +1186,11 @@ class NavbarAvatarPushTests(TestCase):
 
 
 class SharedAudioUploadTests(SimpleTestCase):
-    """Josh: "My upload options are missing on the publish page, I can only paste
-    links." The episode page's upload is the exemplar; both now render one
-    snippet, posting the EXISTING manage_episode action='upload_audio' — no new
-    action, no migration."""
+    """Josh: "My upload options are missing on the publish page." The episode page
+    keeps its standalone _audio_upload.html form (its own manage_episode
+    action='upload_audio' submit); the publish page folds the SAME ingest into
+    its main submit instead. What the two genuinely share is the progress bar
+    (_upload_progress.html) and the server ingest (_ingest_episode_audio)."""
 
     @property
     def TEMPLATE_ROOT(self):
@@ -1198,17 +1199,27 @@ class SharedAudioUploadTests(SimpleTestCase):
 
     AUDIO_PAGES = ('episode_detail.html', 'publish_episode.html')
 
-    def test_both_pages_use_the_shared_snippet(self):
-        for name in self.AUDIO_PAGES:
-            with self.subTest(template=name):
-                txt = (self.TEMPLATE_ROOT / name).read_text(encoding='utf-8')
-                self.assertIn('_audio_upload.html', txt)
+    def test_episode_page_keeps_the_standalone_snippet(self):
+        txt = (self.TEMPLATE_ROOT / 'episode_detail.html').read_text(encoding='utf-8')
+        self.assertIn('_audio_upload.html', txt)
 
-    def test_snippet_reuses_the_existing_action(self):
+    def test_both_audio_surfaces_use_the_shared_progress_bar(self):
+        # The publish page has the scope inline; the episode page gets it via the
+        # _audio_upload.html snippet it includes. Both must end up with the shared
+        # _upload_progress.html rather than a hand-rolled bar.
+        publish = (self.TEMPLATE_ROOT / 'publish_episode.html').read_text(encoding='utf-8')
+        self.assertIn('data-upload-scope', publish)
+        self.assertIn('_upload_progress.html', publish)
+
+        snippet = (self.TEMPLATE_ROOT / 'snippets' / '_audio_upload.html').read_text(encoding='utf-8')
+        self.assertIn('data-upload-scope', snippet)
+        self.assertIn('_upload_progress.html', snippet)
+
+    def test_standalone_snippet_reuses_the_existing_action(self):
         txt = (self.TEMPLATE_ROOT / 'snippets' / '_audio_upload.html').read_text(encoding='utf-8')
         self.assertIn('name="action" value="upload_audio"', txt)
 
-    def test_snippet_boosts_with_hx_encoding(self):
+    def test_standalone_snippet_boosts_with_hx_encoding(self):
         """It used to be hx-boost="false" for "native progress" that does not
         exist — and the hard navigation stopped playback mid-episode."""
         txt = (self.TEMPLATE_ROOT / 'snippets' / '_audio_upload.html').read_text(encoding='utf-8')
@@ -1226,8 +1237,10 @@ class SharedAudioUploadTests(SimpleTestCase):
 
 
 class PublishPageAudioUploadTests(TestCase):
-    """Rendered rather than grepped: whether the upload is actually offered turns
-    on edit mode, and whether it can work at all turns on the form nesting."""
+    """The publish page folds the audio upload into its main submit — the Upload
+    File tab's field is part of #publishForm, so it rides Publish/Draft/Schedule.
+    Rendered, not grepped, because what matters is the field being INSIDE the form
+    and offered in both modes."""
 
     def setUp(self):
         self.owner = User.objects.create_user(username='owner', email='o@example.com')
@@ -1249,36 +1262,35 @@ class PublishPageAudioUploadTests(TestCase):
             'scheduled': [],
         })
 
-    def test_edit_mode_offers_the_upload(self):
+    def test_upload_offered_in_edit_mode(self):
         out = self._render(self.ep)
         self.assertIn('name="audio_file"', out)
-        self.assertIn('name="action" value="upload_audio"', out)
-        self.assertIn(f'/episode/{self.ep.id}/manage', out.replace('\\', '/'))
 
-    def test_compose_mode_does_not_offer_it(self):
-        """upload_audio mirrors against an EXISTING episode id — a brand-new
-        compose has no episode to attach audio to, so the card points at Save as
-        Draft instead of rendering a form that could only fail."""
+    def test_upload_offered_in_compose_mode_too(self):
+        """The whole point of folding in: the episode is created in the same
+        submit, so an upload no longer needs an episode that already exists."""
         out = self._render(None)
-        self.assertNotIn('name="audio_file"', out)
-        self.assertIn('Save this as a draft first', out)
+        self.assertIn('name="audio_file"', out)
 
-    def test_the_audio_form_is_not_nested_inside_the_publish_form(self):
-        """A nested <form> is invalid HTML: the browser drops the inner one, so
-        the upload would silently post the publish action instead."""
+    def test_the_audio_field_rides_the_publish_form(self):
+        """The file must be INSIDE #publishForm (depth 1), so it's part of the
+        Publish/Draft/Schedule submit — not its own form and not orphaned."""
         out = self._render(self.ep)
         upload_at = out.index('name="audio_file"')
         opens = [m.start() for m in re.finditer(r'<form\b', out)]
         closes = [m.start() for m in re.finditer(r'</form>', out)]
         depth = sum(1 for o in opens if o < upload_at) - sum(1 for c in closes if c < upload_at)
-        self.assertEqual(depth, 1, msg='The audio upload is nested inside another form.')
+        self.assertEqual(depth, 1, msg='The audio field is not inside exactly one form.')
+        # And that one form is the publish form, which must be multipart.
+        pub = re.search(r'<form[^>]*id="publishForm"[^>]*>', out).group(0)
+        self.assertIn('hx-encoding="multipart/form-data"', pub)
+        self.assertIn('enctype="multipart/form-data"', pub)
 
-    def test_the_audio_form_boosts_and_carries_hx_encoding(self):
+    def test_no_separate_below_the_form_upload_card(self):
+        """The old design put a standalone _audio_upload.html card below the form.
+        Folding in removed it — the publish page must not include that snippet."""
         out = self._render(self.ep)
-        tag = re.search(r'<form[^>]*audio[^>]*>|<form[^>]*>(?=(?:(?!</form>).)*audio_file)',
-                        out, re.S).group(0)
-        self.assertIn('hx-encoding="multipart/form-data"', tag)
-        self.assertNotIn('hx-boost="false"', tag)
+        self.assertNotIn('_audio_upload.html', out)
 
     def test_the_progress_bar_is_themed(self):
         out = self._render(self.ep)
@@ -8628,7 +8640,7 @@ class ManageEpisodeUploadAudioTests(TestCase):
         self.episode.refresh_from_db()
         self.assertIsNone(self.episode.audio_url_subscriber)
         msgs = [str(m) for m in get_messages(resp.wsgi_request)]
-        self.assertTrue(any('Upload rejected' in m for m in msgs))
+        self.assertTrue(any('Audio upload rejected' in m for m in msgs))
 
     def _post_explicit(self, user, value):
         self.client.force_login(user)
@@ -9292,6 +9304,115 @@ class PublishCalendarEntryWiringTests(TestCase):
         entry = CalendarEntry.objects.get()
         self.assertEqual(entry.episode, ep)
         self.assertEqual(entry.scheduled_at, planned_time)
+
+
+class PublishFoldedAudioIngestTests(TestCase):
+    """The publish submit now carries the audio file (the Upload File tab). The
+    server creates/saves the episode, then mirrors the file — so an upload works
+    on compose (no pre-existing episode) as well as edit. Shared with
+    manage_episode via _ingest_episode_audio; the mirror is mocked."""
+
+    def setUp(self):
+        self.network = Network.objects.create(name='Net', slug='netfold')
+        self.podcast = Podcast.objects.create(network=self.network, title='Show', slug='showfold')
+        self.owner = User.objects.create_user('foldowner', password='x')
+        self.network.owners.add(self.owner)
+        self.client.force_login(self.owner)
+
+    def _audio(self, name='ep.mp3', content=b'fake-bytes'):
+        return SimpleUploadedFile(name, content, content_type='audio/mpeg')
+
+    def _post(self, action='publish', audio=None, episode_id=None, **extra):
+        data = {'action': action, 'network_slug': self.network.slug,
+                'podcast_id': self.podcast.id, 'title': 'Folded Ep',
+                'tags_json': '[]', 'chapters_json': 'null'}
+        if episode_id:
+            data['episode_id'] = episode_id
+        if audio is not None:
+            data['audio_file'] = audio
+        data.update(extra)
+        stack = [
+            mock.patch('pod_manager.views.creator.publish.task_rebuild_episode_fragments'),
+            mock.patch('pod_manager.views.creator.publish.task_refresh_live_schedules'),
+        ]
+        for p in stack:
+            p.start()
+        try:
+            return self.client.post(reverse('publish_episode'), data)
+        finally:
+            for p in stack:
+                p.stop()
+
+    _MIRROR_OK = {'status': 'mirrored', 'r2_url': 'https://r2.example.com/ep.mp3',
+                  'key': 'k', 'reason': ''}
+
+    def test_compose_publish_with_a_file_creates_episode_and_mirrors(self):
+        """The headline: an upload on a BRAND-NEW episode. No pre-existing episode
+        was needed — the submit creates it, then the file mirrors to the Premium
+        slot."""
+        with mock.patch('pod_manager.services.r2_mirror.mirror_episode_audio',
+                        return_value=self._MIRROR_OK) as mirror, \
+             mock.patch('pod_manager.services.transcription.dispatch_transcription'):
+            resp = self._post('publish', audio=self._audio())
+        self.assertEqual(resp.status_code, 302)
+        ep = Episode.objects.get(title='Folded Ep')
+        self.assertTrue(ep.is_published)
+        mirror.assert_called_once()
+        self.assertEqual(mirror.call_args.args[0], ep.id)
+        ep.refresh_from_db()
+        self.assertEqual(ep.audio_url_subscriber, 'https://r2.example.com/ep.mp3')
+
+    def test_draft_and_schedule_also_mirror(self):
+        for action, extra in (('draft', {}), ('schedule', {'scheduled_at': '2026-09-01T10:00'})):
+            with self.subTest(action=action):
+                with mock.patch('pod_manager.services.r2_mirror.mirror_episode_audio',
+                                return_value=self._MIRROR_OK) as mirror, \
+                     mock.patch('pod_manager.services.transcription.dispatch_transcription'):
+                    self._post(action, audio=self._audio(), title=f'Ep {action}', **extra)
+                self.assertTrue(mirror.called)
+
+    def test_publish_without_a_file_never_calls_the_mirror(self):
+        with mock.patch('pod_manager.services.r2_mirror.mirror_episode_audio') as mirror:
+            resp = self._post('publish', audio=None)
+        self.assertEqual(resp.status_code, 302)
+        self.assertTrue(Episode.objects.filter(title='Folded Ep').exists())
+        mirror.assert_not_called()
+
+    def test_bad_extension_is_rejected_before_the_episode_is_created(self):
+        """A bad file must not half-publish. The extension check runs before any
+        save, so nothing is created and the mirror is never reached."""
+        with mock.patch('pod_manager.services.r2_mirror.mirror_episode_audio') as mirror:
+            resp = self._post('publish', audio=self._audio(name='ep.txt'))
+        self.assertEqual(resp.status_code, 302)   # redirect back to the form
+        self.assertFalse(Episode.objects.filter(title='Folded Ep').exists())
+        mirror.assert_not_called()
+        msgs = [str(m) for m in get_messages(resp.wsgi_request)]
+        self.assertTrue(any('Unsupported file type' in m for m in msgs))
+
+    def test_mirror_failure_keeps_the_saved_episode_and_reports_it(self):
+        """Deliberately non-fatal: the episode is already saved, so a mirror
+        failure leaves it and messages the error rather than unwinding a
+        publish. The user retries from the edit page."""
+        from pod_manager.services.r2_mirror import MirrorSkipped
+        with mock.patch('pod_manager.services.r2_mirror.mirror_episode_audio',
+                        side_effect=MirrorSkipped('nope')):
+            resp = self._post('draft', audio=self._audio())
+        self.assertEqual(resp.status_code, 302)
+        ep = Episode.objects.get(title='Folded Ep')       # still created
+        self.assertIsNone(ep.audio_url_subscriber)         # but no audio attached
+        msgs = [str(m) for m in get_messages(resp.wsgi_request)]
+        self.assertTrue(any('Audio upload rejected' in m for m in msgs))
+
+    def test_edit_mode_upload_mirrors_to_the_existing_episode(self):
+        ep = Episode.objects.create(podcast=self.podcast, title='Folded Ep',
+                                    pub_date=timezone.now(), raw_description='x',
+                                    clean_description='x', is_published=False)
+        with mock.patch('pod_manager.services.r2_mirror.mirror_episode_audio',
+                        return_value=self._MIRROR_OK) as mirror, \
+             mock.patch('pod_manager.services.transcription.dispatch_transcription'):
+            self._post('draft', audio=self._audio(), episode_id=ep.id)
+        mirror.assert_called_once()
+        self.assertEqual(mirror.call_args.args[0], ep.id)
 
 
 class CommitEpisodeCalendarLinkTests(TestCase):

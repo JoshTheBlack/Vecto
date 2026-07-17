@@ -29,6 +29,12 @@
     .pub-mode-btn { opacity:.55; border:1px solid #444; }
     .pub-mode-btn.selected { opacity:1; border-color:var(--vecto-primary,#ffc107); box-shadow:0 0 0 .15rem rgba(255,193,7,.25); }
 
+    /* Audio Files URL/Upload pills — themed off the network primary, not the
+       Bootstrap default. Bootstrap toggles .active; these just paint it. */
+    #audioTabs .nav-link { color:#adb5bd; padding:.15rem .7rem; font-size:.85rem; border:1px solid transparent; }
+    #audioTabs .nav-link:hover { color:#f8f9fa; }
+    #audioTabs .nav-link.active { background-color:var(--vecto-primary,#ffc107); color:var(--vecto-primary-text,#000); }
+
     .sched-row { transition:background .15s; }
     .sched-row:hover { background:rgba(255,255,255,.04); }
 
@@ -112,7 +118,8 @@
 
 <!-- ── Compose tab ──────────────────────────────────────────────────── -->
 <div class="tab-pane fade {% if request.GET.tab != 'scheduled' %}show active{% endif %}" id="compose" role="tabpanel">
-<form id="publishForm" method="POST" action="{% url 'publish_episode' %}?network={{ current_network.slug }}">
+<form id="publishForm" method="POST" action="{% url 'publish_episode' %}?network={{ current_network.slug }}"
+      enctype="multipart/form-data" hx-encoding="multipart/form-data">
     {% csrf_token %}
     <input type="hidden" name="network_slug"   value="{{ current_network.slug }}">
     <input type="hidden" name="action"         id="formAction" value="publish">
@@ -180,37 +187,74 @@
         </div>
     </div>
 
-    <!-- Audio -->
+    {% comment %}
+    Audio Files — tabbed: Paste URL vs Upload File. Both tabs are part of
+    #publishForm (which is now multipart + hx-encoding), so the Upload tab's file
+    rides the Publish / Save Draft / Schedule submit rather than a separate
+    button. That is what lets it work on COMPOSE too: the server creates the
+    episode, then mirrors the file (an upload no longer needs an episode that
+    already exists). See _handle_publish_post / _ingest_episode_audio.
+
+    The pills are #audioTabs, deliberately distinct from the page's main #pubTabs:
+    the Compose/Scheduled styler is scoped to #pubTabs so these don't deactivate
+    it, and Bootstrap manages the pills' own active state.
+    {% endcomment %}
     <div class="card border-secondary mb-3">
-        <div class="card-header border-secondary py-2">
+        <div class="card-header border-secondary py-2 d-flex align-items-center justify-content-between flex-wrap gap-2">
             <span class="fw-bold text-light"><i class="bi bi-music-note-beamed me-1 text-warning"></i>Audio Files</span>
+            <ul class="nav nav-pills" id="audioTabs" role="tablist">
+                <li class="nav-item" role="presentation">
+                    <button class="nav-link active" id="audio-url-tab" data-bs-toggle="tab"
+                            data-bs-target="#audioUrlPane" type="button" role="tab">
+                        <i class="bi bi-link-45deg"></i> Paste URL
+                    </button>
+                </li>
+                <li class="nav-item" role="presentation">
+                    <button class="nav-link" id="audio-upload-tab" data-bs-toggle="tab"
+                            data-bs-target="#audioUploadPane" type="button" role="tab">
+                        <i class="bi bi-cloud-upload"></i> Upload File
+                    </button>
+                </li>
+            </ul>
         </div>
         <div class="card-body">
-            <div class="mb-3">
-                <label class="form-label text-light">Public Audio URL <small class="text-muted fw-normal">(optional)</small></label>
-                <input type="url" name="audio_url_public" class="form-control bg-dark text-light border-secondary"
-                       value="{% if edit_ep %}{{ edit_ep.audio_url_public|default:'' }}{% endif %}"
-                       placeholder="https://example.com/episode.mp3">
-                <div class="form-text text-muted">Served to all listeners. Can be added later once the episode is live on Megaphone.</div>
-            </div>
-            <div class="mb-1">
-                <label class="form-label text-light">Premium / Ad-Free Audio URL <small class="text-muted fw-normal">(optional)</small></label>
-                <input type="url" name="audio_url_subscriber" class="form-control bg-dark text-light border-secondary"
-                       value="{% if edit_ep %}{{ edit_ep.audio_url_subscriber|default:'' }}{% endif %}"
-                       placeholder="https://example.com/episode-adfree.mp3">
-                <div class="form-text text-muted">If set and different from public URL, served to paying subscribers. The feed ingestor will match this with the public URL on first sync.</div>
-            </div>
-            {% comment %}
-            The upload itself CANNOT live here: this card is inside #publishForm,
-            and _audio_upload.html is a form of its own (nesting forms is invalid
-            HTML). It renders just below this form instead — see the note there.
-            {% endcomment %}
-            <div class="form-text text-muted mt-3">
-                {% if edit_ep %}
-                <i class="bi bi-arrow-down-circle"></i> Or upload a file instead of pasting a link — see <strong>Upload Audio</strong> below.
-                {% else %}
-                <i class="bi bi-info-circle"></i> Want to upload a file instead? Save this as a draft first — an upload has to attach to an episode that exists.
-                {% endif %}
+            <div class="tab-content">
+                <div class="tab-pane fade show active" id="audioUrlPane" role="tabpanel">
+                    <div class="mb-3">
+                        <label class="form-label text-light">Public Audio URL <small class="text-muted fw-normal">(optional)</small></label>
+                        <input type="url" name="audio_url_public" class="form-control bg-dark text-light border-secondary"
+                               value="{% if edit_ep %}{{ edit_ep.audio_url_public|default:'' }}{% endif %}"
+                               placeholder="https://example.com/episode.mp3">
+                        <div class="form-text text-muted">Served to all listeners. Can be added later once the episode is live on Megaphone.</div>
+                    </div>
+                    <div class="mb-1">
+                        <label class="form-label text-light">Premium / Ad-Free Audio URL <small class="text-muted fw-normal">(optional)</small></label>
+                        <input type="url" name="audio_url_subscriber" class="form-control bg-dark text-light border-secondary"
+                               value="{% if edit_ep %}{{ edit_ep.audio_url_subscriber|default:'' }}{% endif %}"
+                               placeholder="https://example.com/episode-adfree.mp3">
+                        <div class="form-text text-muted">If set and different from public URL, served to paying subscribers. The feed ingestor will match this with the public URL on first sync.</div>
+                    </div>
+                </div>
+                <div class="tab-pane fade" id="audioUploadPane" role="tabpanel">
+                    {% comment %}
+                    A raw file input + the shared progress bar, NOT _audio_upload.html
+                    (that snippet is its own <form>; here the field belongs to
+                    #publishForm so it rides the main submit). data-upload-scope is
+                    how _upload_progress.html finds this field's input.
+                    {% endcomment %}
+                    <label class="form-label text-light">Premium / Ad-Free Audio File</label>
+                    <div data-upload-scope>
+                        <input type="file" name="audio_file"
+                               accept=".mp3,.m4a,.wav,.aac,.ogg,audio/*"
+                               class="form-control bg-dark text-light border-secondary">
+                        {% include 'pod_manager/snippets/_upload_progress.html' with processing_label='Mirroring to R2…' %}
+                    </div>
+                    <div class="form-text text-muted">
+                        Uploaded to the Premium / Ad-Free slot and mirrored to R2 when you
+                        {% if edit_ep %}save{% else %}publish, save as draft, or schedule{% endif %}.
+                        Overwrites any existing premium audio and re-queues transcription.
+                    </div>
+                </div>
             </div>
         </div>
     </div>
@@ -354,37 +398,13 @@
         </button>
     </div>
 </form>
-
-{% if edit_ep %}
 {% comment %}
-Josh: "my upload options are missing on the publish page, I can only paste links."
-Same snippet, same action, same episode as the episode page — no new server code.
-
-WHY IT IS DOWN HERE rather than up in the Audio Files card where it belongs
-visually: that card is inside #publishForm above, and this snippet is a <form> of
-its own, so putting it there would nest forms. (HTML5's form="..." attribute would
-let the controls sit up there and submit down here — that is exactly what the
-network fallback image used to do, and untangling it was most of item 4. Not
-worth re-introducing.)
-
-ONLY IN EDIT MODE, and that is a hard constraint, not a choice: upload_audio
-mirrors the file against an EXISTING episode id. A brand-new compose has no
-episode yet, so there is nothing to attach audio to — the Audio Files card says
-so and points at Save as Draft.
-
-Uploading re-renders this page from the DATABASE, so it discards anything typed
-into the publish form but not yet saved. Hence the warning in help_text.
+The audio upload folds INTO the form above now (the Upload File tab in Audio
+Files), so it rides Publish / Save Draft / Schedule and works on compose as well
+as edit — no separate below-the-form card, and no lost unsaved edits, because the
+file is part of the same submit. episode_detail.html still uses
+_audio_upload.html for its own standalone upload.
 {% endcomment %}
-<div class="card border-secondary mb-3">
-    <div class="card-header border-secondary py-2">
-        <span class="fw-bold text-light"><i class="bi bi-cloud-upload me-1 text-warning"></i>Upload Audio</span>
-    </div>
-    <div class="card-body">
-        {% url 'manage_episode' edit_ep.id as manage_episode_url %}
-        {% include 'pod_manager/snippets/_audio_upload.html' with action_url=manage_episode_url help_text='Attaches to the Premium / Ad-Free slot and mirrors to R2. Overwrites any existing premium audio and re-queues transcription. Save any pending edits above first — uploading reloads this form from the saved draft.' %}
-    </div>
-</div>
-{% endif %}
 </div><!-- /compose -->
 
 <!-- ── Scheduled & Drafts tab ──────────────────────────────────────── -->
@@ -851,9 +871,14 @@ alongside the editor and loads it through the clipboard API itself.
     });
 
     /* ── Tab switcher styling ───────────────────────────────── */
-    document.querySelectorAll('button[data-bs-toggle="tab"]').forEach(btn => {
+    // Scoped to the MAIN Compose/Scheduled tabs (#pubTabs). The Audio Files pills
+    // (#audioTabs) are also data-bs-toggle="tab"; if this styler weren't scoped,
+    // clicking an audio pill would run its "deactivate every tab button" sweep
+    // and visually kill the active main tab. Bootstrap manages the audio pills'
+    // own active state, and they're themed by CSS in the <style> block.
+    document.querySelectorAll('#pubTabs button[data-bs-toggle="tab"]').forEach(btn => {
         btn.addEventListener('shown.bs.tab', e => {
-            document.querySelectorAll('button[data-bs-toggle="tab"]').forEach(b => {
+            document.querySelectorAll('#pubTabs button[data-bs-toggle="tab"]').forEach(b => {
                 b.classList.remove('active','text-light','bg-dark'); b.classList.add('text-muted');
             });
             e.target.classList.remove('text-muted'); e.target.classList.add('active','text-light','bg-dark');

@@ -11499,6 +11499,23 @@ class BaseTemplateContractTests(SimpleTestCase):
         self.assertIn('hx-target="#boosted-region"', wrapper.group(0))
         self.assertIn('hx-swap="outerHTML show:window:top"', wrapper.group(0))
 
+    def test_only_the_boosted_region_renders_flash_messages(self):
+        """_boosted_region_open.html renders Django messages for EVERY page, at
+        the top of the region. A template that also loops over `messages` shows
+        each one twice — publish_episode.html did exactly that (once above its
+        header from the region, once below from its own copy)."""
+        offenders = []
+        for path in self._templates():
+            rel = path.relative_to(self.TEMPLATE_ROOT).as_posix()
+            if rel.endswith('_boosted_region_open.html'):
+                continue
+            text = path.read_text(encoding='utf-8')
+            if re.search(r'{%\s*for\s+\w+\s+in\s+messages\s*%}', text):
+                offenders.append(rel)
+        self.assertEqual(offenders, [], msg=(
+            'These templates render their own messages loop on top of the region\'s, '
+            f'so every flash message shows twice: {offenders}'))
+
     def test_lazy_loaders_still_unset_the_select_they_no_longer_inherit(self):
         # hx-select="unset" on a partial loader is NOT made redundant by S1.5:
         # _lazy_pane and the other split loaders set hx-select="#boosted-region"

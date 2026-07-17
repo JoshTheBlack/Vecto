@@ -90,15 +90,12 @@
     {% endif %}
 </div>
 
-{% if messages %}
-<div class="mb-3">
-    {% for msg in messages %}
-    <div class="alert alert-{% if msg.tags == 'error' %}danger{% else %}success{% endif %} alert-dismissible fade show py-2" role="alert">
-        {{ msg }}<button type="button" class="btn-close btn-close-white" data-bs-dismiss="alert"></button>
-    </div>
-    {% endfor %}
-</div>
-{% endif %}
+{% comment %}
+No flash-messages block here — the boosted region (snippets/_boosted_region_open.html)
+renders messages for every page, above {% block content %}. This page used to
+render its own copy too, so every message showed twice (once above the header from
+the region, once below from here).
+{% endcomment %}
 
 <!-- Tabs -->
 <ul class="nav nav-tabs border-secondary mb-0" id="pubTabs" role="tablist">

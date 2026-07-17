@@ -178,7 +178,7 @@ Every upload and every rich-text editor in the app goes through one of four snip
 |---|---|---|
 | `snippets/_upload_progress.html` | the two below | The **only** progress bar. Include inside a `data-upload-scope` element holding one file input. |
 | `snippets/_image_upload.html` | network logo + fallback, 404 pool, both mix covers, avatar | A **field, not a form** — most consumers embed it in a bigger form. |
-| `snippets/_audio_upload.html` | episode page, publish page | **Is** a form (audio uploads are standalone). Posts `manage_episode` `action='upload_audio'`. |
+| `snippets/_audio_upload.html` | episode page | **Is** a form (a standalone upload). Posts `manage_episode` `action='upload_audio'`. The publish page does *not* use it — its audio field is folded into `#publishForm` so it rides the Publish/Draft/Schedule submit (`_ingest_episode_audio` mirrors after the episode saves, so upload works on compose too). |
 | `snippets/_quill_editor.html` | episode page, publish page | Mounts id-less; seeds content as data, never as rendered HTML. |
 
 Three things they encode that are easy to get wrong alone:

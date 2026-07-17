@@ -114,7 +114,40 @@ class ProcessedImageMixin:
         """Field names whose upload failed to process on the last save()."""
         return getattr(self, '_image_processing_errors', [])
 
+    def _image_spec(self, field):
+        return next((s for s in self.PROCESSED_IMAGES if s.field == field), None)
+
+    def apply_image_upload(self, field, upload):
+        """Process `upload` and assign it ONLY if that succeeds — the
+        non-destructive path (services.images.handle_image_upload uses it).
+
+        The image is processed to WebP and committed to storage FIRST; only then
+        does the field point at the new object and the version bump. If
+        processing RAISES (a corrupt file, a .txt renamed to .png), the exception
+        propagates with the instance UNTOUCHED — the existing image stays exactly
+        where it is, both in the DB and at its stable R2 key (which was never
+        rewritten, because process_image_field raised before the .save). A bad
+        new upload can no longer destroy the good image it was meant to replace.
+
+        Commits to storage (save=False) but does not save the model — the caller
+        saves. Raises on a processing failure.
+        """
+        spec = self._image_spec(field)
+        # May raise — deliberately BEFORE any mutation of the instance.
+        data = process_image_field(upload, spec.max_px, crop_square=spec.crop_square)
+        # getattr(self, field) is still the OLD (or empty) file here; .save writes
+        # the new webp to the stable key and repoints the field. upload_to ignores
+        # the passed name and returns the stable key, so this overwrites in place.
+        getattr(self, field).save(spec.filename, ContentFile(data), save=False)
+        setattr(self, spec.version_field,
+                (getattr(self, spec.version_field) or 0) + 1)
+
     def process_pending_images(self):
+        """Save-time processing for callers that assign-then-save (the 404 pool,
+        the mix handlers, the avatar upload). handle_image_upload does NOT come
+        through here — it calls apply_image_upload directly so a failure leaves
+        the previous image intact. This path can only blank a bad upload after
+        the fact, so it does exactly that."""
         errors = []
         for spec in self.PROCESSED_IMAGES:
             fieldfile = getattr(self, spec.field, None)
@@ -122,10 +155,7 @@ class ProcessedImageMixin:
             if not fieldfile or fieldfile._committed:
                 continue
             try:
-                data = process_image_field(fieldfile, spec.max_px, crop_square=spec.crop_square)
-                fieldfile.save(spec.filename, ContentFile(data), save=False)
-                setattr(self, spec.version_field,
-                        (getattr(self, spec.version_field) or 0) + 1)
+                self.apply_image_upload(spec.field, fieldfile)
             except Exception as e:
                 logger.error(
                     f"Image processing failed for {type(self).__name__}"
@@ -149,7 +179,7 @@ class ProcessedImageMixin:
         fieldfile = getattr(self, field, None)
         if not fieldfile:
             return None
-        spec = next((s for s in self.PROCESSED_IMAGES if s.field == field), None)
+        spec = self._image_spec(field)
         version = getattr(self, spec.version_field, 0) if spec else 0
         return _versioned_image_url(fieldfile, version)
 

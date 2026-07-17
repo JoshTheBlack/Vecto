@@ -401,6 +401,19 @@ def _tiny_image_upload(name='pic.png'):
     return SimpleUploadedFile(name, buf.getvalue(), content_type='image/png')
 
 
+def _large_noise_upload(name='big.png', mb=9):
+    """A VALID png larger than the retired 8 MB image cap. Random noise so PNG
+    can't compress it away — a real oversized source that the ingest pipeline is
+    meant to downscale, not reject."""
+    import io, os
+    from PIL import Image
+    side = int((mb * 1024 * 1024 / 3) ** 0.5)
+    img = Image.frombytes('RGB', (side, side), os.urandom(side * side * 3))
+    buf = io.BytesIO()
+    img.save(buf, format='PNG')
+    return SimpleUploadedFile(name, buf.getvalue(), content_type='image/png')
+
+
 def _tiny_gif_upload(name='anim.gif', frames=3):
     """A minimal real animated GIF (distinct frames, 100ms apart)."""
     import io
@@ -867,6 +880,45 @@ class HandleImageUploadTests(TestCase):
         msgs = self._messages(req)
         self.assertIn('That image could not be processed — try another file.', msgs)
         self.assertNotIn('Fallback image saved.', msgs)
+
+    def test_a_failed_upload_leaves_the_existing_image_intact(self):
+        """A bad NEW upload must not destroy the good image it was meant to
+        replace. Uploading a .txt renamed to .png reported the failure but had
+        already blanked the field, so the previous fallback vanished. Now the
+        image is processed before the instance is touched — a failure leaves the
+        old one in the DB and at its untouched R2 key."""
+        from pod_manager.services.images import handle_image_upload
+        self.network.default_image_upload = _tiny_image_upload()
+        self.network.save()
+        good_name = self.network.default_image_upload.name
+        good_version = self.network.default_image_version
+
+        junk = SimpleUploadedFile('x.png', b'this is xml, not an image',
+                                  content_type='image/png')
+        req = self._request(files={'default_image_upload': junk})
+        ok = handle_image_upload(req, self.network, 'default_image_upload',
+                                 label='Fallback image')
+        self.assertFalse(ok)
+        self.network.refresh_from_db()
+        self.assertEqual(self.network.default_image_upload.name, good_name)
+        self.assertEqual(self.network.default_image_version, good_version)
+
+    def test_accepts_a_source_larger_than_the_retired_8mb_cap(self):
+        """8 MB rejected exactly the phone photos and big GIFs users wanted
+        downscaled. The output is a bounded WebP regardless, so the source just
+        needs a higher ceiling — and the stored result is far smaller than the
+        source it came from."""
+        from pod_manager.services.images import handle_image_upload, MAX_IMAGE_BYTES
+        self.assertGreater(MAX_IMAGE_BYTES, 8 * 1024 * 1024)
+        big = _large_noise_upload(mb=9)
+        self.assertGreater(big.size, 8 * 1024 * 1024)
+        req = self._request(files={'default_image_upload': big})
+        ok = handle_image_upload(req, self.network, 'default_image_upload',
+                                 label='Fallback image')
+        self.assertTrue(ok)
+        self.network.refresh_from_db()
+        self.assertTrue(self.network.default_image_upload)
+        self.assertLess(self.network.default_image_upload.size, big.size)
 
     def test_clear_fields_blanks_the_url_an_upload_supersedes(self):
         from pod_manager.services.images import handle_image_upload

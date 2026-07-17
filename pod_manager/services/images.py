@@ -10,9 +10,14 @@ from PIL import Image, ImageSequence
 
 logger = logging.getLogger(__name__)
 
-# 8 MB. Generous for cover art but bounded — process_image_field decodes the
-# whole thing into memory, and an animated GIF decodes to every frame at once.
-MAX_IMAGE_BYTES = 8 * 1024 * 1024
+# 25 MB. The OUTPUT is always a bounded WebP (≤500px cover, ≤512px logo, ≤800px
+# 404 art), so the source only needs a high enough ceiling to accept a phone
+# photo or a large GIF and downscale it — an 8 MB cap rejected exactly the files
+# users most wanted us to shrink for them. Still bounded, not unbounded:
+# process_image_field decodes the whole source into memory, and an animated GIF
+# decodes to every frame at once, so a truly huge upload is a memory risk. 25 MB
+# is the balance.
+MAX_IMAGE_BYTES = 25 * 1024 * 1024
 
 
 def _normalize_frame(img, max_px: int, crop_square: bool):
@@ -93,9 +98,9 @@ def handle_image_upload(request, instance, field, *, file_param=None, label='Ima
     keyed on remove=1 in the POST.
 
     Note what is NOT a parameter: max_px and crop. Those belong to the IMAGE, not
-    the request, so they live in the model's PROCESSED_IMAGES spec and the
-    mixin's save() applies them. That keeps one source of truth — a caller cannot
-    ask for a 500px crop of an image the model resizes to 256.
+    the request, so they live in the model's PROCESSED_IMAGES spec and
+    apply_image_upload applies them. That keeps one source of truth — a caller
+    cannot ask for a 500px crop of an image the model resizes to 256.
 
     field        the ProcessedImage field name on `instance`
     file_param   request.FILES key, if it differs from `field`
@@ -128,23 +133,27 @@ def handle_image_upload(request, instance, field, *, file_param=None, label='Ima
         messages.error(request, f"Image too large (max {max_bytes // (1024 * 1024)}MB).")
         return False
 
-    # No pre-delete: the stable key is deterministic and storage overwrites in
-    # place, so save() PUTs over any existing object. An explicit delete would
-    # only add a round-trip and a momentary 404 gap before the PUT lands.
-    setattr(instance, field, upload)
+    # Process and commit the new image BEFORE touching the instance. If it can't
+    # be processed — a renamed non-image, a corrupt file — apply_image_upload
+    # raises with the instance UNCHANGED, so the existing image survives in the DB
+    # and at its stable R2 key. The earlier version assigned the upload first and
+    # let the model blank it on failure, which destroyed the good image for a bad
+    # new one (the .txt-renamed-.png report). No pre-delete either: the stable key
+    # overwrites in place, so a successful save PUTs over the old object with no
+    # 404 gap.
+    try:
+        instance.apply_image_upload(field, upload)
+    except Exception as e:
+        logger.error(
+            f"Image upload failed for {type(instance).__name__}"
+            f"(pk={instance.pk}).{field}: {e}", exc_info=True)
+        messages.error(request, "That image could not be processed — try another file.")
+        return False
+
     for name in clear_fields:
         setattr(instance, name, '')
     if save:
         instance.save()
-
-    # A silently dropped file must not report success. The mixin logs and records
-    # a processing failure rather than raising (one bad file must not 500 a
-    # settings save), so this is the only place the user hears about it — the
-    # copy this replaced tested `if instance.field` after save(), which was
-    # always truthy and so never once fired.
-    if field in getattr(instance, 'image_processing_errors', []):
-        messages.error(request, "That image could not be processed — try another file.")
-        return False
 
     messages.success(request, f"{label} saved.")
     return True

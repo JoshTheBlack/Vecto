@@ -11078,14 +11078,60 @@ class HtmxSettleClassStrippingTests(SimpleTestCase):
         from django.conf import settings as django_settings
         return Path(django_settings.BASE_DIR) / 'pod_manager' / 'templates' / 'pod_manager'
 
+    QUILL_PAGES = ('episode_detail.html', 'publish_episode.html')
+
     def test_quill_mounts_on_an_id_less_element(self):
-        txt = (self.TEMPLATE_ROOT / 'episode_detail.html').read_text(encoding='utf-8')
+        txt = (self.TEMPLATE_ROOT / 'snippets' / '_quill_editor.html').read_text(encoding='utf-8')
         self.assertIn('data-quill-editor', txt)
         self.assertNotIn('editDescContainer', txt,
                          msg='Quill container has an id again — htmx settle will strip '
                              'ql-container/ql-snow on a same-page swap and the link '
                              'tooltip will render as a stray input.')
-        self.assertIn("new Quill(document.querySelector('[data-quill-editor]')", txt)
+        self.assertIn('new Quill(editor', txt)
+        # The mount is resolved from the snippet's own <script>, never a
+        # document-wide lookup: during a same-page swap both copies of the page
+        # are in the document and a document-wide query can find the wrong one.
+        self.assertIn("document.currentScript.closest('[data-quill-mount]')", txt)
+
+    def test_quill_pages_use_the_shared_snippet_rather_than_their_own_init(self):
+        """Both editors used to be hand-rolled and divergent. publish_episode's
+        copy mounted on #descEditor — an id — and hid its settle exposure behind
+        an always-empty server-rendered container plus a setTimeout that claimed
+        to clear the ~20ms settle window but passed no delay at all. Neither page
+        may construct its own Quill again."""
+        for name in self.QUILL_PAGES:
+            txt = (self.TEMPLATE_ROOT / name).read_text(encoding='utf-8')
+            with self.subTest(template=name):
+                self.assertIn('snippets/_quill_editor.html', txt)
+                self.assertNotIn('new Quill(', txt,
+                                 msg=f'{name} constructs its own Quill again — use the '
+                                     f'shared snippet so the id-less mount and the '
+                                     f'seed-as-data pattern stay in one place.')
+                # The attribute, not the bare token: the page carries a comment
+                # documenting the old #descEditor bug, and that prose is worth
+                # keeping.
+                self.assertNotIn('id="descEditor"', txt,
+                                 msg=f'{name} mounts Quill on an id again — htmx settle '
+                                     f'will strip ql-container/ql-snow on the publish->'
+                                     f'publish swap the Scheduled tab fires.')
+
+    def test_quill_editor_is_seeded_as_data_not_rendered_html(self):
+        """Standardised on the publish pattern: the container is ALWAYS
+        server-rendered empty and content arrives via json_script + the clipboard
+        API. Rendering it in with |safe means init is not idempotent, the raw HTML
+        FOUCs before Quill boots, and Quill's own chrome can be parsed back as
+        content and saved into the DB."""
+        txt = (self.TEMPLATE_ROOT / 'snippets' / '_quill_editor.html').read_text(encoding='utf-8')
+        self.assertIn('json_script', txt)
+        self.assertIn('dangerouslyPasteHTML', txt)
+        # An empty container: nothing may be rendered between the editor's tags.
+        self.assertRegex(txt, r'data-quill-editor[^>]*>\s*</div>')
+        for name in self.QUILL_PAGES:
+            page = (self.TEMPLATE_ROOT / name).read_text(encoding='utf-8')
+            with self.subTest(template=name):
+                self.assertNotIn('clean_description|safe', page,
+                                 msg=f'{name} renders the description into the editor '
+                                     f'again — seed it through the snippet instead.')
 
     def test_fullcalendar_mounts_on_an_id_less_element(self):
         txt = (self.TEMPLATE_ROOT / 'calendar.html').read_text(encoding='utf-8')

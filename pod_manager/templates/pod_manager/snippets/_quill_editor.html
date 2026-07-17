@@ -1,0 +1,99 @@
+{% comment %}
+Shared Quill rich-text editor. Used by publish_episode.html and
+episode_detail.html — the two pages had divergent hand-rolled setups; this is the
+merge, standardised on the publish page's pattern.
+
+Params (all optional):
+  quill_content       HTML string to seed the editor with. Serialized through
+                      json_script, NEVER rendered into the editor div.
+  quill_class         classes for the editor div (default: bg-dark text-light)
+  quill_placeholder   placeholder text
+  quill_toolbar       JSON array literal overriding the default toolbar
+
+Reading the value back out: the initialised Quill instance is exposed as a
+`_quill` expando on both the mount and the editor div. Resolve it from a scoped
+root (see below) and read `quill.root.innerHTML` — that half was always correct
+on both pages and is unchanged.
+
+WHY THE EDITOR DIV IS SERVER-RENDERED EMPTY (the publish pattern; episode_detail
+used to render {{ ep.clean_description|safe }} straight into it):
+  - init is idempotent BY CONSTRUCTION — the container's server state is always
+    empty, so a re-run can't nest Quill inside Quill;
+  - no FOUC of raw HTML before Quill boots;
+  - content stays DATA rather than DOM, so Quill's own chrome can never be
+    parsed back as content and saved into the DB;
+  - json_script escapes the content instead of trusting |safe.
+dangerouslyPasteHTML is not a hack — it is Quill's documented API for loading
+HTML, and runs the same clipboard matchers Quill uses when parsing innerHTML at
+init. The content is already server-sanitised by sanitize_user_html.
+
+NO id ON THE EDITOR DIV, DELIBERATELY — see docs/boosted-navigation.md. htmx's
+settle phase reverts an id'd element's attributes to the SERVER's version ~20ms
+after a swap (for any id present in both the old and new content). Quill stores
+its state in classes on this element (ql-container ql-snow), so an id here means
+a same-page swap leaves Quill's DOM built but its classes stripped — every Quill
+rule is scoped under .ql-snow, so the link tooltip stops being hidden and renders
+as a stray text box you can type into but never save. Select by data attribute.
+Pinned by HtmxSettleClassStrippingTests.
+{% endcomment %}
+<div data-quill-mount>
+    {{ quill_content|default:''|json_script }}
+    <div data-quill-editor class="{{ quill_class|default:'bg-dark text-light' }}"
+         {% if quill_placeholder %}data-quill-placeholder="{{ quill_placeholder }}"{% endif %}
+         {% if quill_toolbar %}data-quill-toolbar="{{ quill_toolbar }}"{% endif %}></div>
+<script>
+(function () {
+    /* document.currentScript is the only unambiguous self-reference available
+       here: during a same-page boosted swap the OUTGOING and INCOMING copies of
+       the page both sit in the document while inline scripts execute, so a
+       document-wide querySelector can find the wrong editor. Resolve the mount
+       from this script's own position instead. Must be read synchronously —
+       currentScript is null inside any later callback. */
+    const mount = document.currentScript && document.currentScript.closest('[data-quill-mount]');
+    if (!mount || typeof Quill === 'undefined') return;
+
+    const editor = mount.querySelector('[data-quill-editor]');
+    const blob = mount.querySelector('script[type="application/json"]');
+    if (!editor) return;
+
+    /* Idempotent init: if this DOM already carries a Quill (an htmx history
+       restore replays cached HTML), unwrap it back to a bare container first.
+       The editor div is ALWAYS server-rendered empty, so this is belt-and-braces
+       rather than load-bearing — but it is what makes re-running this script
+       harmless, which is the whole reason we standardised on this pattern. */
+    mount.querySelectorAll(':scope > .ql-toolbar').forEach((t) => t.remove());
+    editor.classList.remove('ql-container', 'ql-snow', 'ql-disabled');
+    editor.innerHTML = '';
+
+    const DEFAULT_TOOLBAR = [
+        ['bold', 'italic', 'underline', 'strike'],
+        ['blockquote', 'code-block'],
+        [{ 'list': 'ordered' }, { 'list': 'bullet' }],
+        [{ 'header': [2, 3, false] }],
+        ['link', 'clean']
+    ];
+    let toolbar = DEFAULT_TOOLBAR;
+    if (editor.dataset.quillToolbar) {
+        try { toolbar = JSON.parse(editor.dataset.quillToolbar); } catch (e) {}
+    }
+
+    const options = { theme: 'snow', modules: { toolbar: toolbar } };
+    if (editor.dataset.quillPlaceholder) options.placeholder = editor.dataset.quillPlaceholder;
+
+    const quill = new Quill(editor, options);
+
+    if (blob) {
+        try {
+            const initial = JSON.parse(blob.textContent);
+            if (initial) quill.clipboard.dangerouslyPasteHTML(initial);
+        } catch (e) {}
+    }
+
+    /* Expose the instance for the page's save side. An expando rather than a
+       global: two editors on one page, or two copies of a page mid-swap, must
+       not clobber each other. */
+    mount._quill = quill;
+    editor._quill = quill;
+})();
+</script>
+</div>

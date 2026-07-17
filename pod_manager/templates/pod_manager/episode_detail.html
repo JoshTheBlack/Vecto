@@ -719,21 +719,12 @@
                         <div class="mb-5">
                             <label class="form-label text-light fw-bold">Clean Description</label>
                             {% comment %}
-                            NO id here, deliberately — see docs/boosted-navigation.md.
-                            htmx reverts the attributes of any id'd element to the
-                            SERVER's version ~20ms after a swap (its settle phase,
-                            for elements whose id exists in both the old and new
-                            content). Quill stores its state in classes on this
-                            element (ql-container ql-snow), so with an id here a
-                            same-page swap — e.g. the audio upload — left Quill's
-                            DOM built but its classes stripped. Every Quill rule is
-                            scoped under .ql-snow, so the link tooltip stopped being
-                            hidden and rendered as a stray text box you could type
-                            into but never save. Select by data attribute instead.
+                            The container used to render the description straight in
+                            with |safe. It is now seeded as DATA through the shared
+                            snippet (see its header for why): no FOUC, and Quill's
+                            own chrome can never be parsed back as content.
                             {% endcomment %}
-                            <div data-quill-editor class="bg-dark text-light">
-                                {{ ep.clean_description|default:ep.raw_description|safe }}
-                            </div>
+                            {% include 'pod_manager/snippets/_quill_editor.html' with quill_content=ep.clean_description|default:ep.raw_description %}
                         </div>
 
                         <div class="mb-4 pt-3 border-top border-secondary">
@@ -997,22 +988,12 @@
 <script>
     (() => {
         
-        // --- 1. INITIALIZE QUILL RTE ---
-        // Selected by data attribute, NOT id: an id here would let htmx's settle
-        // phase revert this element's attributes to the server's after a same-page
-        // swap, deleting the ql-container/ql-snow classes Quill adds at init.
-        const quill = new Quill(document.querySelector('[data-quill-editor]'), {
-            theme: 'snow',
-            modules: {
-                toolbar: [
-                    ['bold', 'italic', 'underline', 'strike'],
-                    ['blockquote', 'code-block'],
-                    [{ 'list': 'ordered'}, { 'list': 'bullet' }],
-                    [{ 'header': [2, 3, false] }], 
-                    ['link', 'clean']
-                ]
-            }
-        });
+        // --- 1. QUILL RTE ---
+        // Built and seeded by snippets/_quill_editor.html (shared with
+        // publish_episode.html), which exposes the instance as a `_quill`
+        // expando. Its script sits above this one, so it has already run.
+        const quillEl = document.querySelector('[data-quill-editor]');
+        const quill = quillEl && quillEl._quill;
 
         // --- 2. EPISODE REMOTE CARDS ---
         // Each card drives and mirrors the global now-playing bar. It only

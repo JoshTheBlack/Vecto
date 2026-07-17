@@ -168,7 +168,7 @@
 
             <div class="mb-3">
                 <label class="form-label fw-bold text-light">Description</label>
-                <div id="descEditor" class="bg-dark text-light"></div>
+                {% include 'pod_manager/snippets/_quill_editor.html' with quill_content=edit_ep.clean_description %}
             </div>
 
             <div class="mb-1">
@@ -423,49 +423,42 @@
 </div><!-- /tab-content -->
 
 {% if edit_ep %}{{ edit_ep.tags|json_script:"initial-tags" }}{% else %}<script id="initial-tags" type="application/json">[]</script>{% endif %}
-{% if edit_ep %}{{ edit_ep.clean_description|json_script:"initial-desc" }}{% else %}<script id="initial-desc" type="application/json">""</script>{% endif %}
+{% comment %}
+The description's seed blob is NOT here — snippets/_quill_editor.html renders it
+alongside the editor and loads it through the clipboard API itself.
+{% endcomment %}
 {% if edit_ep and edit_ep.chapters_public %}{{ edit_ep.chapters_public|json_script:"initial-chapters" }}{% else %}<script id="initial-chapters" type="application/json">null</script>{% endif %}
 
 <script>
 (function () {
-    /* Boosted publish->publish swaps (the Scheduled tab's Edit button) break
-       naive page init two ways: (1) the outgoing and incoming pages BOTH sit
-       in the document while inline scripts execute, so document-wide id
-       lookups are ambiguous; (2) htmx's settle pass temporarily copies the
-       OLD element's attributes onto the matching-id incoming element and
-       restores the real ones ~20ms later (htmx.config.defaultSettleDelay), so
-       classes Quill adds inside that window are clobbered. Scope every lookup
-       to THIS script's own region and defer init past the settle window. */
+    /* Boosted publish->publish swaps (the Scheduled tab's Edit button) leave the
+       outgoing and incoming pages BOTH in the document while inline scripts
+       execute, so document-wide id lookups here are ambiguous. Every lookup is
+       scoped to THIS script's own region via `root`.
+
+       This comment used to claim the setTimeout also deferred Quill's init past
+       htmx's ~20ms settle window, which reverts an id'd element's attributes to
+       the server's version and strips the classes Quill adds. It never did —
+       setTimeout with no delay is a ~0ms macrotask, so init landed well inside
+       that window. The page got away with it only because #descEditor was
+       server-rendered empty, which hid the symptom rather than avoiding it.
+       That hazard is now fixed structurally: the editor mounts on an id-less
+       element in snippets/_quill_editor.html, so settle has nothing to revert.
+       The setTimeout stays for the id ambiguity above and so the rest of the
+       document has parsed before init reads it. */
     const pageScript = document.currentScript;
     setTimeout(function initPublishPage() {
     if (pageScript && !pageScript.isConnected) return;
     const root = (pageScript && pageScript.closest('#boosted-region')) || document;
     const $id = (id) => root.querySelector('[id="' + id + '"]');
     /* ── Quill ─────────────────────────────────────────────── */
-    // Idempotent init: if this DOM already carries a Quill (htmx history
-    // restore), unwrap it back to plain content before re-initializing. The
-    // editor div itself is ALWAYS server-rendered empty — the edit
-    // description arrives via the initial-desc json_script and is loaded
-    // through the clipboard API below, never as live editor innerHTML.
-    const descEl = $id('descEditor');
-    descEl.parentElement.querySelectorAll(':scope > .ql-toolbar').forEach(t => t.remove());
-    descEl.parentElement.querySelectorAll(':scope > .ql-toolbar').forEach(t => t.remove());
-    descEl.classList.remove('ql-container', 'ql-snow', 'ql-disabled');
-    descEl.innerHTML = '';
-    const quill = new Quill(descEl, {
-        theme: 'snow',
-        modules: { toolbar: [
-            ['bold','italic','underline','strike'],
-            ['blockquote','code-block'],
-            [{'list':'ordered'},{'list':'bullet'}],
-            [{'header':[2,3,false]}],
-            ['link','clean']
-        ]}
-    });
-    try {
-        const initialDesc = JSON.parse($id('initial-desc').textContent);
-        if (initialDesc) quill.clipboard.dangerouslyPasteHTML(initialDesc);
-    } catch (e) {}
+    // Quill lives in snippets/_quill_editor.html now (shared with
+    // episode_detail.html): it renders the container, seeds the description
+    // through the clipboard API and exposes the instance as a `_quill` expando.
+    // Its own script has already run by the time this setTimeout fires, so the
+    // instance is there. Scope the lookup to `root` — during a publish->publish
+    // swap the outgoing page's editor is still in the document too.
+    const quill = root.querySelector('[data-quill-editor]')._quill;
 
     /* ── Publish mode selector ──────────────────────────────── */
     const modeIds    = ['modePublish','modeDraft','modeSchedule'];

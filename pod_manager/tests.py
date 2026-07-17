@@ -879,6 +879,134 @@ class HandleImageUploadTests(TestCase):
         self.assertTrue(mix.image_upload)
 
 
+class NetworkImageUploadTests(TestCase):
+    """The network's two images: the fallback (RSS feeds + custom mixes) and the
+    logo (navbar + 404). Both go through handle_image_upload."""
+
+    def setUp(self):
+        self.factory = RequestFactory()
+        self.owner = User.objects.create_user(username='owner', email='o@example.com')
+        self.network = Network.objects.create(name='Net', slug='n')
+        self.network.owners.add(self.owner)
+
+    def _post(self, data):
+        req = _make_tenant_request(self.factory, self.network, method='post',
+                                   path='/creator/', data=data, user=self.owner)
+        return views.creator_settings(req)
+
+    def test_logo_upload_lands_and_bumps_the_version(self):
+        self._post({'action': 'update_network_logo', 'logo_upload': _tiny_image_upload()})
+        self.network.refresh_from_db()
+        self.assertTrue(self.network.logo_upload)
+        self.assertEqual(self.network.logo_version, 1)
+        self.assertIn('?v=1', self.network.display_logo)
+
+    def test_logo_keeps_its_aspect_ratio(self):
+        """A logo is usually a wide wordmark. The fallback image IS cropped
+        square; cropping a logo the same way would eat the word."""
+        import io
+        from PIL import Image
+        buf = io.BytesIO()
+        Image.new('RGB', (400, 100), color='red').save(buf, format='PNG')
+        self._post({'action': 'update_network_logo',
+                    'logo_upload': SimpleUploadedFile('logo.png', buf.getvalue(),
+                                                      content_type='image/png')})
+        self.network.refresh_from_db()
+        with self.network.logo_upload.open('rb') as f:
+            self.assertEqual(Image.open(f).size, (400, 100))
+
+    def test_fallback_image_is_cropped_square(self):
+        import io
+        from PIL import Image
+        buf = io.BytesIO()
+        Image.new('RGB', (400, 100), color='red').save(buf, format='PNG')
+        self._post({'action': 'update_network_default_image',
+                    'default_image_upload': SimpleUploadedFile('f.png', buf.getvalue(),
+                                                               content_type='image/png')})
+        self.network.refresh_from_db()
+        with self.network.default_image_upload.open('rb') as f:
+            w, h = Image.open(f).size
+            self.assertEqual(w, h)
+
+    def test_logo_remove_reveals_the_legacy_url(self):
+        self.network.logo_url = 'https://example.com/old-logo.png'
+        self.network.logo_upload = _tiny_image_upload()
+        self.network.save()
+        self._post({'action': 'update_network_logo', 'remove': '1'})
+        self.network.refresh_from_db()
+        self.assertFalse(self.network.logo_upload)
+        self.assertEqual(self.network.display_logo, 'https://example.com/old-logo.png')
+
+    def test_display_logo_precedence(self):
+        """An upload beats both pasted URLs; between the two URLs, theme_config's
+        keeps the precedence it has always had."""
+        self.assertEqual(self.network.display_logo, '')
+
+        self.network.logo_url = 'https://example.com/plain.png'
+        self.network.save()
+        self.assertEqual(self.network.display_logo, 'https://example.com/plain.png')
+
+        self.network.theme_config = {**self.network.theme_config,
+                                     'logo_url': 'https://example.com/theme.png'}
+        self.network.save()
+        self.assertEqual(self.network.display_logo, 'https://example.com/theme.png')
+
+        self.network.logo_upload = _tiny_image_upload()
+        self.network.save()
+        self.assertIn('network-logos/', self.network.display_logo)
+
+    def test_a_logo_that_cannot_be_processed_reports_failure(self):
+        resp = self._post({'action': 'update_network_logo',
+                           'logo_upload': SimpleUploadedFile('bad.png', b'junk',
+                                                             content_type='image/png')})
+        self.network.refresh_from_db()
+        self.assertFalse(self.network.logo_upload)
+
+    def test_uploads_do_not_hard_navigate(self):
+        """Both image forms boost, so the creator page's POST still ends in the
+        usual redirect rather than anything bespoke — the player survives."""
+        resp = self._post({'action': 'update_network_logo',
+                           'logo_upload': _tiny_image_upload()})
+        self.assertEqual(resp.status_code, 302)
+
+
+class NavbarLogoPushTests(TestCase):
+    """The navbar renders OUTSIDE #boosted-region, so nothing re-renders it after
+    a swap: uploading a logo would not visibly change the nav until a real page
+    load. tab_network pushes it with an OOB swap."""
+
+    @property
+    def TEMPLATE_ROOT(self):
+        from django.conf import settings as django_settings
+        return Path(django_settings.BASE_DIR) / 'pod_manager' / 'templates' / 'pod_manager'
+
+    def test_base_renders_the_logo_through_the_shared_snippet(self):
+        base = (self.TEMPLATE_ROOT / 'base.html').read_text(encoding='utf-8')
+        self.assertIn("_navbar_logo.html", base)
+        self.assertIn('id="navbarLogo"', base)
+
+    def test_tab_network_pushes_the_nav_logo_out_of_band(self):
+        tab = (self.TEMPLATE_ROOT / 'creator_tabs' / 'tab_network.html').read_text(encoding='utf-8')
+        self.assertIn('hx-swap-oob="true"', tab)
+        self.assertIn('id="navbarLogo"', tab)
+        self.assertIn('_navbar_logo.html', tab,
+                      msg='The OOB fragment must render the same snippet as the nav, '
+                          'or the two drift.')
+
+    def test_nothing_reads_the_raw_logo_fields_for_display(self):
+        """display_logo resolves upload > theme_config > logo_url. A template that
+        reads a raw field silently ignores an upload — which is exactly the bug
+        display_default_image was introduced to prevent for the other image."""
+        offenders = []
+        for path in sorted(self.TEMPLATE_ROOT.rglob('*.html')):
+            text = re.sub(r'{% comment %}.*?{% endcomment %}', '',
+                          path.read_text(encoding='utf-8'), flags=re.S)
+            for m in re.finditer(r'{{\s*current_network\.(theme_config\.)?logo_url', text):
+                offenders.append((path.name, text[:m.start()].count('\n') + 1))
+        self.assertEqual(offenders, [], msg=(
+            f'Template(s) rendering a raw logo field instead of display_logo: {offenders}'))
+
+
 class ImageUploadWidgetContractTests(SimpleTestCase):
     """snippets/_image_upload.html — the one client widget. Its rules are the
     boosted-navigation rules; breaking one silently stops playback or drops the
@@ -11137,16 +11265,19 @@ class BoostOptOutContractTests(SimpleTestCase):
     # owns the submit must opt out (htmx must not also send it), and can still
     # finish with a region swap. Those are listed here with the reason. What is
     # banned is a form that opts out and then lets the BROWSER navigate.
-    ALLOWED_FORM_OPT_OUTS = {
-        'tab_network.html': (
-            'The fallback-image upload: its own JS owns the submit for upload/'
-            'processing progress and finishes with a region swap. The font form '
-            'beside it IS boosted (hx-encoding). Due to move onto '
-            'snippets/_image_upload.html, which gets the same progress from '
-            'htmx:xhr:progress without opting out at all — tab_notfound already '
-            'did, which is what emptied its entry from this list.'
-        ),
-    }
+    # EMPTY, and it should stay that way. It briefly held tab_notfound and
+    # tab_network, both for the same reason: a hand-rolled XHR to draw an upload
+    # progress bar meant htmx must not also boost the form. Both now render
+    # snippets/_image_upload.html, which reads htmx's OWN htmx:xhr:progress —
+    # identical progress, no opt-out, and no hand-written htmx.ajax() region swap
+    # standing between the upload and a hard navigation.
+    #
+    # If you are about to add an entry: an upload is not a reason (hx-encoding),
+    # a modal is not a reason (base.html disposes it on region swap), and wanting
+    # a progress bar is not a reason (that is what the widget is). A form whose
+    # OWN JS truly must own the submit may be listed here with the reason, and
+    # must still finish with a region swap rather than a navigation.
+    ALLOWED_FORM_OPT_OUTS = {}
 
     @property
     def TEMPLATE_ROOT(self):
@@ -11211,23 +11342,27 @@ class BoostOptOutContractTests(SimpleTestCase):
         self.assertIn('.modal-backdrop', base)
         self.assertIn("classList.remove('modal-open')", base)
 
-    def test_js_owned_uploads_finish_with_a_region_swap(self):
-        # These forms own their own submit (so they opt out of boost), which means
-        # nothing stops them hard-navigating on success — and they did, with
-        # window.location.href, reloading the page and stopping playback. The only
-        # window.location.href allowed is the no-htmx fallback.
-        for name in self.ALLOWED_FORM_OPT_OUTS:
-            with self.subTest(template=name):
-                txt = (self.TEMPLATE_ROOT / 'pod_manager' / 'creator_tabs' / name).read_text(encoding='utf-8')
-                self.assertIn("htmx.ajax('GET', actionUrl", txt)
-                self.assertIn("target: '#boosted-region'", txt)
-                for m in re.finditer(r'.*window\.location\.href\s*=.*', txt):
-                    line = m.group(0)
-                    if line.strip().startswith('//'):
-                        continue               # a comment about it, not a call
-                    self.assertIn("typeof htmx === 'undefined'", line,
-                                  msg='window.location.href outside the no-htmx fallback '
-                                      'would reload the page and stop playback: ' + line.strip())
+    def test_no_upload_hand_rolls_its_own_xhr(self):
+        """Replaces test_js_owned_uploads_finish_with_a_region_swap, which pinned
+        that the two JS-owned uploads swapped the region instead of
+        window.location.href-ing (they used to do the latter, killing playback).
+
+        Neither exists now: both render snippets/_image_upload.html and ride
+        htmx's own XHR. So the stronger property holds — no upload owns its
+        submit, therefore none CAN hard-navigate. Hand-rolling one is what forced
+        the opt-out and put the hard navigation one line away in the first place;
+        if a template needs an upload progress bar, it includes the widget."""
+        offenders = []
+        for path in sorted(self.TEMPLATE_ROOT.rglob('*.html')):
+            text = path.read_text(encoding='utf-8')
+            body = re.sub(r'{% comment %}.*?{% endcomment %}', '', text, flags=re.S)
+            # `new XMLHttpRequest(`, not the bare word: 'X-Requested-With':
+            # 'XMLHttpRequest' is a header string on a perfectly ordinary fetch.
+            if re.search(r'new\s+XMLHttpRequest\s*\(', body):
+                offenders.append(path.name)
+        self.assertEqual(offenders, [], msg=(
+            'Template(s) hand-rolling an upload XHR. Include '
+            f'snippets/_image_upload.html instead: {offenders}'))
 
 
 class MergeDeskPaneShapeTests(SimpleTestCase):

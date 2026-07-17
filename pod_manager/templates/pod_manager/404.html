@@ -10,10 +10,14 @@
         <p class="fs-4 fw-bold mb-3">{{ entry.caption }}</p>
         <img src="{{ entry.display_image }}" alt="{{ entry.caption }}" class="img-fluid rounded mb-3" style="max-height: 360px;">
     {% else %}
-        {% if current_network.theme_config.logo_url %}
-            <img src="{{ current_network.theme_config.logo_url }}" alt="{{ current_network.name }}" class="rounded border border-secondary shadow-sm mb-3" style="height: 120px; width: auto;">
-        {% elif current_network.logo_url %}
-            <img src="{{ current_network.logo_url }}" alt="{{ current_network.name }}" class="rounded border border-secondary shadow-sm mb-3" style="height: 120px; width: auto;">
+        {% comment %}
+        display_logo, not the raw fields: it resolves upload > theme_config's
+        pasted URL > the plain one, so reading either field here would ignore an
+        upload. Its own fallback differs from the navbar's (this one is bigger and
+        uses the favicon mark), which is why it doesn't share _navbar_logo.html.
+        {% endcomment %}
+        {% if current_network.display_logo %}
+            <img src="{{ current_network.display_logo }}" alt="{{ current_network.name }}" class="rounded border border-secondary shadow-sm mb-3" style="height: 120px; width: auto;">
         {% else %}
             <img src="{% static 'pod_manager/img/brand/vecto-favicon.svg' %}" alt="Vecto" class="mb-3" style="height: 120px; width: auto;">
         {% endif %}

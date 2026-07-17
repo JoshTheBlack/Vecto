@@ -1,0 +1,36 @@
+{% comment %}
+The navbar brand's logo: the network's logo if it has one, else the Vecto mark.
+Rendered in TWO places and they must not drift:
+  - base.html, inside the persistent nav;
+  - creator_tabs/tab_network.html, inside an hx-swap-oob wrapper, so uploading or
+    removing a logo actually updates the nav.
+
+Why the OOB is needed at all: the nav lives OUTSIDE #boosted-region, so nothing
+re-renders it after a swap. Changing a nav-visible value server-side and
+expecting it to appear is a silent no-op — the nav would keep showing the old
+logo until a real page load. See "The nav persists" in docs/boosted-navigation.md
+(the avatar picker is the other live example).
+
+It renders the FALLBACK too, not just the img: removing a logo has to put the
+Vecto mark back, and an OOB fragment that only knew how to render an <img> would
+leave the old logo sitting there on removal.
+
+Reads display_logo, which resolves upload > theme_config.logo_url > logo_url.
+Never read those fields directly here — an upload would be silently ignored.
+
+Context: current_network.
+{% endcomment %}
+{% if current_network.display_logo %}
+    <img src="{{ current_network.display_logo }}" alt="{{ current_network.name }} logo"
+         class="d-inline-block align-text-top rounded shadow-sm me-2"
+         style="height: 32px; width: auto;">
+{% else %}
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" fill="none" role="img" aria-label="Vecto" class="me-2" style="height: 28px; width: 28px;">
+        <defs>
+            <clipPath id="navbrand-vt"><rect x="0" y="0" width="100" height="45"></rect></clipPath>
+            <clipPath id="navbrand-vb"><rect x="0" y="55" width="100" height="45"></rect></clipPath>
+        </defs>
+        <g clip-path="url(#navbrand-vt)"><polyline points="27,26 57,74 87,26" stroke="currentColor" stroke-width="15" stroke-linecap="round" stroke-linejoin="round"></polyline></g>
+        <g clip-path="url(#navbrand-vb)"><polyline points="13,26 43,74 73,26" stroke="currentColor" stroke-width="15" stroke-linecap="round" stroke-linejoin="round"></polyline></g>
+    </svg>
+{% endif %}

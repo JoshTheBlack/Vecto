@@ -533,39 +533,35 @@ def handle_update_network_font(request, current_network):
 
 
 def handle_update_network_default_image(request, current_network):
-    """Upload / remove the network's fallback logo (RSS feeds + custom mixes).
-
-    Mirrors handle_update_network_font: one action does both, keyed on remove=1.
-    The image itself is processed to WebP at a stable key by Network.save(),
-    which also bumps default_image_version — the key is CDN-cached immutable, so
-    without the bump a re-upload would never reach browsers.
+    """Upload / remove the network's fallback artwork (RSS feeds + custom mixes).
 
     This replaced a plain default_image_url text box; that field survives as the
     legacy fallback (see Network.display_default_image), so removing an upload
     reveals any old pasted URL rather than leaving the network with no artwork.
+
+    Both this and the logo below are now four lines because handle_image_upload
+    owns the whole dance — size limit, remove=1, and reporting a failure to
+    process HONESTLY (the hand-rolled version this replaces checked
+    `if current_network.default_image_upload` after save(), which is always
+    truthy, so it reported success for images it had actually dropped).
     """
-    if request.POST.get('remove') == '1':
-        if current_network.default_image_upload:
-            current_network.default_image_upload.delete(save=False)
-        current_network.default_image_upload = None
-        current_network.save()
-        messages.success(request, "Fallback image removed.")
-        return
+    # Not returned: creator_settings returns any non-None handler result AS the
+    # response, and this one is a bool.
+    handle_image_upload(request, current_network, 'default_image_upload',
+                        label='Fallback image')
 
-    image = request.FILES.get('default_image_upload')
-    if not image:
-        messages.error(request, "No image selected.")
-        return
-    if image.size > 8 * 1024 * 1024:
-        messages.error(request, "Image too large (max 8MB).")
-        return
 
-    current_network.default_image_upload = image
-    current_network.save()   # processes to WebP + bumps the version
-    if current_network.default_image_upload:
-        messages.success(request, "Fallback image saved.")
-    else:
-        messages.error(request, "That image could not be processed — try another file.")
+def handle_update_network_logo(request, current_network):
+    """Upload / remove the network's navbar logo.
+
+    logo_url (and theme_config['logo_url']) survive as legacy pasted-URL
+    fallbacks — see Network.display_logo for the precedence.
+
+    The navbar renders OUTSIDE #boosted-region and nothing re-renders it after a
+    swap, so the new logo would not appear until a real page load. tab_network.html
+    pushes it with an hx-swap-oob fragment; see the note there.
+    """
+    handle_image_upload(request, current_network, 'logo_upload', label='Logo')
 
 
 def handle_update_show(request, current_network):
@@ -914,6 +910,7 @@ ACTION_HANDLERS = {
     'update_network':       handle_update_network,
     'update_network_font':  handle_update_network_font,
     'update_network_default_image': handle_update_network_default_image,
+    'update_network_logo':  handle_update_network_logo,
     'update_show':          handle_update_show,
     'add_show':             handle_add_show,
     'merge_episodes':       handle_merge_episodes,

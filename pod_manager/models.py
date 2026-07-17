@@ -233,6 +233,15 @@ class EncryptedCharField(models.CharField):
             return None
 
 
+def network_logo_path(instance, filename):
+    """Stable R2 key for a network's logo: network-logos/<slug>.webp.
+
+    Mirrors network_default_image_path — always .webp, so a re-upload OVERWRITES
+    rather than orphaning. The passed filename is ignored.
+    """
+    return f"network-logos/{instance.slug}.webp"
+
+
 def network_default_image_path(instance, filename):
     """Stable R2 key for a network's fallback logo: network-defaults/<slug>.webp.
 
@@ -248,6 +257,12 @@ class Network(ProcessedImageMixin, models.Model):
     PROCESSED_IMAGES = (
         ProcessedImage('default_image_upload', 'default_image_version', 500,
                        filename='default.webp'),
+        # NOT cropped square: a logo is usually a wide wordmark, and centre-
+        # cropping one to a square eats the word. The navbar renders it at 32px
+        # tall and the 404 page at 120px, both width:auto — aspect ratio is the
+        # whole point. 512 bounds the longest side for a 2x-DPI 120px render.
+        ProcessedImage('logo_upload', 'logo_version', 512, crop_square=False,
+                       filename='logo.webp'),
     )
 
     name = models.TextField()
@@ -288,7 +303,13 @@ class Network(ProcessedImageMixin, models.Model):
     # --- BRANDING & METADATA ---
     summary = models.TextField(blank=True, null=True)
     one_liner = models.CharField(max_length=255, blank=True, null=True)
+    # The navbar logo. logo_upload supersedes both URL fields; they survive as
+    # the legacy fallbacks (theme_config['logo_url'] has always won over
+    # logo_url, and still does). Read display_logo, never these — reading a raw
+    # field silently ignores an upload.
     logo_url = models.URLField(max_length=500, blank=True, null=True) # Maps to image_small_url
+    logo_upload = models.ImageField(upload_to=network_logo_path, storage=select_media_storage, blank=True, null=True, help_text="Uploaded network logo, rendered in the navbar")
+    logo_version = models.IntegerField(default=0)
     banner_image_url = models.URLField(max_length=500, blank=True, null=True) # Maps to image_url
     custom_font_upload = models.FileField(
         upload_to=network_font_path, storage=select_media_storage, blank=True, null=True,
@@ -345,6 +366,22 @@ class Network(ProcessedImageMixin, models.Model):
         if not self.custom_font_upload:
             return ''
         return f"{self.custom_font_upload.url}?v={self.custom_font_version}"
+
+    @property
+    def display_logo(self):
+        """The network's navbar logo: the uploaded one if there is one, else the
+        legacy pasted URLs in their established precedence (theme_config's has
+        always beaten the plain field, and an upload now beats both — it is the
+        most explicit thing the creator did).
+
+        Read this, never logo_url/theme_config['logo_url'] — reading those
+        directly silently ignores an upload. base.html, 404.html and
+        snippets/_navbar_logo.html all go through here.
+        """
+        uploaded = self.versioned_image_url('logo_upload')
+        if uploaded:
+            return uploaded
+        return (self.theme_config or {}).get('logo_url') or self.logo_url or ''
 
     @property
     def display_default_image(self):

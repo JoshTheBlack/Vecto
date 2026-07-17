@@ -903,18 +903,30 @@ class HandleImageUploadTests(TestCase):
         self.assertEqual(self.network.default_image_upload.name, good_name)
         self.assertEqual(self.network.default_image_version, good_version)
 
-    def test_accepts_a_source_larger_than_the_retired_8mb_cap(self):
-        """8 MB rejected exactly the phone photos and big GIFs users wanted
-        downscaled. The output is a bounded WebP regardless, so the source just
-        needs a higher ceiling — and the stored result is far smaller than the
-        source it came from."""
-        from pod_manager.services.images import handle_image_upload, MAX_IMAGE_BYTES
-        self.assertGreater(MAX_IMAGE_BYTES, 8 * 1024 * 1024)
+    def test_default_cap_rejects_an_oversize_small_art_upload(self):
+        """The small-art surfaces (logo, fallback, mix, avatar) cap at 8 MB. A
+        9 MB source is rejected — and, crucially, nothing is stored, so an
+        existing image is untouched."""
+        from pod_manager.services.images import handle_image_upload
+        big = _large_noise_upload(mb=9)
+        req = self._request(files={'default_image_upload': big})
+        ok = handle_image_upload(req, self.network, 'default_image_upload',
+                                 label='Fallback image')
+        self.assertFalse(ok)
+        self.network.refresh_from_db()
+        self.assertFalse(self.network.default_image_upload)
+        self.assertTrue(any('too large' in m for m in self._messages(req)))
+
+    def test_a_caller_can_raise_the_cap_for_its_surface(self):
+        """The limit is the caller's — passing a bigger max_bytes (as the 404 pool
+        does) accepts the same file the default would reject, and stores it as a
+        much smaller webp."""
+        from pod_manager.services.images import handle_image_upload, MAX_ANIMATED_IMAGE_BYTES
         big = _large_noise_upload(mb=9)
         self.assertGreater(big.size, 8 * 1024 * 1024)
         req = self._request(files={'default_image_upload': big})
         ok = handle_image_upload(req, self.network, 'default_image_upload',
-                                 label='Fallback image')
+                                 label='Fallback image', max_bytes=MAX_ANIMATED_IMAGE_BYTES)
         self.assertTrue(ok)
         self.network.refresh_from_db()
         self.assertTrue(self.network.default_image_upload)
@@ -929,6 +941,93 @@ class HandleImageUploadTests(TestCase):
         mix.refresh_from_db()
         self.assertEqual(mix.image_url, '')
         self.assertTrue(mix.image_upload)
+
+
+@override_settings(DEBUG=False, ALLOWED_HOSTS=['*'])
+class PerSurfaceImageSizeLimitTests(TestCase):
+    """The cap is per-surface: small art (logo, fallback, mix, user mix, avatar)
+    is 8 MB; the 404 pool allows big animated GIFs up to 100 MB. Josh has a 42 MB
+    404 GIF. The mix/user-mix/avatar surfaces had NO server-side cap at all before
+    this — someone could OOM a worker with a 500 MB "cover"."""
+
+    def setUp(self):
+        cache.clear()
+        self.factory = RequestFactory()
+        self.owner = User.objects.create_user('sizeowner', email='s@example.com')
+        self.network = Network.objects.create(name='Net', slug='sizenet')
+        self.network.owners.add(self.owner)
+        self.podcast = Podcast.objects.create(network=self.network, title='P', slug='sp')
+
+    def _creator_post(self, data):
+        req = _make_tenant_request(self.factory, self.network, method='post',
+                                   path='/creator/', data=data, user=self.owner)
+        return views.creator_settings(req)
+
+    def test_constants_order(self):
+        from pod_manager.services.images import MAX_IMAGE_BYTES, MAX_ANIMATED_IMAGE_BYTES
+        self.assertEqual(MAX_IMAGE_BYTES, 8 * 1024 * 1024)
+        self.assertGreater(MAX_ANIMATED_IMAGE_BYTES, MAX_IMAGE_BYTES)
+
+    def test_image_size_error_helper(self):
+        from pod_manager.services.images import image_size_error, MAX_IMAGE_BYTES
+        self.assertIsNone(image_size_error(_tiny_image_upload()))
+        self.assertIsNone(image_size_error(None))
+        big = _large_noise_upload(mb=9)
+        self.assertIn('too large', image_size_error(big))
+        self.assertIsNone(image_size_error(big, max_bytes=MAX_IMAGE_BYTES * 4))
+
+    def test_404_pool_accepts_over_8mb(self):
+        """The whole reason for the split — a big 404 GIF must go through."""
+        big = _large_noise_upload(mb=9)
+        self._creator_post({'action': 'add_notfound_entry', 'caption': 'big', 'image_upload': big})
+        entry = NotFoundEntry.objects.filter(network=self.network).first()
+        self.assertIsNotNone(entry)
+        self.assertTrue(entry.image_upload)
+
+    def test_404_pool_still_bounded_at_100mb(self):
+        from pod_manager.services.images import MAX_ANIMATED_IMAGE_BYTES
+        huge = SimpleUploadedFile('h.gif', b'x' * (MAX_ANIMATED_IMAGE_BYTES + 1),
+                                  content_type='image/gif')
+        self._creator_post({'action': 'add_notfound_entry', 'caption': 'huge', 'image_upload': huge})
+        self.assertFalse(NotFoundEntry.objects.filter(network=self.network).exists())
+
+    def test_network_mix_rejects_over_8mb_keeping_the_mix(self):
+        """The mix had no cap before. An oversize cover is rejected but the mix
+        (name/slug/shows) still saves — the cover is simply skipped."""
+        big = _large_noise_upload(mb=9)
+        self._creator_post({'action': 'add_network_mix', 'network_id': self.network.id,
+                            'name': 'Big Cover Mix', 'slug': 'bigcover', 'mix_image': '',
+                            'tier_id': '', 'mix_image_upload': big})
+        mix = NetworkMix.objects.filter(network=self.network, slug='bigcover').first()
+        self.assertIsNotNone(mix)          # the mix saved
+        self.assertFalse(mix.image_upload)  # but not the oversize cover
+
+    def test_user_mix_rejects_over_8mb(self):
+        from pod_manager.views.listener.actions import _handle_create_mix
+        from django.contrib.messages.storage.fallback import FallbackStorage
+        req = self.factory.post('/feeds/', {'mix_name': 'UM', 'mix_image_upload': _large_noise_upload(mb=9)})
+        req.user = self.owner
+        req.network = self.network
+        setattr(req, 'session', {})
+        setattr(req, '_messages', FallbackStorage(req))
+        _handle_create_mix(req)
+        um = UserMix.objects.filter(user=self.owner, network=self.network).first()
+        self.assertIsNotNone(um)
+        self.assertFalse(um.image_upload)
+        self.assertTrue(any('too large' in str(m) for m in req._messages))
+
+    def test_avatar_rejects_over_8mb(self):
+        from django.urls import reverse
+        NetworkMembership.objects.get_or_create(user=self.owner, network=self.network)
+        self.client.force_login(self.owner)
+        self.network.custom_domain = 'sizenet.example.test'
+        self.network.save()
+        cache.clear()
+        resp = self.client.post(reverse('upload_custom_avatar'),
+                                {'custom_image_upload': _large_noise_upload(mb=9)},
+                                HTTP_HOST='sizenet.example.test')
+        m = NetworkMembership.objects.get(user=self.owner, network=self.network)
+        self.assertFalse(m.custom_image_upload)
 
 
 class NetworkImageUploadTests(TestCase):
@@ -1336,6 +1435,31 @@ class UploadProgressSnippetTests(SimpleTestCase):
                 self.assertIn('data-upload-scope', txt)
                 # No second copy of the progress implementation.
                 self.assertNotIn('htmx:xhr:progress', txt)
+
+
+class ThemedAccentContractTests(SimpleTestCase):
+    """Interactive accents must key off --vecto-primary (the network's theme
+    colour), not the hardcoded #ffc107 that IS Vecto's own default orange. The
+    episode-type chips were literal #ffc107, so they showed orange on every
+    network regardless of theme."""
+
+    @property
+    def TEMPLATE_ROOT(self):
+        from django.conf import settings as django_settings
+        return Path(django_settings.BASE_DIR) / 'pod_manager' / 'templates' / 'pod_manager'
+
+    def test_type_chips_use_the_theme_primary(self):
+        for name in ('publish_episode.html', 'episode_detail.html'):
+            with self.subTest(template=name):
+                txt = (self.TEMPLATE_ROOT / name).read_text(encoding='utf-8')
+                chip = re.search(r'\.type-chip\.selected\s*\{[^}]*\}', txt)
+                self.assertIsNotNone(chip, f'{name} lost its .type-chip.selected rule')
+                rule = chip.group(0)
+                self.assertIn('var(--vecto-primary', rule)
+                # No bare hex accent (the #ffc107 inside var(...,#ffc107) fallback
+                # is fine; a standalone one is the bug).
+                self.assertNotRegex(rule, r'(border-color|background|color)\s*:\s*#ffc107')
+                self.assertNotIn('rgba(255,193,7', rule)
 
 
 class ImageUploadWidgetContractTests(SimpleTestCase):

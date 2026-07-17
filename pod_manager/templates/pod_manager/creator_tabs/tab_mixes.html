@@ -120,9 +120,13 @@
 Boosted despite the upload (see docs/boosted-navigation.md). enctype stays for the
 no-JS submit; hx-encoding is what makes htmx send this as FormData over XHR
 instead of letting the browser hard-navigate — which is what used to stop
-playback on save. The trade is the browser's native upload progress bar, not
-worth a page reload for an image. base.html disposes any open modal on region
-swap, so a backdrop cannot outlive its modal.
+playback on save. base.html disposes any open modal on region swap, so a backdrop
+cannot outlive its modal.
+
+There was never a "trade" of the browser's native progress bar, as this comment
+used to claim: a browser shows NO progress for a form POST. hx-encoding is what
+makes progress possible, and the cover field renders through
+snippets/_image_upload.html, which reads htmx:xhr:progress off this form.
 {% endcomment %}
 <form method="POST" action="{% url 'creator_settings' %}?network={{ current_network.slug }}&tab=mixes"
       enctype="multipart/form-data" hx-encoding="multipart/form-data">
@@ -160,8 +164,7 @@ swap, so a backdrop cannot outlive its modal.
                                         <input type="url" name="mix_image" class="form-control bg-black text-light border-secondary" placeholder="https://...">
                                     </div>
                                     <div class="col-md-6">
-                                        <label class="form-label text-muted small fw-bold">Or Upload Image</label>
-                                        <input type="file" name="mix_image_upload" class="form-control bg-black text-light border-secondary" accept="image/*">
+                                        {% include 'pod_manager/snippets/_image_upload.html' with name='mix_image_upload' label='Or Upload Image' %}
                                     </div>
                                 </div>
 

@@ -893,17 +893,12 @@ enforces that; hx-select used to paper over it at runtime.
                             <a class="nav-link p-0 d-flex align-items-center" href="{% url 'user_profile' %}" title="View Profile">
                                 {% if request.tenant_profile %}
                                     {% comment %}
-                                    id is the handle the profile page uses to push a new avatar
-                                    here after a source change: this nav sits outside
-                                    #boosted-region, so no boosted swap re-renders it.
+                                    Shared with user_profile.html, which re-renders this
+                                    same snippet as an OOB push after an avatar upload:
+                                    this nav sits outside #boosted-region, so no boosted
+                                    swap re-renders it.
                                     {% endcomment %}
-                                    <img src="{{ request.tenant_profile.display_avatar }}"
-                                        id="navbarAvatar"
-                                        alt="Profile"
-                                        class="rounded-circle border"
-                                        style="width: 38px; height: 38px; object-fit: cover; border-color: var(--vecto-primary, #ffc107) !important; border-width: 2px !important; transition: transform 0.2s ease, filter 0.2s ease;"
-                                        onmouseover="this.style.transform='scale(1.1)'; this.style.filter='brightness(1.2)';"
-                                        onmouseout="this.style.transform='scale(1)'; this.style.filter='brightness(1)';">
+                                    {% include 'pod_manager/snippets/_navbar_avatar.html' %}
                                 {% else %}
                                     <div class="rounded-circle border d-flex justify-content-center align-items-center"
                                         style="width: 38px; height: 38px; background-color: rgba(0,0,0,0.2); border-color: var(--vecto-primary, #ffc107) !important; border-width: 2px !important; transition: transform 0.2s ease;"

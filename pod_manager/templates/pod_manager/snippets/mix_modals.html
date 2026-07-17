@@ -31,8 +31,13 @@
             {% comment %}
 Boosted despite the upload (docs/boosted-navigation.md): hx-encoding sends it as
 FormData over XHR so it swaps #boosted-region instead of hard-navigating, which
-used to stop playback. enctype stays for the no-JS submit. Cover art is small
-enough that losing the native progress bar costs nothing.
+used to stop playback. enctype stays for the no-JS submit.
+
+"Cover art is small enough that losing the native progress bar costs nothing"
+used to end this comment. There was no native progress bar to lose — a browser
+shows none for a form POST. hx-encoding is what makes progress possible at all,
+and the artwork field now renders through snippets/_image_upload.html, which
+reads htmx:xhr:progress off this form.
 {% endcomment %}
 <form method="POST" action="{% url 'user_feeds' %}" enctype="multipart/form-data" hx-encoding="multipart/form-data">
                 {% csrf_token %}
@@ -50,9 +55,8 @@ enough that losing the native progress bar costs nothing.
                     </div>
                     
                     <div class="mb-4">
-                        <label class="form-label text-light small fw-bold">Custom Artwork</label>
-                        <input type="file" class="form-control modal-dark-input mb-2 p-2" name="mix_image_upload" accept="image/*">
-                        <input type="url" class="form-control modal-dark-input p-2" name="mix_image" placeholder="Or paste an image URL (https://...)">
+                        {% include 'pod_manager/snippets/_image_upload.html' with name='mix_image_upload' label='Custom Artwork' input_class='form-control modal-dark-input mb-2 p-2' %}
+                        <input type="url" class="form-control modal-dark-input p-2 mt-2" name="mix_image" placeholder="Or paste an image URL (https://...)">
                         <div class="form-text meta-text mt-2" style="font-size: 12px;">Upload a square image (e.g., 500x500) or provide a URL to use as the podcast cover art.</div>
                     </div>
                     
@@ -91,8 +95,13 @@ enough that losing the native progress bar costs nothing.
             {% comment %}
 Boosted despite the upload (docs/boosted-navigation.md): hx-encoding sends it as
 FormData over XHR so it swaps #boosted-region instead of hard-navigating, which
-used to stop playback. enctype stays for the no-JS submit. Cover art is small
-enough that losing the native progress bar costs nothing.
+used to stop playback. enctype stays for the no-JS submit.
+
+"Cover art is small enough that losing the native progress bar costs nothing"
+used to end this comment. There was no native progress bar to lose — a browser
+shows none for a form POST. hx-encoding is what makes progress possible at all,
+and the artwork field now renders through snippets/_image_upload.html, which
+reads htmx:xhr:progress off this form.
 {% endcomment %}
 <form method="POST" action="{% url 'user_feeds' %}" enctype="multipart/form-data" hx-encoding="multipart/form-data">
                 {% csrf_token %}
@@ -111,9 +120,8 @@ enough that losing the native progress bar costs nothing.
                     </div>
                     
                     <div class="mb-4">
-                        <label class="form-label text-light small fw-bold">Custom Artwork</label>
-                        <input type="file" class="form-control modal-dark-input mb-2 p-2" name="mix_image_upload" accept="image/*">
-                        <input type="url" class="form-control modal-dark-input p-2" name="mix_image" value="{{ mix.image_url }}" placeholder="Or paste an image URL (https://...)">
+                        {% include 'pod_manager/snippets/_image_upload.html' with name='mix_image_upload' label='Custom Artwork' input_class='form-control modal-dark-input mb-2 p-2' current_url=mix.display_image preview_px=64 %}
+                        <input type="url" class="form-control modal-dark-input p-2 mt-2" name="mix_image" value="{{ mix.image_url }}" placeholder="Or paste an image URL (https://...)">
                     </div>
                     
                     <h6 class="meta-text small fw-bold text-uppercase mb-2" style="letter-spacing: 0.5px;">Select Shows to Include:</h6>

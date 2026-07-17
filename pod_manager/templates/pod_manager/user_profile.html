@@ -251,8 +251,13 @@
             {% comment %}
 Boosted despite the upload (docs/boosted-navigation.md): hx-encoding sends it as
 FormData over XHR so it swaps #boosted-region instead of hard-navigating, which
-used to stop playback. enctype stays for the no-JS submit. Cover art is small
-enough that losing the native progress bar costs nothing.
+used to stop playback. enctype stays for the no-JS submit.
+
+"Cover art is small enough that losing the native progress bar costs nothing"
+used to end this comment. There was no native progress bar to lose — a browser
+shows none for a form POST. hx-encoding is what makes progress possible, and the
+file field now renders through snippets/_image_upload.html, which reads
+htmx:xhr:progress off this form.
 {% endcomment %}
 <form method="POST" action="{% url 'upload_custom_avatar' %}" enctype="multipart/form-data" hx-encoding="multipart/form-data">
                 {% csrf_token %}
@@ -261,9 +266,8 @@ enough that losing the native progress bar costs nothing.
                     <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
                 </div>
                 <div class="modal-body">
-                    <input class="form-control bg-dark text-light border-secondary" type="file" name="custom_image_upload" accept="image/*">
-                    <div class="small text-muted mt-2 mb-3">Recommended: 256x256 square image (PNG or JPG)</div>
-                    
+                    {% include 'pod_manager/snippets/_image_upload.html' with name='custom_image_upload' input_class='form-control bg-dark text-light border-secondary' current_url=membership.custom_avatar_url preview_px=64 help_text='Recommended: 256x256 square image (PNG or JPG)' %}
+
                     <hr class="border-secondary">
                     
                     <label class="form-label text-light">Or Link to Image</label>
@@ -277,6 +281,25 @@ enough that losing the native progress bar costs nothing.
         </div>
     </div>
 </div>
+
+{% comment %}
+Push the nav's avatar. The navbar lives OUTSIDE #boosted-region, so nothing
+re-renders it after a swap: uploading a custom avatar changed it here and left
+the nav showing the old one until a full page load. The source PICKER below
+already handled this by assigning #navbarAvatar.src after its fetch — the upload
+never did.
+
+upload_custom_avatar redirects back here, htmx follows that redirect on the same
+XHR, and this fragment rides the response and replaces #navbarAvatar in place.
+Rendering the same snippet as the nav keeps the two from drifting.
+
+GATED ON is_htmx: hx-swap-oob only means anything in an AJAX response. This page
+is reachable by a normal full load (a bookmark, F5), where htmx never sees the
+attribute and this would render as a stray second avatar with a duplicate id.
+{% endcomment %}
+{% if is_htmx and request.tenant_profile %}
+    {% include 'pod_manager/snippets/_navbar_avatar.html' with oob=True %}
+{% endif %}
 
 <script>
 (function () {

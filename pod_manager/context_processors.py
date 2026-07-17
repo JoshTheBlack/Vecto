@@ -38,5 +38,16 @@ def htmx(request):
     converted templates can `{% extends base_template|default:... %}`: the skinny
     base_htmx.html on an htmx-boosted request, the full base.html otherwise.
     Falls back to base.html if the middleware didn't run (e.g. a bare
-    RequestFactory request in a unit test)."""
-    return {'base_template': getattr(request, 'base_template', 'pod_manager/base.html')}
+    RequestFactory request in a unit test).
+
+    `is_htmx` is the same signal, exposed directly for the one thing the base
+    template can't express: an hx-swap-oob fragment is only meaningful in an AJAX
+    RESPONSE. htmx processes it there; on a full page load nothing does, so the
+    fragment renders inline as a stray, duplicate-id'd element. Any template that
+    is EVER rendered on a full load — which includes every eager creator tab —
+    must gate its OOB on this. Mirrors the middleware's condition exactly.
+    """
+    return {
+        'base_template': getattr(request, 'base_template', 'pod_manager/base.html'),
+        'is_htmx': bool(request.headers.get('HX-Request')) if hasattr(request, 'headers') else False,
+    }

@@ -993,6 +993,40 @@ class NavbarLogoPushTests(TestCase):
                       msg='The OOB fragment must render the same snippet as the nav, '
                           'or the two drift.')
 
+    def test_oob_fragments_are_gated_on_is_htmx(self):
+        """hx-swap-oob only means anything in an AJAX response. tab_network is an
+        EAGER include in creator_settings.html, so it also renders on a full page
+        load — where htmx never sees the attribute and the fragment would just be
+        a stray duplicate-id'd element sitting in the page."""
+        offenders = []
+        for path in sorted(self.TEMPLATE_ROOT.rglob('*.html')):
+            text = path.read_text(encoding='utf-8')
+            body = re.sub(r'{% comment %}.*?{% endcomment %}', '', text, flags=re.S)
+            if 'hx-swap-oob' not in body:
+                continue
+            # A shared snippet may emit the attribute under its own `oob` param —
+            # the gate then belongs at the call site, which this same sweep
+            # checks (the caller renders hx-swap-oob only via oob=True).
+            if 'is_htmx' in body or re.search(r'{%\s*if\s+oob\s*%}', body):
+                continue
+            offenders.append(path.name)
+        self.assertEqual(offenders, [], msg=(
+            f'OOB fragment(s) not gated on is_htmx: {offenders}'))
+
+    def test_oob_call_sites_pass_oob_only_under_is_htmx(self):
+        """The companion to the above: a snippet that takes oob=True is only safe
+        if its caller gates on is_htmx."""
+        offenders = []
+        for path in sorted(self.TEMPLATE_ROOT.rglob('*.html')):
+            body = re.sub(r'{% comment %}.*?{% endcomment %}', '',
+                          path.read_text(encoding='utf-8'), flags=re.S)
+            for m in re.finditer(r'{%\s*include[^%]*oob=True[^%]*%}', body):
+                before = body[:m.start()]
+                if 'is_htmx' not in before:
+                    offenders.append((path.name, before.count('\n') + 1))
+        self.assertEqual(offenders, [], msg=(
+            f'oob=True include(s) not gated on is_htmx: {offenders}'))
+
     def test_nothing_reads_the_raw_logo_fields_for_display(self):
         """display_logo resolves upload > theme_config > logo_url. A template that
         reads a raw field silently ignores an upload — which is exactly the bug
@@ -1005,6 +1039,98 @@ class NavbarLogoPushTests(TestCase):
                 offenders.append((path.name, text[:m.start()].count('\n') + 1))
         self.assertEqual(offenders, [], msg=(
             f'Template(s) rendering a raw logo field instead of display_logo: {offenders}'))
+
+
+class EveryImageUploadHasProgressTests(SimpleTestCase):
+    """Josh: "Still not seeing upload progress on network mixes or user mixes."
+    Correct — they never had any. Every image upload in the app now renders
+    through the shared widget, which is the only thing that draws a bar.
+
+    A bare <input type="file" accept="image/*"> outside the widget is the
+    regression this catches: it works, it just silently has no progress."""
+
+    @property
+    def TEMPLATE_ROOT(self):
+        from django.conf import settings as django_settings
+        return Path(django_settings.BASE_DIR) / 'pod_manager' / 'templates' / 'pod_manager'
+
+    # Every surface named in the plan, plus the two the helper landed with.
+    EXPECTED_SURFACES = {
+        'creator_tabs/tab_network.html',      # fallback image + logo
+        'creator_tabs/tab_notfound.html',     # 404 pool
+        'creator_tabs/tab_mixes.html',        # add network mix
+        'creator_tabs/_mix_form.html',        # edit network mix
+        'snippets/mix_modals.html',           # user mix create + edit
+        'user_profile.html',                  # custom avatar
+    }
+
+    def test_every_expected_surface_includes_the_widget(self):
+        for rel in sorted(self.EXPECTED_SURFACES):
+            with self.subTest(template=rel):
+                txt = (self.TEMPLATE_ROOT / rel).read_text(encoding='utf-8')
+                self.assertIn('_image_upload.html', txt)
+
+    def test_no_bare_image_file_input_escapes_the_widget(self):
+        widget = 'snippets/_image_upload.html'
+        offenders = []
+        for path in sorted(self.TEMPLATE_ROOT.rglob('*.html')):
+            rel = path.relative_to(self.TEMPLATE_ROOT).as_posix()
+            if rel == widget:
+                continue
+            text = re.sub(r'{% comment %}.*?{% endcomment %}', '',
+                          path.read_text(encoding='utf-8'), flags=re.S)
+            for m in re.finditer(r'<input[^>]*type="file"[^>]*>', text):
+                tag = m.group(0)
+                if 'image/*' not in tag:
+                    continue      # .woff2 font upload, audio upload — not images
+                offenders.append((rel, text[:m.start()].count('\n') + 1))
+        self.assertEqual(offenders, [], msg=(
+            'Bare image file input(s) outside the widget — they will silently have '
+            f'no progress bar. Include snippets/_image_upload.html: {offenders}'))
+
+
+@override_settings(DEBUG=False, ALLOWED_HOSTS=['*'])
+class NavbarAvatarPushTests(TestCase):
+    """The avatar UPLOAD used to leave the nav stale. The source picker already
+    pushed #navbarAvatar by hand after its fetch; the upload path never did, so a
+    new custom avatar showed on the profile and nowhere else until a full load."""
+
+    def setUp(self):
+        cache.clear()  # tenant_custom_domains is cached for 60s across requests
+        self.user = User.objects.create_user(username='u', password='p', email='u@e.com')
+        # A real custom_domain: NetworkMiddleware matches the host against it and
+        # only then attaches request.tenant_profile, which is what renders the
+        # nav avatar at all.
+        self.network = Network.objects.create(name='Net', slug='n',
+                                              custom_domain='navavatar.example.test')
+        NetworkMembership.objects.create(user=self.user, network=self.network)
+
+    @property
+    def TEMPLATE_ROOT(self):
+        from django.conf import settings as django_settings
+        return Path(django_settings.BASE_DIR) / 'pod_manager' / 'templates' / 'pod_manager'
+
+    def test_base_and_profile_render_the_same_avatar_snippet(self):
+        base = (self.TEMPLATE_ROOT / 'base.html').read_text(encoding='utf-8')
+        profile = (self.TEMPLATE_ROOT / 'user_profile.html').read_text(encoding='utf-8')
+        self.assertIn('_navbar_avatar.html', base)
+        self.assertIn('_navbar_avatar.html', profile)
+
+    def test_profile_pushes_the_avatar_only_on_an_hx_response(self):
+        """The OOB must not render on a full page load: htmx would never process
+        it, so it would just be a stray second avatar with a duplicate id."""
+        from django.test import Client
+        c = Client(HTTP_HOST=self.network.custom_domain)
+        c.force_login(self.user)
+
+        full = c.get('/profile/').content.decode()
+        hx = c.get('/profile/', HTTP_HX_REQUEST='true').content.decode()
+
+        self.assertNotIn('hx-swap-oob', full)
+        self.assertEqual(full.count('id="navbarAvatar"'), 1)   # the nav's, only
+
+        self.assertIn('hx-swap-oob', hx)
+        self.assertEqual(hx.count('id="navbarAvatar"'), 1)     # the OOB push, only
 
 
 class ImageUploadWidgetContractTests(SimpleTestCase):

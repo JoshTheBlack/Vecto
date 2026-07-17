@@ -208,14 +208,23 @@
                         an uploaded logo would not appear until a real page load
                         (divergence A / "The nav persists" in
                         docs/boosted-navigation.md). This OOB fragment rides every
-                        response that re-renders this tab — including the one right
-                        after an upload or a remove — and replaces #navbarLogo in
-                        place. It renders the same snippet the nav does, so the two
-                        cannot drift.
+                        HX response that re-renders this tab — including the one
+                        right after an upload or a remove — and replaces #navbarLogo
+                        in place. It renders the same snippet the nav does, so the
+                        two cannot drift.
+
+                        GATED ON is_htmx, and that is not optional: hx-swap-oob
+                        only means anything in an AJAX response. This tab is an
+                        EAGER include in creator_settings.html (not a lazy pane),
+                        so it also renders on a full page load — where htmx never
+                        sees the attribute and this would just be a stray second
+                        logo sitting in the page with a duplicate id.
                         {% endcomment %}
+                        {% if is_htmx %}
                         <span id="navbarLogo" hx-swap-oob="true" class="d-inline-flex align-items-center">
                             {% include 'pod_manager/snippets/_navbar_logo.html' %}
                         </span>
+                        {% endif %}
 
                         <h5 class="fw-bold mb-3 border-bottom border-secondary pb-2 mt-4 text-warning">Custom Font</h5>
                         <p class="text-muted small mb-3">Upload a self-hosted .woff2 file to use as this network's theme font. It's prepended to the font stack above, so the existing fallback still applies if it fails to load.</p>

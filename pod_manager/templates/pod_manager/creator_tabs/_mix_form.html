@@ -20,10 +20,14 @@ Context: mix (with .selected_ids), current_network, network_podcasts.
 {% comment %}
 Boosted despite the upload. enctype stays for the no-JS submit; hx-encoding is
 what makes htmx send this as FormData over XHR rather than letting the browser
-hard-navigate — which is what used to stop playback on save. The trade is the
-browser's native upload progress, which for a cover image is not worth a page
-reload. base.html disposes the open modal on region swap so its backdrop cannot
-outlive it.
+hard-navigate — which is what used to stop playback on save. base.html disposes
+the open modal on region swap so its backdrop cannot outlive it.
+
+This comment used to end "the trade is the browser's native upload progress,
+which for a cover image is not worth a page reload". There was never a trade: a
+browser shows NO progress for a form POST. hx-encoding is what makes progress
+possible at all, and the cover field now renders through
+snippets/_image_upload.html, which reads htmx:xhr:progress off this form.
 {% endcomment %}
 <form method="POST" action="{% url 'creator_settings' %}?network={{ current_network.slug }}&tab=mixes"
       enctype="multipart/form-data" hx-encoding="multipart/form-data">
@@ -59,8 +63,7 @@ outlive it.
                 <input type="url" name="mix_image" value="{{ mix.image_url }}" class="form-control bg-black text-light border-secondary" placeholder="https://...">
             </div>
             <div class="col-md-6">
-                <label class="form-label text-muted small fw-bold">Or Upload Image</label>
-                <input type="file" name="mix_image_upload" class="form-control bg-black text-light border-secondary" accept="image/*">
+                {% include 'pod_manager/snippets/_image_upload.html' with name='mix_image_upload' label='Or Upload Image' current_url=mix.display_image preview_px=64 %}
             </div>
         </div>
 

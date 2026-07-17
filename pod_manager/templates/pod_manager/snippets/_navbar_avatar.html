@@ -1,0 +1,30 @@
+{% comment %}
+The navbar's avatar image. Rendered in TWO places and they must not drift:
+  - base.html, inside the persistent nav;
+  - user_profile.html, with oob=True, so uploading a custom avatar updates the
+    nav instead of leaving the old one there until a full page load.
+
+The nav sits OUTSIDE #boosted-region, so nothing re-renders it after a swap — see
+"The nav persists" in docs/boosted-navigation.md. The avatar SOURCE PICKER
+already handled this by hand: it fetches update_avatar_preference and assigns the
+returned URL to #navbarAvatar.src. The UPLOAD did not, so a new custom avatar
+appeared on the profile page and nowhere else.
+
+Params:
+  oob   render as an hx-swap-oob push instead of the live nav copy. Only ever
+        pass this on an HX response (gate it on is_htmx): hx-swap-oob means
+        nothing on a full page load, where this would render as a stray second
+        avatar with a duplicate id.
+
+The id stays on the <img> itself because the picker's JS looks it up by id and
+assigns .src.
+
+Context: request.tenant_profile.
+{% endcomment %}
+<img src="{{ request.tenant_profile.display_avatar }}"
+     id="navbarAvatar"{% if oob %} hx-swap-oob="true"{% endif %}
+     alt="Profile"
+     class="rounded-circle border"
+     style="width: 38px; height: 38px; object-fit: cover; border-color: var(--vecto-primary, #ffc107) !important; border-width: 2px !important; transition: transform 0.2s ease, filter 0.2s ease;"
+     onmouseover="this.style.transform='scale(1.1)'; this.style.filter='brightness(1.2)';"
+     onmouseout="this.style.transform='scale(1)'; this.style.filter='brightness(1)';">

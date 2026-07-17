@@ -163,7 +163,14 @@
                 <a href="#" class="btn btn-sm btn-outline-warning d-none" id="calEventOpen" target="_blank" rel="noopener"><i class="bi bi-box-arrow-up-right me-1"></i>Open</a>
                 {% if is_owner %}
                 <button type="button" class="btn btn-sm btn-outline-warning d-none" id="calEventEdit"><i class="bi bi-pencil me-1"></i>Edit</button>
-                <form method="post" action="{% url 'calendar_manage' %}" class="d-inline" id="calEventDeleteForm" hx-boost="false" onsubmit="return confirm('Delete this calendar entry?');">
+                {% comment %}
+Boosted (no hx-boost="false"): these are plain POSTs, and they only hard-navigated
+because a modal's backdrop is appended to <body> — outside #boosted-region — so a
+region swap used to strand it as a dead grey overlay. base.html now disposes any
+open modal on htmx:beforeSwap, so adding/editing/deleting an entry swaps the
+region and the floating player keeps playing.
+{% endcomment %}
+<form method="post" action="{% url 'calendar_manage' %}" class="d-inline" id="calEventDeleteForm" onsubmit="return confirm('Delete this calendar entry?');">
                     {% csrf_token %}
                     <input type="hidden" name="action" value="delete">
                     <input type="hidden" name="entry_id" id="calEventDeleteId">
@@ -179,7 +186,14 @@
 <div class="modal fade" id="calEntryModal" tabindex="-1" aria-hidden="true">
     <div class="modal-dialog modal-dialog-centered modal-lg">
         <div class="modal-content bg-dark border-secondary">
-            <form method="post" action="{% url 'calendar_manage' %}" id="calEntryForm" class="cal-entry-form" hx-boost="false">
+            {% comment %}
+Boosted (no hx-boost="false"): these are plain POSTs, and they only hard-navigated
+because a modal's backdrop is appended to <body> — outside #boosted-region — so a
+region swap used to strand it as a dead grey overlay. base.html now disposes any
+open modal on htmx:beforeSwap, so adding/editing/deleting an entry swaps the
+region and the floating player keeps playing.
+{% endcomment %}
+<form method="post" action="{% url 'calendar_manage' %}" id="calEntryForm" class="cal-entry-form">
                 {% csrf_token %}
                 <input type="hidden" name="action" id="calEntryActionField" value="add">
                 <input type="hidden" name="entry_id" id="calEntryIdField" value="">

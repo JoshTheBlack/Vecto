@@ -81,9 +81,9 @@
                                         hands #boosted-region to anything boosted in the
                                         loaded body, the INNER loader keeps its
                                         self-targeting attrs behind hx-disinherit="*".
-                                        The mix form itself is hx-boost="false" (multipart
-                                        upload), so nothing inherits today — the split is
-                                        what keeps that true if the opt-out ever goes.
+                                        The mix form is boosted (hx-encoding sends its
+                                        upload over XHR), so it depends on this split to
+                                        inherit #boosted-region and keep audio alive.
                                         {% endcomment %}
                                         <div id="mix-form-{{ mix.id }}"
                                              hx-target="#boosted-region" hx-select="#boosted-region" hx-swap="outerHTML show:window:top" hx-push-url="false">
@@ -116,7 +116,16 @@
                             <h5 class="modal-title fw-bold"><i class="bi bi-collection-play text-warning"></i> Create Network Mix</h5>
                             <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
                         </div>
-                        <form method="POST" action="{% url 'creator_settings' %}?network={{ current_network.slug }}&tab=mixes" enctype="multipart/form-data" hx-boost="false">
+                        {% comment %}
+Boosted despite the upload (see docs/boosted-navigation.md). enctype stays for the
+no-JS submit; hx-encoding is what makes htmx send this as FormData over XHR
+instead of letting the browser hard-navigate — which is what used to stop
+playback on save. The trade is the browser's native upload progress bar, not
+worth a page reload for an image. base.html disposes any open modal on region
+swap, so a backdrop cannot outlive its modal.
+{% endcomment %}
+<form method="POST" action="{% url 'creator_settings' %}?network={{ current_network.slug }}&tab=mixes"
+      enctype="multipart/form-data" hx-encoding="multipart/form-data">
                             <div class="modal-body p-4">
                                 {% csrf_token %}
                                 <input type="hidden" name="action" value="add_network_mix">

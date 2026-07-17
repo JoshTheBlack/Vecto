@@ -11,14 +11,22 @@ selected options and clones the rest from that template on first open.
 show_multiselect_assets.html re-inits any widget arriving via htmx:load, so the
 picker wires itself up on arrival (same path as _show_form.html's picker).
 
-The form is hx-boost="false" (multipart upload — a documented boost opt-out), so
-it does a real navigation and no swap-target inheritance applies to it. The
-loader in tab_mixes.html still uses divergence C's outer/inner split anyway, so
-that stays true if the upload — and with it the opt-out — ever goes away.
+The form IS boosted, upload and all: hx-encoding makes htmx send it as FormData
+over XHR, so saving keeps the out-of-region player alive. It therefore relies on
+the loader's divergence C split in tab_mixes.html to inherit #boosted-region.
 
 Context: mix (with .selected_ids), current_network, network_podcasts.
 {% endcomment %}
-<form method="POST" action="{% url 'creator_settings' %}?network={{ current_network.slug }}&tab=mixes" enctype="multipart/form-data" hx-boost="false">
+{% comment %}
+Boosted despite the upload. enctype stays for the no-JS submit; hx-encoding is
+what makes htmx send this as FormData over XHR rather than letting the browser
+hard-navigate — which is what used to stop playback on save. The trade is the
+browser's native upload progress, which for a cover image is not worth a page
+reload. base.html disposes the open modal on region swap so its backdrop cannot
+outlive it.
+{% endcomment %}
+<form method="POST" action="{% url 'creator_settings' %}?network={{ current_network.slug }}&tab=mixes"
+      enctype="multipart/form-data" hx-encoding="multipart/form-data">
     <div class="modal-body p-4">
         {% csrf_token %}
         <input type="hidden" name="action" value="edit_network_mix">

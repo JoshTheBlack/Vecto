@@ -248,7 +248,13 @@
 <div class="modal fade" id="customAvatarModal" tabindex="-1">
     <div class="modal-dialog modal-dialog-centered">
         <div class="modal-content bg-dark border-secondary">
-            <form method="POST" action="{% url 'upload_custom_avatar' %}" enctype="multipart/form-data" hx-boost="false">
+            {% comment %}
+Boosted despite the upload (docs/boosted-navigation.md): hx-encoding sends it as
+FormData over XHR so it swaps #boosted-region instead of hard-navigating, which
+used to stop playback. enctype stays for the no-JS submit. Cover art is small
+enough that losing the native progress bar costs nothing.
+{% endcomment %}
+<form method="POST" action="{% url 'upload_custom_avatar' %}" enctype="multipart/form-data" hx-encoding="multipart/form-data">
                 {% csrf_token %}
                 <div class="modal-header border-secondary">
                     <h5 class="modal-title text-light">Upload Custom Avatar</h5>

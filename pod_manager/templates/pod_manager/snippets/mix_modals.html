@@ -28,7 +28,13 @@
 <div class="modal fade" id="createMixModal" tabindex="-1">
     <div class="modal-dialog modal-lg modal-dialog-centered">
         <div class="modal-content shadow-lg" style="background: var(--vecto-surface-bg, #32373c); border: 1px solid rgba(255,255,255,0.1); border-radius: 12px;">
-            <form method="POST" action="{% url 'user_feeds' %}" enctype="multipart/form-data" hx-boost="false">
+            {% comment %}
+Boosted despite the upload (docs/boosted-navigation.md): hx-encoding sends it as
+FormData over XHR so it swaps #boosted-region instead of hard-navigating, which
+used to stop playback. enctype stays for the no-JS submit. Cover art is small
+enough that losing the native progress bar costs nothing.
+{% endcomment %}
+<form method="POST" action="{% url 'user_feeds' %}" enctype="multipart/form-data" hx-encoding="multipart/form-data">
                 {% csrf_token %}
                 <input type="hidden" name="create_mix" value="1">
                 
@@ -82,7 +88,13 @@
 <div class="modal fade" id="editMixModal-{{ mix.id }}" tabindex="-1">
     <div class="modal-dialog modal-lg modal-dialog-centered">
         <div class="modal-content shadow-lg" style="background: var(--vecto-surface-bg, #32373c); border: 1px solid rgba(255,255,255,0.1); border-radius: 12px;">
-            <form method="POST" action="{% url 'user_feeds' %}" enctype="multipart/form-data" hx-boost="false">
+            {% comment %}
+Boosted despite the upload (docs/boosted-navigation.md): hx-encoding sends it as
+FormData over XHR so it swaps #boosted-region instead of hard-navigating, which
+used to stop playback. enctype stays for the no-JS submit. Cover art is small
+enough that losing the native progress bar costs nothing.
+{% endcomment %}
+<form method="POST" action="{% url 'user_feeds' %}" enctype="multipart/form-data" hx-encoding="multipart/form-data">
                 {% csrf_token %}
                 <input type="hidden" name="edit_mix" value="1">
                 <input type="hidden" name="mix_id" value="{{ mix.id }}">

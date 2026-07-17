@@ -109,11 +109,18 @@ Other rules for lazy content:
 
 ## Boost opt-outs
 
-`hx-boost="false"` on anything that must be a real navigation or request:
+**No form opts out.** `hx-boost="false"` on a form means a real navigation, which reloads the page and destroys the player — audio stops mid-episode, which is the one thing this system exists to prevent. `BoostOptOutContractTests` fails the build on a new one; its allowlist is deliberately empty.
 
-- **Multipart forms** (file uploads) — native progress behavior beats a silent XHR.
+This section used to say *"Multipart forms (file uploads) — native progress behavior beats a silent XHR."* **That was wrong twice over**, and it cost real playback: a browser shows *no* upload progress for a form POST (you get a spinning tab and a dead page), and htmx handles uploads fine via `hx-encoding`. Both reasons to opt out were myths.
+
+- **Uploads** — keep `enctype="multipart/form-data"` for the no-JS submit and add `hx-encoding="multipart/form-data"`. htmx then sends the form as `FormData` over XHR and swaps the region as usual. A multipart form that boosts *without* `hx-encoding` silently drops the file — there's a test for that. Where progress genuinely matters (episode audio), listen for `htmx:xhr:progress` on the form; the episode page's upload has a real percentage bar this way, which the "native" version never did.
+- **Modals** — not a reason to opt out either. A modal's backdrop is appended to `<body>`, *outside* the region, so a swap used to strand it as a dead grey overlay with the scroll locked. `base.html` disposes any open modal on `htmx:beforeSwap` of the region (`closeOpenModals`), so modal forms boost like anything else.
+- **Lazy panes** — a boosted form inside one needs its pane split per the rules above, or it inherits the loader's self-target. The merge desk's forms carried `hx-boost="false"` for exactly this reason for months.
+
+`hx-boost="false"` is still right for **links** that must be real requests:
+
 - **Download links** (`download` attribute) and generated files (CSV exports).
-- **Links leaving the app shell**: `/admin/` (Django admin doesn't extend `base.html`, so `hx-select` would find nothing), logout.
+- **Links leaving the app shell**: `/admin/` (Django admin doesn't extend `base.html`), logout.
 
 External links (`target="_blank"`) are ignored by boost automatically.
 

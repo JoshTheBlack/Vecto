@@ -10867,3 +10867,82 @@ class InTabFilterPaneSwapTests(TestCase):
                                HTTP_HOST=self.host, HTTP_HX_REQUEST='true')
         self.assertEqual(resp.context['current_network'], self.other)
         self.assertNotEqual(resp.context['current_network'], self.network)
+
+
+class BoostOptOutContractTests(SimpleTestCase):
+    """hx-boost="false" makes a form hard-navigate, which reloads the page and
+    destroys the out-of-region floating player — audio stops mid-episode. That is
+    the one thing the boosted-navigation system exists to prevent, so every
+    remaining opt-out must be a deliberate, listed choice rather than a default.
+
+    Uploads are NOT a reason to opt out: hx-encoding="multipart/form-data" makes
+    htmx send the form as FormData over XHR, so it boosts like anything else.
+    Modals are not a reason either: base.html disposes an open modal on region
+    swap so its backdrop can't outlive it."""
+
+    # Opt-outs that are correct, with the reason each is allowed to hard-navigate.
+    # Currently empty: NO form needs to. Uploads use hx-encoding, and the modal
+    # backdrop problem is solved centrally in base.html. Adding an entry here is
+    # a deliberate decision to stop someone's audio — justify it.
+    ALLOWED_FORM_OPT_OUTS = {}
+
+    @property
+    def TEMPLATE_ROOT(self):
+        from django.conf import settings as django_settings
+        return Path(django_settings.BASE_DIR) / 'pod_manager' / 'templates'
+
+    def _opted_out_forms(self):
+        found = []
+        for path in sorted(self.TEMPLATE_ROOT.rglob('*.html')):
+            text = path.read_text(encoding='utf-8')
+            for m in re.finditer(r'<form[^>]*>', text):
+                if 'hx-boost="false"' in m.group(0):
+                    found.append((path.name, text[:m.start()].count('\n') + 1))
+        return found
+
+    def test_no_creator_form_hard_navigates(self):
+        # The creator tabs are where this hurt most: saving a mix, merging
+        # episodes and editing network settings all stopped playback.
+        offenders = [
+            (name, line) for name, line in self._opted_out_forms()
+            if name.startswith('tab_') or name.startswith('_') or name == 'creator_settings.html'
+        ]
+        self.assertEqual(offenders, [], msg=(
+            'These creator forms still hx-boost="false" and will hard-navigate, '
+            'killing audio. Use hx-encoding="multipart/form-data" if it is an '
+            f'upload: {offenders}'))
+
+    def test_every_remaining_opt_out_is_a_listed_exception(self):
+        unexpected = [
+            (name, line) for name, line in self._opted_out_forms()
+            if name not in self.ALLOWED_FORM_OPT_OUTS
+        ]
+        self.assertEqual(unexpected, [], msg=(
+            'New hx-boost="false" form(s) that would hard-navigate and stop '
+            'playback. If it is genuinely needed, add it to '
+            f'ALLOWED_FORM_OPT_OUTS with a reason: {unexpected}'))
+
+    def test_uploads_that_boost_declare_hx_encoding(self):
+        # A multipart form that neither opts out NOR sets hx-encoding is the
+        # broken middle: htmx would boost it and drop the file.
+        broken = []
+        for path in sorted(self.TEMPLATE_ROOT.rglob('*.html')):
+            text = path.read_text(encoding='utf-8')
+            for m in re.finditer(r'<form[^>]*>', text):
+                t = m.group(0)
+                if 'multipart/form-data' not in t:
+                    continue
+                if 'hx-boost="false"' in t or 'hx-encoding' in t:
+                    continue
+                broken.append((path.name, text[:m.start()].count('\n') + 1))
+        self.assertEqual(broken, [], msg=(
+            'Multipart form(s) that boost without hx-encoding — htmx would send '
+            f'them url-encoded and silently drop the upload: {broken}'))
+
+    def test_base_disposes_modals_before_a_region_swap(self):
+        # Without this, boosting a form inside a modal strands its backdrop
+        # (appended to <body>, outside the region) as a dead grey overlay.
+        base = (self.TEMPLATE_ROOT / 'pod_manager' / 'base.html').read_text(encoding='utf-8')
+        self.assertIn('closeOpenModals', base)
+        self.assertIn('.modal-backdrop', base)
+        self.assertIn("classList.remove('modal-open')", base)

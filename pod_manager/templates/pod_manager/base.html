@@ -417,7 +417,30 @@ window.VectoPage = (function () {
         if (!e.detail.target || e.detail.target.id !== 'boosted-region') return;
         bound.forEach(([t, type, fn, opts]) => t.removeEventListener(type, fn, opts));
         bound = [];
+        closeOpenModals();
     });
+
+    /* A Bootstrap modal lives INSIDE the region, but its backdrop is appended to
+       <body> — outside it — and .modal-open is set on <body> too. So swapping the
+       region with a modal open destroys the modal element while its backdrop
+       survives: a dead grey overlay with the page scroll-locked, unclickable
+       until a real reload. That is why every modal form used to carry
+       hx-boost="false" and hard-navigate (which killed playback). Disposing the
+       modal here lets those forms boost like anything else.
+
+       .hide() alone is not enough: it animates, and the element is gone before
+       the transition ends, so the backdrop leaks anyway. Dispose (synchronous),
+       then sweep whatever Bootstrap left behind. */
+    function closeOpenModals() {
+        document.querySelectorAll('#boosted-region .modal.show').forEach(el => {
+            const inst = bootstrap.Modal.getInstance(el);
+            if (inst) inst.dispose();
+        });
+        document.querySelectorAll('.modal-backdrop').forEach(el => el.remove());
+        document.body.classList.remove('modal-open');
+        document.body.style.removeProperty('overflow');
+        document.body.style.removeProperty('padding-right');
+    }
     return {
         on(target, type, fn, opts) {
             target.addEventListener(type, fn, opts);

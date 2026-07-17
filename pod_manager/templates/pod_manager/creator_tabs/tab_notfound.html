@@ -5,7 +5,16 @@
         <div class="card-body">
             <p class="text-muted small mb-4">A random image + caption pair from this pool is shown whenever a visitor hits a broken link on your network. Leave the pool empty for a plain themed fallback.</p>
 
-            <form method="POST" action="{% url 'creator_settings' %}?network={{ current_network.slug }}&tab=notfound" enctype="multipart/form-data" hx-boost="false" id="notfoundAddForm" class="row g-3 align-items-end mb-4 pb-4 border-bottom border-secondary">
+            {% comment %}
+Boosted despite the upload (see docs/boosted-navigation.md). enctype stays for the
+no-JS submit; hx-encoding is what makes htmx send this as FormData over XHR
+instead of letting the browser hard-navigate — which is what used to stop
+playback on save. The trade is the browser's native upload progress bar, not
+worth a page reload for an image. base.html disposes any open modal on region
+swap, so a backdrop cannot outlive its modal.
+{% endcomment %}
+<form method="POST" action="{% url 'creator_settings' %}?network={{ current_network.slug }}&tab=notfound"
+      enctype="multipart/form-data" hx-encoding="multipart/form-data" id="notfoundAddForm" class="row g-3 align-items-end mb-4 pb-4 border-bottom border-secondary">
                 {% csrf_token %}
                 <input type="hidden" name="action" value="add_notfound_entry">
                 <div class="col-md-5">

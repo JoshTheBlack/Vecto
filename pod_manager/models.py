@@ -123,7 +123,19 @@ class EncryptedCharField(models.CharField):
             # Catching this prevents the entire app from crashing, effectively "clearing"
             # the corrupted token so the user can re-authenticate.
             return None
-    
+
+
+def network_default_image_path(instance, filename):
+    """Stable R2 key for a network's fallback logo: network-defaults/<slug>.webp.
+
+    Mirrors mix_cover_path: the extension is always .webp (process_image_field
+    normalizes output), so a re-upload OVERWRITES the same key instead of
+    orphaning the old object. Keyed on slug rather than a UUID because Network
+    has no unique_id; slug is unique and stable. The passed filename is ignored.
+    """
+    return f"network-defaults/{instance.slug}.webp"
+
+
 class Network(models.Model):
     name = models.TextField()
     slug = models.SlugField(unique=True)
@@ -138,7 +150,13 @@ class Network(models.Model):
     patreon_creator_refresh_token = EncryptedCharField(max_length=500, blank=True, null=True)
     patreon_campaign_created_at = models.DateTimeField(blank=True, null=True, help_text="The date the creator launched their Patreon campaign.")
     website_url = models.URLField(blank=True, help_text="e.g., https://yournetwork.com")
-    default_image_url = models.URLField(blank=True, help_text="Fallback logo for RSS feeds")
+    # Fallback artwork for RSS feeds and custom mixes. default_image_url is the
+    # legacy paste-a-link field, kept so existing networks keep working and as
+    # the fallback; the creator UI now uploads instead. display_default_image
+    # resolves the two — read THAT, never the raw field.
+    default_image_url = models.URLField(blank=True, help_text="Legacy fallback logo URL (superseded by default_image_upload)")
+    default_image_upload = models.ImageField(upload_to=network_default_image_path, storage=select_media_storage, blank=True, null=True, help_text="Uploaded fallback logo for RSS feeds and mixes")
+    default_image_version = models.IntegerField(default=0)
     ignored_title_tags = models.TextField(blank=True, help_text="Comma-separated list of tags to strip during import (e.g., '(ad-free), premium')")
     description_cut_triggers = models.TextField(blank=True, help_text="Comma-separated phrases to trigger paragraph deletion (e.g., 'ad choices, leave a review')")
 
@@ -215,7 +233,28 @@ class Network(models.Model):
             return ''
         return f"{self.custom_font_upload.url}?v={self.custom_font_version}"
 
+    @property
+    def display_default_image(self):
+        """The network's fallback artwork for RSS feeds and mixes: the uploaded
+        image if there is one, else the legacy pasted URL. Read this, never
+        default_image_url — that field is now only the fallback, and reading it
+        directly silently ignores an upload."""
+        if self.default_image_upload:
+            return _versioned_image_url(self.default_image_upload, self.default_image_version)
+        return self.default_image_url
+
     def save(self, *args, **kwargs):
+        # Single-write, mirroring NetworkMix: process the fresh upload to WebP and
+        # write it ONCE at the stable key, then persist. _committed is False only
+        # for a just-uploaded file, so plain row re-saves never reprocess/re-PUT.
+        if self.default_image_upload and not self.default_image_upload._committed:
+            try:
+                data = process_image_field(self.default_image_upload, 500)
+                self.default_image_upload.save('default.webp', ContentFile(data), save=False)
+                self.default_image_version = (self.default_image_version or 0) + 1
+            except Exception as e:
+                logger.error(f"Default image processing failed for network {self.slug}: {e}", exc_info=True)
+
         super().save(*args, **kwargs)
 
         # Automatically invalidate podcast shells when the network is updated

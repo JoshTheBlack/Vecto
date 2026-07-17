@@ -28,10 +28,56 @@
                                     <label class="form-label text-muted small fw-bold">Website URL</label>
                                     <input type="url" name="website_url" class="form-control bg-black text-light border-secondary" value="{{ current_network.website_url }}" placeholder="https://...">
                                 </div>
-                                <div class="col-md-12 mb-3">
-                                    <label class="form-label text-muted small fw-bold">Default Image URL</label>
-                                    <input type="url" name="default_image_url" class="form-control bg-black text-light border-secondary" value="{{ current_network.default_image_url }}">
-                                    <div class="form-text text-muted">Fallback logo for RSS feeds and Custom Mixes.</div>
+                            </div>
+
+                            {% comment %}
+                            Fallback image: an UPLOAD, not a URL box. It lives
+                            OUTSIDE the settings form on purpose — nesting forms is
+                            invalid HTML, and its own form lets it post its own
+                            action (upload / remove) exactly like the font widget
+                            below. Network.save() processes it to WebP at a stable
+                            R2 key and bumps default_image_version to bust the CDN.
+                            {% endcomment %}
+                            <div class="col-md-12 mb-3">
+                                <label class="form-label text-muted small fw-bold">Fallback Image</label>
+                                <div class="form-text text-muted mb-2">Used by RSS feeds and Custom Mixes when a show has no artwork of its own.</div>
+                                <div class="d-flex align-items-start gap-3">
+                                    {% if current_network.display_default_image %}
+                                    <img src="{{ current_network.display_default_image }}" alt="Current fallback image"
+                                         class="rounded border border-secondary flex-shrink-0"
+                                         style="width: 96px; height: 96px; object-fit: cover;">
+                                    {% else %}
+                                    <div class="rounded border border-secondary d-flex align-items-center justify-content-center flex-shrink-0"
+                                         style="width: 96px; height: 96px; background-color: rgba(128,128,128,0.15);">
+                                        <i class="bi bi-image text-muted"></i>
+                                    </div>
+                                    {% endif %}
+                                    <div class="flex-grow-1" id="netDefaultImageControls">
+                                        <div class="input-group">
+                                            <input type="file" name="default_image_upload" id="netDefaultImageFile"
+                                                   class="form-control bg-black text-light border-secondary" accept="image/*" required
+                                                   form="netDefaultImageForm">
+                                            <button type="submit" class="btn btn-warning fw-bold" id="netDefaultImageBtn" form="netDefaultImageForm">
+                                                <i class="bi bi-cloud-upload"></i> {% if current_network.default_image_upload %}Replace{% else %}Upload{% endif %}
+                                            </button>
+                                        </div>
+                                        <div class="progress mt-2 d-none" id="netDefaultImageProgress"
+                                             style="height: 0.5rem; border-radius: var(--vecto-radius-sm); background-color: rgba(128,128,128,0.2);"
+                                             role="progressbar" aria-label="Upload progress">
+                                            <div class="progress-bar" style="width: 0%; background-color: var(--vecto-primary);"></div>
+                                        </div>
+                                        <div class="form-text text-muted d-none" id="netDefaultImageLabel">Uploading… 0%</div>
+                                        {% if current_network.default_image_upload %}
+                                        <button type="submit" class="btn btn-sm btn-outline-danger mt-2" form="netDefaultImageRemoveForm"
+                                                onclick="return confirm('Remove this network\'s fallback image?');">
+                                            <i class="bi bi-trash"></i> Remove
+                                        </button>
+                                        {% elif current_network.default_image_url %}
+                                        <div class="form-text text-muted mt-2">
+                                            <i class="bi bi-info-circle"></i> Currently using a legacy pasted URL. Uploading replaces it.
+                                        </div>
+                                        {% endif %}
+                                    </div>
                                 </div>
                             </div>
                             
@@ -152,6 +198,87 @@
 
                             <button type="submit" class="btn btn-warning fw-bold"><i class="bi bi-floppy"></i> Save Network Configurations</button>
                         </form>
+
+                        {% comment %}
+                        The fallback-image widget renders up inside the settings
+                        form (next to the other identity fields, where it belongs
+                        visually) but its controls carry form="netDefaultImageForm",
+                        so they submit THESE forms instead — HTML5 lets an input
+                        belong to a form by id from anywhere on the page. Nesting
+                        the forms would be invalid HTML and would post both actions
+                        at once.
+
+                        Not boosted: the JS below owns the submit so it can show
+                        upload + processing progress, and it finishes with a region
+                        swap rather than a navigation (see tab_notfound.html, the
+                        same shape). The remove form IS boosted — nothing to
+                        report on a delete.
+                        {% endcomment %}
+                        <form id="netDefaultImageForm" method="POST"
+                              action="{% url 'creator_settings' %}?network={{ current_network.slug }}&tab=network"
+                              enctype="multipart/form-data" hx-boost="false" class="d-none">
+                            {% csrf_token %}
+                            <input type="hidden" name="action" value="update_network_default_image">
+                        </form>
+                        <form id="netDefaultImageRemoveForm" method="POST"
+                              action="{% url 'creator_settings' %}?network={{ current_network.slug }}&tab=network" class="d-none">
+                            {% csrf_token %}
+                            <input type="hidden" name="action" value="update_network_default_image">
+                            <input type="hidden" name="remove" value="1">
+                        </form>
+                        <script>
+                        (function () {
+                            const form = document.getElementById('netDefaultImageForm');
+                            if (!form) return;
+                            const file  = document.getElementById('netDefaultImageFile');
+                            const btn   = document.getElementById('netDefaultImageBtn');
+                            const wrap  = document.getElementById('netDefaultImageProgress');
+                            const bar   = wrap.querySelector('.progress-bar');
+                            const label = document.getElementById('netDefaultImageLabel');
+
+                            form.addEventListener('submit', function (e) {
+                                e.preventDefault();
+                                if (!file.files.length) return;
+                                btn.disabled = true;
+                                wrap.classList.remove('d-none');
+                                label.classList.remove('d-none');
+                                bar.style.width = '0%';
+                                label.textContent = 'Uploading… 0%';
+
+                                const actionUrl = form.getAttribute('action');
+                                const xhr = new XMLHttpRequest();
+                                xhr.open('POST', actionUrl);
+                                xhr.upload.addEventListener('progress', function (ev) {
+                                    if (!ev.lengthComputable) return;
+                                    const pct = Math.round((ev.loaded / ev.total) * 100);
+                                    bar.style.width = pct + '%';
+                                    // The server re-encodes to WebP after the bytes
+                                    // land, so 100% is not "done".
+                                    label.textContent = pct < 100 ? 'Uploading… ' + pct + '%' : 'Processing image…';
+                                });
+                                const fail = function () {
+                                    btn.disabled = false;
+                                    wrap.classList.add('d-none');
+                                    label.classList.add('d-none');
+                                    bar.style.width = '0%';
+                                    alert('Upload failed — please try again.');
+                                };
+                                xhr.addEventListener('load', function () {
+                                    if (xhr.status >= 400) { fail(); return; }
+                                    // Region swap, never window.location.href: a real
+                                    // navigation reloads the page and kills the
+                                    // out-of-region player.
+                                    if (typeof htmx === 'undefined') { window.location.href = actionUrl; return; }
+                                    htmx.ajax('GET', actionUrl, {
+                                        target: '#boosted-region',
+                                        swap: 'outerHTML show:window:top',
+                                    });
+                                });
+                                xhr.addEventListener('error', fail);
+                                xhr.send(new FormData(form));
+                            });
+                        })();
+                        </script>
 
                         <h5 class="fw-bold mb-3 border-bottom border-secondary pb-2 mt-4 text-warning">Custom Font</h5>
                         <p class="text-muted small mb-3">Upload a self-hosted .woff2 file to use as this network's theme font. It's prepended to the font stack above, so the existing fallback still applies if it fails to load.</p>

@@ -10880,11 +10880,23 @@ class BoostOptOutContractTests(SimpleTestCase):
     Modals are not a reason either: base.html disposes an open modal on region
     swap so its backdrop can't outlive it."""
 
-    # Opt-outs that are correct, with the reason each is allowed to hard-navigate.
-    # Currently empty: NO form needs to. Uploads use hx-encoding, and the modal
-    # backdrop problem is solved centrally in base.html. Adding an entry here is
-    # a deliberate decision to stop someone's audio — justify it.
-    ALLOWED_FORM_OPT_OUTS = {}
+    # Opting out of boost is NOT the same as hard-navigating: a form whose own JS
+    # owns the submit must opt out (htmx must not also send it), and can still
+    # finish with a region swap. Those are listed here with the reason. What is
+    # banned is a form that opts out and then lets the BROWSER navigate.
+    ALLOWED_FORM_OPT_OUTS = {
+        'tab_notfound.html': (
+            'Its own JS preventDefault()s and sends an XHR so it can show upload '
+            'and processing progress, so htmx must not boost it too. It finishes '
+            'with an htmx region swap, not a navigation — '
+            'test_js_owned_uploads_finish_with_a_region_swap pins that.'
+        ),
+        'tab_network.html': (
+            'The fallback-image upload: same shape as tab_notfound — its own JS '
+            'owns the submit for upload/processing progress and finishes with a '
+            'region swap. The font form beside it IS boosted (hx-encoding).'
+        ),
+    }
 
     @property
     def TEMPLATE_ROOT(self):
@@ -10905,7 +10917,9 @@ class BoostOptOutContractTests(SimpleTestCase):
         # episodes and editing network settings all stopped playback.
         offenders = [
             (name, line) for name, line in self._opted_out_forms()
-            if name.startswith('tab_') or name.startswith('_') or name == 'creator_settings.html'
+            if (name.startswith('tab_') or name.startswith('_')
+                or name == 'creator_settings.html')
+            and name not in self.ALLOWED_FORM_OPT_OUTS
         ]
         self.assertEqual(offenders, [], msg=(
             'These creator forms still hx-boost="false" and will hard-navigate, '
@@ -10946,3 +10960,138 @@ class BoostOptOutContractTests(SimpleTestCase):
         self.assertIn('closeOpenModals', base)
         self.assertIn('.modal-backdrop', base)
         self.assertIn("classList.remove('modal-open')", base)
+
+    def test_js_owned_uploads_finish_with_a_region_swap(self):
+        # These forms own their own submit (so they opt out of boost), which means
+        # nothing stops them hard-navigating on success — and they did, with
+        # window.location.href, reloading the page and stopping playback. The only
+        # window.location.href allowed is the no-htmx fallback.
+        for name in ('tab_notfound.html', 'tab_network.html'):
+            with self.subTest(template=name):
+                txt = (self.TEMPLATE_ROOT / 'pod_manager' / 'creator_tabs' / name).read_text(encoding='utf-8')
+                self.assertIn("htmx.ajax('GET', actionUrl", txt)
+                self.assertIn("target: '#boosted-region'", txt)
+                for m in re.finditer(r'.*window\.location\.href\s*=.*', txt):
+                    line = m.group(0)
+                    if line.strip().startswith('//'):
+                        continue               # a comment about it, not a call
+                    self.assertIn("typeof htmx === 'undefined'", line,
+                                  msg='window.location.href outside the no-htmx fallback '
+                                      'would reload the page and stop playback: ' + line.strip())
+
+
+class MergeDeskPaneShapeTests(SimpleTestCase):
+    """The merge pane is three levels and every one of them matters.
+
+    htmx's disinherit returns "unset" for EVERY attribute lookup that passes
+    through the element — not just the attributes it sets. So a disinheriting
+    element that SURVIVES as the loaded body's parent strips hx-boost off the
+    merge forms (native submit -> hard refresh -> audio dies) and hx-target off
+    the nav (which falls back to the element itself and renders the body onto the
+    link you clicked — a second selector appearing under the first).
+
+    _lazy_pane gets away with hx-disinherit="*" because its loader targets the
+    PANE and is destroyed by its own swap. This loader targets its parent for the
+    same reason. A loader that targeted ITSELF would survive and poison the body.
+    """
+
+    @property
+    def _pane(self):
+        from django.conf import settings as django_settings
+        return (Path(django_settings.BASE_DIR) / 'pod_manager' / 'templates' / 'pod_manager'
+                / 'creator_tabs' / 'tab_merge.html').read_text(encoding='utf-8')
+
+    @property
+    def _body(self):
+        from django.conf import settings as django_settings
+        return (Path(django_settings.BASE_DIR) / 'pod_manager' / 'templates' / 'pod_manager'
+                / 'creator_tabs' / '_merge_desk_body.html').read_text(encoding='utf-8')
+
+    def test_the_container_is_plain(self):
+        # #merge-desk-body is the loaded body's PARENT, so any htmx attribute on
+        # it cascades into the body — and a disinherit on it would strip every
+        # inherited attribute, hx-boost included.
+        container = re.search(r'<div id="merge-desk-body"[^>]*>', self._pane)
+        self.assertIsNotNone(container, 'merge pane lost #merge-desk-body')
+        self.assertNotIn('hx-disinherit', container.group(0))
+        self.assertNotIn('hx-target', container.group(0))
+        self.assertNotIn('hx-boost', container.group(0))
+
+    def test_the_pane_offers_the_region_to_the_forms(self):
+        pane = re.search(r'<div class="tab-pane[^>]*id="list-merge"[^>]*>', self._pane)
+        self.assertIsNotNone(pane)
+        self.assertIn('hx-target="#boosted-region"', pane.group(0))
+
+    def test_the_loader_disinherits_but_destroys_itself(self):
+        # It may disinherit ONLY because its swap replaces its parent's
+        # innerHTML, so it does not survive to poison the loaded body.
+        loader = re.search(r'<div hx-get="[^"]*creator_tab_partial[^"]*"[^>]*>', self._pane) \
+            or re.search(r'<div hx-get=[^>]*>', self._pane)
+        self.assertIsNotNone(loader)
+        self.assertIn('hx-disinherit="*"', loader.group(0))
+        self.assertIn('hx-target="#merge-desk-body"', loader.group(0))
+        self.assertIn('hx-swap="innerHTML', loader.group(0))
+
+    def test_every_in_tab_nav_element_targets_the_body_explicitly(self):
+        # They cannot inherit it: the pane offers #boosted-region, which is right
+        # for the forms and wrong for them. Swapping just the body is the special
+        # case, so it says so.
+        bad = []
+        for m in re.finditer(r'<[a-zA-Z][^>]*hx-get[^>]*>', self._body):
+            t = m.group(0)
+            if 'hx-target="#merge-desk-body"' not in t or 'hx-select="unset"' not in t:
+                bad.append(self._body[:m.start()].count('\n') + 1)
+        self.assertEqual(bad, [], msg=(
+            'merge nav element(s) without an explicit hx-target/hx-select; they '
+            f'would swap the whole region instead of this pane: lines {bad}'))
+
+    def test_the_action_forms_boost_into_the_region(self):
+        # Merge / Split must NOT target the merge body (that was the old trap) and
+        # must not opt out of boost (that was the old workaround, which killed
+        # playback on every merge).
+        for m in re.finditer(r'<form[^>]*>', self._body):
+            t = m.group(0)
+            if 'hx-get' in t:
+                continue                      # in-tab nav form, covered above
+            line = self._body[:m.start()].count('\n') + 1
+            with self.subTest(line=line):
+                self.assertNotIn('hx-boost="false"', t)
+                self.assertNotIn('hx-target', t)   # inherits #boosted-region
+
+
+class HtmxSettleClassStrippingTests(SimpleTestCase):
+    """htmx reverts an id'd element's attributes to the SERVER's version ~20ms
+    after a swap (its settle phase, for any id present in both the old and new
+    content). Any JS library that stores state in classes on that element loses
+    them — its DOM survives, the hooks its CSS targets do not.
+
+    This was the single root cause of two bugs that looked unrelated: Quill's link
+    tooltip rendering as a stray text box (container lost ql-container/ql-snow, so
+    .ql-snow .ql-hidden stopped matching) and the calendar rendering completely raw
+    after adding an entry (#calendar lost fc/fc-theme-standard). Both only fired on
+    a SAME-PAGE swap, which is what made them look intermittent.
+
+    The rule: never put an id on an element a library initialises onto."""
+
+    @property
+    def TEMPLATE_ROOT(self):
+        from django.conf import settings as django_settings
+        return Path(django_settings.BASE_DIR) / 'pod_manager' / 'templates' / 'pod_manager'
+
+    def test_quill_mounts_on_an_id_less_element(self):
+        txt = (self.TEMPLATE_ROOT / 'episode_detail.html').read_text(encoding='utf-8')
+        self.assertIn('data-quill-editor', txt)
+        self.assertNotIn('editDescContainer', txt,
+                         msg='Quill container has an id again — htmx settle will strip '
+                             'ql-container/ql-snow on a same-page swap and the link '
+                             'tooltip will render as a stray input.')
+        self.assertIn("new Quill(document.querySelector('[data-quill-editor]')", txt)
+
+    def test_fullcalendar_mounts_on_an_id_less_element(self):
+        txt = (self.TEMPLATE_ROOT / 'calendar.html').read_text(encoding='utf-8')
+        # #calendar stays: 24 CSS rules hang off it, and FC never touches it.
+        self.assertIn('id="calendar"', txt)
+        self.assertIn('data-calendar-mount', txt)
+        self.assertIn('new FullCalendar.Calendar(mountEl', txt,
+                      msg='FullCalendar must mount on the id-less inner div, or htmx '
+                          'settle strips its fc-* root classes on a same-page swap.')

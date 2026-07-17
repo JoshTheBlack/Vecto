@@ -377,7 +377,7 @@
                 <div class="feed-row" data-type="supermix" data-title="{{ item.mix.name|lower }}" data-lastep="">
                     <div class="feed-header" onclick="toggleFeed(this)">
                         <div class="feed-art-container">
-                            <img src="{{ item.mix.display_image|default:item.mix.network.default_image_url }}" alt="Art">
+                            <img src="{{ item.mix.display_image|default:item.mix.network.display_default_image }}" alt="Art">
                         </div>
                         <div class="min-w-0 flex-grow-1">
                             <div class="d-flex align-items-center">
@@ -417,7 +417,7 @@
                      data-lastep="{{ item.podcast.episodes.first.pub_date|date:'c' }}">
                     <div class="feed-header" onclick="toggleFeed(this)">
                         <div class="feed-art-container">
-                            <img src="{{ item.podcast.image_url|default:item.podcast.network.default_image_url }}" alt="Art">
+                            <img src="{{ item.podcast.image_url|default:item.podcast.network.display_default_image }}" alt="Art">
                         </div>
                         <div class="min-w-0 flex-grow-1">
                             <div class="d-flex align-items-center">
@@ -461,7 +461,7 @@
         <div class="feed-row" data-type="usermixes" data-title="{{ mix.name|lower }}" data-lastep="">
             <div class="feed-header" onclick="toggleFeed(this)">
                 <div class="feed-art-container">
-                    <img src="{{ mix.display_image|default:current_network.default_image_url }}" alt="Art">
+                    <img src="{{ mix.display_image|default:current_network.display_default_image }}" alt="Art">
                 </div>
                 <div class="min-w-0 flex-grow-1">
                     <div class="d-flex align-items-center">

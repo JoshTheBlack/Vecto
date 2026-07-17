@@ -471,7 +471,6 @@ def handle_update_network(request, current_network):
 
     current_network.patreon_campaign_id = request.POST.get('patreon_campaign_id', '')
     current_network.website_url = request.POST.get('website_url', '')
-    current_network.default_image_url = request.POST.get('default_image_url', '')
     current_network.ignored_title_tags = request.POST.get('ignored_title_tags', '')
     current_network.description_cut_triggers = request.POST.get('description_cut_triggers', '')
     current_network.global_footer_public = request.POST.get('footer_public', '')
@@ -530,6 +529,42 @@ def handle_update_network_font(request, current_network):
     current_network.custom_font_family = re.sub(r'[^\w \-]', '', request.POST.get('custom_font_family', '')).strip()[:100]
     current_network.save()
     messages.success(request, "Custom font saved.")
+
+
+def handle_update_network_default_image(request, current_network):
+    """Upload / remove the network's fallback logo (RSS feeds + custom mixes).
+
+    Mirrors handle_update_network_font: one action does both, keyed on remove=1.
+    The image itself is processed to WebP at a stable key by Network.save(),
+    which also bumps default_image_version — the key is CDN-cached immutable, so
+    without the bump a re-upload would never reach browsers.
+
+    This replaced a plain default_image_url text box; that field survives as the
+    legacy fallback (see Network.display_default_image), so removing an upload
+    reveals any old pasted URL rather than leaving the network with no artwork.
+    """
+    if request.POST.get('remove') == '1':
+        if current_network.default_image_upload:
+            current_network.default_image_upload.delete(save=False)
+        current_network.default_image_upload = None
+        current_network.save()
+        messages.success(request, "Fallback image removed.")
+        return
+
+    image = request.FILES.get('default_image_upload')
+    if not image:
+        messages.error(request, "No image selected.")
+        return
+    if image.size > 8 * 1024 * 1024:
+        messages.error(request, "Image too large (max 8MB).")
+        return
+
+    current_network.default_image_upload = image
+    current_network.save()   # processes to WebP + bumps the version
+    if current_network.default_image_upload:
+        messages.success(request, "Fallback image saved.")
+    else:
+        messages.error(request, "That image could not be processed — try another file.")
 
 
 def handle_update_show(request, current_network):
@@ -863,6 +898,7 @@ ACTION_HANDLERS = {
     'run_manual_sync':      handle_run_manual_sync,
     'update_network':       handle_update_network,
     'update_network_font':  handle_update_network_font,
+    'update_network_default_image': handle_update_network_default_image,
     'update_show':          handle_update_show,
     'add_show':             handle_add_show,
     'merge_episodes':       handle_merge_episodes,

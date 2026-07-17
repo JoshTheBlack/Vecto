@@ -6,15 +6,15 @@
             <p class="text-muted small mb-4">A random image + caption pair from this pool is shown whenever a visitor hits a broken link on your network. Leave the pool empty for a plain themed fallback.</p>
 
             {% comment %}
-Boosted despite the upload (see docs/boosted-navigation.md). enctype stays for the
-no-JS submit; hx-encoding is what makes htmx send this as FormData over XHR
-instead of letting the browser hard-navigate — which is what used to stop
-playback on save. The trade is the browser's native upload progress bar, not
-worth a page reload for an image. base.html disposes any open modal on region
-swap, so a backdrop cannot outlive its modal.
+NOT boosted, and hx-encoding would be dead weight: the script at the bottom
+preventDefault()s this submit and sends its own XHR so it can show upload +
+processing progress (the server re-encodes, and animated GIFs take seconds).
+htmx never sees the submit. What that script must NOT do is finish with a hard
+navigation — it used to, which reloaded the page and killed playback. It now
+swaps #boosted-region instead.
 {% endcomment %}
 <form method="POST" action="{% url 'creator_settings' %}?network={{ current_network.slug }}&tab=notfound"
-      enctype="multipart/form-data" hx-encoding="multipart/form-data" id="notfoundAddForm" class="row g-3 align-items-end mb-4 pb-4 border-bottom border-secondary">
+      enctype="multipart/form-data" hx-boost="false" id="notfoundAddForm" class="row g-3 align-items-end mb-4 pb-4 border-bottom border-secondary">
                 {% csrf_token %}
                 <input type="hidden" name="action" value="add_notfound_entry">
                 <div class="col-md-5">
@@ -116,9 +116,16 @@ swap, so a backdrop cannot outlive its modal.
         };
         xhr.addEventListener('load', function () {
             if (xhr.status >= 400) { fail(); return; }
-            // Server redirects back to this tab; navigate there so the fresh
-            // pool (and any messages) render.
-            window.location.href = actionUrl;
+            // Re-render via a region swap, NOT window.location.href: a real
+            // navigation reloads the page and destroys the out-of-region
+            // floating player, so adding a 404 image stopped playback. GETting
+            // the same URL through htmx sends HX-Request, so the response is the
+            // region — the fresh pool and any messages render, audio keeps going.
+            if (typeof htmx === 'undefined') { window.location.href = actionUrl; return; }
+            htmx.ajax('GET', actionUrl, {
+                target: '#boosted-region',
+                swap: 'outerHTML show:window:top',
+            }).then(function () { history.pushState({ htmx: true }, '', actionUrl); });
         });
         xhr.addEventListener('error', fail);
         xhr.send(new FormData(form));

@@ -140,11 +140,23 @@
 
 <div class="card border-secondary">
     <div class="card-body">
+        {% comment %}
+        #calendar keeps its id ONLY as a CSS + config hook — FullCalendar mounts on
+        the inner, id-less div. htmx reverts an id'd element's attributes to the
+        server's version ~20ms after a swap (settle), so mounting FC on #calendar
+        meant a same-page swap (adding an entry) stripped the fc/fc-theme-standard/
+        fc-direction-ltr classes it adds at render. Its DOM survived, but every
+        FullCalendar rule is scoped under .fc*, so the whole calendar rendered raw.
+        Our own rules are #calendar-scoped, which is why THEY kept working and the
+        bug looked like a missing stylesheet. Custom properties inherit down to the
+        mount and #calendar .fc-* descendant rules still match, so all 24 rules are
+        unaffected. See docs/boosted-navigation.md.
+        {% endcomment %}
         <div id="calendar"
              data-events-url="{% url 'calendar_events' %}"
              data-manage-url="{% url 'calendar_manage' %}"
              data-owner="{{ is_owner|yesno:'1,0' }}"
-             data-script-url="{% static 'pod_manager/js/fullcalendar.min.js' %}"></div>
+             data-script-url="{% static 'pod_manager/js/fullcalendar.min.js' %}"><div data-calendar-mount></div></div>
     </div>
 </div>
 
@@ -273,6 +285,9 @@ region and the floating player keeps playing.
 (function () {
     const el = document.getElementById('calendar');
     if (!el) return;
+    // FC mounts on the id-less inner div: htmx's settle would revert an id'd
+    // element's attributes to the server's and strip FC's own root classes.
+    const mountEl = el.querySelector('[data-calendar-mount]') || el;
 
     const eventsUrl = el.dataset.eventsUrl;
     const manageUrl = el.dataset.manageUrl;
@@ -467,7 +482,7 @@ region and the floating player keeps playing.
 
     function initCal() {
         if (window._vectoCal) { try { window._vectoCal.destroy(); } catch (err) {} window._vectoCal = null; }
-        const cal = new FullCalendar.Calendar(el, {
+        const cal = new FullCalendar.Calendar(mountEl, {
             initialView: 'listWeek',
             timeZone: 'UTC',  // events are handed to FC as Eastern wall-clock
                               // with the tz stripped, so the rendered clock is ET

@@ -97,6 +97,48 @@ Heavy pages fetch their parts on demand (Creator Settings tabs via `creator_tab_
 
 Why it can't be one element: `hx-target="this"` **resolves to the nearest ancestor that sets the attribute, not to the inheriting child** (htmx's `getTarget`/`findThisElement`), and an inherited `hx-select="unset"` reads as "no select". So a boosted form in the loaded body would swap an entire page response into its own loader. Hiding the attrs with `hx-disinherit="hx-target ..."` does not fix it — disinherit *blocks* inheritance, so the form falls back to htmx's boosted default of `<body>`, whose innerHTML swap destroys the player. Both failure modes were live bugs. `LazyPaneBoostTargetTests` guards the shape.
 
+### Never put an `id` on an element a JS library styles itself
+
+htmx's settle phase **reverts an id'd element's attributes to the server-rendered version** ~20ms after a swap, for any `id` present in *both* the old and new content:
+
+```js
+querySelectorAll("[id]"), function(newNode) {
+  const oldNode = parent.querySelector(tag + "[id='" + newNode.id + "']")
+  if (oldNode) {
+    const serverAttrs = newNode.cloneNode()                  // snapshot server attrs
+    cloneAttributes(newNode, oldNode)                        // swap in OLD attrs
+    tasks.push(() => cloneAttributes(newNode, serverAttrs))  // settle: revert to server
+  }
+}
+```
+
+So the sequence is: swap → inline scripts run → a library initialises and adds its classes → **settle deletes them.** The library's DOM children survive; the hooks its CSS targets do not. The symptom is a widget that is fully present and completely unstyled.
+
+It only fires on a **same-page swap** (same id in old and new — a form POST that re-renders the page it lives on). Cold loads and boosts between *different* pages are fine, which is what makes it look intermittent and unrelated to htmx at all.
+
+This was the single root cause of two bugs that looked nothing alike:
+- **Quill** — `#editDescContainer` lost `ql-container ql-snow`, so `.ql-snow .ql-hidden{display:none}` stopped matching and the link tooltip's `<input>` rendered as a stray text box you could type into but that never saved.
+- **The calendar** — `#calendar` lost `fc fc-media-screen fc-direction-ltr fc-theme-standard`, so every FullCalendar rule (all scoped under `.fc*`) stopped applying. Our own `#calendar`-scoped rules kept working, which disguised it as a missing stylesheet.
+
+**The rule: select library-owned elements by `data-*` attribute, never `id`** — htmx only settles elements that have one. If CSS depends on the id (the calendar has 24 such rules), keep the id on a **wrapper** and mount the library on an inner, id-less div: custom properties inherit down and descendant selectors still match. Do **not** re-initialise on `htmx:afterSettle` — that races the same revert. `HtmxSettleClassStrippingTests` guards both mounts.
+
+### `hx-disinherit` is only safe on a loader that destroys itself
+
+This is the sharpest edge in the whole system, and it has drawn blood three times. htmx's disinherit does **not** mean "don't pass down my attributes". Read the source:
+
+```js
+if (o && (o === "*" || o.split(" ").indexOf(n) >= 0)) { return "unset" }
+```
+
+For **any** attribute lookup that walks through an element carrying `hx-disinherit="*"`, htmx returns `unset` — whether or not that element sets the attribute. Inheritance stops dead there. A descendant of such an element inherits *nothing*: not `hx-target`, and **not `hx-boost`**.
+
+So it is only ever safe on an element that **does not survive its own swap**. `_lazy_pane`'s loader targets the *pane* (its parent) with `innerHTML`, so the swap deletes the loader and its disinherit along with it; the loaded body's parent is the clean pane. A loader that targets **itself** survives as the loaded body's parent and poisons everything inside it — permanently, and invisibly:
+
+- forms lose `hx-boost` → native submit → full reload → **audio dies**;
+- links lose `hx-target` → htmx falls back to the element itself → the response renders *onto the link you clicked* (the merge desk grew a second podcast selector under the first).
+
+If a container must persist around lazily-loaded content (the merge desk does, because its in-tab nav re-swaps the same body), keep the container **plain** and put the shared swap attrs on the *elements that need them* instead. `tab_merge.html` is the worked example: pane offers `#boosted-region` (the default the forms want), container is inert, self-destructing loader disinherits, and each nav element names `hx-target="#merge-desk-body"` explicitly. `MergeDeskPaneShapeTests` pins all four.
+
 Other rules for lazy content:
 
 - **`hx-select="unset"` on any loader whose response is a bare fragment.** It overrides the inherited `hx-select="#boosted-region"`, which would otherwise search a fragment for a region it doesn't contain and swap in nothing.

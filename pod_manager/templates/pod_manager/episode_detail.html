@@ -343,8 +343,8 @@
                         <div class="col-md-auto text-center text-md-start mb-3 mb-md-0">
                             {% if ep.podcast.image_url %}
                                 <img src="{{ ep.podcast.image_url }}" class="img-fluid rounded shadow-lg border border-secondary" style="max-width: 280px;">
-                            {% elif ep.podcast.network.default_image_url %}
-                                <img src="{{ ep.podcast.network.default_image_url }}" class="img-fluid rounded shadow-lg border border-secondary" style="max-width: 280px;">
+                            {% elif ep.podcast.network.display_default_image %}
+                                <img src="{{ ep.podcast.network.display_default_image }}" class="img-fluid rounded shadow-lg border border-secondary" style="max-width: 280px;">
                             {% else %}
                                 <div class="rounded bg-dark d-flex justify-content-center align-items-center border border-secondary shadow-lg mx-auto mx-md-0" style="width: 280px; height: 280px; max-width: 100%;">
                                     <i class="bi bi-mic text-warning" style="font-size: 4rem;"></i>
@@ -400,7 +400,7 @@
                                         </a>
                                     </div>
                                     {% if ep.audio_url_public %}
-                                    <div class="vecto-remote js-episode-remote{% if chapters %} has-chapters{% endif %}" data-link="{% url 'episode_detail' ep.id %}" data-audio="{{ ep.audio_url_public }}" data-title="{{ ep.title }}" data-show="{{ ep.podcast.title }}" data-cover="{{ ep.podcast.image_url|default:ep.podcast.network.default_image_url|default:'' }}" data-chapters="1">
+                                    <div class="vecto-remote js-episode-remote{% if chapters %} has-chapters{% endif %}" data-link="{% url 'episode_detail' ep.id %}" data-audio="{{ ep.audio_url_public }}" data-title="{{ ep.title }}" data-show="{{ ep.podcast.title }}" data-cover="{{ ep.podcast.image_url|default:ep.podcast.network.display_default_image|default:'' }}" data-chapters="1">
                                         <button type="button" class="vecto-remote-play" title="Play"><i class="bi bi-play-fill"></i></button>
                                         <span class="vecto-remote-time vecto-remote-cur">0:00</span>
                                         <div class="vecto-remote-track"><div class="vecto-remote-fill"></div></div>
@@ -408,7 +408,7 @@
                                     </div>
                                     {% endif %}
                                 {% elif ep.raw_audio_url %}
-                                <div class="vecto-remote js-episode-remote{% if chapters %} has-chapters{% endif %}" data-link="{% url 'episode_detail' ep.id %}" data-audio="{{ ep.raw_audio_url }}" data-title="{{ ep.title }}" data-show="{{ ep.podcast.title }}" data-cover="{{ ep.podcast.image_url|default:ep.podcast.network.default_image_url|default:'' }}" data-chapters="1">
+                                <div class="vecto-remote js-episode-remote{% if chapters %} has-chapters{% endif %}" data-link="{% url 'episode_detail' ep.id %}" data-audio="{{ ep.raw_audio_url }}" data-title="{{ ep.title }}" data-show="{{ ep.podcast.title }}" data-cover="{{ ep.podcast.image_url|default:ep.podcast.network.display_default_image|default:'' }}" data-chapters="1">
                                     <button type="button" class="vecto-remote-play" title="Play"><i class="bi bi-play-fill"></i></button>
                                     <span class="vecto-remote-time vecto-remote-cur">0:00</span>
                                     <div class="vecto-remote-track"><div class="vecto-remote-fill"></div></div>
@@ -462,7 +462,7 @@
                                     <div class="collapse mt-3" id="publicAudioCollapse">
                                         <div class="card card-body bg-dark border-secondary">
                                             <p class="small text-muted mb-2">Public (Ad-Supported) Audio:</p>
-                                            <div class="vecto-remote js-episode-remote" data-link="{% url 'episode_detail' ep.id %}" data-audio="{{ ep.audio_url_public }}" data-title="{{ ep.title }} (Ad-Supported)" data-show="{{ ep.podcast.title }}" data-cover="{{ ep.podcast.image_url|default:ep.podcast.network.default_image_url|default:'' }}">
+                                            <div class="vecto-remote js-episode-remote" data-link="{% url 'episode_detail' ep.id %}" data-audio="{{ ep.audio_url_public }}" data-title="{{ ep.title }} (Ad-Supported)" data-show="{{ ep.podcast.title }}" data-cover="{{ ep.podcast.image_url|default:ep.podcast.network.display_default_image|default:'' }}">
                                                 <button type="button" class="vecto-remote-play" title="Play"><i class="bi bi-play-fill"></i></button>
                                                 <span class="vecto-remote-time vecto-remote-cur">0:00</span>
                                                 <div class="vecto-remote-track"><div class="vecto-remote-fill"></div></div>
@@ -718,7 +718,20 @@
 
                         <div class="mb-5">
                             <label class="form-label text-light fw-bold">Clean Description</label>
-                            <div id="editDescContainer" class="bg-dark text-light">
+                            {% comment %}
+                            NO id here, deliberately — see docs/boosted-navigation.md.
+                            htmx reverts the attributes of any id'd element to the
+                            SERVER's version ~20ms after a swap (its settle phase,
+                            for elements whose id exists in both the old and new
+                            content). Quill stores its state in classes on this
+                            element (ql-container ql-snow), so with an id here a
+                            same-page swap — e.g. the audio upload — left Quill's
+                            DOM built but its classes stripped. Every Quill rule is
+                            scoped under .ql-snow, so the link tooltip stopped being
+                            hidden and rendered as a stray text box you could type
+                            into but never save. Select by data attribute instead.
+                            {% endcomment %}
+                            <div data-quill-editor class="bg-dark text-light">
                                 {{ ep.clean_description|default:ep.raw_description|safe }}
                             </div>
                         </div>
@@ -831,8 +844,16 @@
                                     <i class="bi bi-cloud-upload me-1"></i>Upload &amp; Mirror
                                 </button>
                             </div>
-                            <div class="progress mt-2 d-none" id="uploadAudioProgress" style="height: 0.5rem;" role="progressbar" aria-label="Upload progress">
-                                <div class="progress-bar bg-warning" style="width: 0%"></div>
+                            {% comment %}
+                            Themed off --vecto-primary, not bg-warning: every
+                            network sets its own primary, so a hardcoded Bootstrap
+                            colour ignores the theme. Radius comes from the token
+                            for the same reason.
+                            {% endcomment %}
+                            <div class="progress mt-2 d-none" id="uploadAudioProgress"
+                                 style="height: 0.5rem; border-radius: var(--vecto-radius-sm); background-color: rgba(128,128,128,0.2);"
+                                 role="progressbar" aria-label="Upload progress">
+                                <div class="progress-bar" style="width: 0%; background-color: var(--vecto-primary);"></div>
                             </div>
                             <div class="form-text text-muted">Attaches to the Premium / Ad-Free slot and mirrors to R2. Overwrites any existing premium audio and re-queues transcription.</div>
                         </form>
@@ -977,7 +998,10 @@
     (() => {
         
         // --- 1. INITIALIZE QUILL RTE ---
-        const quill = new Quill('#editDescContainer', {
+        // Selected by data attribute, NOT id: an id here would let htmx's settle
+        // phase revert this element's attributes to the server's after a same-page
+        // swap, deleting the ql-container/ql-snow classes Quill adds at init.
+        const quill = new Quill(document.querySelector('[data-quill-editor]'), {
             theme: 'snow',
             modules: {
                 toolbar: [

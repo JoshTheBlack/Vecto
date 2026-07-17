@@ -105,7 +105,7 @@ class RSSFeedBuilder:
             description=safe_description,
             website=network.website_url or self.base_url,
             explicit=True,
-            image=image_url or network.default_image_url or "https://example.com/logo.png",
+            image=image_url or network.display_default_image or "https://example.com/logo.png",
             authors=[Person(name=network.name, email=network.contact_email or "hosts@example.com")],
             owner=Person(name=network.name, email=network.contact_email or "hosts@example.com"),
             withhold_from_itunes=True,
@@ -477,7 +477,7 @@ def generate_mix_feed(request, unique_id):
 
     if not shell:
         # Generate mix shell on the fly (lightweight)
-        builder = RSSFeedBuilder(base_url, user_mix.name, f"Custom blended feed for {user_mix.user.first_name}.", user_mix.display_image or user_mix.network.default_image_url, user_mix.network)
+        builder = RSSFeedBuilder(base_url, user_mix.name, f"Custom blended feed for {user_mix.user.first_name}.", user_mix.display_image or user_mix.network.display_default_image, user_mix.network)
         raw_xml = builder.render()
         shell = (raw_xml.split('</channel>')[0], "</channel></rss>")
         cache.set(cache_key, shell, timeout=None)
@@ -554,7 +554,7 @@ def generate_network_mix_feed(request, network_slug, mix_slug):
     shell = cache.get(cache_key)
 
     if not shell:
-        builder = RSSFeedBuilder(base_url, network_mix.name, f"A curated network mix by {network_mix.network.name}.", network_mix.display_image or network_mix.network.default_image_url, network_mix.network)
+        builder = RSSFeedBuilder(base_url, network_mix.name, f"A curated network mix by {network_mix.network.name}.", network_mix.display_image or network_mix.network.display_default_image, network_mix.network)
         raw_xml = builder.render()
         shell = (raw_xml.split('</channel>')[0], "</channel></rss>")
         cache.set(cache_key, shell, timeout=None)

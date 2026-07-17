@@ -1,30 +1,46 @@
 {% comment %}
-Merge Desk pane, in divergence C's outer/inner split (see
-planned_features_htmx_base_swap.txt and docs/boosted-navigation.md).
+Merge Desk pane. THREE levels, and the nesting is load-bearing — see
+docs/boosted-navigation.md and the divergence C notes in
+planned_features_htmx_base_swap.txt.
 
-This used to be ONE div carrying the loader's self-target
-(hx-target="#merge-desk-body" + innerHTML + select=unset) AND hosting the loaded
-body — the exact shape the _lazy_pane fix removed. The consequence: the merge
-body's POST forms (Merge Episodes / Split Episode) could not be boosted, because
-they would inherit that self-target and swap a whole settings page into the merge
-body. They carried hx-boost="false" instead — born that way in 7c1ad09, the same
-commit that introduced this pane — so merging hard-navigated and killed playback.
+  1. The PANE carries the #boosted-region swap, so the merge body's POST forms
+     (Merge Episodes / Split Episode) boost into a clean region swap and the
+     out-of-region floating player survives. They used to be hx-boost="false" —
+     born that way in 7c1ad09, the same commit that introduced this pane —
+     precisely because there was nowhere safe for them to inherit from, so
+     merging hard-navigated and killed playback.
 
-Split, the OUTER pane hands #boosted-region to those forms and the INNER loader
-keeps its self-targeting attrs behind hx-disinherit="*", so they boost into a
-clean region swap and the out-of-region floating player survives.
+  2. #merge-desk-body is a PLAIN container. It must stay plain. It is the parent
+     of the loaded body, so any htmx attribute on it is inherited by everything
+     inside — and hx-disinherit on it would be worse: htmx's disinherit returns
+     "unset" for EVERY attribute lookup that passes through the element, not just
+     the ones it sets, so a disinheriting parent strips hx-boost off the forms
+     too (native submit, hard refresh, audio dead) and hx-target off the nav
+     (which then falls back to the element itself and renders the body onto the
+     link that was clicked).
+
+  3. The LOADER does the one-shot GET into #merge-desk-body and is destroyed by
+     its own swap (it replaces its parent's innerHTML), taking hx-disinherit="*"
+     with it. That is why _lazy_pane can use the same trick safely: its loader
+     targets the pane and disappears. A loader that targeted ITSELF would survive
+     as the body's parent and poison it — which is exactly the bug this comment
+     exists to prevent someone re-introducing.
 
 The merge desk's own in-tab nav (mode switch / search / the three paginators)
-sets hx-target="#merge-desk-body" on each link, so it still swaps just this body.
+therefore sets hx-target="#merge-desk-body" explicitly per element in
+_merge_desk_body.html. That is the right split of responsibility: swapping just
+this body is the special case and says so, while the forms get the sensible
+default (a region swap) by inheriting from the pane.
 {% endcomment %}
 <div class="tab-pane fade {% if request.GET.tab == 'merge' %}show active{% endif %}" id="list-merge" role="tabpanel"
      hx-target="#boosted-region" hx-select="#boosted-region" hx-swap="outerHTML show:window:top" hx-push-url="false">
-    <div id="merge-desk-body"
-         hx-get="{% url 'creator_tab_partial' 'merge' %}?network={{ current_network.slug }}&{{ request.GET.urlencode }}"
-         hx-trigger="{% if request.GET.tab == 'merge' %}load{% else %}shown.bs.tab from:#list-merge-list once{% endif %}"
-         hx-target="#merge-desk-body" hx-select="unset" hx-swap="innerHTML show:window:top" hx-push-url="false" hx-disinherit="*">
-        <div class="text-center py-5 text-muted">
-            <span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span> Loading…
+    <div id="merge-desk-body">
+        <div hx-get="{% url 'creator_tab_partial' 'merge' %}?network={{ current_network.slug }}&{{ request.GET.urlencode }}"
+             hx-trigger="{% if request.GET.tab == 'merge' %}load{% else %}shown.bs.tab from:#list-merge-list once{% endif %}"
+             hx-target="#merge-desk-body" hx-select="unset" hx-swap="innerHTML show:window:top" hx-push-url="false" hx-disinherit="*">
+            <div class="text-center py-5 text-muted">
+                <span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span> Loading…
+            </div>
         </div>
     </div>
 </div>

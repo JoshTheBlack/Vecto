@@ -200,8 +200,8 @@
                         <div class="flex-shrink-0">
                             {% if ep.podcast.image_url %}
                                 <img src="{{ ep.podcast.image_url }}" class="episode-art" alt="{{ ep.podcast.title }} artwork">
-                            {% elif ep.podcast.network.default_image_url %}
-                                <img src="{{ ep.podcast.network.default_image_url }}" class="episode-art" alt="">
+                            {% elif ep.podcast.network.display_default_image %}
+                                <img src="{{ ep.podcast.network.display_default_image }}" class="episode-art" alt="">
                             {% else %}
                                 <div class="episode-art episode-art-fallback">
                                     <i class="bi bi-mic text-warning fs-3"></i>
@@ -261,7 +261,7 @@
                                         data-audio="{{ ep.raw_audio_url }}"
                                         data-title="{{ ep.title }}"
                                         data-show="{{ ep.podcast.title }}"
-                                        data-cover="{{ ep.podcast.image_url|default:ep.podcast.network.default_image_url|default:'' }}"
+                                        data-cover="{{ ep.podcast.image_url|default:ep.podcast.network.display_default_image|default:'' }}"
                                         data-link="{% url 'episode_detail' ep.id %}">
                                     <i class="bi bi-play-circle"></i> Play Episode
                                 </button>

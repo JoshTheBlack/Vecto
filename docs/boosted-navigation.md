@@ -27,7 +27,16 @@ This is not cosmetic plumbing. It changes the runtime contract for **every inlin
 
 ### The nav persists — push nav state explicitly
 
-Because the nav now lives outside the region, **nothing re-renders it after a swap**. Any nav-visible state that can change must be pushed by hand. The avatar picker is the live example: `update_avatar_preference` returns the new URL and the profile page assigns it to `#navbarAvatar`. Changing a nav-visible value server-side and expecting it to appear is a silent no-op. (An htmx OOB swap is the other option.)
+Because the nav now lives outside the region, **nothing re-renders it after a swap**. Any nav-visible state that can change must be pushed by hand. Changing a nav-visible value server-side and expecting it to appear is a silent no-op — it keeps rendering the old value until a real page load, which is exactly why this class of bug reads as "it saved, but it didn't".
+
+Three live examples, two shapes:
+
+- **Assign it from JS** — the avatar *picker*: `update_avatar_preference` returns the new URL and the profile page assigns it to `#navbarAvatar.src`.
+- **Push an OOB fragment** — the network **logo** (`tab_network.html`) and the avatar **upload** (`user_profile.html`). Both re-render the same snippet the nav uses (`snippets/_navbar_logo.html`, `snippets/_navbar_avatar.html`) inside an `hx-swap-oob="true"` wrapper, so the live copy and the pushed copy cannot drift. The avatar upload is the cautionary tale: the picker had been pushing by hand for months, so a *source change* updated the nav while an *upload* did not.
+
+**An OOB fragment must be gated on `is_htmx`.** `hx-swap-oob` only means anything in an AJAX **response** — htmx processes it there. On a full page load nothing does, so the fragment just renders inline as a stray, duplicate-id'd copy of whatever it was pushing. This is not hypothetical: `tab_network.html` is an **eager** include in `creator_settings.html` (not a lazy pane), so an ungated OOB put a second 32px logo in the middle of the tab on every F5. The `htmx` context processor exposes `is_htmx` (same condition as the middleware) for exactly this; `NavbarLogoPushTests` pins both that the fragment appears on an HX response and that it does not on a full load.
+
+The trap generalises: **any template that is ever rendered on a full load** — which is every eager tab — cannot carry a bare OOB fragment.
 
 ### Base-swap: the server renders only the region on HX requests
 
@@ -122,6 +131,8 @@ This was the single root cause of two bugs that looked nothing alike:
 
 **The rule: select library-owned elements by `data-*` attribute, never `id`** — htmx only settles elements that have one. If CSS depends on the id (the calendar has 24 such rules), keep the id on a **wrapper** and mount the library on an inner, id-less div: custom properties inherit down and descendant selectors still match. Do **not** re-initialise on `htmx:afterSettle` — that races the same revert. `HtmxSettleClassStrippingTests` guards both mounts.
 
+**A `setTimeout` is not a fix, and "it works" is not evidence you're safe.** The publish page mounted Quill on `#descEditor` behind a comment claiming its `setTimeout` deferred init past the settle window — the call passed *no delay*, so init landed at ~0ms, well inside it. What actually saved it was that its container is always server-rendered empty, which hid the symptom rather than avoiding the cause. Both editors now mount id-less through `snippets/_quill_editor.html`. If you find yourself timing around settle, remove the `id` instead.
+
 ### `hx-disinherit` is only safe on a loader that destroys itself
 
 This is the sharpest edge in the whole system, and it has drawn blood three times. htmx's disinherit does **not** mean "don't pass down my attributes". Read the source:
@@ -155,9 +166,28 @@ Other rules for lazy content:
 
 This section used to say *"Multipart forms (file uploads) — native progress behavior beats a silent XHR."* **That was wrong twice over**, and it cost real playback: a browser shows *no* upload progress for a form POST (you get a spinning tab and a dead page), and htmx handles uploads fine via `hx-encoding`. Both reasons to opt out were myths.
 
-- **Uploads** — keep `enctype="multipart/form-data"` for the no-JS submit and add `hx-encoding="multipart/form-data"`. htmx then sends the form as `FormData` over XHR and swaps the region as usual. A multipart form that boosts *without* `hx-encoding` silently drops the file — there's a test for that. Where progress genuinely matters (episode audio), listen for `htmx:xhr:progress` on the form; the episode page's upload has a real percentage bar this way, which the "native" version never did.
+- **Uploads** — keep `enctype="multipart/form-data"` for the no-JS submit and add `hx-encoding="multipart/form-data"`. htmx then sends the form as `FormData` over XHR and swaps the region as usual. A multipart form that boosts *without* `hx-encoding` silently drops the file — there's a test for that. **Don't hand-roll any of this** — see the section below.
 - **Modals** — not a reason to opt out either. A modal's backdrop is appended to `<body>`, *outside* the region, so a swap used to strand it as a dead grey overlay with the scroll locked. `base.html` disposes any open modal on `htmx:beforeSwap` of the region (`closeOpenModals`), so modal forms boost like anything else.
 - **Lazy panes** — a boosted form inside one needs its pane split per the rules above, or it inherits the loader's self-target. The merge desk's forms carried `hx-boost="false"` for exactly this reason for months.
+
+### Uploads and editors: use the shared snippets
+
+Every upload and every rich-text editor in the app goes through one of four snippets. There were previously four hand-rolled copies of the image upload and two divergent Quill setups; each copy had a different subset of the rules above, and the differences were all bugs.
+
+| Snippet | Used by | Notes |
+|---|---|---|
+| `snippets/_upload_progress.html` | the two below | The **only** progress bar. Include inside a `data-upload-scope` element holding one file input. |
+| `snippets/_image_upload.html` | network logo + fallback, 404 pool, both mix covers, avatar | A **field, not a form** — most consumers embed it in a bigger form. |
+| `snippets/_audio_upload.html` | episode page, publish page | **Is** a form (audio uploads are standalone). Posts `manage_episode` `action='upload_audio'`. |
+| `snippets/_quill_editor.html` | episode page, publish page | Mounts id-less; seeds content as data, never as rendered HTML. |
+
+Three things they encode that are easy to get wrong alone:
+
+- **Never hand-roll the upload XHR.** Doing so means htmx must not also boost the form, which means `hx-boost="false"`, which puts a hard navigation (and dead audio) one line away — both hand-rolled copies *did* hard-navigate on success before they were caught. Riding htmx's own XHR gets identical progress for free. `BoostOptOutContractTests.test_no_upload_hand_rolls_its_own_xhr` enforces this, and `ALLOWED_FORM_OPT_OUTS` is empty again as a result.
+- **The progress bar latches at 100%.** htmx registers `progress` on **both** the `xhr` and the `xhr.upload` and triggers the same `htmx:xhr:progress` for each, with nothing in the detail to distinguish them — so once the upload completes the *response download* fires it too and rewinds the bar. Latch, and use the 100% state to say what's actually happening ("Processing image…", "Mirroring to R2…"), because the server genuinely is still working.
+- **Theme the bar**: `var(--vecto-primary)` and `var(--vecto-radius-sm)`, never `bg-warning`. Every network sets its own primary, so a hardcoded Bootstrap colour renders yellow on all of them.
+
+The server side matches: `ProcessedImageMixin` (`models.py`) declares each model's images via `PROCESSED_IMAGES` specs — `max_px`/`crop_square` belong to the *image*, not the request, so they live here and a caller cannot contradict them — and `services.images.handle_image_upload` is the one request handler (upload + remove, keyed on `remove=1`). It reports processing failures **honestly**: the copies it replaced swallowed them and then tested `if instance.field` after `save()`, which is always truthy, so a dropped file always reported success.
 
 `hx-boost="false"` is still right for **links** that must be real requests:
 

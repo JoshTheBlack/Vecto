@@ -6,7 +6,7 @@ from django.contrib.auth.models import User
 from django.core.cache import cache
 from django.core.files.base import ContentFile
 from django.core.files.storage import FileSystemStorage
-from django.db.models.signals import post_delete, post_save, pre_save
+from django.db.models.signals import post_delete, post_save, pre_delete, pre_save
 from django.dispatch import receiver
 from cryptography.fernet import Fernet, InvalidToken
 import hashlib
@@ -752,13 +752,68 @@ class CalendarEntry(models.Model):
     scheduled_at = models.DateTimeField(db_index=True)
     external_link = models.URLField(blank=True, help_text="Where to go for a non-episode entry (e.g. a Live Watch link).")
     episode = models.OneToOneField(Episode, on_delete=models.SET_NULL, null=True, blank=True, related_name='calendar_entry')
+    # True when this row was born to mirror an episode (auto-created on
+    # schedule/publish with no pre-plan, backfilled, or made via the episode
+    # page's "Create entry" button) rather than planned independently. Deleting
+    # the episode deletes an episode-born entry but returns a pre-planned one to
+    # the unlinked pool (Episode pre_delete → delete_auto_created_calendar_entry).
+    created_from_episode = models.BooleanField(default=False)
     notes = models.TextField(blank=True)
+
+    class PrepublishVisibility(models.TextChoices):
+        ACTUAL = 'actual', 'Show actual info'
+        TEASER = 'teaser', 'Show teaser'
+        HIDDEN = 'hidden', 'Hidden until publish'
+
+    # How this entry appears on PUBLIC surfaces (page + ICS) BEFORE its linked
+    # episode publishes. 'actual' (default) shows the real title/notes/numbering
+    # as today; 'teaser' swaps in placeholder_title/notes and hides SxE; 'hidden'
+    # omits it entirely. Ignored once revealed — a published episode's entry
+    # always shows the actual info regardless of this setting.
+    prepublish_visibility = models.CharField(
+        max_length=10, choices=PrepublishVisibility.choices,
+        default=PrepublishVisibility.ACTUAL)
+    placeholder_title = models.CharField(max_length=255, blank=True,
+        help_text="Public-facing teaser title shown until the episode publishes (teaser mode).")
+    placeholder_notes = models.TextField(blank=True,
+        help_text="Public-facing teaser notes shown until the episode publishes (teaser mode).")
     created_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
+    TEASER_DEFAULT_TITLE = "To be announced"
+
     def __str__(self):
         return f"{self.network.slug} | {self.title} @ {self.scheduled_at:%Y-%m-%d %H:%M}"
+
+    # --- Public-surface reveal logic (used by calendar_events + the ICS feed) ---
+    # "Revealed" = the linked episode is live; from then on the actual info shows
+    # regardless of prepublish_visibility. Everything below is a no-op once
+    # revealed, so a published entry always renders its real title/notes/SxE.
+
+    @property
+    def is_revealed(self):
+        return bool(self.episode_id) and self.episode.is_published
+
+    def public_hidden(self):
+        """True when a listener should not see this entry at all right now."""
+        return self.prepublish_visibility == self.PrepublishVisibility.HIDDEN and not self.is_revealed
+
+    def _teased(self):
+        return self.prepublish_visibility == self.PrepublishVisibility.TEASER and not self.is_revealed
+
+    def public_title(self):
+        if self._teased():
+            return self.placeholder_title or self.TEASER_DEFAULT_TITLE
+        return self.title
+
+    def public_notes(self):
+        return self.placeholder_notes if self._teased() else self.notes
+
+    def public_show_sxe(self):
+        if self._teased():
+            return False
+        return self.season_number is not None and self.episode_number is not None
 
 
 class LiveSchedulePost(models.Model):
@@ -1402,6 +1457,19 @@ def queue_r2_mirror_on_episode_save(sender, instance, created=False, **kwargs):
         return
     from pod_manager.tasks import task_mirror_episode_audio
     task_mirror_episode_audio.delay(instance.id)
+
+
+@receiver(pre_delete, sender=Episode)
+def delete_auto_created_calendar_entry(sender, instance, **kwargs):
+    """An entry that only exists to mirror this episode (created_from_episode)
+    dies with it; a pre-planned entry the episode adopted survives — SET_NULL
+    returns it to the unlinked pool. Runs in pre_delete so the reverse
+    OneToOne still resolves (SET_NULL hasn't nulled it yet). Audio in R2 is NOT
+    touched here — it's reclaimed by the orphan GC once the row is gone
+    (services/r2_maintenance)."""
+    entry = getattr(instance, 'calendar_entry', None)
+    if entry is not None and entry.created_from_episode:
+        entry.delete()
 
 
 @receiver(post_delete, sender=Transcript)

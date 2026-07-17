@@ -442,9 +442,25 @@ def episode_detail(request, episode_id):
     if request.user.is_authenticated:
         network_podcasts = ep.podcast.network.podcasts.exclude(id=ep.podcast_id).order_by('title')
 
+    # Release-calendar linking (owner controls only): the entry this episode is
+    # already tied to, and the pool of still-unlinked entries it could adopt
+    # (this podcast's planned entries plus any freeform ones).
+    from django.db.models import Q as _Q
+    calendar_entry = getattr(ep, 'calendar_entry', None)
+    unlinked_calendar_entries = []
+    if is_owner and calendar_entry is None:
+        unlinked_calendar_entries = (
+            ep.podcast.network.calendar_entries
+            .filter(episode__isnull=True)
+            .filter(_Q(podcast_id=ep.podcast_id) | _Q(podcast__isnull=True))
+            .order_by('scheduled_at')
+        )
+
     return render(request, 'pod_manager/episode_detail.html', {
         'ep': ep,
         'is_owner': is_owner,
+        'calendar_entry': calendar_entry,
+        'unlinked_calendar_entries': unlinked_calendar_entries,
         'show_transcript_tab': show_transcript_tab,
         'chapters': chapters,
         'chapters_json': _json.dumps(chapters),

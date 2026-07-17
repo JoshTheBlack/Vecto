@@ -169,6 +169,43 @@ the region, once below from here).
     </div>
     {% endif %}
 
+    {% comment %}
+    Pre-publish calendar visibility (A16). Applies while this episode is
+    SCHEDULED; the moment it publishes the calendar always shows the real info.
+    Prefilled from the linked entry when editing a scheduled episode.
+    {% endcomment %}
+    {% with cal=edit_ep.calendar_entry %}
+    <div class="card border-secondary mb-3" id="calendarVisibilityCard">
+        <div class="card-body py-3">
+            <label class="form-label fw-bold text-light mb-2"><i class="bi bi-eye-slash me-1 text-warning"></i>Calendar visibility <small class="text-muted fw-normal">before it publishes</small></label>
+            <select name="prepublish_visibility" id="pubVisibilitySelect" class="form-select bg-dark text-light border-secondary">
+                <option value="actual" {% if not cal or cal.prepublish_visibility == 'actual' %}selected{% endif %}>Show actual info</option>
+                <option value="teaser" {% if cal.prepublish_visibility == 'teaser' %}selected{% endif %}>Show teaser instead</option>
+                <option value="hidden" {% if cal.prepublish_visibility == 'hidden' %}selected{% endif %}>Hide until it publishes</option>
+            </select>
+            <div class="form-text text-muted">Once this episode publishes, the calendar shows the real title/notes regardless.</div>
+            <div id="pubTeaserFields" class="mt-2 {% if cal.prepublish_visibility != 'teaser' %}d-none{% endif %}">
+                <input type="text" name="placeholder_title" maxlength="255"
+                       class="form-control bg-dark text-light border-secondary mb-2"
+                       value="{{ cal.placeholder_title|default:'' }}" placeholder="Teaser title — e.g. Secret Christmas Episode">
+                <textarea name="placeholder_notes" rows="2"
+                          class="form-control bg-dark text-light border-secondary"
+                          placeholder="Teaser notes (optional)">{{ cal.placeholder_notes|default:'' }}</textarea>
+            </div>
+        </div>
+    </div>
+    {% endwith %}
+    <script>
+    (function () {
+        var sel = document.getElementById('pubVisibilitySelect');
+        var fields = document.getElementById('pubTeaserFields');
+        if (!sel || !fields) return;
+        sel.addEventListener('change', function () {
+            fields.classList.toggle('d-none', sel.value !== 'teaser');
+        });
+    })();
+    </script>
+
     <!-- Content -->
     <div class="card border-secondary mb-3">
         <div class="card-header border-secondary py-2">

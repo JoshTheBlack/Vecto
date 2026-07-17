@@ -116,6 +116,7 @@ from .calendar import (
     calendar_page,
     calendar_events,
     calendar_manage,
+    calendar_episode_search,
 )
 
 from .transcripts import serve_transcript

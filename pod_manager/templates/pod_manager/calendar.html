@@ -101,7 +101,7 @@
     #calEntryModal input[type="time"]::-webkit-calendar-picker-indicator {
         filter: invert(1); opacity: 0.8; cursor: pointer;
     }
-    .cal-freeform-only.d-none, .cal-podcast-only.d-none { display: none !important; }
+    .cal-freeform-only.d-none, .cal-podcast-only.d-none, .cal-teaser-only.d-none { display: none !important; }
     /* Episode-type chips — same picker as the publish form (localStorage-backed). */
     .type-chip-group { display:flex; flex-wrap:wrap; gap:6px; align-items:center; padding:.4rem 0; min-height:2.25rem; }
     .type-chip { padding:.3rem .8rem; border:1px solid #444; border-radius:999px; background:rgba(255,255,255,.05); color:#aaa; font-size:.875rem; cursor:pointer; user-select:none; transition:all .15s; white-space:nowrap; }
@@ -170,10 +170,41 @@
             <div class="modal-body">
                 <p class="text-muted small mb-1" id="calEventPodcast"></p>
                 <p class="text-light mb-0" id="calEventNotes" style="white-space: pre-wrap;"></p>
+                {% if is_owner %}
+                {% comment %}
+                Owner-only "link an existing episode" panel (hidden until the
+                Link button is clicked). Fills the gap when auto-matching missed:
+                a real episode drifted in title, migrated across feeds, or the
+                entry was planned after the episode already ingested. Only
+                episodes not already on the calendar are offered (search endpoint
+                filters them out).
+                {% endcomment %}
+                <div id="calLinkPanel" class="d-none mt-3 pt-3 border-top border-secondary"
+                     data-search-url="{% url 'calendar_episode_search' %}">
+                    <label class="form-label fw-bold text-light small mb-1"><i class="bi bi-link-45deg me-1"></i>Link an existing episode</label>
+                    <input type="text" id="calLinkSearch" autocomplete="off"
+                           class="form-control form-control-sm bg-dark text-light border-secondary"
+                           placeholder="Search episodes by title or ID…">
+                    <div id="calLinkResults" class="list-group mt-2"></div>
+                    <form method="post" action="{% url 'calendar_manage' %}" id="calLinkForm" class="d-none">
+                        {% csrf_token %}
+                        <input type="hidden" name="action" value="link_episode">
+                        <input type="hidden" name="entry_id" id="calLinkEntryId">
+                        <input type="hidden" name="episode_id" id="calLinkEpisodeId">
+                    </form>
+                </div>
+                {% endif %}
             </div>
             <div class="modal-footer border-secondary">
                 <a href="#" class="btn btn-sm btn-outline-warning d-none" id="calEventOpen" target="_blank" rel="noopener"><i class="bi bi-box-arrow-up-right me-1"></i>Open</a>
                 {% if is_owner %}
+                <button type="button" class="btn btn-sm btn-outline-info d-none" id="calEventLink"><i class="bi bi-link-45deg me-1"></i>Link episode</button>
+                <form method="post" action="{% url 'calendar_manage' %}" class="d-inline d-none" id="calEventUnlinkForm">
+                    {% csrf_token %}
+                    <input type="hidden" name="action" value="unlink_episode">
+                    <input type="hidden" name="entry_id" id="calEventUnlinkId">
+                    <button type="submit" class="btn btn-sm btn-outline-secondary"><i class="bi bi-x-circle me-1"></i>Unlink episode</button>
+                </form>
                 <button type="button" class="btn btn-sm btn-outline-warning d-none" id="calEventEdit"><i class="bi bi-pencil me-1"></i>Edit</button>
                 {% comment %}
 Boosted (no hx-boost="false"): these are plain POSTs, and they only hard-navigated
@@ -269,6 +300,21 @@ region and the floating player keeps playing.
                             <label class="form-label fw-bold text-light">Public notes <small class="text-muted fw-normal">— shown on the public calendar and in subscribers' calendar apps</small></label>
                             <textarea name="notes" rows="2" class="form-control bg-dark text-light border-secondary" placeholder="Optional public-facing copy."></textarea>
                         </div>
+                        <div class="col-md-6">
+                            <label class="form-label fw-bold text-light">Before it publishes</label>
+                            <select name="prepublish_visibility" id="calVisibilitySelect" class="form-select bg-dark text-light border-secondary">
+                                <option value="actual">Show actual info</option>
+                                <option value="teaser">Show teaser instead</option>
+                                <option value="hidden">Hide until it publishes</option>
+                            </select>
+                            <div class="form-text text-muted">Once the linked episode publishes, the real info always shows — regardless of this.</div>
+                        </div>
+                        <div class="col-12 cal-teaser-only d-none">
+                            <label class="form-label fw-bold text-light">Teaser title <small class="text-muted fw-normal">— public placeholder shown until publish</small></label>
+                            <input type="text" name="placeholder_title" maxlength="255" class="form-control bg-dark text-light border-secondary mb-2" placeholder="e.g. Secret Christmas Episode">
+                            <label class="form-label fw-bold text-light">Teaser notes <small class="text-muted fw-normal">(optional)</small></label>
+                            <textarea name="placeholder_notes" rows="2" class="form-control bg-dark text-light border-secondary" placeholder="Optional teaser copy."></textarea>
+                        </div>
                     </div>
                 </div>
                 <div class="modal-footer border-secondary">
@@ -354,6 +400,20 @@ region and the floating player keeps playing.
                 ? '<i class="bi bi-box-arrow-up-right me-1"></i>Edit in Publisher'
                 : '<i class="bi bi-pencil me-1"></i>Edit';
         }
+        // Link/Unlink an existing episode: offer Link on an unlinked entry,
+        // Unlink on a linked one. The link panel starts collapsed each open.
+        const linkBtn = document.getElementById('calEventLink');
+        const unlinkForm = document.getElementById('calEventUnlinkForm');
+        const linkPanel = document.getElementById('calLinkPanel');
+        if (linkBtn) linkBtn.classList.toggle('d-none', p.linked);
+        if (unlinkForm) unlinkForm.classList.toggle('d-none', !p.linked);
+        if (linkPanel) linkPanel.classList.add('d-none');
+        const unlinkId = document.getElementById('calEventUnlinkId');
+        if (unlinkId) unlinkId.value = event.id;
+        const linkResults = document.getElementById('calLinkResults');
+        if (linkResults) linkResults.innerHTML = '';
+        const linkSearch = document.getElementById('calLinkSearch');
+        if (linkSearch) linkSearch.value = '';
         detailModal.show();
     }
 
@@ -427,6 +487,14 @@ region and the floating player keeps playing.
         document.querySelectorAll('.cal-freeform-only').forEach(function (n) { n.classList.toggle('d-none', !freeform); });
     }
 
+    // Teaser fields show only when pre-publish visibility is "teaser" (A16).
+    function syncVisibilityToggle() {
+        const sel = document.getElementById('calVisibilitySelect');
+        if (!sel) return;
+        const teaser = sel.value === 'teaser';
+        document.querySelectorAll('.cal-teaser-only').forEach(function (n) { n.classList.toggle('d-none', !teaser); });
+    }
+
     function openAddModal() {
         const f = document.getElementById('calEntryForm');
         if (!f || !entryModal) return;
@@ -437,6 +505,7 @@ region and the floating player keeps playing.
         document.getElementById('calEntrySubmit').innerHTML = '<i class="bi bi-plus-lg me-1"></i>Add Entry';
         setCalType('');
         syncPodToggle();
+        syncVisibilityToggle();
         entryModal.show();
     }
 
@@ -460,9 +529,13 @@ region and the floating player keeps playing.
         setCalType(p.episodeType || '');
         f.elements['external_link'].value = p.externalLink || '';
         f.elements['notes'].value = p.notes || '';
+        f.elements['prepublish_visibility'].value = p.prepublishVisibility || 'actual';
+        f.elements['placeholder_title'].value = p.placeholderTitle || '';
+        f.elements['placeholder_notes'].value = p.placeholderNotes || '';
         document.getElementById('calEntryModalTitle').textContent = 'Edit Calendar Entry';
         document.getElementById('calEntrySubmit').innerHTML = '<i class="bi bi-check-lg me-1"></i>Save Changes';
         syncPodToggle();
+        syncVisibilityToggle();
         entryModal.show();
     }
 
@@ -528,6 +601,15 @@ region and the floating player keeps playing.
                 title.className = 'cal-ev-title';
                 title.textContent = (p.sxe ? p.sxe + ' · ' : '') + arg.event.title;
                 wrap.appendChild(title);
+                // Owner-only: flag entries the public sees differently pre-publish
+                // (extendedProps.prepublishVisibility is only sent to owners).
+                if (!p.published && (p.prepublishVisibility === 'hidden' || p.prepublishVisibility === 'teaser')) {
+                    const flag = document.createElement('div');
+                    flag.className = 'cal-ev-pod';
+                    flag.textContent = p.prepublishVisibility === 'hidden'
+                        ? '● hidden until publish' : '● teaser shown publicly';
+                    wrap.appendChild(flag);
+                }
                 if (arg.event.url) {
                     const a = document.createElement('a');
                     a.className = 'cal-ev-link';
@@ -570,6 +652,9 @@ region and the floating player keeps playing.
     const podSelect = document.getElementById('calPodcastSelect');
     if (podSelect) podSelect.addEventListener('change', syncPodToggle);
 
+    const visSelect = document.getElementById('calVisibilitySelect');
+    if (visSelect) visSelect.addEventListener('change', syncVisibilityToggle);
+
     const editBtn = document.getElementById('calEventEdit');
     if (editBtn) {
         editBtn.addEventListener('click', function () {
@@ -578,6 +663,67 @@ region and the floating player keeps playing.
             if (p.editUrl) { window.location.href = p.editUrl; return; }
             if (detailModal) detailModal.hide();
             openEditModal(detailEvent);
+        });
+    }
+
+    // "Link episode" typeahead — reveal the panel, search the network's
+    // unlinked episodes, and submit the link form on pick.
+    const linkBtn = document.getElementById('calEventLink');
+    const linkPanel = document.getElementById('calLinkPanel');
+    const linkSearch = document.getElementById('calLinkSearch');
+    const linkResults = document.getElementById('calLinkResults');
+    if (linkBtn && linkPanel) {
+        linkBtn.addEventListener('click', function () {
+            linkPanel.classList.toggle('d-none');
+            if (!linkPanel.classList.contains('d-none') && linkSearch) linkSearch.focus();
+        });
+    }
+    if (linkSearch && linkResults && linkPanel) {
+        const searchUrl = linkPanel.dataset.searchUrl;
+        let debounce = null;
+        function renderResults(items) {
+            linkResults.innerHTML = '';
+            if (!items.length) {
+                const empty = document.createElement('div');
+                empty.className = 'text-muted small px-1';
+                empty.textContent = 'No unlinked episodes match.';
+                linkResults.appendChild(empty);
+                return;
+            }
+            items.forEach(function (ep) {
+                const btn = document.createElement('button');
+                btn.type = 'button';
+                btn.className = 'list-group-item list-group-item-action bg-dark text-light border-secondary py-2';
+                const titleText = (ep.sxe ? ep.sxe + ' · ' : '') + ep.title;
+                const meta = [ep.podcast, ep.episodeType, ep.status].filter(Boolean).join(' · ');
+                btn.innerHTML = '<div class="fw-semibold small">' + escapeHtml(titleText) + '</div>' +
+                    '<div class="text-muted" style="font-size:.72rem;">' + escapeHtml(meta) + '</div>';
+                btn.addEventListener('click', function () {
+                    if (!detailEvent) return;
+                    document.getElementById('calLinkEntryId').value = detailEvent.id;
+                    document.getElementById('calLinkEpisodeId').value = ep.id;
+                    document.getElementById('calLinkForm').submit();
+                });
+                linkResults.appendChild(btn);
+            });
+        }
+        linkSearch.addEventListener('input', function () {
+            const q = linkSearch.value.trim();
+            clearTimeout(debounce);
+            if (!q) { linkResults.innerHTML = ''; return; }
+            debounce = setTimeout(function () {
+                fetch(searchUrl + '?q=' + encodeURIComponent(q), {
+                    headers: { 'X-Requested-With': 'XMLHttpRequest' },
+                })
+                    .then(function (r) { return r.ok ? r.json() : { results: [] }; })
+                    .then(function (d) { renderResults(d.results || []); })
+                    .catch(function () { linkResults.innerHTML = ''; });
+            }, 250);
+        });
+    }
+    function escapeHtml(s) {
+        return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
+            return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
         });
     }
 

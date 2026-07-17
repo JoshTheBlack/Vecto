@@ -99,10 +99,14 @@ def ensure_calendar_entry_for_episode(episode, *, calendar_entry_id=None):
     if not entry:
         entry = match_calendar_entry(episode)
     if not entry:
+        # Auto-created with no pre-plan — flagged episode-born so deleting the
+        # episode also deletes this entry (a matched/explicit entry stays False
+        # and survives as a plan). See CalendarEntry.created_from_episode.
         entry = CalendarEntry(
             network_id=episode.podcast.network_id, podcast=episode.podcast,
             title=episode.title, season_number=episode.season_number,
             episode_number=episode.episode_number, episode_type=episode.episode_type,
+            created_from_episode=True,
         )
     _sync_entry_from_episode(entry, episode)
     entry.scheduled_at = target_time
@@ -111,16 +115,25 @@ def ensure_calendar_entry_for_episode(episode, *, calendar_entry_id=None):
 
 
 def link_calendar_entry_for_new_episode(episode, stdout=None):
-    """Ingest hook, LINK-ONLY: reconcile a pre-planned entry with a NEW
-    ingested episode (ingested episodes are born published and never pass
-    through publish.py). Never auto-creates — that would flood the calendar
-    with every episode from ~88 feeds. Called from commit_episode's is_new
-    branch only, after the episode has a PK."""
+    """Ingest hook, LINK-ONLY: reconcile a pre-planned entry with an ingested
+    episode (ingested episodes are born published and never pass through
+    publish.py). Never auto-creates — that would flood the calendar with every
+    episode from ~88 feeds.
+
+    Runs for ANY not-yet-linked episode this feed owns, not just brand-new ones:
+    an episode that first ingested under a low-priority catch-all feed (wrong
+    podcast, so no match) and later auto-migrated to its real podcast is
+    `is_new=False` at the moment its podcast finally matches a planned entry —
+    the is_new-only gate this replaces silently skipped exactly that case. The
+    reverse-OneToOne guard makes re-running on every ingest idempotent and cheap
+    (already-linked episodes short-circuit before the match query)."""
+    if getattr(episode, 'calendar_entry', None) is not None:
+        return None  # already linked — nothing to reconcile
     entry = match_calendar_entry(episode)
     if not entry:
         return None
     _sync_entry_from_episode(entry, episode)
-    entry.scheduled_at = episode.pub_date
+    entry.scheduled_at = episode.scheduled_at or episode.pub_date
     entry.save()
     logger.info(
         f"[calendar] Linked entry {entry.id} '{entry.title}' to ingested "
@@ -131,4 +144,61 @@ def link_calendar_entry_for_new_episode(episode, stdout=None):
             f"'{entry.title}' (id={entry.id})"
         )  # logger alone never reaches the creator-facing import log —
            # CommandLogStream only sees stdout
+    return entry
+
+
+_VISIBILITY_CHOICES = {c[0] for c in CalendarEntry.PrepublishVisibility.choices}
+
+
+def set_prepublish_visibility(entry, visibility, placeholder_title='', placeholder_notes=''):
+    """Set an entry's pre-publish visibility + teaser text from raw form values
+    (does NOT save — the caller owns persistence). An unknown mode falls back to
+    'actual' so a forged value can't hide/rename another entry. Shared by the
+    calendar modal, the schedule/publish form, and the episode page."""
+    entry.prepublish_visibility = (
+        visibility if visibility in _VISIBILITY_CHOICES
+        else CalendarEntry.PrepublishVisibility.ACTUAL)
+    entry.placeholder_title = (placeholder_title or '').strip()[:255]
+    entry.placeholder_notes = (placeholder_notes or '').strip()
+
+
+def link_episode_to_entry(episode, entry):
+    """Manually link an existing episode to an existing (unlinked) CalendarEntry
+    — the /calendar 'Link episode' and episode-page 'Link to entry' controls.
+    Mirrors the auto path: the episode becomes the source of truth and the
+    entry's time follows the episode's schedule. Callers must network-scope both
+    objects (both ids arrive from request.POST)."""
+    if entry.podcast_id is None:
+        # A freeform entry the owner is repurposing for a real episode.
+        entry.podcast = episode.podcast
+    _sync_entry_from_episode(entry, episode)
+    entry.scheduled_at = episode.scheduled_at or episode.pub_date
+    entry.save()
+    logger.info(
+        f"[calendar] Manually linked entry {entry.id} '{entry.title}' to "
+        f"episode {episode.id} '{episode.title}'")
+    return entry
+
+
+def create_calendar_entry_from_episode(episode):
+    """Explicitly create a CalendarEntry mirroring `episode` — the episode
+    page's 'Create calendar entry' button. Returns the episode's existing entry
+    untouched if it already has one (so the button is idempotent); otherwise
+    force-creates (no matching — the page's link-select already covers adopting
+    a planned entry)."""
+    existing = getattr(episode, 'calendar_entry', None)
+    if existing is not None:
+        return existing
+    entry = CalendarEntry(
+        network_id=episode.podcast.network_id, podcast=episode.podcast,
+        title=episode.title, season_number=episode.season_number,
+        episode_number=episode.episode_number, episode_type=episode.episode_type,
+        created_from_episode=True,
+    )
+    _sync_entry_from_episode(entry, episode)
+    entry.scheduled_at = episode.scheduled_at or episode.pub_date
+    entry.save()
+    logger.info(
+        f"[calendar] Created entry {entry.id} from episode "
+        f"{episode.id} '{episode.title}'")
     return entry

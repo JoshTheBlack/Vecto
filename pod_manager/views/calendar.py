@@ -18,7 +18,8 @@ from django.utils import timezone
 from django.utils.dateparse import parse_datetime
 from django.views.decorators.http import require_POST
 
-from ..models import CalendarEntry, Podcast
+from ..models import CalendarEntry, Episode, Podcast
+from ..services.release_calendar import link_episode_to_entry, set_prepublish_visibility
 from .creator.publish import _require_owner
 
 logger = logging.getLogger(__name__)
@@ -99,6 +100,12 @@ def _apply_entry_fields(entry, request, network):
         entry.episode_number = None
         entry.episode_type = ''
         entry.external_link = request.POST.get('external_link', '').strip()
+    set_prepublish_visibility(
+        entry,
+        request.POST.get('prepublish_visibility', ''),
+        request.POST.get('placeholder_title', ''),
+        request.POST.get('placeholder_notes', ''),
+    )
 
 
 def _network_or_404(request):
@@ -164,10 +171,26 @@ def calendar_events(request):
 
     events = []
     for entry in entries:
-        numbered = entry.season_number is not None and entry.episode_number is not None
-        sxe = f"S{entry.season_number}E{entry.episode_number}" if numbered else ''
         linked = bool(entry.episode_id)
         published = linked and entry.episode.is_published
+        # Pre-publish visibility (A16). Listeners get the masked view: a 'hidden'
+        # entry is omitted entirely until it publishes; a 'teaser' entry shows
+        # placeholder text with SxE suppressed. Owners always see the real data
+        # (so they can manage it) plus the mode/placeholder for editing, marked
+        # so the owner UI can flag it. Once published, everyone sees the actual
+        # info regardless — public_* short-circuit on is_revealed.
+        if entry.public_hidden() and not is_owner:
+            continue
+        if is_owner:
+            numbered = entry.season_number is not None and entry.episode_number is not None
+            title = entry.title
+            sxe = f"S{entry.season_number}E{entry.episode_number}" if numbered else ''
+            notes = entry.notes
+        else:
+            title = entry.public_title()
+            sxe = (f"S{entry.season_number}E{entry.episode_number}"
+                   if entry.public_show_sxe() else '')
+            notes = entry.public_notes()
         # A linked-but-unpublished entry (a scheduled/draft episode) is edited
         # from the publisher, not the freeform modal; published/unlinked have
         # no publisher edit target.
@@ -176,7 +199,7 @@ def calendar_events(request):
             edit_url = f"{reverse('publish_episode')}?edit={entry.episode_id}&network={network.slug}"
         event = {
             'id': entry.id,
-            'title': entry.title,
+            'title': title,
             'start': _eastern_naive_iso(entry.scheduled_at),
             'allDay': False,
             'editable': is_owner and not linked,
@@ -184,14 +207,18 @@ def calendar_events(request):
                 'podcast': entry.podcast.title if entry.podcast else '',
                 'podcastId': entry.podcast_id or '',
                 'sxe': sxe,
-                'season': entry.season_number if entry.season_number is not None else '',
-                'episode': entry.episode_number if entry.episode_number is not None else '',
-                'episodeType': entry.episode_type,
+                'season': entry.season_number if (is_owner and entry.season_number is not None) else '',
+                'episode': entry.episode_number if (is_owner and entry.episode_number is not None) else '',
+                'episodeType': entry.episode_type if is_owner else '',
                 'externalLink': entry.external_link,
-                'notes': entry.notes,
+                'notes': notes,
                 'linked': linked,
                 'published': published,
                 'editUrl': edit_url,
+                # Owner-only management context (not sent to listeners).
+                'prepublishVisibility': entry.prepublish_visibility if is_owner else '',
+                'placeholderTitle': entry.placeholder_title if is_owner else '',
+                'placeholderNotes': entry.placeholder_notes if is_owner else '',
             },
         }
         if published:
@@ -264,5 +291,76 @@ def calendar_manage(request):
         messages.success(request, f'{verb} "{title}".')
         return redirect('calendar')
 
+    if action == 'link_episode':
+        # Adopt an existing (published/scheduled/draft) episode into a planned,
+        # still-unlinked entry — the manual fallback for when auto-matching
+        # missed (title drift, cross-feed migration, entry planned late).
+        entry = get_object_or_404(CalendarEntry, pk=request.POST.get('entry_id'), network=network)
+        if entry.episode_id:
+            messages.error(request, "That entry is already linked to an episode.")
+            return redirect('calendar')
+        episode = get_object_or_404(
+            Episode, pk=request.POST.get('episode_id'), podcast__network=network)
+        if getattr(episode, 'calendar_entry', None) is not None:
+            messages.error(request, "That episode is already on the calendar.")
+            return redirect('calendar')
+        link_episode_to_entry(episode, entry)
+        messages.success(request, f'Linked "{episode.title}" to the calendar.')
+        return redirect('calendar')
+
+    if action == 'unlink_episode':
+        # Return the entry to the planned (unlinked) pool without deleting it —
+        # the plan survives, the episode is simply detached.
+        entry = get_object_or_404(CalendarEntry, pk=request.POST.get('entry_id'), network=network)
+        entry.episode = None
+        entry.save(update_fields=['episode', 'updated_at'])
+        messages.success(request, "Entry unlinked from its episode.")
+        return redirect('calendar')
+
     messages.error(request, "Unknown calendar action.")
     return redirect('calendar')
+
+
+def calendar_episode_search(request):
+    """Owner-only JSON typeahead backing the /calendar 'Link episode' picker.
+    Network-scoped (episodes number in the thousands network-wide, so they can't
+    ride the page inline) and returns only episodes not already tied to a
+    calendar entry — the only ones a link is valid for."""
+    network = _network_or_404(request)
+    if not _is_owner(request, network):
+        return HttpResponseForbidden("Owner only.")
+
+    q = (request.GET.get('q') or '').strip()
+    qs = Episode.objects.filter(
+        podcast__network=network, calendar_entry__isnull=True,
+    ).select_related('podcast')
+    if q.isdigit():
+        qs = qs.filter(pk=int(q))
+    elif q:
+        qs = qs.filter(title__icontains=q)
+    else:
+        qs = qs.none()
+
+    def _status(ep):
+        if ep.is_published:
+            return 'Published'
+        return 'Scheduled' if ep.scheduled_at else 'Draft'
+
+    def _sxe(ep):
+        if ep.season_number is not None and ep.episode_number is not None:
+            return f"S{ep.season_number}E{ep.episode_number}"
+        return ''
+
+    results = [
+        {
+            'id': ep.id,
+            'title': ep.title,
+            'podcast': ep.podcast.title if ep.podcast else '',
+            'status': _status(ep),
+            'sxe': _sxe(ep),
+            'episodeType': ep.episode_type,
+            'when': _eastern_naive_iso(ep.scheduled_at or ep.pub_date) if (ep.scheduled_at or ep.pub_date) else '',
+        }
+        for ep in qs.order_by('-pub_date')[:20]
+    ]
+    return JsonResponse({'results': results})

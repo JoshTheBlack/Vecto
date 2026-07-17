@@ -29,6 +29,7 @@ urlpatterns = [
     path('calendar/', views.calendar_page, name='calendar'),
     path('calendar/events/', views.calendar_events, name='calendar_events'),
     path('calendar/manage/', views.calendar_manage, name='calendar_manage'),
+    path('calendar/episode-search/', views.calendar_episode_search, name='calendar_episode_search'),
     
     # Auth & API Routes
     path('admin/', admin.site.urls),

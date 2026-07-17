@@ -21,7 +21,24 @@ from ...services.cross_publish import (
     apply_auto_cross_publish, current_target_ids, sync_cross_publications,
     validate_cross_targets,
 )
-from ...services.release_calendar import ensure_calendar_entry_for_episode
+from ...services.release_calendar import (
+    create_calendar_entry_from_episode, ensure_calendar_entry_for_episode,
+    link_episode_to_entry, set_prepublish_visibility,
+)
+
+_CAL_VIS_FIELDS = ['prepublish_visibility', 'placeholder_title', 'placeholder_notes', 'updated_at']
+
+
+def _apply_calendar_visibility(entry, request):
+    """Persist pre-publish visibility + teaser text from a form that carries the
+    controls (schedule/publish form). No-op when the entry is None or the form
+    didn't include the control, so callers without it don't clobber the setting."""
+    if entry is None or 'prepublish_visibility' not in request.POST:
+        return
+    set_prepublish_visibility(
+        entry, request.POST.get('prepublish_visibility', ''),
+        request.POST.get('placeholder_title', ''), request.POST.get('placeholder_notes', ''))
+    entry.save(update_fields=_CAL_VIS_FIELDS)
 from ...tasks import task_rebuild_episode_fragments, task_refresh_live_schedules
 from ...utils import sanitize_user_html
 
@@ -312,7 +329,8 @@ def _handle_publish_post(request, current_network, podcasts, networks):
         ep.save()
         _sync_cross(ep)
         _attach_audio()
-        ensure_calendar_entry_for_episode(ep, calendar_entry_id=request.POST.get('calendar_entry_id'))
+        entry = ensure_calendar_entry_for_episode(ep, calendar_entry_id=request.POST.get('calendar_entry_id'))
+        _apply_calendar_visibility(entry, request)
         logger.info(f"[publish] Episode {ep.id} '{ep.title}' scheduled for {scheduled_dt.isoformat()} by {request.user.username}")
         messages.success(request, f'"{ep.title}" scheduled for {scheduled_dt.strftime("%b %d, %Y %H:%M")}.')
         return redirect(f"{reverse('publish_episode')}?network={current_network.slug}&tab=scheduled")
@@ -466,7 +484,8 @@ def manage_episode(request, episode_id):
             ep.scheduled_at = scheduled_dt
             ep.pub_date     = scheduled_dt
             ep.save(update_fields=['is_published', 'scheduled_at', 'pub_date'])
-            ensure_calendar_entry_for_episode(ep, calendar_entry_id=request.POST.get('calendar_entry_id'))
+            entry = ensure_calendar_entry_for_episode(ep, calendar_entry_id=request.POST.get('calendar_entry_id'))
+            _apply_calendar_visibility(entry, request)
             from django.core.cache import cache
             cache.delete(f"ep_frag_public_{ep.id}")
             cache.delete(f"ep_frag_private_{ep.id}")
@@ -481,5 +500,44 @@ def manage_episode(request, episode_id):
             from ...services.episode_move import move_episodes
             move_episodes([ep.id], target_pod, base_url=request.build_absolute_uri('/'), moved_by=request.user)
             messages.success(request, f'"{ep.title}" moved to "{target_pod.title}".')
+
+    elif action == 'link_calendar':
+        # Adopt a planned, still-unlinked entry from this network into this
+        # episode (the manual fallback for a missed auto-match). Network-scoped:
+        # the id arrives from request.POST.
+        from ...models import CalendarEntry
+        entry = get_object_or_404(
+            CalendarEntry, pk=request.POST.get('calendar_entry_id'),
+            network=ep.podcast.network, episode__isnull=True)
+        if getattr(ep, 'calendar_entry', None) is not None:
+            messages.error(request, "This episode is already on the calendar.")
+        else:
+            link_episode_to_entry(ep, entry)
+            messages.success(request, f'Linked to calendar entry "{entry.title}".')
+
+    elif action == 'unlink_calendar':
+        entry = getattr(ep, 'calendar_entry', None)
+        if entry is not None:
+            entry.episode = None
+            entry.save(update_fields=['episode', 'updated_at'])
+            messages.success(request, "Removed from the calendar entry (the entry was kept).")
+        else:
+            messages.info(request, "This episode isn't linked to a calendar entry.")
+
+    elif action == 'create_calendar_entry':
+        entry = create_calendar_entry_from_episode(ep)
+        messages.success(request, f'Added "{entry.title}" to the release calendar.')
+
+    elif action == 'set_calendar_visibility':
+        entry = getattr(ep, 'calendar_entry', None)
+        if entry is None:
+            messages.error(request, "This episode isn't on the calendar yet.")
+        else:
+            set_prepublish_visibility(
+                entry, request.POST.get('prepublish_visibility', ''),
+                request.POST.get('placeholder_title', ''), request.POST.get('placeholder_notes', ''))
+            entry.save(update_fields=[
+                'prepublish_visibility', 'placeholder_title', 'placeholder_notes', 'updated_at'])
+            messages.success(request, "Calendar visibility updated.")
 
     return redirect(request.META.get('HTTP_REFERER', reverse('episode_detail', args=[ep.id])))

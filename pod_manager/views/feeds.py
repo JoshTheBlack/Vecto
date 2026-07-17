@@ -29,7 +29,7 @@ from lxml import etree
 from django.db.models import Q
 
 from ..models import (
-    Network, Podcast, Episode, EpisodeCrossPublication, NetworkMix, UserMix,
+    CalendarEntry, Network, Podcast, Episode, EpisodeCrossPublication, NetworkMix, UserMix,
 )
 from ..services.access import (_evaluate_access, _build_episode_description,
                                _evaluate_mix_access, can_view_transcript,
@@ -636,16 +636,22 @@ def generate_calendar_feed(request, network_slug):
     now = timezone.now()
     entries = network.calendar_entries.select_related('episode', 'podcast').order_by('scheduled_at')
     for entry in entries:
+        # Pre-publish visibility (A16), public perspective: a 'hidden' entry is
+        # omitted until it publishes; a 'teaser' entry shows placeholder text
+        # with SxE suppressed and the type line dropped. A published entry always
+        # shows the actual info — public_* short-circuit on is_revealed.
+        if entry.public_hidden():
+            continue
+        teased = entry.prepublish_visibility == CalendarEntry.PrepublishVisibility.TEASER and not entry.is_revealed
         event = icalendar.Event()
         event.add('uid', f'calendar-entry-{entry.id}@vecto')
         # RFC 5545 requires DTSTAMP on every VEVENT; the icalendar lib does
         # NOT add it automatically.
         event.add('dtstamp', now)
         event.add('last-modified', entry.updated_at)
-        numbered = entry.season_number is not None and entry.episode_number is not None
         summary = (
-            f'S{entry.season_number}E{entry.episode_number} · {entry.title}'
-            if numbered else entry.title
+            f'S{entry.season_number}E{entry.episode_number} · {entry.public_title()}'
+            if entry.public_show_sxe() else entry.public_title()
         )
         event.add('summary', summary)
         event.add('dtstart', entry.scheduled_at)
@@ -654,10 +660,12 @@ def generate_calendar_feed(request, network_slug):
                 reverse('episode_detail', args=[entry.episode_id])))
         elif entry.external_link:
             event.add('url', entry.external_link)
-        # DESCRIPTION: a podcast/type header line, then the public notes.
+        # DESCRIPTION: a podcast/type header line, then the public notes. The
+        # type is dropped while teased (it can spoil), matching the hidden SxE.
         header_bits = [b for b in (
-            entry.podcast.title if entry.podcast else '', entry.episode_type) if b]
-        desc_parts = [b for b in (' · '.join(header_bits), entry.notes) if b]
+            entry.podcast.title if entry.podcast else '',
+            '' if teased else entry.episode_type) if b]
+        desc_parts = [b for b in (' · '.join(header_bits), entry.public_notes()) if b]
         if desc_parts:
             event.add('description', '\n\n'.join(desc_parts))
         cal.add_component(event)

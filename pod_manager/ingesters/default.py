@@ -476,11 +476,15 @@ def commit_episode(podcast, pub_entry, sub_entry, match_reason, stdout, enhancer
     if not guid_update_only:
         apply_auto_cross_publish(episode, stdout=stdout)
 
-    if is_new:
         # Link-only calendar reconciliation (never auto-creates — see
         # services.release_calendar): a pre-planned CalendarEntry for an
         # RSS-sourced show would otherwise never reconcile, since ingested
         # episodes are born published and never pass through publish.py.
+        # Runs for owned episodes that aren't linked yet — NOT just is_new —
+        # so an episode that first ingested under a low-priority catch-all
+        # feed and auto-migrated here (is_new=False, right podcast only now)
+        # still links; the reverse-OneToOne guard keeps already-linked
+        # episodes from re-querying on every poll.
         from pod_manager.services.release_calendar import link_calendar_entry_for_new_episode
         link_calendar_entry_for_new_episode(episode, stdout=stdout)
 

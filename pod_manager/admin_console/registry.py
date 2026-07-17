@@ -204,6 +204,14 @@ REGISTRY = {
         # Idempotent SET; previews unless --apply. Banks per-edit rollback deltas
         # onto historical APPROVED edits; does not touch membership aggregates.
     ),
+    "backfill_calendar": CommandSpec(
+        name="backfill_calendar",
+        category="Maintenance",
+        # Benign, reversible SET: seeds the release calendar from existing
+        # episodes at their pub_date (adopts a pre-planned entry when one exists,
+        # idempotent on re-run), so --apply alone executes — no --yes. --network /
+        # --podcast auto-infer their pickers; --days / --limit are plain ints.
+    ),
     "refresh_live_schedules": CommandSpec(
         name="refresh_live_schedules",
         category="Maintenance",

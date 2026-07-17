@@ -23,6 +23,10 @@
     .ql-snow .ql-fill, .ql-snow .ql-stroke.ql-fill { fill: #f8f9fa; }
     .ql-snow .ql-picker { color: #f8f9fa; }
     .ql-snow .ql-picker-options { background-color: #212529; border-color: var(--bs-secondary); }
+    /* Link editor popup — Quill ships it white, which reads wrong in the dark UI. */
+    .ql-snow .ql-tooltip { background-color: #212529; border-color: var(--bs-secondary); color: #f8f9fa; box-shadow: 0 2px 8px rgba(0,0,0,.5); border-radius: .375rem; }
+    .ql-snow .ql-tooltip input[type=text] { background-color: #2b3035; border-color: var(--bs-secondary); color: #f8f9fa; }
+    .ql-snow .ql-tooltip a { color: var(--vecto-primary, #ffc107); }
 
     
     /* Edit Mode Specific Styles */

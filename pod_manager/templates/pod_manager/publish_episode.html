@@ -10,6 +10,10 @@
     .ql-snow .ql-fill, .ql-snow .ql-stroke.ql-fill { fill:#f8f9fa; }
     .ql-snow .ql-picker    { color:#f8f9fa; }
     .ql-snow .ql-picker-options { background:#212529; border-color:#444; }
+    /* Link editor popup — Quill ships it white, which reads wrong in the dark UI. */
+    .ql-snow .ql-tooltip { background:#212529; border-color:#444; color:#f8f9fa; box-shadow:0 2px 8px rgba(0,0,0,.5); border-radius:.375rem; }
+    .ql-snow .ql-tooltip input[type=text] { background:#2b3035; border-color:#444; color:#f8f9fa; }
+    .ql-snow .ql-tooltip a { color:var(--vecto-primary,#ffc107); }
 
     .tag-input-wrapper {
         display:flex; flex-wrap:wrap; gap:.4rem; align-items:center;

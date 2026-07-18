@@ -13679,3 +13679,119 @@ class CreatorSettingsReviewCountPillsTests(TestCase):
         self.assertIn('<span class="badge rounded-pill ms-2"', content)
         # Counts should appear somewhere in the response.
         self.assertIn('>1<', content)
+
+
+class BackfillMatchSuggestionsCommandTests(TestCase):
+    """backfill_match_suggestions (Chat 5, §4b): column-scans a network's
+    episodes for pre-fix duplicate-GUID rows and seeds EpisodeMatchSuggestion
+    via the same service/constraint/sticky-dismiss machinery as live
+    detection. Preview by default; --apply persists."""
+
+    def setUp(self):
+        self.network = Network.objects.create(name='BfMsNet', slug='bfms')
+        self.podcast = Podcast.objects.create(network=self.network, title='Show', slug='bfms-show')
+
+    def _ep(self, title, *, guid_public=None, guid_private=None, podcast=None,
+            subscriber_audio=False):
+        return Episode.objects.create(
+            podcast=podcast or self.podcast, title=title, pub_date=timezone.now(),
+            raw_description='x', clean_description='x',
+            guid_public=guid_public, guid_private=guid_private,
+            audio_url_subscriber='https://x.test/a.mp3' if subscriber_audio else None,
+        )
+
+    def _run(self, *args, network=None):
+        from django.core.management import call_command
+        out = StringIO()
+        call_command(
+            'backfill_match_suggestions', f"--network={network or self.network.slug}",
+            *args, stdout=out, stderr=StringIO())
+        return out.getvalue()
+
+    def test_private_guid_collision_seeds_pending_suggestion(self):
+        a = self._ep('A', guid_private='DUP1')
+        b = self._ep('B', guid_private='DUP1')
+        self._run('--apply')
+        s = EpisodeMatchSuggestion.objects.get()
+        self.assertEqual(s.status, 'PENDING')
+        self.assertEqual(s.detected_reason, 'backfill_duplicate_guid')
+        self.assertEqual({s.public_episode_id, s.private_episode_id}, {a.id, b.id})
+        self.assertEqual(s.priv_guid, 'DUP1')
+        self.assertEqual(s.network_id, self.network.id)
+
+    def test_role_tiebreaker_falls_back_to_guid_public_then_older_row(self):
+        # Both rows carry subscriber audio (the prod-backfill norm — the first
+        # tiebreaker doesn't discriminate), so role assignment falls to
+        # guid_public presence: the row that HAS one becomes public_episode.
+        older = self._ep('Older', guid_private='DUP2', guid_public='HASPUB', subscriber_audio=True)
+        newer = self._ep('Newer', guid_private='DUP2', subscriber_audio=True)
+        self._run('--apply')
+        s = EpisodeMatchSuggestion.objects.get()
+        self.assertEqual(s.public_episode_id, older.id)
+        self.assertEqual(s.private_episode_id, newer.id)
+
+    def test_role_tiebreaker_older_row_wins_public_when_all_else_ties(self):
+        # Neither row has guid_public and both carry subscriber audio: the
+        # final fallback is older-row-wins-public (lower id created first).
+        older = self._ep('Older', guid_private='DUP3', subscriber_audio=True)
+        newer = self._ep('Newer', guid_private='DUP3', subscriber_audio=True)
+        self._run('--apply')
+        s = EpisodeMatchSuggestion.objects.get()
+        self.assertEqual(s.public_episode_id, older.id)
+        self.assertEqual(s.private_episode_id, newer.id)
+
+    def test_cluster_of_three_seeds_pairwise_cards_against_anchor(self):
+        anchor = self._ep('Anchor', guid_private='DUP4', subscriber_audio=True)
+        extra1 = self._ep('Extra1', guid_private='DUP4')
+        extra2 = self._ep('Extra2', guid_private='DUP4')
+        self._run('--apply')
+        suggestions = EpisodeMatchSuggestion.objects.all()
+        self.assertEqual(suggestions.count(), 2)
+        pairs = {frozenset((s.public_episode_id, s.private_episode_id)) for s in suggestions}
+        self.assertEqual(pairs, {
+            frozenset((anchor.id, extra1.id)),
+            frozenset((anchor.id, extra2.id)),
+        })
+
+    def test_honors_sticky_dismissal(self):
+        a = self._ep('A', guid_private='DUP5')
+        b = self._ep('B', guid_private='DUP5')
+        EpisodeMatchSuggestion.objects.create(
+            network=self.network, public_episode=a, private_episode=b,
+            pub_guid='', priv_guid='DUP5', source_podcast=self.podcast,
+            target_podcast=self.podcast, detected_reason='backfill_duplicate_guid',
+            status='DISMISSED', resolved_at=timezone.now())
+        self._run('--apply')
+        self.assertFalse(EpisodeMatchSuggestion.objects.filter(status='PENDING').exists())
+
+    def test_rerun_is_idempotent_no_duplicate_pending(self):
+        self._ep('A', guid_private='DUP6')
+        self._ep('B', guid_private='DUP6')
+        self._run('--apply')
+        self._run('--apply')
+        self.assertEqual(EpisodeMatchSuggestion.objects.filter(status='PENDING').count(), 1)
+
+    def test_dry_run_writes_nothing(self):
+        self._ep('A', guid_private='DUP7')
+        self._ep('B', guid_private='DUP7')
+        self._run()  # no --apply
+        self.assertEqual(EpisodeMatchSuggestion.objects.count(), 0)
+
+    def test_dry_run_output_mentions_would_seed(self):
+        self._ep('A', guid_private='DUP8')
+        self._ep('B', guid_private='DUP8')
+        output = self._run()
+        self.assertIn('would seed', output)
+        self.assertEqual(EpisodeMatchSuggestion.objects.count(), 0)
+
+    def test_no_collision_seeds_nothing(self):
+        self._ep('A', guid_private='UNIQUE1')
+        self._ep('B', guid_private='UNIQUE2')
+        self._run('--apply')
+        self.assertEqual(EpisodeMatchSuggestion.objects.count(), 0)
+
+    def test_scope_required(self):
+        from django.core.management import call_command
+        from django.core.management.base import CommandError
+        with self.assertRaises(CommandError):
+            call_command('backfill_match_suggestions', stdout=StringIO(), stderr=StringIO())

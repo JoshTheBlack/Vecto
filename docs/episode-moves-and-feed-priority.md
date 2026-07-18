@@ -42,6 +42,24 @@ Marking a podcast **low-priority** (Manage Podcasts) means:
    identifiers.
 
 **Ambiguous matches:** if one ingest pass resolves an episode's public and
-private GUIDs to two *different* rows, migration is skipped and the import log
-shows `[SKIP MIGRATE] … resolve via Merge Desk`. Merge the pair in the Merge
-Desk; the next ingest then migrates normally.
+private GUIDs to two *different* rows, migration is a **true skip**: the
+import log shows `[SKIP MIGRATE] … resolve via Merge Desk`, and neither row's
+GUIDs, audio, or metadata are touched while the pair is unresolved (an earlier
+build fell through to updating the row anyway, which minted a duplicate GUID —
+see `planned_migration_match_suggestions.txt` §1b for the history). Instead,
+the pair is persisted as a **Suggested Pair** — reviewable in the Merge Desk's
+*Suggested Pairs* mode, alongside a badge count on the Merge Desk tab. Open a
+card's *Review & Merge* to resolve it with the field-level merge editor (pick
+the surviving row, reconcile each field, choose the parent podcast), or
+*Dismiss* it to suppress that exact GUID pair sticky (it won't resurface on
+later polls). The next ingest then migrates normally once the survivor carries
+both GUIDs.
+
+**Historical duplicates:** the pre-fix fallthrough could already have minted
+duplicate-GUID rows before this behavior shipped. `python manage.py
+backfill_match_suggestions --network=<slug> --apply` (or `--all`) scans a
+network's episodes column-by-column for rows sharing a `guid_public` or
+`guid_private`, and seeds the same Suggested Pair rows for each collision
+found — live detection can't see this class of pre-existing corruption on its
+own. Preview (no `--apply`) reports what it would seed without writing
+anything. See the command's own `--help` / module docstring for details.

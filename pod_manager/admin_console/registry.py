@@ -212,6 +212,15 @@ REGISTRY = {
         # idempotent on re-run), so --apply alone executes — no --yes. --network /
         # --podcast auto-infer their pickers; --days / --limit are plain ints.
     ),
+    "backfill_match_suggestions": CommandSpec(
+        name="backfill_match_suggestions",
+        category="Maintenance",
+        # Benign, additive SET: seeds EpisodeMatchSuggestion rows for pre-fix
+        # duplicate-GUID episode pairs (planned_migration_match_suggestions.txt
+        # §4b) via the same dedup/sticky machinery as live detection — nothing
+        # is deleted or overwritten, so --apply alone executes, no --yes.
+        # --network auto-infers its picker.
+    ),
     "refresh_live_schedules": CommandSpec(
         name="refresh_live_schedules",
         category="Maintenance",

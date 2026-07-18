@@ -40,6 +40,9 @@
             </a>
             <a class="list-group-item list-group-item-action border-secondary {% if request.GET.tab == 'merge' %}active{% endif %}" id="list-merge-list" data-bs-toggle="list" href="#list-merge" role="tab">
                 <i class="bi bi-intersect me-2"></i> Merge Desk
+                {% if pending_pairs_count %}
+                <span class="badge rounded-pill ms-2" style="background-color: var(--vecto-primary); color: var(--vecto-surface-text);">{{ pending_pairs_count }}</span>
+                {% endif %}
             </a>
             <a class="list-group-item list-group-item-action border-secondary {% if request.GET.tab == 'move' %}active{% endif %}" id="list-move-list" data-bs-toggle="list" href="#list-move" role="tab">
                 <i class="bi bi-arrows-move me-2"></i> Bulk Move
@@ -49,6 +52,9 @@
             </a>
             <a class="list-group-item list-group-item-action border-secondary {% if request.GET.tab == 'inbox' %}active{% endif %}" id="list-inbox-list" data-bs-toggle="list" href="#list-inbox" role="tab">
                 <i class="bi bi-inbox me-2"></i> Community Edits
+                {% if pending_edits_count %}
+                <span class="badge rounded-pill ms-2" style="background-color: var(--vecto-primary); color: var(--vecto-surface-text);">{{ pending_edits_count }}</span>
+                {% endif %}
             </a>
             <a class="list-group-item list-group-item-action border-secondary {% if request.GET.tab == 'audit' %}active{% endif %}" id="list-audit-list" data-bs-toggle="list" href="#list-audit" role="tab">
                 <i class="bi bi-shield-check me-2"></i> Audit Log

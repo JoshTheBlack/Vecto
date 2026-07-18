@@ -13506,3 +13506,176 @@ class MatchEditorViewAndActionTests(TestCase):
         })
         self.assertEqual(resp.status_code, 404)
         self.assertTrue(Episode.objects.filter(pk=self.o_priv.pk).exists())
+
+
+class CreatorSettingsReviewCountPillsTests(TestCase):
+    """Per-tab review-count pills on the creator-settings left nav (§3.4, Chat 4):
+    counts scoped to the network being managed, not cross-network aggregate.
+    Pills render only when count > 0."""
+
+    def setUp(self):
+        self.client = Client()
+        self.owner = User.objects.create_user('pill-owner', password='x')
+        self.network = Network.objects.create(name='PillNet', slug='pillnet')
+        self.network.owners.add(self.owner)
+
+        # A foreign network for scoping isolation tests.
+        self.other_net = Network.objects.create(name='OtherNet', slug='othernet')
+        self.other_owner = User.objects.create_user('other-owner', password='x')
+        self.other_net.owners.add(self.other_owner)
+
+        self.url = reverse('creator_settings')
+
+    def _get_context(self):
+        """Helper to fetch creator_settings and return its context."""
+        resp = self.client.get(self.url, {'network': self.network.slug})
+        self.assertEqual(resp.status_code, 200)
+        return resp.context
+
+    def test_zero_counts_render_no_pills(self):
+        """When both counts are zero, no pills appear."""
+        self.client.force_login(self.owner)
+        resp = self.client.get(self.url, {'network': self.network.slug})
+        self.assertEqual(resp.status_code, 200)
+        content = resp.content.decode('utf-8')
+        # Pills are only in the nav badges, which shouldn't appear with zero count
+        self.assertNotIn('Community Edits</i>\n                <span class="badge', content)
+        self.assertNotIn('Merge Desk</i>\n                <span class="badge', content)
+
+    def test_pending_edits_count_in_context(self):
+        """The pending_edits_count is added to the GET context."""
+        self.client.force_login(self.owner)
+        context = self._get_context()
+        self.assertIn('pending_edits_count', context)
+        self.assertEqual(context['pending_edits_count'], 0)
+
+    def test_pending_pairs_count_in_context(self):
+        """The pending_pairs_count is added to the GET context."""
+        self.client.force_login(self.owner)
+        context = self._get_context()
+        self.assertIn('pending_pairs_count', context)
+        self.assertEqual(context['pending_pairs_count'], 0)
+
+    def test_pending_edits_count_scoped_to_network(self):
+        """Pending edits are scoped to the managed network only."""
+        user = User.objects.create_user('contributor', password='x')
+
+        podcast = Podcast.objects.create(network=self.network, title='Test', slug='test')
+        episode = Episode.objects.create(
+            podcast=podcast, title='Ep1', pub_date=timezone.now(),
+            guid_public='X', raw_description='x', clean_description='x')
+        edit = EpisodeEditSuggestion.objects.create(
+            episode=episode, user=user, status=EpisodeEditSuggestion.Status.PENDING,
+            suggested_data={}, original_data={})
+
+        # Foreign edit on a different network.
+        other_podcast = Podcast.objects.create(network=self.other_net, title='Other', slug='other')
+        other_episode = Episode.objects.create(
+            podcast=other_podcast, title='OtherEp', pub_date=timezone.now(),
+            guid_public='Y', raw_description='y', clean_description='y')
+        other_edit = EpisodeEditSuggestion.objects.create(
+            episode=other_episode, user=user, status=EpisodeEditSuggestion.Status.PENDING,
+            suggested_data={}, original_data={})
+
+        self.client.force_login(self.owner)
+        context = self._get_context()
+        # Only the local network's edit should be counted.
+        self.assertEqual(context['pending_edits_count'], 1)
+
+    def test_pending_pairs_count_scoped_to_network(self):
+        """Pending match suggestions are scoped to the managed network only."""
+        low = Podcast.objects.create(network=self.network, title='Low', slug='low', is_low_priority=True)
+        target = Podcast.objects.create(network=self.network, title='Target', slug='target')
+        pub = Episode.objects.create(
+            podcast=low, title='Pub', pub_date=timezone.now(),
+            guid_public='GX', raw_description='x', clean_description='x')
+        priv = Episode.objects.create(
+            podcast=low, title='Priv', pub_date=timezone.now(),
+            guid_private='GY', raw_description='y', clean_description='y')
+        suggestion = EpisodeMatchSuggestion.objects.create(
+            network=self.network, public_episode=pub, private_episode=priv,
+            pub_guid='GX', priv_guid='GY', source_podcast=low, target_podcast=target,
+            detected_reason='ambiguous_guid_divergence', status='PENDING')
+
+        # Foreign suggestion on a different network.
+        other_low = Podcast.objects.create(network=self.other_net, title='OL', slug='ol', is_low_priority=True)
+        other_target = Podcast.objects.create(network=self.other_net, title='OT', slug='ot')
+        o_pub = Episode.objects.create(
+            podcast=other_low, title='OPub', pub_date=timezone.now(),
+            guid_public='OX', raw_description='x', clean_description='x')
+        o_priv = Episode.objects.create(
+            podcast=other_low, title='OPriv', pub_date=timezone.now(),
+            guid_private='OY', raw_description='y', clean_description='y')
+        other_suggestion = EpisodeMatchSuggestion.objects.create(
+            network=self.other_net, public_episode=o_pub, private_episode=o_priv,
+            pub_guid='OX', priv_guid='OY', source_podcast=other_low, target_podcast=other_target,
+            detected_reason='ambiguous_guid_divergence', status='PENDING')
+
+        self.client.force_login(self.owner)
+        context = self._get_context()
+        # Only the local network's suggestion should be counted.
+        self.assertEqual(context['pending_pairs_count'], 1)
+
+    def test_superuser_sees_selected_network_count_not_global(self):
+        """A superuser viewing a network sees that network's counts, not a sum."""
+        superuser = User.objects.create_superuser('super', 'super@x', 'x')
+        user = User.objects.create_user('contributor', password='x')
+
+        # Add pending edits to both networks.
+        podcast1 = Podcast.objects.create(network=self.network, title='P1', slug='p1')
+        ep1 = Episode.objects.create(
+            podcast=podcast1, title='E1', pub_date=timezone.now(),
+            guid_public='X1', raw_description='x', clean_description='x')
+        edit1 = EpisodeEditSuggestion.objects.create(
+            episode=ep1, user=user, status=EpisodeEditSuggestion.Status.PENDING,
+            suggested_data={}, original_data={})
+
+        podcast2 = Podcast.objects.create(network=self.other_net, title='P2', slug='p2')
+        ep2 = Episode.objects.create(
+            podcast=podcast2, title='E2', pub_date=timezone.now(),
+            guid_public='X2', raw_description='x', clean_description='x')
+        edit2 = EpisodeEditSuggestion.objects.create(
+            episode=ep2, user=user, status=EpisodeEditSuggestion.Status.PENDING,
+            suggested_data={}, original_data={})
+
+        self.client.force_login(superuser)
+        context = self._get_context()
+        # Superuser viewing self.network should see only 1, not 2 (the global sum).
+        self.assertEqual(context['pending_edits_count'], 1)
+
+    def test_pills_render_when_count_nonzero(self):
+        """Pills appear in the HTML when counts are nonzero."""
+        user = User.objects.create_user('contributor', password='x')
+
+        podcast = Podcast.objects.create(network=self.network, title='Test', slug='test')
+        episode = Episode.objects.create(
+            podcast=podcast, title='Ep1', pub_date=timezone.now(),
+            guid_public='X', raw_description='x', clean_description='x')
+        edit = EpisodeEditSuggestion.objects.create(
+            episode=episode, user=user, status=EpisodeEditSuggestion.Status.PENDING,
+            suggested_data={}, original_data={})
+
+        low = Podcast.objects.create(network=self.network, title='Low', slug='low', is_low_priority=True)
+        target = Podcast.objects.create(network=self.network, title='Target', slug='target')
+        pub = Episode.objects.create(
+            podcast=low, title='Pub', pub_date=timezone.now(),
+            guid_public='GX', raw_description='x', clean_description='x')
+        priv = Episode.objects.create(
+            podcast=low, title='Priv', pub_date=timezone.now(),
+            guid_private='GY', raw_description='y', clean_description='y')
+        suggestion = EpisodeMatchSuggestion.objects.create(
+            network=self.network, public_episode=pub, private_episode=priv,
+            pub_guid='GX', priv_guid='GY', source_podcast=low, target_podcast=target,
+            detected_reason='ambiguous_guid_divergence', status='PENDING')
+
+        self.client.force_login(self.owner)
+        resp = self.client.get(self.url, {'network': self.network.slug})
+        content = resp.content.decode('utf-8')
+
+        # Verify the badges appear with correct counts.
+        self.assertIn('Community Edits', content)
+        self.assertIn('Merge Desk', content)
+        # Look for the badge markup with the count value.
+        self.assertIn('<span class="badge rounded-pill ms-2"', content)
+        # Counts should appear somewhere in the response.
+        self.assertIn('>1<', content)

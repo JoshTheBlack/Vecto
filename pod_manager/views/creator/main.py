@@ -14,7 +14,7 @@ from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
 from django.utils import timezone
 
-from ...models import Episode, Network, NetworkMembership, EpisodeEditSuggestion
+from ...models import Episode, Network, NetworkMembership, EpisodeEditSuggestion, EpisodeMatchSuggestion
 from ...services.cross_publish import validate_cross_targets
 from ...services.edits import (
     apply_approved_edit, chapter_items, parse_chapter_payload, snapshot_episode,
@@ -26,6 +26,7 @@ from .actions import ACTION_HANDLERS
 from .data import (
     annotate_audit_edit,
     network_podcast_list,
+    pending_match_suggestion_count,
 )
 
 logger = logging.getLogger(__name__)
@@ -56,12 +57,17 @@ def creator_settings(request):
 
     # GET — every tab except Network Profile and GDrive Recovery lazy-loads its
     # body via creator_tab_partial, so the shell only needs what those two
-    # eager tabs render: the theme JSON and the network's feed roster.
+    # eager tabs render: the theme JSON and the network's feed roster. Add
+    # per-tab review-count pills (§3.4) for the left nav.
     context = {
         'networks': allowed_networks,
         'current_network': current_network,
         'theme_config_json': json.dumps(current_network.theme_config, indent=2),
         'network_podcasts': network_podcast_list(current_network),
+        'pending_edits_count': EpisodeEditSuggestion.objects.filter(
+            episode__podcast__network=current_network, status=EpisodeEditSuggestion.Status.PENDING
+        ).count(),
+        'pending_pairs_count': pending_match_suggestion_count(current_network),
     }
 
     return render(request, 'pod_manager/creator_settings.html', context)

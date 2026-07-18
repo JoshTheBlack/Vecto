@@ -12778,3 +12778,425 @@ class IngestGuidDivergenceTests(TestCase):
         self.ep_pub.refresh_from_db()
         self.assertEqual(self.ep_pub.podcast_id, self.low.id)
         self.assertTrue(any('[SKIP MIGRATE]' in line for line in self._stdout_lines(stdout)))
+
+
+class MergePairWithChoicesTests(TestCase):
+    """services/episode_merge.py :: merge_pair_with_choices — the §3.6 field-
+    level merge primitive: sanitized field writes, the r2 trio riding the
+    audio_url_subscriber pick, the (a)-(f) relation handlers, on_commit-only
+    side effects, and full rollback (zero file deletions, zero half-moved
+    relations) on a forced mid-merge exception."""
+
+    def setUp(self):
+        self.network = Network.objects.create(name='Net', slug='merge')
+        self.pod_a = Podcast.objects.create(
+            network=self.network, title='Target', slug='merge-a')
+        self.pod_b = Podcast.objects.create(
+            network=self.network, title='Low', slug='merge-b', is_low_priority=True)
+        self.actor = User.objects.create_user('merger', password='x')
+        self.survivor = Episode.objects.create(
+            podcast=self.pod_a, title='Survivor', pub_date=timezone.now(),
+            raw_description='rs', clean_description='cs', guid_private='GY',
+            audio_url_subscriber='https://cdn.example.com/sub-survivor.mp3')
+        self.loser = Episode.objects.create(
+            podcast=self.pod_b, title='Loser', pub_date=timezone.now(),
+            raw_description='rl', clean_description='cl', guid_public='GX',
+            audio_url_subscriber='https://cdn.example.com/sub-loser.mp3')
+
+    def _merge(self, choices=None, **kwargs):
+        from pod_manager.services.episode_merge import merge_pair_with_choices
+        return merge_pair_with_choices(
+            self.survivor, self.loser, choices or {}, actor=self.actor, **kwargs)
+
+    # --- field writes + sanitization -------------------------------------
+
+    def test_field_choices_applied_with_sanitization(self):
+        self._merge({
+            'title': 'Merged Title',
+            'description': '<p>ok</p><script>alert(1)</script>',
+            'chapters_public': [
+                {'startTime': 5, 'title': 'Intro'},
+                {'title': 'no startTime — dropped'},
+            ],
+            'season_number': '7',
+            'episode_number': 'not-a-number',   # unparseable — survivor keeps its own
+            'episode_type': 'x' * 80,
+            'guid_public': 'GX',
+            'guid_private': 'GY',
+        })
+        self.survivor.refresh_from_db()
+        self.assertEqual(self.survivor.title, 'Merged Title')
+        self.assertIn('<p>ok</p>', self.survivor.clean_description)
+        self.assertNotIn('script', self.survivor.clean_description)
+        self.assertEqual(self.survivor.chapters_public['version'], '1.2.0')
+        self.assertEqual(len(self.survivor.chapters_public['chapters']), 1)
+        self.assertEqual(self.survivor.season_number, 7)
+        self.assertIsNone(self.survivor.episode_number)
+        self.assertEqual(len(self.survivor.episode_type), 50)
+        # The survivor ends carrying BOTH GUIDs so the next ingest sees one row.
+        self.assertEqual(self.survivor.guid_public, 'GX')
+        self.assertEqual(self.survivor.guid_private, 'GY')
+        self.assertEqual(self.survivor.match_reason, 'Manual Merge (Merge Desk)')
+        self.assertFalse(Episode.objects.filter(pk=self.loser.pk).exists())
+
+    def test_unknown_choice_key_raises_and_merges_nothing(self):
+        with self.assertRaises(ValueError):
+            self._merge({'r2_url': 'https://evil.example.com/x.mp3'})
+        self.assertTrue(Episode.objects.filter(pk=self.loser.pk).exists())
+        self.survivor.refresh_from_db()
+        self.assertEqual(self.survivor.match_reason, '')
+
+    def test_r2_trio_rides_subscriber_audio_pick_from_loser(self):
+        uploaded = timezone.now()
+        Episode.objects.filter(pk=self.loser.pk).update(
+            r2_url='https://r2.example.com/loser.mp3',
+            r2_uploaded_at=uploaded, r2_source_signature='etag:123')
+        self.loser.refresh_from_db()
+        self._merge({'audio_url_subscriber': self.loser.audio_url_subscriber})
+        self.survivor.refresh_from_db()
+        self.assertEqual(self.survivor.audio_url_subscriber,
+                         'https://cdn.example.com/sub-loser.mp3')
+        self.assertEqual(self.survivor.r2_url, 'https://r2.example.com/loser.mp3')
+        self.assertEqual(self.survivor.r2_uploaded_at, uploaded)
+        self.assertEqual(self.survivor.r2_source_signature, 'etag:123')
+
+    def test_r2_trio_untouched_when_survivor_audio_kept(self):
+        Episode.objects.filter(pk=self.survivor.pk).update(
+            r2_url='https://r2.example.com/survivor.mp3',
+            r2_source_signature='etag:s')
+        Episode.objects.filter(pk=self.loser.pk).update(
+            r2_url='https://r2.example.com/loser.mp3',
+            r2_source_signature='etag:l')
+        self.survivor.refresh_from_db()
+        self.loser.refresh_from_db()
+        self._merge({'audio_url_subscriber': self.survivor.audio_url_subscriber})
+        self.survivor.refresh_from_db()
+        self.assertEqual(self.survivor.r2_url, 'https://r2.example.com/survivor.mp3')
+        self.assertEqual(self.survivor.r2_source_signature, 'etag:s')
+
+    # --- (a) transcript --------------------------------------------------
+
+    def test_survivor_transcript_untouched_when_loser_has_none(self):
+        tx = Transcript.objects.create(
+            episode=self.survivor, status=Transcript.Status.COMPLETED, version=1)
+        self._merge({})
+        tx.refresh_from_db()
+        self.assertEqual(tx.episode_id, self.survivor.id)
+        self.assertFalse(R2OrphanedObject.objects.exists())
+
+    @override_settings(R2_MEDIA_ENABLED=True)
+    def test_both_transcripts_edge_orphans_files_and_supersedes_speaker_edits(self):
+        Transcript.objects.create(
+            episode=self.survivor, status=Transcript.Status.COMPLETED, version=2)
+        loser_tx = Transcript.objects.create(
+            episode=self.loser, status=Transcript.Status.COMPLETED, version=1,
+            r2_key_token='tok12345', vtt_file='x.vtt', json_file='x.json')
+        speaker_edit = EpisodeEditSuggestion.objects.create(
+            episode=self.loser, user=self.actor,
+            suggested_data={'speaker_mappings': {'SPEAKER_00': 'Josh'}},
+            status=EpisodeEditSuggestion.Status.APPROVED, points=2,
+            resolved_at=timezone.now())
+        loser_id = self.loser.id  # delete() nulls the in-memory pk
+        with mock.patch('pod_manager.services.r2_storage.delete_media_object') as del_obj:
+            with self.captureOnCommitCallbacks(execute=True):
+                self._merge({})
+        # Files were NOT hard-deleted — orphan rows recorded instead.
+        del_obj.assert_not_called()
+        self.assertFalse(Transcript.objects.filter(pk=loser_tx.pk).exists())
+        self.assertTrue(
+            Transcript.objects.filter(episode=self.survivor, version=2).exists())
+        from pod_manager.services.transcription import transcript_r2_key
+        for ext in ('vtt', 'json'):
+            orphan = R2OrphanedObject.objects.get(
+                key=transcript_r2_key(loser_id, ext, 'tok12345'))
+            self.assertEqual(
+                orphan.reason, R2OrphanedObject.Reason.MERGE_SUPERSEDED_TRANSCRIPT)
+            self.assertEqual(orphan.episode_id, self.survivor.id)
+        self.assertEqual(R2OrphanedObject.objects.count(), 2)
+        # Speaker edits repoint (so audit/trust history survives the CASCADE)
+        # but flip to SUPERSEDED — permanently out of the replay fold.
+        speaker_edit.refresh_from_db()
+        self.assertEqual(speaker_edit.episode_id, self.survivor.id)
+        self.assertEqual(speaker_edit.status, EpisodeEditSuggestion.Status.SUPERSEDED)
+        self.assertEqual(speaker_edit.points, 2)  # banked award untouched
+
+    def test_legacy_local_transcript_files_deleted_only_after_commit(self):
+        media_root = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, media_root, ignore_errors=True)
+        rel = f'transcriptions/0/{self.loser.id}.vtt'
+        local = media_root / rel
+        local.parent.mkdir(parents=True)
+        local.write_text('WEBVTT')
+        Transcript.objects.create(
+            episode=self.survivor, status=Transcript.Status.COMPLETED, version=0)
+        Transcript.objects.create(
+            episode=self.loser, status=Transcript.Status.COMPLETED, version=0,
+            vtt_file=rel)
+        with override_settings(MEDIA_ROOT=str(media_root)):
+            with self.captureOnCommitCallbacks(execute=True) as callbacks:
+                self._merge({})
+                # Inside the transaction the file must still exist — deletion
+                # is exclusively an on_commit side effect.
+                self.assertTrue(local.exists())
+        self.assertTrue(callbacks)
+        self.assertFalse(local.exists())
+
+    # --- (b) edit suggestions --------------------------------------------
+
+    def test_metadata_edits_rekeyed_and_rollback_still_exact(self):
+        membership = NetworkMembership.objects.create(
+            user=self.actor, network=self.network, trust_score=10, edits_title=1)
+        edit = EpisodeEditSuggestion.objects.create(
+            episode=self.loser, user=self.actor,
+            suggested_data={'title': 'Edited Title'},
+            original_data={'title': 'Loser'},
+            status=EpisodeEditSuggestion.Status.APPROVED,
+            points=3, counter_deltas={'edits_title': 1},
+            resolved_at=timezone.now())
+        original_created_at = edit.created_at
+        # The award was applied at approval time.
+        membership.trust_score += 3
+        membership.edits_title += 1
+        membership.save()
+
+        self._merge({'title': 'Edited Title'})
+
+        edit.refresh_from_db()
+        self.assertEqual(edit.episode_id, self.survivor.id)
+        self.assertEqual(edit.status, EpisodeEditSuggestion.Status.APPROVED)
+        self.assertEqual(edit.created_at, original_created_at)  # replay order kept
+        self.assertEqual(edit.points, 3)
+        self.assertEqual(edit.counter_deltas, {'edits_title': 1})
+
+        # Rollback of the rekeyed edit reverses exactly: fields restore from
+        # the snapshot onto the SURVIVOR, trust/counters wash to the paid-in
+        # baseline.
+        from pod_manager.views.creator.actions import (
+            _restore_metadata_values, _reverse_award)
+        _restore_metadata_values(edit, self.survivor, self.network)
+        _reverse_award(edit, membership)
+        membership.save()
+        self.survivor.refresh_from_db()
+        membership.refresh_from_db()
+        self.assertEqual(self.survivor.title, 'Loser')
+        self.assertEqual(membership.trust_score, 10)
+        self.assertEqual(membership.edits_title, 1)
+
+    # --- (c) calendar entry ----------------------------------------------
+
+    def test_calendar_relinks_before_delete_when_only_loser_has_entry(self):
+        entry = CalendarEntry.objects.create(
+            network=self.network, podcast=self.pod_b, title='Planned',
+            scheduled_at=timezone.now(), episode=self.loser,
+            created_from_episode=False)
+        self._merge({})
+        entry.refresh_from_db()
+        self.assertEqual(entry.episode_id, self.survivor.id)
+
+    def test_calendar_keeps_survivors_entry_when_both_have_one(self):
+        keeper = CalendarEntry.objects.create(
+            network=self.network, podcast=self.pod_a, title='Keeper',
+            scheduled_at=timezone.now(), episode=self.survivor,
+            created_from_episode=False)
+        auto_entry = CalendarEntry.objects.create(
+            network=self.network, podcast=self.pod_b, title='Auto',
+            scheduled_at=timezone.now(), episode=self.loser,
+            created_from_episode=True)
+        self._merge({})
+        keeper.refresh_from_db()
+        self.assertEqual(keeper.episode_id, self.survivor.id)
+        # The loser's auto-created entry rode the normal pre_delete path.
+        self.assertFalse(CalendarEntry.objects.filter(pk=auto_entry.pk).exists())
+
+    # --- (d) cross-publications ------------------------------------------
+
+    def test_cross_publications_repointed_deduped_and_parent_skipped(self):
+        pod_c = Podcast.objects.create(network=self.network, title='C', slug='merge-c')
+        pod_d = Podcast.objects.create(network=self.network, title='D', slug='merge-d')
+        pod_e = Podcast.objects.create(network=self.network, title='E', slug='merge-e')
+        # Survivor already placed in D; loser has manual links to C (new),
+        # A (survivor's parent — skip), D (dup — skip) and an auto link to E.
+        EpisodeCrossPublication.objects.create(
+            episode=self.survivor, podcast=pod_d, auto_created=False)
+        manual_new = EpisodeCrossPublication.objects.create(
+            episode=self.loser, podcast=pod_c, auto_created=False)
+        EpisodeCrossPublication.objects.create(
+            episode=self.loser, podcast=self.pod_a, auto_created=False)
+        EpisodeCrossPublication.objects.create(
+            episode=self.loser, podcast=pod_d, auto_created=False)
+        EpisodeCrossPublication.objects.create(
+            episode=self.loser, podcast=pod_e, auto_created=True)
+        self._merge({})
+        manual_new.refresh_from_db()
+        self.assertEqual(manual_new.episode_id, self.survivor.id)
+        survivor_targets = set(
+            EpisodeCrossPublication.objects.filter(episode=self.survivor)
+            .values_list('podcast_id', flat=True))
+        self.assertEqual(survivor_targets, {pod_c.id, pod_d.id})
+        # Parent link, dup and the auto link all died with the loser.
+        self.assertFalse(
+            EpisodeCrossPublication.objects.exclude(episode=self.survivor).exists())
+
+    # --- (e) locks + pin --------------------------------------------------
+
+    def test_keep_pin_carries_losers_stamp_and_locks_apply(self):
+        pinned_at = timezone.now() - timedelta(days=3)
+        Episode.objects.filter(pk=self.loser.pk).update(
+            podcast_pinned_at=pinned_at, podcast_pinned_by=self.actor)
+        self.loser.refresh_from_db()
+        self._merge({'keep_pin': True, 'is_metadata_locked': True, 'audio_locked': True})
+        self.survivor.refresh_from_db()
+        self.assertEqual(self.survivor.podcast_pinned_at, pinned_at)
+        self.assertEqual(self.survivor.podcast_pinned_by_id, self.actor.id)
+        self.assertTrue(self.survivor.is_metadata_locked)
+        self.assertTrue(self.survivor.audio_locked)
+
+    def test_keep_pin_false_clears_survivors_pin(self):
+        Episode.objects.filter(pk=self.survivor.pk).update(
+            podcast_pinned_at=timezone.now(), podcast_pinned_by=self.actor)
+        self.survivor.refresh_from_db()
+        self._merge({'keep_pin': False})
+        self.survivor.refresh_from_db()
+        self.assertIsNone(self.survivor.podcast_pinned_at)
+        self.assertIsNone(self.survivor.podcast_pinned_by)
+
+    # --- atomicity ---------------------------------------------------------
+
+    @override_settings(R2_MEDIA_ENABLED=True)
+    def test_forced_midmerge_exception_rolls_back_everything(self):
+        media_root = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, media_root, ignore_errors=True)
+        rel = f'transcriptions/0/{self.loser.id}.vtt'
+        local = media_root / rel
+        local.parent.mkdir(parents=True)
+        local.write_text('WEBVTT')
+        Transcript.objects.create(
+            episode=self.survivor, status=Transcript.Status.COMPLETED, version=2)
+        loser_tx = Transcript.objects.create(
+            episode=self.loser, status=Transcript.Status.COMPLETED, version=1,
+            r2_key_token='tok12345', vtt_file=rel)
+        edit = EpisodeEditSuggestion.objects.create(
+            episode=self.loser, user=self.actor,
+            suggested_data={'title': 'X'}, original_data={'title': 'Loser'},
+            status=EpisodeEditSuggestion.Status.APPROVED, points=3,
+            resolved_at=timezone.now())
+        entry = CalendarEntry.objects.create(
+            network=self.network, podcast=self.pod_b, title='Planned',
+            scheduled_at=timezone.now(), episode=self.loser,
+            created_from_episode=False)
+        pod_c = Podcast.objects.create(network=self.network, title='C', slug='merge-c2')
+        link = EpisodeCrossPublication.objects.create(
+            episode=self.loser, podcast=pod_c, auto_created=False)
+
+        # merge_cross_publications runs LAST of the handlers, so everything
+        # else has already executed when the failure hits — maximal rollback.
+        with override_settings(MEDIA_ROOT=str(media_root)), \
+                mock.patch('pod_manager.services.r2_storage.delete_media_object') as del_obj, \
+                mock.patch('pod_manager.services.episode_merge.merge_cross_publications',
+                           side_effect=RuntimeError('boom')):
+            with self.assertRaises(RuntimeError):
+                self._merge({'title': 'Merged'})
+
+        # ZERO file deletions of any kind.
+        del_obj.assert_not_called()
+        self.assertTrue(local.exists())
+        # Zero half-moved relations; both rows fully intact.
+        self.assertTrue(Episode.objects.filter(pk=self.loser.pk).exists())
+        self.survivor.refresh_from_db()
+        self.assertEqual(self.survivor.title, 'Survivor')
+        self.assertEqual(self.survivor.match_reason, '')
+        self.assertTrue(Transcript.objects.filter(pk=loser_tx.pk).exists())
+        self.assertFalse(R2OrphanedObject.objects.exists())
+        edit.refresh_from_db()
+        self.assertEqual(edit.episode_id, self.loser.id)
+        self.assertEqual(edit.status, EpisodeEditSuggestion.Status.APPROVED)
+        entry.refresh_from_db()
+        self.assertEqual(entry.episode_id, self.loser.id)
+        link.refresh_from_db()
+        self.assertEqual(link.episode_id, self.loser.id)
+
+    # --- on_commit side effects -------------------------------------------
+
+    @override_settings(WHISPER_ENABLED=True)
+    def test_transcription_dispatched_when_survivor_ends_without_transcript(self):
+        with mock.patch(
+                'pod_manager.services.transcription.dispatch_transcription') as dispatch:
+            with self.captureOnCommitCallbacks(execute=True):
+                self._merge({})
+        dispatch.assert_called_once_with(self.survivor.id)
+        tx = Transcript.objects.get(episode=self.survivor)
+        self.assertEqual(tx.status, Transcript.Status.PENDING)
+
+    @override_settings(WHISPER_ENABLED=True)
+    def test_transcription_not_dispatched_when_survivor_has_transcript(self):
+        Transcript.objects.create(
+            episode=self.survivor, status=Transcript.Status.COMPLETED, version=1)
+        with mock.patch(
+                'pod_manager.services.transcription.dispatch_transcription') as dispatch:
+            with self.captureOnCommitCallbacks(execute=True):
+                self._merge({})
+        dispatch.assert_not_called()
+
+    def test_fragment_and_shell_caches_busted_after_commit(self):
+        survivor_id, loser_id = self.survivor.id, self.loser.id
+        with mock.patch('pod_manager.services.episode_merge.cache') as mock_cache:
+            with self.captureOnCommitCallbacks(execute=True):
+                self._merge({})
+        busted = {c.args[0] for c in mock_cache.delete.call_args_list}
+        for ep_id in (survivor_id, loser_id):
+            self.assertIn(f'ep_frag_public_{ep_id}', busted)
+            self.assertIn(f'ep_frag_private_{ep_id}', busted)
+        for pod_id in (self.pod_a.id, self.pod_b.id):
+            self.assertIn(f'feed_shell_public_{pod_id}', busted)
+            self.assertIn(f'feed_shell_private_{pod_id}', busted)
+
+    def test_parent_podcast_choice_applied_with_self_link_cleanup(self):
+        # Survivor moves to the loser's parent; its manual link into that
+        # podcast would now self-reference and must be dropped.
+        EpisodeCrossPublication.objects.create(
+            episode=self.survivor, podcast=self.pod_b, auto_created=False)
+        self._merge({'podcast': self.pod_b})
+        self.survivor.refresh_from_db()
+        self.assertEqual(self.survivor.podcast_id, self.pod_b.id)
+        self.assertFalse(
+            EpisodeCrossPublication.objects.filter(episode=self.survivor).exists())
+
+
+class MergeSupersededTranscriptRetentionTests(TestCase):
+    """cleanup_orphans: MERGE_SUPERSEDED_TRANSCRIPT rows honor the 30-day
+    R2_MERGE_TRANSCRIPT_RETENTION_DAYS window before the transcript
+    delete+purge path runs; other transcript orphans keep zero retention."""
+
+    def _cleanup(self, apply=False):
+        from pod_manager.services.r2_maintenance import cleanup_orphans
+        return cleanup_orphans(apply=apply)
+
+    def test_young_merge_row_is_retained(self):
+        row = R2OrphanedObject.objects.create(
+            key='transcripts/0/123.tok.vtt',
+            reason=R2OrphanedObject.Reason.MERGE_SUPERSEDED_TRANSCRIPT,
+            orphaned_at=timezone.now() - timedelta(days=5))
+        result = self._cleanup(apply=True)
+        self.assertEqual(result['transcripts'], [])
+        self.assertTrue(R2OrphanedObject.objects.filter(pk=row.pk).exists())
+
+    def test_expired_merge_row_is_deleted_and_purged(self):
+        row = R2OrphanedObject.objects.create(
+            key='transcripts/0/123.tok.vtt',
+            reason=R2OrphanedObject.Reason.MERGE_SUPERSEDED_TRANSCRIPT,
+            orphaned_at=timezone.now() - timedelta(days=31))
+        with mock.patch(
+                'pod_manager.services.r2_maintenance._delete_and_purge_transcript_key',
+                return_value=True) as delete_purge:
+            result = self._cleanup(apply=True)
+        delete_purge.assert_called_once_with('transcripts/0/123.tok.vtt')
+        self.assertEqual(result['transcripts'], ['transcripts/0/123.tok.vtt'])
+        self.assertFalse(R2OrphanedObject.objects.filter(pk=row.pk).exists())
+
+    def test_non_merge_transcript_rows_keep_zero_retention(self):
+        R2OrphanedObject.objects.create(
+            key='transcripts/0/456.vtt',
+            reason=R2OrphanedObject.Reason.MOVE_REKEY,
+            orphaned_at=timezone.now())  # brand new — still eligible
+        result = self._cleanup(apply=False)
+        self.assertEqual(result['transcripts'], ['transcripts/0/456.vtt'])

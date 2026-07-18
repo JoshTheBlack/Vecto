@@ -84,6 +84,10 @@ R2_FORCE_SERVE           = os.getenv("R2_FORCE_SERVE", "False") == "True"
 # new key -> short hold covering only in-flight streaming sessions.
 R2_ORPHAN_RETENTION_DAYS = int(os.getenv("R2_ORPHAN_RETENTION_DAYS", "90"))
 R2_REKEY_GRACE_DAYS      = int(os.getenv("R2_REKEY_GRACE_DAYS", "7"))
+# Merge-superseded transcript files (both-transcripts merge edge): the losing
+# episode row is gone and ids are never reused, so this window is pure manual
+# recovery headroom before r2_cleanup_orphans hard-deletes the files.
+R2_MERGE_TRANSCRIPT_RETENTION_DAYS = int(os.getenv("R2_MERGE_TRANSCRIPT_RETENTION_DAYS", "30"))
 
 # Cloudflare R2 — user-asset CDN (see planned_features.txt: vecto-cdn). A SEPARATE
 # bucket from the audio mirror, served via cdn.joshtheblack.com, holding uploaded

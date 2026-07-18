@@ -152,7 +152,10 @@ def cleanup_orphans(apply: bool = False) -> dict:
         against live Transcript resolution, deleted + CDN-purged as a pair — the
         row is only dropped after BOTH succeed. ZERO retention: a byte-identical
         copy already lives at the keyed location, and for a flag-off feed a
-        retention window would BE the leak window.
+        retention window would BE the leak window. EXCEPTION: merge-superseded
+        transcripts (reason MERGE_SUPERSEDED_TRANSCRIPT — the both-transcripts
+        merge edge deleted the only copy's episode row) hold for
+        R2_MERGE_TRANSCRIPT_RETENTION_DAYS of manual-recovery headroom first.
       everything else -> the audio mirror bucket, re-validated against live
         Episode.r2_url, per-reason retention as before.
 
@@ -164,6 +167,7 @@ def cleanup_orphans(apply: bool = False) -> dict:
     referenced = _referenced_keys()
     rekey_cut = now - timedelta(days=settings.R2_REKEY_GRACE_DAYS)
     other_cut = now - timedelta(days=settings.R2_ORPHAN_RETENTION_DAYS)
+    merge_cut = now - timedelta(days=settings.R2_MERGE_TRANSCRIPT_RETENTION_DAYS)
 
     to_delete = []   # confirmed-unreferenced audio rows -> batch-delete object + row
     tx_rows = []     # transcript rows -> media-bucket delete + CDN purge, per key
@@ -172,6 +176,9 @@ def cleanup_orphans(apply: bool = False) -> dict:
         if row.key.startswith(DEV_PREFIX):
             continue  # cleanup never touches dev
         if row.key.startswith(TRANSCRIPTS_PREFIX):
+            if (row.reason == R2OrphanedObject.Reason.MERGE_SUPERSEDED_TRANSCRIPT
+                    and row.orphaned_at > merge_cut):
+                continue  # retention headroom for merge-superseded transcripts
             if _transcript_key_still_live(row.key):
                 readopted.append(row.id)
             else:

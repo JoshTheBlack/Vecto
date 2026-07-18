@@ -1,8 +1,10 @@
 """Orphan cleanup — the only hard-delete in the R2 object lifecycle.
 
 Deletes R2 objects for orphan rows past their per-reason retention (move_rekey ->
-R2_REKEY_GRACE_DAYS, else R2_ORPHAN_RETENTION_DAYS), re-validating against live
-Episode.r2_url first so a re-adopted key is never deleted. Default DRY RUN.
+R2_REKEY_GRACE_DAYS, merge-superseded transcripts (merge_transcript) ->
+R2_MERGE_TRANSCRIPT_RETENTION_DAYS, else R2_ORPHAN_RETENTION_DAYS), re-validating
+against live Episode.r2_url / Transcript resolution first so a re-adopted key is
+never deleted. Default DRY RUN.
 
     python manage.py r2_cleanup_orphans                # dry run: report only
     python manage.py r2_cleanup_orphans --apply --yes  # delete expired, unreferenced

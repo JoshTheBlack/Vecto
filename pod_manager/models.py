@@ -895,6 +895,12 @@ class R2OrphanedObject(models.Model):
         MOVE_REKEY = 'move_rekey', 'Re-keyed on move (byte-identical copy at new key)'
         RECONCILIATION = 'reconciliation', 'Found unreferenced by reconciliation sweep'
         MANUAL = 'manual', 'Manually recorded'
+        # A merge deleted the losing episode while it still owned a transcript
+        # (the both-transcripts edge). The files are never re-referenced —
+        # episode ids are never reused — so cleanup's validation passes
+        # trivially; the 30-day retention (R2_MERGE_TRANSCRIPT_RETENTION_DAYS)
+        # is incidental manual-recovery headroom, not a feature.
+        MERGE_SUPERSEDED_TRANSCRIPT = 'merge_transcript', 'Transcript superseded by episode merge'
 
     # Host-stripped R2 object key. Unique so concurrent re-versions / sweeps
     # can't double-insert the same orphan.
@@ -1546,6 +1552,12 @@ def auto_delete_transcript_files(sender, instance, **kwargs):
     from pathlib import Path
     from django.conf import settings as django_settings
     from pod_manager.services.transcription import ALLOWED_EXTENSIONS, transcript_r2_key
+
+    # Merge supersede path (services/episode_merge.merge_transcript): the files
+    # are handed to the R2 orphan queue and deleted after commit instead —
+    # inline deletion here would not roll back with the merge transaction.
+    if getattr(instance, '_defer_file_deletion', False):
+        return
 
     # R2-backed transcript (version >= 1, R2 enabled): delete the cdn objects.
     # Stable keys are overwritten in place, so there's nothing else to track.

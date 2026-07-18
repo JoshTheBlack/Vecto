@@ -381,16 +381,7 @@ the region, once below from here).
         </div>
         <div class="collapse {% if edit_ep and edit_ep.chapters_public %}show{% endif %}" id="chaptersCollapse">
             <div class="card-body">
-                <div class="form-check form-switch mb-3 pb-2 border-bottom border-secondary" id="globalWaypointsWrapper">
-                    <input class="form-check-input ms-1" type="checkbox" role="switch" id="globalWaypoints">
-                    <label class="form-check-label ms-2 text-light fw-bold" for="globalWaypoints">
-                        Enable Waypoints <small class="text-muted fw-normal">(route map)</small>
-                    </label>
-                </div>
-                <div id="chapterContainer"></div>
-                <button type="button" class="btn btn-sm btn-vecto-primary w-100 mt-2" onclick="addChapterRow()">
-                    <i class="bi bi-plus-lg"></i> Add Chapter
-                </button>
+                {% include 'pod_manager/snippets/_chapter_editor.html' with add_label='Add Chapter' %}
             </div>
         </div>
     </div>
@@ -537,6 +528,7 @@ alongside the editor and loads it through the clipboard API itself.
 {% endcomment %}
 {% if edit_ep and edit_ep.chapters_public %}{{ edit_ep.chapters_public|json_script:"initial-chapters" }}{% else %}<script id="initial-chapters" type="application/json">null</script>{% endif %}
 
+<script src="{% static 'pod_manager/js/chapter_editor.js' %}?v=1"></script>
 <script>
 (function () {
     /* Boosted publish->publish swaps (the Scheduled tab's Edit button) leave the
@@ -624,48 +616,11 @@ alongside the editor and loads it through the clipboard API itself.
     tagWrapper.addEventListener('click', e => { if (e.target === tagWrapper) tagInput.focus(); });
     renderTags();
 
-    /* ── Chapter engine ─────────────────────────────────────── */
+    /* ── Chapter engine (shared: static/pod_manager/js/chapter_editor.js) ── */
     const chapterContainer = $id('chapterContainer');
-    function formatTime(s) {
-        if (!s) return '00:00:00';
-        return [Math.floor(s/3600),Math.floor((s%3600)/60),Math.floor(s%60)].map(n=>String(n).padStart(2,'0')).join(':');
-    }
-    function parseTime(str) {
-        const p = str.split(':').reverse();
-        return (parseInt(p[0]||0)) + (parseInt(p[1]||0)*60) + (parseInt(p[2]||0)*3600);
-    }
-
     window.addChapterRow = function(startTime=0, endTime='', title='', url='', img='', toc=true, location=null) {
-        const row = document.createElement('div');
-        row.className = 'row g-2 align-items-center mb-3 chapter-row p-3 rounded bg-dark border border-secondary';
-        const ln = location || {};
-        row.innerHTML = `
-            <div class="col-md-2"><label class="form-label small text-muted mb-1">Start</label>
-                <input type="text" class="form-control form-control-sm bg-black text-light border-secondary chap-time" value="${formatTime(startTime)}"></div>
-            <div class="col-md-2"><label class="form-label small text-muted mb-1">End</label>
-                <input type="text" class="form-control form-control-sm bg-black text-light border-secondary chap-endtime" placeholder="Optional" value="${endTime?formatTime(endTime):''}"></div>
-            <div class="col-md-6"><label class="form-label small text-muted mb-1">Title</label>
-                <input type="text" class="form-control form-control-sm bg-black text-light border-secondary chap-title" placeholder="Required" value="${title}"></div>
-            <div class="col-md-2 text-end mt-4 d-flex justify-content-end gap-2">
-                <button type="button" class="btn btn-sm btn-outline-info" title="Location" onclick="this.closest('.chapter-row').querySelector('.location-fields').classList.toggle('d-none')"><i class="bi bi-geo-alt"></i></button>
-                <button type="button" class="btn btn-sm btn-outline-danger" onclick="this.closest('.chapter-row').remove()"><i class="bi bi-trash"></i></button>
-            </div>
-            <div class="col-md-5 mt-2"><input type="url" class="form-control form-control-sm bg-black text-light border-secondary chap-url" placeholder="Link URL" value="${url}"></div>
-            <div class="col-md-5 mt-2"><input type="url" class="form-control form-control-sm bg-black text-light border-secondary chap-img" placeholder="Image URL" value="${img}"></div>
-            <div class="col-md-2 mt-2 d-flex align-items-center">
-                <div class="form-check form-switch ms-2">
-                    <input class="form-check-input chap-toc" type="checkbox" role="switch" ${toc!==false?'checked':''}>
-                    <label class="form-check-label small text-muted">TOC</label>
-                </div>
-            </div>
-            <div class="col-12 mt-2 location-fields ${(ln.name||ln.geo)?'':'d-none'}">
-                <div class="p-2 border border-info rounded bg-black d-flex gap-2">
-                    <input type="text" class="form-control form-control-sm bg-dark text-light border-secondary chap-loc-name" placeholder="Location name" value="${ln.name||''}">
-                    <input type="text" class="form-control form-control-sm bg-dark text-light border-secondary chap-loc-geo" placeholder="GeoURI" value="${ln.geo||''}">
-                    <input type="text" class="form-control form-control-sm bg-dark text-light border-secondary chap-loc-osm" placeholder="OSM URL" value="${ln.osm||''}">
-                </div>
-            </div>`;
-        chapterContainer.appendChild(row);
+        return window.ChapterEditor.appendRow(chapterContainer,
+            { startTime, endTime, title, url, img, toc, location });
     };
     try {
         const raw = JSON.parse($id('initial-chapters').textContent);
@@ -877,27 +832,8 @@ alongside the editor and loads it through the clipboard API itself.
         buildDurationStr();
         if (actionInput.value === 'schedule') updateSchedDisplay();
 
-        const rows = [];
-        document.querySelectorAll('.chapter-row').forEach(row => {
-            const ts = row.querySelector('.chap-time').value;
-            const title = row.querySelector('.chap-title').value.trim();
-            if (!title || !ts) return;
-            const c = { startTime: parseTime(ts), title };
-            const et = row.querySelector('.chap-endtime').value.trim();
-            if (et) { const p = parseTime(et); if (p > c.startTime) c.endTime = p; }
-            const url = row.querySelector('.chap-url').value.trim();
-            const img = row.querySelector('.chap-img').value.trim();
-            if (url.startsWith('http')) c.url = url;
-            if (img.startsWith('http')) c.img = img;
-            if (!row.querySelector('.chap-toc').checked) c.toc = false;
-            const ln = row.querySelector('.chap-loc-name').value.trim();
-            const lg = row.querySelector('.chap-loc-geo').value.trim();
-            if (ln && lg) { c.location = {name:ln, geo:lg}; const lo = row.querySelector('.chap-loc-osm').value.trim(); if (lo) c.location.osm = lo; }
-            rows.push(c);
-        });
-        rows.sort((a,b) => a.startTime - b.startTime);
-        const payload = { version:'1.2.0', chapters:rows };
-        if ($id('globalWaypoints').checked) payload.waypoints = true;
+        const payload = window.ChapterEditor.buildPayload(chapterContainer,
+            { waypoints: $id('globalWaypoints') });
         $id('chaptersJson').value = JSON.stringify(payload);
     };
     publishForm.addEventListener('submit', buildPublishPayload);

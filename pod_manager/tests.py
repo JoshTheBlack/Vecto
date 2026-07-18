@@ -13200,3 +13200,309 @@ class MergeSupersededTranscriptRetentionTests(TestCase):
             orphaned_at=timezone.now())  # brand new — still eligible
         result = self._cleanup(apply=False)
         self.assertEqual(result['transcripts'], ['transcripts/0/456.vtt'])
+
+
+class SuggestedPairsGatherTests(TestCase):
+    """gather_merge_desk() 'pairs' mode (§3.3): PENDING scoping, -last_seen_at
+    order, pairs_page pagination, merge_podcast_id/merge_q filters on EITHER
+    episode, the shared count helper, and the chained-pairs indicator."""
+
+    def setUp(self):
+        self.factory = RequestFactory()
+        self.network = Network.objects.create(name='Net', slug='pairs-gather')
+        self.low = Podcast.objects.create(
+            network=self.network, title='Low', slug='pg-low', is_low_priority=True)
+        self.target = Podcast.objects.create(
+            network=self.network, title='Target', slug='pg-target')
+        self.other_net = Network.objects.create(name='Other', slug='pairs-other')
+        self.other_pod = Podcast.objects.create(network=self.other_net, title='O', slug='pg-o')
+
+    def _ep(self, pod, **kw):
+        kw.setdefault('title', 'Ep')
+        kw.setdefault('pub_date', timezone.now())
+        kw.setdefault('raw_description', 'x')
+        kw.setdefault('clean_description', 'x')
+        return Episode.objects.create(podcast=pod, **kw)
+
+    def _suggestion(self, pub_ep, priv_ep, *, network=None, status='PENDING', last_seen=None, pub_guid='GX', priv_guid='GY'):
+        return EpisodeMatchSuggestion.objects.create(
+            network=network or self.network, public_episode=pub_ep, private_episode=priv_ep,
+            pub_guid=pub_guid, priv_guid=priv_guid, source_podcast=self.low,
+            target_podcast=self.target, detected_reason='ambiguous_guid_divergence',
+            status=status, last_seen_at=last_seen or timezone.now())
+
+    def _gather(self, **params):
+        from pod_manager.views.creator.data import gather_merge_desk
+        params.setdefault('merge_view', 'pairs')
+        req = self.factory.get('/creator/tab/merge/', params)
+        return gather_merge_desk(req, self.network)
+
+    def test_pairs_scoped_to_network_and_pending_only(self):
+        a, b = self._ep(self.low, guid_public='GX'), self._ep(self.target, guid_private='GY')
+        self._suggestion(a, b)
+        # A RESOLVED row and a foreign-network row must NOT appear.
+        c, d = self._ep(self.low, guid_public='GZ'), self._ep(self.target, guid_private='GW')
+        self._suggestion(c, d, status='RESOLVED')
+        oa, ob = self._ep(self.other_pod, guid_public='OX'), self._ep(self.other_pod, guid_private='OY')
+        self._suggestion(oa, ob, network=self.other_net)
+        ctx = self._gather()
+        self.assertEqual(ctx['pairs_count'], 1)
+        self.assertEqual([s.id for s in ctx['suggested_pairs']], [self.network.match_suggestions.get(status='PENDING').id])
+
+    def test_pairs_ordered_by_last_seen_desc(self):
+        a, b = self._ep(self.low, guid_public='G1'), self._ep(self.target, guid_private='G2')
+        c, d = self._ep(self.low, guid_public='G3'), self._ep(self.target, guid_private='G4')
+        older = self._suggestion(a, b, last_seen=timezone.now() - timedelta(hours=2))
+        newer = self._suggestion(c, d, last_seen=timezone.now())
+        ids = [s.id for s in self._gather()['suggested_pairs']]
+        self.assertEqual(ids, [newer.id, older.id])
+
+    def test_podcast_filter_matches_either_episode(self):
+        a, b = self._ep(self.low, guid_public='G1'), self._ep(self.target, guid_private='G2')
+        self._suggestion(a, b)  # public in low, private in target
+        # Filtering by the TARGET podcast still returns the pair (private side match).
+        ctx = self._gather(merge_podcast_id=str(self.target.id))
+        self.assertEqual([s.id for s in ctx['suggested_pairs']], [b.match_suggestions_as_private.get().id])
+        # A podcast on neither side excludes it.
+        empty_pod = Podcast.objects.create(network=self.network, title='Empty', slug='pg-empty')
+        self.assertEqual(len(self._gather(merge_podcast_id=str(empty_pod.id))['suggested_pairs']), 0)
+
+    def test_search_matches_title_or_guid_on_either_side(self):
+        a = self._ep(self.low, title='Findable Public', guid_public='G1')
+        b = self._ep(self.target, title='Other', guid_private='G2')
+        self._suggestion(a, b)
+        self.assertEqual(len(self._gather(merge_q='Findable')['suggested_pairs']), 1)
+        self.assertEqual(len(self._gather(merge_q='G2')['suggested_pairs']), 1)  # priv_guid snapshot
+        self.assertEqual(len(self._gather(merge_q='nope')['suggested_pairs']), 0)
+
+    def test_pairs_paginated_20_per_page(self):
+        for i in range(25):
+            a = self._ep(self.low, guid_public=f'P{i}')
+            b = self._ep(self.target, guid_private=f'Q{i}')
+            self._suggestion(a, b)
+        p1 = self._gather(pairs_page=1)['suggested_pairs']
+        p2 = self._gather(pairs_page=2)['suggested_pairs']
+        self.assertEqual(len(p1), 20)
+        self.assertEqual(len(p2), 5)
+        self.assertEqual(p1.paginator.count, 25)
+
+    def test_chained_indicator_flags_shared_episodes(self):
+        shared = self._ep(self.low, guid_public='G1')
+        b = self._ep(self.target, guid_private='G2')
+        c = self._ep(self.target, guid_private='G3')
+        # `shared` appears on two PENDING cards -> both flagged chained.
+        self._suggestion(shared, b)
+        self._suggestion(shared, c)
+        # A standalone pair sharing no episode -> not chained.
+        d = self._ep(self.low, guid_public='G4')
+        e = self._ep(self.target, guid_private='G5')
+        self._suggestion(d, e)
+        flags = {frozenset((s.public_episode_id, s.private_episode_id)): s.is_chained
+                 for s in self._gather()['suggested_pairs']}
+        self.assertTrue(flags[frozenset((shared.id, b.id))])
+        self.assertTrue(flags[frozenset((shared.id, c.id))])
+        self.assertFalse(flags[frozenset((d.id, e.id))])
+
+
+class MatchEditorServiceTests(TestCase):
+    """services/match_editor.py: the §3.6 survivor rule and the field_choices
+    resolution the commit action feeds the merge primitive."""
+
+    def setUp(self):
+        self.network = Network.objects.create(name='Net', slug='me-svc')
+        self.low = Podcast.objects.create(network=self.network, title='Low', slug='me-low', is_low_priority=True)
+        self.target = Podcast.objects.create(network=self.network, title='Target', slug='me-target')
+        self.pub = Episode.objects.create(
+            podcast=self.low, title='Pub', pub_date=timezone.now(),
+            raw_description='rp', clean_description='cp', guid_public='GX')
+        self.priv = Episode.objects.create(
+            podcast=self.target, title='Priv', pub_date=timezone.now(),
+            raw_description='rq', clean_description='cq', guid_private='GY')
+
+    def _transcript(self, ep):
+        return Transcript.objects.create(episode=ep, status=Transcript.Status.COMPLETED)
+
+    def test_survivor_is_lone_transcript_owner_not_editable(self):
+        from pod_manager.services.match_editor import default_survivor
+        self._transcript(self.pub)
+        survivor, deleted, both, editable = default_survivor(self.pub, self.priv)
+        self.assertEqual(survivor.id, self.pub.id)
+        self.assertFalse(both)
+        self.assertFalse(editable)
+
+    def test_both_transcripts_defaults_private_and_is_editable(self):
+        from pod_manager.services.match_editor import default_survivor
+        self._transcript(self.pub)
+        self._transcript(self.priv)
+        survivor, deleted, both, editable = default_survivor(self.pub, self.priv)
+        self.assertEqual(survivor.id, self.priv.id)  # default private-GUID row
+        self.assertTrue(both)
+        self.assertTrue(editable)
+
+    def test_no_transcripts_prefers_subscriber_audio_row(self):
+        from pod_manager.services.match_editor import default_survivor
+        Episode.objects.filter(pk=self.priv.pk).update(audio_url_subscriber='https://cdn/x.mp3')
+        self.priv.refresh_from_db()
+        survivor, deleted, both, editable = default_survivor(self.pub, self.priv)
+        self.assertEqual(survivor.id, self.priv.id)
+        self.assertFalse(editable)
+
+    def test_resolve_field_choices_maps_sides_and_flags(self):
+        from pod_manager.services.match_editor import resolve_field_choices
+        post = {
+            'choice_title': 'public',
+            'choice_guid_public': 'public',
+            'choice_guid_private': 'private',
+            'choice_episode_type': 'edit', 'edit_episode_type': 'bonus',
+            'keep_pin': 'on',
+        }
+        choices = resolve_field_choices(post, self.pub, self.priv)
+        self.assertEqual(choices['title'], self.pub.title)
+        self.assertEqual(choices['guid_public'], 'GX')
+        self.assertEqual(choices['guid_private'], 'GY')
+        self.assertEqual(choices['episode_type'], 'bonus')
+        self.assertTrue(choices['keep_pin'])
+        self.assertFalse(choices['is_metadata_locked'])
+        # A field with no choice_ posted is omitted (survivor keeps its own value).
+        self.assertNotIn('link', choices)
+
+
+class MatchEditorViewAndActionTests(TestCase):
+    """creator_match_editor GET partial + the dismiss/commit POST actions (§3.5):
+    owner gate, network scoping, sticky dismiss, and the end-to-end commit that
+    merges via the primitive and leaves a clean re-ingest."""
+
+    def setUp(self):
+        self.client = Client()
+        self.owner = User.objects.create_user('me-owner', password='x')
+        self.network = Network.objects.create(name='Net', slug='me-view')
+        self.network.owners.add(self.owner)
+        self.low = Podcast.objects.create(network=self.network, title='Low', slug='mv-low', is_low_priority=True)
+        self.target = Podcast.objects.create(network=self.network, title='Target', slug='mv-target')
+        self.pub = Episode.objects.create(
+            podcast=self.low, title='Pub Row', pub_date=timezone.now(),
+            raw_description='rp', clean_description='cp', guid_public='GX')
+        self.priv = Episode.objects.create(
+            podcast=self.low, title='Priv Row', pub_date=timezone.now(),
+            raw_description='rq', clean_description='cq', guid_private='GY')
+        self.suggestion = EpisodeMatchSuggestion.objects.create(
+            network=self.network, public_episode=self.pub, private_episode=self.priv,
+            pub_guid='GX', priv_guid='GY', source_podcast=self.low, target_podcast=self.target,
+            detected_reason='ambiguous_guid_divergence', status='PENDING')
+
+        # A foreign network + suggestion for scoping checks.
+        self.other_owner = User.objects.create_user('me-other', password='x')
+        self.other_net = Network.objects.create(name='Other', slug='me-other')
+        self.other_net.owners.add(self.other_owner)
+        self.o_low = Podcast.objects.create(network=self.other_net, title='OL', slug='mv-ol', is_low_priority=True)
+        self.o_pub = Episode.objects.create(
+            podcast=self.o_low, title='OPub', pub_date=timezone.now(),
+            raw_description='x', clean_description='x', guid_public='OX')
+        self.o_priv = Episode.objects.create(
+            podcast=self.o_low, title='OPriv', pub_date=timezone.now(),
+            raw_description='x', clean_description='x', guid_private='OY')
+        self.other_suggestion = EpisodeMatchSuggestion.objects.create(
+            network=self.other_net, public_episode=self.o_pub, private_episode=self.o_priv,
+            pub_guid='OX', priv_guid='OY', source_podcast=self.o_low, target_podcast=self.o_low,
+            detected_reason='ambiguous_guid_divergence', status='PENDING')
+
+    def _editor_url(self, sugg, net=None):
+        return f"/creator/match/{sugg.id}/editor/?network={(net or self.network).slug}"
+
+    # --- permission gate + scoping ---------------------------------------
+
+    def test_editor_forbidden_for_non_owner(self):
+        User.objects.create_user('nobody', password='x')
+        self.client.login(username='nobody', password='x')
+        resp = self.client.get(self._editor_url(self.suggestion))
+        self.assertEqual(resp.status_code, 403)
+
+    def test_editor_renders_for_owner(self):
+        self.client.force_login(self.owner)
+        resp = self.client.get(self._editor_url(self.suggestion))
+        self.assertEqual(resp.status_code, 200)
+        self.assertTemplateUsed(resp, 'pod_manager/creator_tabs/_match_editor.html')
+        self.assertContains(resp, 'Commit Merge')
+
+    def test_editor_foreign_suggestion_404(self):
+        self.client.force_login(self.owner)
+        # Owner of `network` asks (scoped to their network) for the other net's row.
+        resp = self.client.get(self._editor_url(self.other_suggestion))
+        self.assertEqual(resp.status_code, 404)
+
+    # --- dismiss ----------------------------------------------------------
+
+    def _post(self, data):
+        return self.client.post(
+            f"/creator/?network={self.network.slug}&tab=merge", data)
+
+    def test_dismiss_sets_dismissed_with_audit_and_is_sticky(self):
+        from pod_manager.services.match_suggestions import record_match_suggestion
+        self.client.force_login(self.owner)
+        self._post({'action': 'dismiss_match_suggestion', 'suggestion_id': self.suggestion.id})
+        self.suggestion.refresh_from_db()
+        self.assertEqual(self.suggestion.status, 'DISMISSED')
+        self.assertIsNotNone(self.suggestion.resolved_at)
+        self.assertEqual(self.suggestion.resolved_by_id, self.owner.id)
+        # Sticky: re-detection of the same GUID triple is suppressed.
+        again = record_match_suggestion(
+            self.pub, self.priv, source=self.low, target=self.target,
+            reason='ambiguous_guid_divergence')
+        self.assertIsNone(again)
+
+    def test_dismiss_foreign_suggestion_404(self):
+        self.client.force_login(self.owner)
+        resp = self._post({'action': 'dismiss_match_suggestion', 'suggestion_id': self.other_suggestion.id})
+        self.assertEqual(resp.status_code, 404)
+        self.other_suggestion.refresh_from_db()
+        self.assertEqual(self.other_suggestion.status, 'PENDING')
+
+    # --- commit end-to-end ------------------------------------------------
+
+    def test_commit_merges_resolves_and_reingest_is_clean(self):
+        self.client.force_login(self.owner)
+        resp = self._post({
+            'action': 'commit_match_merge',
+            'suggestion_id': self.suggestion.id,
+            'podcast': self.target.id,            # migrate the survivor into the normal feed
+            'choice_guid_public': 'public',
+            'choice_guid_private': 'private',
+            'choice_title': 'public',
+        })
+        self.assertEqual(resp.status_code, 302)
+
+        # Survivor (the transcript-less public row) now carries BOTH GUIDs, lives
+        # in the chosen parent, and the loser is gone.
+        survivor = Episode.objects.get(pk=self.pub.pk)
+        self.assertEqual(survivor.guid_public, 'GX')
+        self.assertEqual(survivor.guid_private, 'GY')
+        self.assertEqual(survivor.podcast_id, self.target.id)
+        self.assertEqual(survivor.match_reason, 'Manual Merge (Merge Desk)')
+        self.assertFalse(Episode.objects.filter(pk=self.priv.pk).exists())
+
+        # The suggestion is resolved-then-CASCADE'd away — no PENDING row remains
+        # for this network (the foreign-net PENDING row is untouched).
+        self.assertEqual(
+            EpisodeMatchSuggestion.objects.filter(network=self.network, status='PENDING').count(), 0)
+
+        # Simulated re-ingest of the same pair: one clean row, no new suggestion,
+        # no [SKIP MIGRATE].
+        from pod_manager.ingesters.default import commit_episode
+        stdout = mock.Mock()
+        with mock.patch('pod_manager.ingesters.default.task_rebuild_episode_fragments'):
+            commit_episode(self.target, _FakeEntry(id='GX', title='Re Pub'),
+                           _FakeEntry(id='GY', title='Re Priv'), 'GUID Match', stdout)
+        self.assertEqual(
+            EpisodeMatchSuggestion.objects.filter(network=self.network, status='PENDING').count(), 0)
+        lines = [c.args[0] for c in stdout.write.call_args_list]
+        self.assertFalse(any('[SKIP MIGRATE]' in ln for ln in lines))
+
+    def test_commit_foreign_suggestion_404(self):
+        self.client.force_login(self.owner)
+        resp = self._post({
+            'action': 'commit_match_merge',
+            'suggestion_id': self.other_suggestion.id,
+            'podcast': self.o_low.id,
+        })
+        self.assertEqual(resp.status_code, 404)
+        self.assertTrue(Episode.objects.filter(pk=self.o_priv.pk).exists())

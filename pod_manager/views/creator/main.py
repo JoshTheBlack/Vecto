@@ -7,6 +7,7 @@ import logging
 
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required
+from django.db.models import Q
 from django.http import HttpResponseForbidden
 from django.views.decorators.http import require_POST
 from django.shortcuts import get_object_or_404, redirect, render
@@ -140,6 +141,73 @@ def creator_audit_edit(request, edit_id):
     return render(request, 'pod_manager/creator_tabs/_audit_edit_diff.html', {
         'current_network': current_network,
         'edit': edit,
+    })
+
+
+@login_required(login_url='/login/')
+@diagnostic_page("Match Merge Editor (partial)")
+def creator_match_editor(request, suggestion_id):
+    """The field-level merge editor for one EpisodeMatchSuggestion (§3.5), fetched
+    into #merge-desk-body from the Suggested Pairs list. Owner-gated via
+    _resolve_creator_network; the suggestion is scoped to the resolved network so
+    a foreign one 404s (mirrors creator_audit_edit). Renders both rows
+    column-by-column with per-field A/B picks; the commit form POSTs the
+    commit_match_merge action back into creator_settings."""
+    from ...models import EpisodeMatchSuggestion
+    from ...services.match_editor import build_editor_fields, default_survivor
+
+    current_network, forbidden = _resolve_creator_network(request)
+    if forbidden:
+        return forbidden
+
+    suggestion = get_object_or_404(
+        EpisodeMatchSuggestion.objects.select_related(
+            'public_episode', 'public_episode__podcast',
+            'private_episode', 'private_episode__podcast',
+            'source_podcast', 'target_podcast',
+        ),
+        id=suggestion_id, network=current_network,
+        status=EpisodeMatchSuggestion.Status.PENDING,
+    )
+    public_ep = suggestion.public_episode
+    private_ep = suggestion.private_episode
+
+    survivor, deleted, both_transcripts, survivor_editable = default_survivor(public_ep, private_ep)
+    fields = build_editor_fields(public_ep, private_ep, survivor)
+
+    # Parent-podcast candidates (§3.5): either row's current parent or the
+    # detected target feed, deduped, all in-network. is_low_priority rides each
+    # so the template can flag a stranding pick.
+    parent_choices = []
+    seen = set()
+    for pod in (public_ep.podcast, private_ep.podcast, suggestion.target_podcast):
+        if pod and pod.id not in seen and pod.network_id == current_network.id:
+            parent_choices.append(pod)
+            seen.add(pod.id)
+
+    # Chained-pairs indicator (§3.3): either episode also on another PENDING card.
+    other_pending = EpisodeMatchSuggestion.objects.filter(
+        network=current_network, status=EpisodeMatchSuggestion.Status.PENDING,
+    ).exclude(id=suggestion.id)
+    is_chained = other_pending.filter(
+        Q(public_episode__in=[public_ep, private_ep])
+        | Q(private_episode__in=[public_ep, private_ep])
+    ).exists()
+
+    return render(request, 'pod_manager/creator_tabs/_match_editor.html', {
+        'current_network': current_network,
+        'suggestion': suggestion,
+        'public_ep': public_ep,
+        'private_ep': private_ep,
+        'fields': fields,
+        'survivor': survivor,
+        'deleted': deleted,
+        'both_transcripts': both_transcripts,
+        'survivor_editable': survivor_editable,
+        'parent_choices': parent_choices,
+        'default_parent_id': survivor.podcast_id,
+        'cross_parent': public_ep.podcast_id != private_ep.podcast_id,
+        'is_chained': is_chained,
     })
 
 

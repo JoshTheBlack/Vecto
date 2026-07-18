@@ -686,6 +686,89 @@ def handle_merge_episodes(request, current_network):
         messages.success(request, f"Successfully merged '{priv_ep.title}' into '{pub_ep.title}'.")
 
 
+def handle_dismiss_match_suggestion(request, current_network):
+    """Dismiss a Suggested Pair (§3.3). Network-scoped so a foreign suggestion
+    404s; sticky per §3.1 (dismiss_match_suggestion records the GUID triple, so
+    re-detection stays suppressed even if a row is deleted and re-created)."""
+    from ...models import EpisodeMatchSuggestion
+    from ...services.match_suggestions import dismiss_match_suggestion
+
+    suggestion = get_object_or_404(
+        EpisodeMatchSuggestion, id=request.POST.get('suggestion_id'),
+        network=current_network, status=EpisodeMatchSuggestion.Status.PENDING,
+    )
+    dismiss_match_suggestion(suggestion, user=request.user)
+    logger.info(
+        "Match suggestion #%s dismissed on network '%s' by %s",
+        suggestion.id, current_network.name, request.user.username,
+    )
+    messages.success(request, "Suggested pair dismissed — it won't resurface for this GUID pair.")
+
+
+def handle_commit_match_merge(request, current_network):
+    """Commit the field-level merge editor (§3.5/§3.6). Scopes the suggestion AND
+    both episodes to current_network (Q7 — the primitive validates NO scoping),
+    resolves the owner's picks into field_choices, then runs the wrapper:
+    resolve_match_suggestion(...) BEFORE merge_pair_with_choices(...) (§7f
+    contract). The survivor is the transcript-owning row per §3.6 — the posted
+    survivor pick is honored only in the both-transcripts case."""
+    from ...models import EpisodeMatchSuggestion, Podcast
+    from ...services.episode_merge import merge_pair_with_choices
+    from ...services.match_editor import default_survivor, resolve_field_choices
+    from ...services.match_suggestions import resolve_match_suggestion
+
+    suggestion = get_object_or_404(
+        EpisodeMatchSuggestion.objects.select_related('public_episode', 'private_episode'),
+        id=request.POST.get('suggestion_id'),
+        network=current_network, status=EpisodeMatchSuggestion.Status.PENDING,
+    )
+    # Both episodes must belong to this network (mirror handle_merge_episodes'
+    # podcast__network filter — the primitive trusts the caller for scoping).
+    public_ep = get_object_or_404(
+        Episode, id=suggestion.public_episode_id, podcast__network=current_network)
+    private_ep = get_object_or_404(
+        Episode, id=suggestion.private_episode_id, podcast__network=current_network)
+
+    survivor, deleted, both_transcripts, survivor_editable = default_survivor(public_ep, private_ep)
+    if survivor_editable:
+        # Both-transcripts edge: the owner may flip which row survives.
+        picked = request.POST.get('survivor_episode_id')
+        if picked and str(deleted.id) == picked:
+            survivor, deleted = deleted, survivor
+
+    field_choices = resolve_field_choices(request.POST, public_ep, private_ep)
+
+    # Parent podcast is a REQUIRED, in-network pick (§3.5).
+    parent = get_object_or_404(
+        Podcast, id=request.POST.get('podcast'), network=current_network)
+    field_choices['podcast'] = parent.id
+
+    try:
+        # Wrapper order (§7f): resolve the suggestion for the resolved_by audit,
+        # THEN run the primitive (which deletes the loser — CASCADE would also
+        # clear the row, so the explicit resolve is belt-and-suspenders).
+        resolve_match_suggestion(suggestion, user=request.user)
+        merge_pair_with_choices(
+            survivor, deleted, field_choices,
+            actor=request.user,
+            base_url=request.build_absolute_uri('/')[:-1],
+        )
+    except ValueError as e:
+        logger.error("Match merge commit failed for suggestion #%s: %s", suggestion.id, e)
+        messages.error(request, f"Merge failed: {e}")
+        return
+
+    logger.info(
+        "Match suggestion #%s committed: episode %d merged into %d on '%s' by %s",
+        suggestion.id, deleted.id, survivor.id, current_network.name, request.user.username,
+    )
+    messages.success(
+        request,
+        f"Merged '{deleted.title}' into '{survivor.title}'. The surviving episode "
+        f"now carries both GUIDs — the next ingest will reconcile cleanly.",
+    )
+
+
 def handle_split_episode(request, current_network):
     ep = Episode.objects.get(id=request.POST.get('episode_id'), podcast__network=current_network)
     new_ep = Episode.objects.create(
@@ -928,6 +1011,8 @@ ACTION_HANDLERS = {
     'update_show':          handle_update_show,
     'add_show':             handle_add_show,
     'merge_episodes':       handle_merge_episodes,
+    'dismiss_match_suggestion': handle_dismiss_match_suggestion,
+    'commit_match_merge':   handle_commit_match_merge,
     'split_episode':        handle_split_episode,
     'move_episodes':        handle_move_episodes,
     'cross_publish_episodes': handle_cross_publish_episodes,

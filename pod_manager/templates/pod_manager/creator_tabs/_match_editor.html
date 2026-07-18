@@ -1,0 +1,303 @@
+{% comment %}
+Field-level merge editor for one EpisodeMatchSuggestion (§3.5/§3.6). Rendered by
+creator_match_editor into #merge-desk-body.
+
+HTMX rules (tab_merge.html is law):
+  - The COMMIT form carries NO hx-target — it inherits the pane's #boosted-region
+    swap (like Merge Episodes / Split), so after commit the whole region, incl.
+    the left-nav pills, re-renders (§3.4 refresh, no OOB).
+  - In-body nav (Back, Load-side buttons that swap) sets hx-target="#merge-desk-body"
+    per element. Nothing goes on #merge-desk-body itself.
+
+Roles are fixed: public_ep matched the incoming public GUID, private_ep the
+private GUID. The SURVIVOR is the transcript-owning row (§3.6); it is editable
+only in the both-transcripts edge. The r2_url/uploaded_at/source_signature trio
+is NOT exposed — it rides the audio_url_subscriber pick automatically (§3.5).
+{% endcomment %}
+<div class="card shadow-sm border-secondary bg-dark mb-4" id="match-editor">
+    <div class="card-body">
+
+        <div class="d-flex justify-content-between align-items-start mb-3 border-bottom border-secondary pb-3">
+            <div>
+                <h4 class="fw-bold mb-1"><i class="bi bi-intersect text-warning"></i> Reconcile Suggested Pair</h4>
+                <p class="text-muted small mb-0">
+                    {{ suggestion.source_podcast.title }} <i class="bi bi-arrow-right"></i> {{ suggestion.target_podcast.title }}
+                    · pick each field's winning value; the survivor keeps both GUIDs.
+                </p>
+            </div>
+            <a href="?network={{ current_network.slug }}&tab=merge&merge_view=pairs"
+               hx-get="{% url 'creator_tab_partial' 'merge' %}?network={{ current_network.slug }}&merge_view=pairs"
+               class="btn btn-sm btn-outline-secondary" hx-target="#merge-desk-body" hx-swap="innerHTML show:window:top" hx-select="unset" hx-push-url="false">
+                <i class="bi bi-arrow-left"></i> Back
+            </a>
+        </div>
+
+        {% if is_chained %}
+        <div class="alert alert-warning py-2 small"><i class="bi bi-link-45deg me-1"></i>
+            <strong>Part of another suggested pair.</strong> One of these episodes also appears on another card — a second merge will follow this one. Chains converge safely in any order.
+        </div>
+        {% endif %}
+
+        {% if both_transcripts %}
+        <div class="alert alert-danger py-2 small"><i class="bi bi-exclamation-triangle me-1"></i>
+            <strong>Both episodes have a completed transcription.</strong> Only the survivor's transcript is kept — the other is discarded (queued to the R2 orphan pool, not deleted immediately). Choose the survivor below.
+        </div>
+        {% endif %}
+
+        {% if cross_parent %}
+        <div class="alert alert-info py-2 small"><i class="bi bi-info-circle me-1"></i>
+            <strong>These rows live in different podcasts.</strong> The non-chosen feed loses the episode. If both feeds should keep it, cross-publish the survivor there after merging (or Dismiss to leave them independent).
+        </div>
+        {% endif %}
+
+        <form method="POST" action="{% url 'creator_settings' %}?network={{ current_network.slug }}&tab=merge" id="match-editor-form">
+            {% csrf_token %}
+            <input type="hidden" name="action" value="commit_match_merge">
+            <input type="hidden" name="suggestion_id" value="{{ suggestion.id }}">
+
+            {# Survivor pick — only meaningful in the both-transcripts edge; otherwise the transcript owner is forced server-side. #}
+            <div class="mb-3">
+                <label class="form-label fw-bold text-light"><i class="bi bi-trophy me-1"></i> Surviving row</label>
+                <div class="d-flex gap-3 flex-wrap">
+                    <div class="form-check">
+                        <input class="form-check-input" type="radio" name="survivor_episode_id" id="survivor-public" value="{{ public_ep.id }}"
+                               {% if survivor.id == public_ep.id %}checked{% endif %} {% if not survivor_editable %}disabled{% endif %}>
+                        <label class="form-check-label text-light" for="survivor-public">Public row — <span class="text-muted">{{ public_ep.title|truncatechars:60 }}</span></label>
+                    </div>
+                    <div class="form-check">
+                        <input class="form-check-input" type="radio" name="survivor_episode_id" id="survivor-private" value="{{ private_ep.id }}"
+                               {% if survivor.id == private_ep.id %}checked{% endif %} {% if not survivor_editable %}disabled{% endif %}>
+                        <label class="form-check-label text-light" for="survivor-private">Premium row — <span class="text-muted">{{ private_ep.title|truncatechars:60 }}</span></label>
+                    </div>
+                </div>
+                {% if not survivor_editable %}<small class="text-muted d-block mt-1">The transcript-owning row survives automatically (no transcript-repoint path exists by design).</small>{% endif %}
+            </div>
+
+            {# REQUIRED parent podcast (§3.5), with a low-priority stranding warning. #}
+            <div class="mb-4">
+                <label class="form-label fw-bold text-light" for="me-parent"><i class="bi bi-collection me-1"></i> Surviving episode's podcast <span class="text-danger">*</span></label>
+                <select name="podcast" id="me-parent" class="form-select bg-black text-light border-secondary" required>
+                    {% for pod in parent_choices %}
+                    <option value="{{ pod.id }}" data-low-priority="{{ pod.is_low_priority|yesno:'1,0' }}" {% if pod.id == default_parent_id %}selected{% endif %}>
+                        {{ pod.title }}{% if pod.is_low_priority %} (low priority){% endif %}
+                    </option>
+                    {% endfor %}
+                </select>
+                <div id="me-lowpri-warning" class="alert alert-warning py-2 small mt-2 d-none"><i class="bi bi-exclamation-triangle me-1"></i>
+                    This podcast is <strong>low priority</strong>. Combined with a kept pin the episode would never auto-migrate again — it would be stranded here.
+                </div>
+            </div>
+
+            {# ── Per-field A/B picks + inline edit ── #}
+            <div class="border-top border-secondary pt-3">
+                <h6 class="text-light fw-bold mb-3"><i class="bi bi-sliders me-1"></i> Field-by-field</h6>
+                {% for f in fields %}
+                {% if f.kind != 'chapters' %}
+                <div class="mb-3 pb-3 border-bottom border-secondary">
+                    <label class="form-label small fw-bold text-warning mb-2">{{ f.label }}</label>
+                    <div class="row g-2 align-items-stretch">
+                        <div class="col-md-4">
+                            <div class="form-check">
+                                <input class="form-check-input me-choice" type="radio" name="choice_{{ f.key }}" id="choice-{{ f.key }}-public" value="public" {% if f.default_choice == 'public' %}checked{% endif %}>
+                                <label class="form-check-label small text-muted" for="choice-{{ f.key }}-public"><i class="bi bi-globe me-1"></i>Public</label>
+                            </div>
+                            <div class="small text-light bg-black border border-secondary rounded p-2 mt-1" style="max-height: 6rem; overflow:auto;">
+                                {% if f.kind == 'tags' %}{{ f.a_value|join:", "|default:"—" }}
+                                {% elif f.kind == 'datetime' %}{{ f.a_value|date:"M j, Y g:i A"|default:"—" }}
+                                {% elif f.kind == 'html' %}{{ f.a_value|striptags|truncatechars:160|default:"—" }}
+                                {% elif f.kind == 'explicit' %}{{ f.a_value|yesno:"Yes,No,—" }}
+                                {% else %}{{ f.a_value|truncatechars:160|default:"—" }}{% endif %}
+                            </div>
+                        </div>
+                        <div class="col-md-4">
+                            <div class="form-check">
+                                <input class="form-check-input me-choice" type="radio" name="choice_{{ f.key }}" id="choice-{{ f.key }}-private" value="private" {% if f.default_choice == 'private' %}checked{% endif %}>
+                                <label class="form-check-label small text-muted" for="choice-{{ f.key }}-private"><i class="bi bi-lock-fill me-1"></i>Premium</label>
+                            </div>
+                            <div class="small text-light bg-black border border-secondary rounded p-2 mt-1" style="max-height: 6rem; overflow:auto;">
+                                {% if f.kind == 'tags' %}{{ f.b_value|join:", "|default:"—" }}
+                                {% elif f.kind == 'datetime' %}{{ f.b_value|date:"M j, Y g:i A"|default:"—" }}
+                                {% elif f.kind == 'html' %}{{ f.b_value|striptags|truncatechars:160|default:"—" }}
+                                {% elif f.kind == 'explicit' %}{{ f.b_value|yesno:"Yes,No,—" }}
+                                {% else %}{{ f.b_value|truncatechars:160|default:"—" }}{% endif %}
+                            </div>
+                        </div>
+                        <div class="col-md-4">
+                            {% if f.kind != 'datetime' %}
+                            <div class="form-check">
+                                <input class="form-check-input me-choice" type="radio" name="choice_{{ f.key }}" id="choice-{{ f.key }}-edit" value="edit">
+                                <label class="form-check-label small text-muted" for="choice-{{ f.key }}-edit"><i class="bi bi-pencil me-1"></i>Edit</label>
+                            </div>
+                            {% if f.kind == 'html' %}
+                            <textarea name="edit_{{ f.key }}" rows="3" class="form-control form-control-sm bg-black text-light border-secondary mt-1">{% if f.default_choice == 'public' %}{{ f.a_value|default:'' }}{% else %}{{ f.b_value|default:'' }}{% endif %}</textarea>
+                            {% elif f.kind == 'tags' %}
+                            <input type="text" name="edit_{{ f.key }}" class="form-control form-control-sm bg-black text-light border-secondary mt-1" placeholder="comma,separated,tags" value="{% if f.default_choice == 'public' %}{{ f.a_value|join:', ' }}{% else %}{{ f.b_value|join:', ' }}{% endif %}">
+                            {% elif f.kind == 'explicit' %}
+                            <select name="edit_{{ f.key }}" class="form-select form-select-sm bg-black text-light border-secondary mt-1">
+                                <option value="">— (unset)</option>
+                                <option value="true">Yes</option>
+                                <option value="false">No</option>
+                            </select>
+                            {% else %}
+                            <input type="text" name="edit_{{ f.key }}" class="form-control form-control-sm bg-black text-light border-secondary mt-1" value="{% if f.default_choice == 'public' %}{{ f.a_value|default:'' }}{% else %}{{ f.b_value|default:'' }}{% endif %}">
+                            {% endif %}
+                            {% else %}
+                            <small class="text-muted">Pick a side (dates aren't free-edited here).</small>
+                            {% endif %}
+                        </div>
+                    </div>
+                </div>
+                {% endif %}
+                {% endfor %}
+            </div>
+
+            {# ── Chapters: the shared editor (Q10), one per column, always committed from the editor content ── #}
+            <input type="hidden" name="choice_chapters_public" value="edit">
+            <input type="hidden" name="choice_chapters_private" value="edit">
+            <input type="hidden" name="edit_chapters_public" id="me-edit-chapters-public">
+            <input type="hidden" name="edit_chapters_private" id="me-edit-chapters-private">
+
+            <div class="border-top border-secondary pt-3 mt-2">
+                <h6 class="text-light fw-bold mb-3"><i class="bi bi-list-ol me-1"></i> Public Chapters
+                    <button type="button" class="btn btn-sm btn-outline-info ms-2" id="me-load-pub-public">Load Public</button>
+                    <button type="button" class="btn btn-sm btn-outline-info" id="me-load-priv-public">Load Premium</button>
+                </h6>
+                <div class="bg-black border border-secondary rounded p-3 mb-3">
+                    {% include 'pod_manager/snippets/_chapter_editor.html' with container_id='mePublicChapters' waypoints_id='meWpPublic' waypoints_wrapper_id='meWpPublicWrap' add_fn='addPublicChapterRow' add_label='Add Public Chapter' %}
+                </div>
+
+                <h6 class="text-light fw-bold mb-3"><i class="bi bi-list-ol me-1"></i> Premium Chapters
+                    <button type="button" class="btn btn-sm btn-outline-info ms-2" id="me-load-pub-private">Load Public</button>
+                    <button type="button" class="btn btn-sm btn-outline-info" id="me-load-priv-private">Load Premium</button>
+                </h6>
+                <div class="bg-black border border-secondary rounded p-3 mb-3">
+                    {% include 'pod_manager/snippets/_chapter_editor.html' with container_id='mePrivateChapters' waypoints_id='meWpPrivate' waypoints_wrapper_id='meWpPrivateWrap' add_fn='addPrivateChapterRow' add_label='Add Premium Chapter' %}
+                </div>
+            </div>
+
+            {# ── Locks + pin (§3.6e) ── #}
+            <div class="border-top border-secondary pt-3">
+                <h6 class="text-light fw-bold mb-3"><i class="bi bi-shield-lock me-1"></i> Locks &amp; Pin</h6>
+                <div class="form-check form-switch">
+                    <input class="form-check-input" type="checkbox" role="switch" name="is_metadata_locked" id="me-meta-lock" {% if survivor.is_metadata_locked %}checked{% endif %}>
+                    <label class="form-check-label text-light" for="me-meta-lock">Metadata locked (ingest won't overwrite title/description/dates)</label>
+                </div>
+                <div class="form-check form-switch">
+                    <input class="form-check-input" type="checkbox" role="switch" name="audio_locked" id="me-audio-lock" {% if survivor.audio_locked %}checked{% endif %}>
+                    <label class="form-check-label text-light" for="me-audio-lock">Audio locked (ingest won't overwrite audio URLs)</label>
+                </div>
+                <div class="form-check form-switch">
+                    <input class="form-check-input" type="checkbox" role="switch" name="keep_pin" id="me-keep-pin" {% if public_ep.podcast_pinned_at or private_ep.podcast_pinned_at %}checked{% endif %}>
+                    <label class="form-check-label text-light" for="me-keep-pin">Keep pinned{% if public_ep.podcast_pinned_at or private_ep.podcast_pinned_at %} <span class="text-warning">(one row was pinned)</span>{% endif %}</label>
+                </div>
+            </div>
+
+            <div class="mt-4 pt-3 border-top border-secondary text-end">
+                <button type="submit" class="btn btn-warning fw-bold" onclick="return confirm('Commit this merge? The non-surviving row will be deleted and its relations moved to the survivor.');">
+                    <i class="bi bi-magic me-1"></i> Commit Merge
+                </button>
+            </div>
+        </form>
+    </div>
+</div>
+
+{{ public_ep.chapters_public|default:"null"|json_script:"me-pub-chapters-public" }}
+{{ private_ep.chapters_public|default:"null"|json_script:"me-priv-chapters-public" }}
+{{ public_ep.chapters_private|default:"null"|json_script:"me-pub-chapters-private" }}
+{{ private_ep.chapters_private|default:"null"|json_script:"me-priv-chapters-private" }}
+
+<script>
+(function () {
+    "use strict";
+    var root = document.getElementById('match-editor');
+    if (!root || !window.ChapterEditor) return;
+    var form = document.getElementById('match-editor-form');
+    var CE = window.ChapterEditor;
+
+    function readJSON(id) {
+        var el = document.getElementById(id);
+        if (!el) return null;
+        try { return JSON.parse(el.textContent); } catch (e) { return null; }
+    }
+    function asList(raw) {
+        if (Array.isArray(raw)) return { list: raw, waypoints: false };
+        if (raw && typeof raw === 'object' && Array.isArray(raw.chapters)) return { list: raw.chapters, waypoints: !!raw.waypoints };
+        return { list: [], waypoints: false };
+    }
+
+    // One column's editor: seed from a side, expose addRow + serialize.
+    function makeColumn(containerId, wpId, defaultSide, sources) {
+        var container = document.getElementById(containerId);
+        var wp = document.getElementById(wpId);
+        function add(c) { return CE.appendRow(container, c || {}, { inputClass: '', labelClass: 'text-muted', locBoxClass: '' }); }
+        function seed(side) {
+            container.innerHTML = '';
+            var data = asList(sources[side]);
+            wp.checked = data.waypoints;
+            if (data.list.length) data.list.forEach(function (c) { add(c); });
+        }
+        seed(defaultSide);
+        return {
+            add: add,
+            payload: function () { return CE.buildPayload(container, { waypoints: wp }); },
+            seed: seed,
+        };
+    }
+
+    var survivorSide = {% if survivor.id == private_ep.id %}'private'{% else %}'public'{% endif %};
+
+    var pubCol = makeColumn('mePublicChapters', 'meWpPublic', survivorSide, {
+        public: readJSON('me-pub-chapters-public'),
+        private: readJSON('me-priv-chapters-public'),
+    });
+    var privCol = makeColumn('mePrivateChapters', 'meWpPrivate', survivorSide, {
+        public: readJSON('me-pub-chapters-private'),
+        private: readJSON('me-priv-chapters-private'),
+    });
+
+    // The shared _chapter_editor "Add" buttons call these by name.
+    window.addPublicChapterRow = function () { return pubCol.add(); };
+    window.addPrivateChapterRow = function () { return privCol.add(); };
+
+    function bindLoad(id, col, side) {
+        var b = document.getElementById(id);
+        if (b) b.addEventListener('click', function () { col.seed(side); });
+    }
+    bindLoad('me-load-pub-public', pubCol, 'public');
+    bindLoad('me-load-priv-public', pubCol, 'private');
+    bindLoad('me-load-pub-private', privCol, 'public');
+    bindLoad('me-load-priv-private', privCol, 'private');
+
+    // Low-priority + kept-pin stranding warning.
+    var parentSel = document.getElementById('me-parent');
+    var keepPin = document.getElementById('me-keep-pin');
+    var warn = document.getElementById('me-lowpri-warning');
+    function syncWarn() {
+        var opt = parentSel.options[parentSel.selectedIndex];
+        var low = opt && opt.dataset.lowPriority === '1';
+        warn.classList.toggle('d-none', !low);
+    }
+    parentSel.addEventListener('change', syncWarn);
+    if (keepPin) keepPin.addEventListener('change', syncWarn);
+    syncWarn();
+
+    // Serialize the chapter editors into the hidden inputs at request-build time
+    // (boosted-form serialize order isn't guaranteed — mirror publish_episode).
+    function writeChapters() {
+        document.getElementById('me-edit-chapters-public').value = JSON.stringify(pubCol.payload());
+        document.getElementById('me-edit-chapters-private').value = JSON.stringify(privCol.payload());
+    }
+    window.VectoPage.on(document.body, 'htmx:configRequest', function (e) {
+        if (e.detail.elt !== form) return;
+        writeChapters();
+        ['edit_chapters_public', 'edit_chapters_private'].forEach(function (name) {
+            var el = form.querySelector('[name="' + name + '"]');
+            if (!el) return;
+            if (e.detail.parameters && typeof e.detail.parameters.set === 'function') e.detail.parameters.set(name, el.value);
+            else e.detail.parameters[name] = el.value;
+        });
+    });
+    // Non-boosted fallback (should not happen inside the region, but safe).
+    form.addEventListener('submit', writeChapters);
+})();
+</script>

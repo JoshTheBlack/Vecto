@@ -742,12 +742,9 @@
                                 <i class="bi bi-list-ol text-warning me-1"></i> Chapters / Timestamps
                             </h5>
 
-                            <div class="bg-dark border border-secondary rounded p-3 mb-3" id="chapterContainer">
-                                </div>
-                            
-                            <button type="button" class="btn btn-sm btn-vecto-primary w-100 p-2" onclick="addChapterRow()">
-                                <i class="bi bi-plus-lg fw-bold"></i> Add Another Chapter
-                            </button>
+                            <div class="bg-dark border border-secondary rounded p-3 mb-3">
+                                {% include 'pod_manager/snippets/_chapter_editor.html' %}
+                            </div>
                         </div>
 
                         <div class="mb-4 pt-3 border-top border-secondary">
@@ -1035,6 +1032,7 @@
 
 {{ ep.chapters_public|default:"[]"|json_script:"existing-chapters" }}
 
+<script src="{% static 'pod_manager/js/chapter_editor.js' %}?v=1"></script>
 <script>
     (() => {
         
@@ -1168,96 +1166,19 @@
             console.error("No existing chapters found or invalid JSON.");
         }
 
-        function formatTime(totalSeconds) {
-            if (!totalSeconds) return "00:00:00";
-            const h = Math.floor(totalSeconds / 3600).toString().padStart(2, '0');
-            const m = Math.floor((totalSeconds % 3600) / 60).toString().padStart(2, '0');
-            const s = Math.floor(totalSeconds % 60).toString().padStart(2, '0');
-            return `${h}:${m}:${s}`;
-        }
-
-        function parseTime(timeStr) {
-            const parts = timeStr.split(':').reverse();
-            let seconds = 0;
-            if (parts[0]) seconds += parseInt(parts[0], 10);
-            if (parts[1]) seconds += parseInt(parts[1], 10) * 60;
-            if (parts[2]) seconds += parseInt(parts[2], 10) * 3600;
-            return seconds;
-        }
+        // Chapter markup + serialization live in the shared module
+        // (static/pod_manager/js/chapter_editor.js, Q10). addChapterRow keeps its
+        // name + signature so the shared _chapter_editor.html "Add" button binds.
+        window.addChapterRow = function(startTime = 0, endTime = "", title = "", url = "", img = "", toc = true, location = null) {
+            return window.ChapterEditor.appendRow(chapterContainer,
+                { startTime, endTime, title, url, img, toc, location });
+        };
 
         // Parse existing data correctly (in case the DB holds the new dictionary format)
         let chaptersList = Array.isArray(existingChapters) ? existingChapters : (existingChapters.chapters || []);
         let existingWaypoints = !Array.isArray(existingChapters) && existingChapters.waypoints ? true : false;
-
-        // 1. Inject Global Waypoints Toggle (as the first row INSIDE the chapter container,
-        //    so it visually belongs to the Chapters section rather than sitting between the
-        //    description and chapters as a separate-looking box).
-        if (!document.getElementById('globalWaypointsWrapper')) {
-            const wpWrapper = document.createElement('div');
-            wpWrapper.id = 'globalWaypointsWrapper';
-            wpWrapper.className = 'form-check form-switch pb-3 mb-3 border-bottom border-secondary';
-            wpWrapper.innerHTML = `
-                <input class="form-check-input ms-1" type="checkbox" role="switch" id="globalWaypoints" ${existingWaypoints ? 'checked' : ''}>
-                <label class="form-check-label ms-2 fw-bold text-light" for="globalWaypoints">Enable Waypoints <small class="text-muted fw-normal">(Connects locations into a route map)</small></label>
-            `;
-            chapterContainer.insertBefore(wpWrapper, chapterContainer.firstChild);
-        }
-
-        window.addChapterRow = function(startTime = 0, endTime = "", title = "", url = "", img = "", toc = true, location = null) {
-            const row = document.createElement('div');
-            row.className = 'row g-2 align-items-center mb-3 chapter-row p-3 rounded bg-dark border border-secondary';
-
-            const locName = location ? (location.name || "") : "";
-            const locGeo = location ? (location.geo || "") : "";
-            const locOsm = location ? (location.osm || "") : "";
-
-            row.innerHTML = `
-                <div class="col-md-2">
-                    <label class="form-label small text-muted mb-1">Start Time</label>
-                    <input type="text" class="form-control form-control-sm bg-black text-light border-secondary chap-time" placeholder="00:00:00" value="${formatTime(startTime)}">
-                </div>
-                <div class="col-md-2">
-                    <label class="form-label small text-muted mb-1">End Time</label>
-                    <input type="text" class="form-control form-control-sm bg-black text-light border-secondary chap-endtime" placeholder="Optional" value="${endTime ? formatTime(endTime) : ''}">
-                </div>
-                <div class="col-md-6">
-                    <label class="form-label small text-muted mb-1">Chapter Title</label>
-                    <input type="text" class="form-control form-control-sm bg-black text-light border-secondary chap-title" placeholder="Required" value="${title}">
-                </div>
-                <div class="col-md-2 text-end mt-4 d-flex justify-content-end gap-2">
-                    <button type="button" class="btn btn-sm btn-outline-info" title="Toggle Location" onclick="this.closest('.chapter-row').querySelector('.location-fields').classList.toggle('d-none')"><i class="bi bi-geo-alt"></i></button>
-                    <button type="button" class="btn btn-sm btn-outline-danger" title="Remove Chapter" onclick="this.closest('.chapter-row').remove()"><i class="bi bi-trash"></i></button>
-                </div>
-
-                <div class="col-md-5 mt-2">
-                    <input type="url" class="form-control form-control-sm bg-black text-light border-secondary chap-url" placeholder="Optional Link URL (https://...)" value="${url}">
-                </div>
-                <div class="col-md-5 mt-2">
-                    <input type="url" class="form-control form-control-sm bg-black text-light border-secondary chap-img" placeholder="Optional Image URL (https://...)" value="${img}">
-                </div>
-                <div class="col-md-2 mt-2 d-flex align-items-center">
-                    <div class="form-check form-switch ms-2 mt-1">
-                        <input class="form-check-input chap-toc" type="checkbox" role="switch" ${toc !== false ? 'checked' : ''}>
-                        <label class="form-check-label small text-muted">Visible (TOC)</label>
-                    </div>
-                </div>
-
-                <div class="col-12 mt-2 location-fields ${(locName || locGeo) ? '' : 'd-none'}">
-                    <div class="p-2 border border-info rounded bg-black d-flex gap-2">
-                        <div class="flex-grow-1">
-                            <input type="text" class="form-control form-control-sm bg-dark text-light border-secondary chap-loc-name" placeholder="Location Name (e.g. Elmyr, Atlanta)" value="${locName}">
-                        </div>
-                        <div class="flex-grow-1">
-                            <input type="text" class="form-control form-control-sm bg-dark text-light border-secondary chap-loc-geo" placeholder="GeoURI (e.g. geo:33.7653,-84.3494)" value="${locGeo}">
-                        </div>
-                        <div class="flex-grow-1">
-                            <input type="text" class="form-control form-control-sm bg-dark text-light border-secondary chap-loc-osm" placeholder="OSM URL (Optional)" value="${locOsm}">
-                        </div>
-                    </div>
-                </div>
-            `;
-            chapterContainer.appendChild(row);
-        }
+        const globalWaypointsEl = document.getElementById('globalWaypoints');
+        if (globalWaypointsEl) globalWaypointsEl.checked = existingWaypoints;
 
         // Initialize rows
         if (chaptersList.length > 0) {
@@ -1338,56 +1259,10 @@
                 const tagsArray = currentTags.slice();
                 const descInput = quill.root.innerHTML;
 
-                const chaptersArray = [];
-                document.querySelectorAll('.chapter-row').forEach(row => {
-                    const timeStr = row.querySelector('.chap-time').value;
-                    const endTimeStr = row.querySelector('.chap-endtime').value.trim();
-                    const title = row.querySelector('.chap-title').value.trim();
-                    const url = row.querySelector('.chap-url').value.trim();
-                    const img = row.querySelector('.chap-img').value.trim();
-                    const toc = row.querySelector('.chap-toc').checked;
+                // Serialize via the shared module (Q10) — same P2.0 payload shape.
+                let finalChaptersPayload = window.ChapterEditor.buildPayload(
+                    chapterContainer, { waypoints: document.getElementById('globalWaypoints') });
 
-                    const locName = row.querySelector('.chap-loc-name').value.trim();
-                    const locGeo = row.querySelector('.chap-loc-geo').value.trim();
-                    const locOsm = row.querySelector('.chap-loc-osm').value.trim();
-
-                    if (title && timeStr) {
-                        const chap = { startTime: parseTime(timeStr), title: title };
-
-                        if (endTimeStr) {
-                            const parsedEnd = parseTime(endTimeStr);
-                            if (parsedEnd > chap.startTime) chap.endTime = parsedEnd;
-                        }
-
-                        if (url && url.startsWith('http')) chap.url = url;
-                        if (img && img.startsWith('http')) chap.img = img;
-
-                        // Only explicitly define toc if it is false (spec defaults to true)
-                        if (!toc) chap.toc = false;
-
-                        // Only add location object if both mandatory fields are present
-                        if (locName && locGeo) {
-                            chap.location = { name: locName, geo: locGeo };
-                            if (locOsm) chap.location.osm = locOsm;
-                        }
-
-                        chaptersArray.push(chap);
-                    }
-                });
-
-                chaptersArray.sort((a, b) => a.startTime - b.startTime);
-
-                // ALWAYS enforce the Podcasting 2.0 Dictionary Standard
-                let finalChaptersPayload = {
-                    version: "1.2.0",
-                    chapters: chaptersArray
-                };
-                
-                const isWaypointsEnabled = document.getElementById('globalWaypoints').checked;
-                if (isWaypointsEnabled) {
-                    finalChaptersPayload.waypoints = true;
-                }
-                
                 const titleInput = document.getElementById('editTitle').value.trim();
                 const seasonVal = document.getElementById('editSeason').value.trim();
                 const episodeNumVal = document.getElementById('editEpisodeNum').value.trim();

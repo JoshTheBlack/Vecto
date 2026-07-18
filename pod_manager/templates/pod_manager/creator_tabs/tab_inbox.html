@@ -617,21 +617,6 @@
         }
     }
 
-    function formatTime(totalSeconds) {
-        const n = Number(totalSeconds) || 0;
-        const h = Math.floor(n / 3600).toString().padStart(2, '0');
-        const m = Math.floor((n % 3600) / 60).toString().padStart(2, '0');
-        const s = Math.floor(n % 60).toString().padStart(2, '0');
-        return `${h}:${m}:${s}`;
-    }
-    function parseTime(timeStr) {
-        const parts = String(timeStr || "").split(':').reverse();
-        let seconds = 0;
-        if (parts[0]) seconds += parseInt(parts[0], 10) || 0;
-        if (parts[1]) seconds += (parseInt(parts[1], 10) || 0) * 60;
-        if (parts[2]) seconds += (parseInt(parts[2], 10) || 0) * 3600;
-        return seconds;
-    }
     // Stable JSON for chapter equality checks (key-sorted)
     function chapKey(c) {
         if (!c) return "";
@@ -657,14 +642,6 @@
         }
         return { list: [], waypoints: false };
     }
-    function escapeHtml(s) {
-        return String(s == null ? "" : s)
-            .replace(/&/g, "&amp;")
-            .replace(/</g, "&lt;")
-            .replace(/>/g, "&gt;")
-            .replace(/"/g, "&quot;");
-    }
-
     // ============================================================
     // Tag pill widgets
     // ============================================================
@@ -745,75 +722,24 @@
     }
 
     // ============================================================
-    // Chapter rows (mirrors episode_detail.html addChapterRow)
+    // Chapter rows — markup from the shared editor (Q10,
+    // static/pod_manager/js/chapter_editor.js). The inbox variant is themed
+    // (surface tokens, no bg override), splits its controls into their own row,
+    // and wires remove/location via listeners (class hooks) because a
+    // removed row must also drop its N-1 diff-grid sibling cells.
     // ============================================================
     function buildChapterRowHTML(c, opts) {
-        const readonly = !!opts.readonly;
-        const startTimeStr = formatTime(c.startTime);
-        const endTimeStr = c.endTime != null && c.endTime !== "" ? formatTime(c.endTime) : "";
-        const title = escapeHtml(c.title || "");
-        const url = escapeHtml(c.url || "");
-        const img = escapeHtml(c.img || "");
-        const toc = c.toc !== false;
-        const loc = c.location || null;
-        const locName = escapeHtml(loc ? (loc.name || "") : "");
-        const locGeo = escapeHtml(loc ? (loc.geo || "") : "");
-        const locOsm = escapeHtml(loc ? (loc.osm || "") : "");
-        const locVisible = !!(loc && (loc.name || loc.geo));
-        const dis = readonly ? "disabled" : "";
-
-        const controls = readonly
-            ? ""
-            : `
-                <button type="button" class="btn btn-sm btn-outline-info chap-toggle-loc" title="Toggle Location"><i class="bi bi-geo-alt"></i></button>
-                <button type="button" class="btn btn-sm btn-outline-danger chap-remove" title="Remove Chapter"><i class="bi bi-trash"></i></button>
-            `;
-
-        return `
-            <div class="row g-2 align-items-center">
-                <div class="col-md-3">
-                    <label class="form-label small text-surface-muted mb-1">Start Time</label>
-                    <input type="text" class="form-control form-control-sm chap-time" placeholder="00:00:00" value="${startTimeStr}" ${dis}>
-                </div>
-                <div class="col-md-3">
-                    <label class="form-label small text-surface-muted mb-1">End Time</label>
-                    <input type="text" class="form-control form-control-sm chap-endtime" placeholder="Optional" value="${endTimeStr}" ${dis}>
-                </div>
-                <div class="col-md-6">
-                    <label class="form-label small text-surface-muted mb-1">Chapter Title</label>
-                    <input type="text" class="form-control form-control-sm chap-title" placeholder="Required" value="${title}" ${dis}>
-                </div>
-
-                <div class="col-md-5 mt-2">
-                    <input type="url" class="form-control form-control-sm chap-url" placeholder="Optional Link URL (https://…)" value="${url}" ${dis}>
-                </div>
-                <div class="col-md-5 mt-2">
-                    <input type="url" class="form-control form-control-sm chap-img" placeholder="Optional Image URL (https://…)" value="${img}" ${dis}>
-                </div>
-                <div class="col-md-2 mt-2 d-flex align-items-center justify-content-between">
-                    <div class="form-check form-switch ms-1 mt-1">
-                        <input class="form-check-input chap-toc" type="checkbox" role="switch" ${toc ? 'checked' : ''} ${dis}>
-                        <label class="form-check-label small text-surface-muted">TOC</label>
-                    </div>
-                </div>
-
-                ${readonly ? "" : `<div class="col-12 mt-2 chapter-row-controls">${controls}</div>`}
-
-                <div class="col-12 mt-2 location-fields ${locVisible ? '' : 'd-none'}">
-                    <div class="p-2 border rounded d-flex gap-2 flex-wrap" style="border-color: var(--bs-border-color) !important;">
-                        <div class="flex-grow-1" style="min-width: 12rem;">
-                            <input type="text" class="form-control form-control-sm chap-loc-name" placeholder="Location Name (e.g. Elmyr, Atlanta)" value="${locName}" ${dis}>
-                        </div>
-                        <div class="flex-grow-1" style="min-width: 12rem;">
-                            <input type="text" class="form-control form-control-sm chap-loc-geo" placeholder="GeoURI (e.g. geo:33.7653,-84.3494)" value="${locGeo}" ${dis}>
-                        </div>
-                        <div class="flex-grow-1" style="min-width: 12rem;">
-                            <input type="text" class="form-control form-control-sm chap-loc-osm" placeholder="OSM URL (Optional)" value="${locOsm}" ${dis}>
-                        </div>
-                    </div>
-                </div>
-            </div>
-        `;
+        // The inbox row element is .inbox-chapter-row (a diff-grid cell); the
+        // shared cols need their own bootstrap grid wrapper inside it.
+        return '<div class="row g-2 align-items-center">' +
+            window.ChapterEditor.rowInnerHTML(c || {}, {
+                readonly: !!opts.readonly,
+                inputClass: "",
+                labelClass: "text-surface-muted",
+                locBoxClass: "",
+                controlStyle: opts.readonly ? "none" : "hooks",
+                controlsSeparate: true,
+            }) + '</div>';
     }
 
     function buildChapterRowElement(chapter, opts) {
@@ -865,40 +791,12 @@
     }
 
     function collectChaptersFromContainer(container) {
-        const out = [];
         // Pair-grid contains both readonly (left) and editable (right) rows.
-        // Only the editable, non-placeholder ones contribute to the saved chapter list.
-        container.querySelectorAll('.inbox-chapter-row').forEach(row => {
-            if (row.classList.contains('readonly')) return;
-            if (row.classList.contains('chapter-placeholder')) return;
-            const timeStr = row.querySelector('.chap-time').value;
-            const endTimeStr = row.querySelector('.chap-endtime').value.trim();
-            const title = row.querySelector('.chap-title').value.trim();
-            const url = row.querySelector('.chap-url').value.trim();
-            const img = row.querySelector('.chap-img').value.trim();
-            const toc = row.querySelector('.chap-toc').checked;
-            const locName = row.querySelector('.chap-loc-name').value.trim();
-            const locGeo = row.querySelector('.chap-loc-geo').value.trim();
-            const locOsm = row.querySelector('.chap-loc-osm').value.trim();
-
-            if (title && timeStr) {
-                const chap = { startTime: parseTime(timeStr), title: title };
-                if (endTimeStr) {
-                    const parsedEnd = parseTime(endTimeStr);
-                    if (parsedEnd > chap.startTime) chap.endTime = parsedEnd;
-                }
-                if (url && url.startsWith('http')) chap.url = url;
-                if (img && img.startsWith('http')) chap.img = img;
-                if (!toc) chap.toc = false;
-                if (locName && locGeo) {
-                    chap.location = { name: locName, geo: locGeo };
-                    if (locOsm) chap.location.osm = locOsm;
-                }
-                out.push(chap);
-            }
+        // Only the editable, non-placeholder ones contribute to the saved list.
+        return window.ChapterEditor.collectChapters(container, {
+            rowSelector: '.inbox-chapter-row',
+            skip: (row) => row.classList.contains('readonly') || row.classList.contains('chapter-placeholder'),
         });
-        out.sort((a, b) => a.startTime - b.startTime);
-        return out;
     }
 
     // ============================================================

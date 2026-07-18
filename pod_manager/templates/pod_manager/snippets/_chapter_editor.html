@@ -1,0 +1,22 @@
+{% comment %}
+Shared chapter-editor container (Q10) — the waypoints switch, an empty rows
+container, and the "add row" button. Behaviour lives in
+static/pod_manager/js/chapter_editor.js; each consumer defines the add function
+named below (default addChapterRow) as a thin wrapper over ChapterEditor.appendRow
+and seeds the container + waypoints checkbox from its own initial data.
+
+Parameters (all optional):
+  container_id          id of the rows container   (default chapterContainer)
+  waypoints_id          id of the waypoints switch (default globalWaypoints)
+  waypoints_wrapper_id  id of the switch wrapper    (default globalWaypointsWrapper)
+  add_fn                JS fn the button calls       (default addChapterRow)
+  add_label             button text                  (default Add Another Chapter)
+{% endcomment %}
+<div class="form-check form-switch pb-3 mb-3 border-bottom border-secondary" id="{{ waypoints_wrapper_id|default:'globalWaypointsWrapper' }}">
+    <input class="form-check-input ms-1" type="checkbox" role="switch" id="{{ waypoints_id|default:'globalWaypoints' }}">
+    <label class="form-check-label ms-2 fw-bold text-light" for="{{ waypoints_id|default:'globalWaypoints' }}">Enable Waypoints <small class="text-muted fw-normal">(Connects locations into a route map)</small></label>
+</div>
+<div id="{{ container_id|default:'chapterContainer' }}"></div>
+<button type="button" class="btn btn-sm btn-vecto-primary w-100 mt-2 p-2" onclick="{{ add_fn|default:'addChapterRow' }}()">
+    <i class="bi bi-plus-lg fw-bold"></i> {{ add_label|default:'Add Another Chapter' }}
+</button>

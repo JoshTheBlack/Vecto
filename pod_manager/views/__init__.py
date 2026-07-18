@@ -44,6 +44,7 @@ from .creator import (
     creator_show_form,
     creator_mix_form,
     creator_audit_edit,
+    creator_match_editor,
     creator_tab_partial,
     submit_episode_edit,
     submit_speaker_labels,

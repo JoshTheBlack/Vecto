@@ -12,7 +12,7 @@ from django.core.paginator import Paginator
 from django.db.models import Q, Case, When, CharField, Max, Count, F
 from django.db.models.functions import Substr, Lower
 
-from ...models import EpisodeEditSuggestion, NetworkMembership, Episode
+from ...models import EpisodeEditSuggestion, EpisodeMatchSuggestion, NetworkMembership, Episode
 from ...services.edits import chapter_items, score_contribution, scoring_config, FIRST_RESPONDER_BONUS, REJECT_PENALTY
 from ...utils import diagnostic_timer
 
@@ -269,6 +269,16 @@ def gather_inbox(current_network):
     }
 
 
+def pending_match_suggestion_count(current_network):
+    """PENDING EpisodeMatchSuggestion count for a network — the single source of
+    truth shared by the Merge Desk's "Suggested Pairs" mode button (§3.3) and the
+    left-nav Merge Desk pill (§3.4, Chat 4), so the two numbers can never diverge.
+    Status is UPPERCASE (§7b) — filter via the enum member."""
+    return EpisodeMatchSuggestion.objects.filter(
+        network=current_network, status=EpisodeMatchSuggestion.Status.PENDING
+    ).count()
+
+
 @diagnostic_timer("3. Gather Merge Desk")
 def gather_merge_desk(request, current_network):
     merge_view = request.GET.get('merge_view', 'orphans')
@@ -284,10 +294,12 @@ def gather_merge_desk(request, current_network):
             Q(title__icontains=merge_q) | Q(guid_public__icontains=merge_q) | Q(guid_private__icontains=merge_q)
         )
 
-    public_orphans = private_orphans = matched_episodes = None
+    public_orphans = private_orphans = matched_episodes = suggested_pairs = None
     match_reasons = []
 
-    if merge_view == 'orphans':
+    if merge_view == 'pairs':
+        suggested_pairs = _gather_suggested_pairs(current_network, merge_podcast_id, merge_q, request)
+    elif merge_view == 'orphans':
         pub_qs = base_episodes.filter(
             Q(guid_private__isnull=True) | Q(guid_private__exact='')
         ).exclude(
@@ -326,7 +338,62 @@ def gather_merge_desk(request, current_network):
         'private_orphans': private_orphans,
         'matched_episodes': matched_episodes,
         'match_reasons': match_reasons,
+        'suggested_pairs': suggested_pairs,
+        # Rendered on the mode button in ALL three views (cheap COUNT), from the
+        # same helper the left-nav pill uses so the numbers can't diverge (§3.3/§3.4).
+        'pairs_count': pending_match_suggestion_count(current_network),
     }
+
+
+def _gather_suggested_pairs(current_network, merge_podcast_id, merge_q, request):
+    """PENDING EpisodeMatchSuggestion rows for the 'pairs' view (§3.3): scoped to
+    the network, newest first, paginated 20/page (own pairs_page param), with the
+    Merge Desk's podcast/search filters applied against EITHER episode. Each page
+    row is flagged .is_chained when one of its episodes also sits on another
+    PENDING card (the chained-pairs indicator — a >2-row cluster surfaces as
+    overlapping pairwise cards; §3.3)."""
+    pending = EpisodeMatchSuggestion.objects.filter(
+        network=current_network, status=EpisodeMatchSuggestion.Status.PENDING,
+    )
+
+    qs = pending.select_related(
+        'public_episode', 'public_episode__podcast',
+        'private_episode', 'private_episode__podcast',
+        'source_podcast', 'target_podcast',
+    ).order_by('-last_seen_at')
+
+    if merge_podcast_id:
+        qs = qs.filter(
+            Q(public_episode__podcast_id=merge_podcast_id)
+            | Q(private_episode__podcast_id=merge_podcast_id)
+        )
+    if merge_q:
+        qs = qs.filter(
+            Q(public_episode__title__icontains=merge_q)
+            | Q(private_episode__title__icontains=merge_q)
+            # Both the snapshot GUIDs (shown on the card) and either episode's live
+            # GUIDs (§3.3 'filtering on either episode … GUIDs').
+            | Q(pub_guid__icontains=merge_q) | Q(priv_guid__icontains=merge_q)
+            | Q(public_episode__guid_public__icontains=merge_q)
+            | Q(public_episode__guid_private__icontains=merge_q)
+            | Q(private_episode__guid_public__icontains=merge_q)
+            | Q(private_episode__guid_private__icontains=merge_q)
+        )
+
+    page = Paginator(qs, 20).get_page(request.GET.get('pairs_page', 1))
+
+    # Chained-pairs indicator: an episode id that appears in more than one PENDING
+    # suggestion (across the WHOLE network, not just this page, so pagination can't
+    # hide a chain) means a second merge follows this one. Computed once, cheaply,
+    # from the full pending id set.
+    slot_counts = {}
+    for pub_id, priv_id in pending.values_list('public_episode_id', 'private_episode_id'):
+        slot_counts[pub_id] = slot_counts.get(pub_id, 0) + 1
+        slot_counts[priv_id] = slot_counts.get(priv_id, 0) + 1
+    for s in page:
+        s.is_chained = slot_counts.get(s.public_episode_id, 0) > 1 or slot_counts.get(s.private_episode_id, 0) > 1
+
+    return page
 
 
 def _audit_points(edit):

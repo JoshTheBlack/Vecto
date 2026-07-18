@@ -23,6 +23,7 @@ urlpatterns = [
     path('creator/show/<int:show_id>/form/', views.creator_show_form, name='creator_show_form'),
     path('creator/mix/<int:mix_id>/form/', views.creator_mix_form, name='creator_mix_form'),
     path('creator/audit/<int:edit_id>/diff/', views.creator_audit_edit, name='creator_audit_edit'),
+    path('creator/match/<int:suggestion_id>/editor/', views.creator_match_editor, name='creator_match_editor'),
     path('creator/tab/<str:tab>/', views.creator_tab_partial, name='creator_tab_partial'),
 
     # Public per-network release calendar (Feature 4, A14)

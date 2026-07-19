@@ -1032,7 +1032,7 @@
 
 {{ ep.chapters_public|default:"[]"|json_script:"existing-chapters" }}
 
-<script src="{% static 'pod_manager/js/chapter_editor.js' %}?v=1"></script>
+{# chapter_editor.js is loaded in the shell (base.html) — NOT here: an htmx-injected <script src> loads async and races the inline scripts below on a boosted swap. #}
 <script>
     (() => {
         
@@ -1667,6 +1667,13 @@
         if (lastDoc) { container.innerHTML = buildEnhancedTranscript(lastDoc); rebuildWordSync(); }
     });
 
+    // First attempt on the next frame (lets a boosted swap settle the container
+    // before we render into it). Then a guarded retry after htmx settles the
+    // region: reaching episode_detail via boosted nav runs this script mid-swap,
+    // where the synchronous render could race and leave the server fallback HTML
+    // showing (no speaker blocks) — the retry recovers it. No-op on a full page
+    // load (htmx:afterSettle never fires there) and once a render succeeds.
+    // VectoPage.on cleans the listener up on the next region swap.
     init();
 })();
 

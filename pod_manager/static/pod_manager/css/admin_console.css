@@ -226,6 +226,25 @@ select.ac-control[multiple] { min-height: 7rem; }
 }
 .ac-btn-execute:disabled { opacity: 0.5; cursor: not-allowed; }
 .ac-btn-execute.ac-execute-danger { background: var(--ac-danger); border-color: var(--ac-danger); color: #fff; }
+/* The button is a bare .btn (no bootstrap variant), so .btn:hover applies
+   Bootstrap's default hover variables — transparent background — and
+   out-specifies the single-class rule above: the button vanished on hover.
+   Pin explicit hover states at .btn.<class>:hover specificity. */
+.btn.ac-btn-execute:hover {
+    background: color-mix(in srgb, var(--vecto-primary) 82%, #000);
+    border-color: var(--vecto-primary);
+    color: var(--vecto-primary-text);
+}
+.btn.ac-btn-execute.ac-execute-danger:hover {
+    background: color-mix(in srgb, var(--ac-danger) 82%, #000);
+    border-color: var(--ac-danger);
+    color: #fff;
+}
+.btn.ac-btn-deeplink:hover {
+    background: color-mix(in srgb, var(--vecto-primary) 15%, transparent);
+    border-color: var(--vecto-primary);
+    color: var(--vecto-primary);
+}
 .ac-btn-deeplink {
     align-self: flex-start;
     border: 1px solid var(--vecto-primary);

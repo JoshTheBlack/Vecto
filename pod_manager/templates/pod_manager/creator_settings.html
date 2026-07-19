@@ -117,8 +117,7 @@ those fixes silently reverts for that user.
 <script src="{% static 'pod_manager/js/creator_tabs.js' %}?v=6"></script>
 {# v=3: rewind confirm moved from window.confirm() to data-confirm-slide. #}
 <script src="{% static 'pod_manager/js/gdrive_recovery.js' %}?v=3"></script>
-{# Shared chapter-row editor (Q10) — consumed by the inbox diff-grid and the merge editor partials. #}
-<script src="{% static 'pod_manager/js/chapter_editor.js' %}?v=1"></script>
+{# chapter_editor.js is loaded in the shell (base.html); the inbox diff-grid and merge editor partials rely on the global window.ChapterEditor. #}
 {# Shared tag pill-input widget + Quill theme css — the merge editor partial uses both (Quill JS itself is global in base.html). #}
 <script src="{% static 'pod_manager/js/tag_editor.js' %}?v=1"></script>
 <link href="{% static 'pod_manager/css/quill.snow.css' %}" rel="stylesheet">

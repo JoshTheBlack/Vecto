@@ -529,7 +529,7 @@ alongside the editor and loads it through the clipboard API itself.
 {% endcomment %}
 {% if edit_ep and edit_ep.chapters_public %}{{ edit_ep.chapters_public|json_script:"initial-chapters" }}{% else %}<script id="initial-chapters" type="application/json">null</script>{% endif %}
 
-<script src="{% static 'pod_manager/js/chapter_editor.js' %}?v=1"></script>
+{# chapter_editor.js is loaded in the shell (base.html) — NOT here: an htmx-injected <script src> loads async and races the inline scripts below on a boosted swap. #}
 <script>
 (function () {
     /* Boosted publish->publish swaps (the Scheduled tab's Edit button) leave the

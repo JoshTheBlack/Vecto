@@ -19,6 +19,16 @@
     <script src="{% static 'pod_manager/js/quill.js' %}"></script>
     <script src="{% static 'pod_manager/js/diff.min.js' %}"></script>
     {% comment %}
+    Shared chapter-row editor. Loaded in the SHELL (not per page) so window.
+    ChapterEditor is defined before any boosted-in content runs its inline
+    scripts: an htmx-injected <script src> loads async, so a page that both
+    injected chapter_editor.js AND called addChapterRow() inline threw
+    "ChapterEditor is undefined" on the first boost — and that uncaught error
+    aborted the rest of the injected <script> (e.g. the transcript renderer
+    lower in the same block). Bump ?v= on change; filenames are not hashed.
+    {% endcomment %}
+    <script src="{% static 'pod_manager/js/chapter_editor.js' %}?v=1"></script>
+    {% comment %}
     Site-wide two-step slide-out confirm (data-confirm-slide) replacing every
     window.confirm() popup. Deliberately OUTSIDE the boosted region: it binds
     one persistent capture listener per full page load (own bind guard, not
@@ -122,7 +132,15 @@
         .text-light, .text-white { color: var(--vecto-bg-text) !important; }
 
         /* 3. Navigation & Social Bar (Restored Flex Layout) */
-        .navbar { background-color: var(--vecto-nav-bg) !important; }
+        /* Translucent + blurred like the floating player, keeping the network's
+           own nav hue — so when the player is pinned above it the two read as
+           one continuous frosted header instead of a themed bar sitting below a
+           separate dark player strip (the "gap" that look created). */
+        .navbar {
+            background-color: color-mix(in srgb, var(--vecto-nav-bg) 82%, transparent) !important;
+            backdrop-filter: blur(24px);
+            -webkit-backdrop-filter: blur(24px);
+        }
         .header-wrapper { border-bottom: 2px solid var(--vecto-primary); }
         .navbar .navbar-brand, .navbar-nav .nav-link, .navbar-text { color: var(--vecto-nav-text) !important; }
         .navbar .text-muted { color: var(--vecto-nav-muted) !important; }
@@ -400,7 +418,15 @@
     .fp-chapters-menu .dropdown-item:hover .fp-ch-time { color: var(--fp-accent); }
     /* Plyr instance backing the bar is hidden — the bar is the UI. */
     #floatingPlayer .plyr { display: none !important; }
-    body.fp-active { padding-top: 62px; transition: padding-top 0.45s cubic-bezier(0.34,1.4,0.64,1); }
+    /* --fp-height is the player's measured height, set by showBar() so the
+       reserved space matches the bar exactly (a fixed 62px left a dark gap when
+       the bar rendered shorter). Falls back to 62px before first measurement. */
+    body.fp-active { padding-top: var(--fp-height, 62px); transition: padding-top 0.45s cubic-bezier(0.34,1.4,0.64,1); }
+    /* With the player pinned (fixed, z-1055) the sticky header must stick BELOW
+       it — at top:0 it slid underneath and the navbar's top strip vanished
+       behind the bar. Same measured height + easing as body.fp-active. */
+    .header-wrapper.sticky-top { transition: top 0.45s cubic-bezier(0.34,1.4,0.64,1); }
+    body.fp-active .header-wrapper.sticky-top { top: var(--fp-height, 62px); }
 </style>
 
 <div id="floatingPlayer">
@@ -570,6 +596,12 @@ window.VectoPage = (function () {
         if (fp.classList.contains('fp-visible')) return;
         fp.classList.add('fp-visible', 'fp-intro');
         document.body.classList.add('fp-active');
+        // Reserve EXACTLY the player's rendered height — a hardcoded 62px left a
+        // dark strip of page background between the player and the pinned navbar
+        // whenever the bar rendered shorter than that. offsetHeight ignores the
+        // slide-in transform, so it's correct even mid-animation. Drives both the
+        // body top-padding and the sticky header's top offset (CSS var below).
+        document.documentElement.style.setProperty('--fp-height', fp.offsetHeight + 'px');
         setTimeout(() => fp.classList.remove('fp-intro'), 900);
     }
     function hideBar() {
@@ -1038,6 +1070,27 @@ enforces that; hx-select used to paper over it at runtime.
     {% endif %}
 
 </div>
+
+<script>
+(function () {
+    /* Creator/Staff menu opens on hover (pointer devices only); click still
+       toggles, which stays the whole story on touch. The navbar persists
+       across boosted swaps, so one plain listener per full load is correct —
+       no VectoPage cleanup (that would strip it on the first region swap
+       with nothing re-registering it). */
+    const toggle = document.getElementById('creatorDropdown');
+    if (!toggle || typeof bootstrap === 'undefined') return;
+    const wrap = toggle.closest('.dropdown');
+    if (!wrap || !window.matchMedia('(hover: hover)').matches) return;
+    let hideTimer = null;
+    const dd = () => bootstrap.Dropdown.getOrCreateInstance(toggle);
+    wrap.addEventListener('mouseenter', () => { clearTimeout(hideTimer); dd().show(); });
+    wrap.addEventListener('mouseleave', () => {
+        clearTimeout(hideTimer);
+        hideTimer = setTimeout(() => dd().hide(), 250);
+    });
+})();
+</script>
 
 {% include 'pod_manager/snippets/_boosted_region_open.html' %}
     {% block content %}

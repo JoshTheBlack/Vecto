@@ -257,7 +257,7 @@ swap, so a backdrop cannot outlive its modal.
                             {% csrf_token %}
                             <input type="hidden" name="action" value="update_network_font">
                             <input type="hidden" name="remove" value="1">
-                            <button type="submit" class="btn btn-sm btn-outline-danger" onclick="return confirm('Remove the custom font for this network?');"><i class="bi bi-trash"></i> Remove Custom Font</button>
+                            <button type="submit" class="btn btn-sm btn-outline-danger" data-confirm-slide="Removes this network's custom font."><i class="bi bi-trash"></i> Remove Custom Font</button>
                         </form>
                         {% endif %}
                     </div>

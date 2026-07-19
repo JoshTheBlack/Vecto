@@ -281,7 +281,10 @@ def pending_match_suggestion_count(current_network):
 
 @diagnostic_timer("3. Gather Merge Desk")
 def gather_merge_desk(request, current_network):
-    merge_view = request.GET.get('merge_view', 'orphans')
+    # 'pairs' is the desk's default mode: Suggested Pairs is the actionable
+    # review queue (badged on the left nav), so it greets first; the orphan
+    # and matched tools sit behind their mode buttons.
+    merge_view = request.GET.get('merge_view', 'pairs')
     merge_podcast_id = request.GET.get('merge_podcast_id', '')
     merge_q = request.GET.get('merge_q', '').strip()
     merge_reason = request.GET.get('merge_reason', '').strip()

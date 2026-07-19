@@ -102,25 +102,35 @@ def _batch_delete(client, bucket, keys):
 # ---------------------------------------------------------------------------
 
 def reconcile_orphans(apply: bool = False, age_days: int = 7) -> dict:
-    """List the whole prod keyspace and record unreferenced objects as orphans.
+    """List THIS ENVIRONMENT'S keyspace and record unreferenced objects as
+    orphans.
 
-    Records ONLY; never deletes. Default is a dry run (apply=False). Skips the
-    dev/ namespace, keys already referenced, keys already in the orphan table,
-    and objects newer than age_days (which may still be mid-pipeline)."""
+    Env scoping (the single shared bucket is namespaced by R2_KEY_PREFIX —
+    "dev/" in the IDE, "" in prod): an env may only reconcile keys it OWNS,
+    because "unreferenced" is judged against ITS database. The IDE listing the
+    whole bucket would compare prod objects against the (near-empty) sqlite db
+    and record thousands of prod keys as false orphans — which cleanup could
+    later hard-delete. So: a prefixed env lists ONLY its prefix; the
+    unprefixed (prod) env lists everything and skips dev/.
+
+    Records ONLY; never deletes. Default is a dry run (apply=False). Skips
+    keys already referenced, keys already in the orphan table, and objects
+    newer than age_days (which may still be mid-pipeline)."""
     from pod_manager.models import R2OrphanedObject
 
     client = get_r2_client()
     bucket = settings.R2_BUCKET
+    own_prefix = settings.R2_KEY_PREFIX or ""
     referenced = _referenced_keys()
     existing = set(R2OrphanedObject.objects.values_list("key", flat=True))
     cutoff = timezone.now() - timedelta(days=age_days)
 
     scanned = 0
     new_orphans = []
-    for key, last_modified in _iter_bucket_objects(client, bucket):
+    for key, last_modified in _iter_bucket_objects(client, bucket, prefix=own_prefix or None):
         scanned += 1
-        if key.startswith(DEV_PREFIX):
-            continue
+        if not own_prefix and key.startswith(DEV_PREFIX):
+            continue  # prod never judges the dev namespace
         if key in referenced or key in existing:
             continue
         if last_modified and last_modified > cutoff:
@@ -172,9 +182,21 @@ def cleanup_orphans(apply: bool = False) -> dict:
     to_delete = []   # confirmed-unreferenced audio rows -> batch-delete object + row
     tx_rows = []     # transcript rows -> media-bucket delete + CDN purge, per key
     readopted = []   # key referenced again -> drop row only
+    own_prefix = settings.R2_KEY_PREFIX or ""
     for row in R2OrphanedObject.objects.all():
-        if row.key.startswith(DEV_PREFIX):
-            continue  # cleanup never touches dev
+        # Env scoping for audio-mirror rows (they carry FULL bucket keys): an
+        # env only deletes inside its own namespace — the IDE (own_prefix
+        # "dev/") only dev keys; prod only non-dev keys. Guards against a
+        # mis-scoped reconcile having poisoned the table with foreign keys.
+        # Transcript rows are exempt: they store BARE keys ("transcripts/…")
+        # that media_object_key() env-prefixes at delete time, so they can
+        # only ever resolve inside this env's media namespace anyway.
+        if not row.key.startswith(TRANSCRIPTS_PREFIX):
+            if own_prefix:
+                if not row.key.startswith(own_prefix):
+                    continue  # foreign (prod) key — never ours to touch
+            elif row.key.startswith(DEV_PREFIX):
+                continue  # cleanup never touches dev from prod
         if row.key.startswith(TRANSCRIPTS_PREFIX):
             if (row.reason == R2OrphanedObject.Reason.MERGE_SUPERSEDED_TRANSCRIPT
                     and row.orphaned_at > merge_cut):

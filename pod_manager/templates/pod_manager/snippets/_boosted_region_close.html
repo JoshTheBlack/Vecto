@@ -45,7 +45,9 @@ so its count re-renders on every boosted swap and stays live), then closes
         border: 2px solid rgba(8, 8, 10, 0.92);
     }
 </style>
-<a href="{% url 'creator_settings' %}?tab=inbox" id="approvalBadge" title="{{ pending_approval_count }} edit{{ pending_approval_count|pluralize }} awaiting approval">
+{# Link lands on whichever queue has work: inbox when edits are pending (the deeper review), else straight to Suggested Pairs. #}
+<a href="{% url 'creator_settings' %}{% if pending_edit_count %}?tab=inbox{% else %}?tab=merge&merge_view=pairs{% endif %}" id="approvalBadge"
+   title="{{ pending_approval_count }} item{{ pending_approval_count|pluralize }} awaiting review{% if pending_edit_count and pending_pair_count %}: {{ pending_edit_count }} edit{{ pending_edit_count|pluralize }}, {{ pending_pair_count }} suggested pair{{ pending_pair_count|pluralize }}{% elif pending_pair_count %}: {{ pending_pair_count }} suggested pair{{ pending_pair_count|pluralize }}{% else %}: {{ pending_edit_count }} edit{{ pending_edit_count|pluralize }}{% endif %}">
     <i class="bi bi-chat-square-text-fill"></i>
     <span class="approval-badge-count">{{ pending_approval_count }}</span>
 </a>

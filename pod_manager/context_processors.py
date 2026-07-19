@@ -1,4 +1,4 @@
-from .models import EpisodeEditSuggestion, Network
+from .models import EpisodeEditSuggestion, EpisodeMatchSuggestion, Network
 
 def current_network(request):
     """
@@ -11,10 +11,15 @@ def current_network(request):
 
 
 def pending_approvals(request):
-    """Badge count of edits awaiting approval, aggregated across every network
-    the user owns (or all networks for superusers) — NOT scoped to
+    """Floating-badge counts of items awaiting owner review — PENDING community
+    edits AND PENDING suggested pairs (Merge Desk) — aggregated across every
+    network the user owns (or all networks for superusers). NOT scoped to
     request.network, since that's domain-matched and is often None on the
-    shared admin console path where owners actually manage their queue."""
+    shared admin console path where owners actually manage their queue.
+
+    pending_approval_count is the badge's TOTAL (kept under its original name
+    so every consumer stays live); the per-queue counts drive the badge's link
+    target and tooltip breakdown in _boosted_region_close.html."""
     user = getattr(request, 'user', None)
     if not user or not user.is_authenticated:
         return {}
@@ -26,11 +31,19 @@ def pending_approvals(request):
         if not networks.exists():
             return {}
 
-    count = EpisodeEditSuggestion.objects.filter(
+    edit_count = EpisodeEditSuggestion.objects.filter(
         episode__podcast__network__in=networks,
         status=EpisodeEditSuggestion.Status.PENDING,
     ).count()
-    return {'pending_approval_count': count}
+    pair_count = EpisodeMatchSuggestion.objects.filter(
+        network__in=networks,
+        status=EpisodeMatchSuggestion.Status.PENDING,
+    ).count()
+    return {
+        'pending_approval_count': edit_count + pair_count,
+        'pending_edit_count': edit_count,
+        'pending_pair_count': pair_count,
+    }
 
 
 def htmx(request):

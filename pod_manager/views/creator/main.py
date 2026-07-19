@@ -213,6 +213,14 @@ def creator_match_editor(request, suggestion_id):
         'parent_choices': parent_choices,
         'default_parent_id': survivor.podcast_id,
         'cross_parent': public_ep.podcast_id != private_ep.podcast_id,
+        # Cross-publish-on-merge candidates (§3.5): the two rows' own parents —
+        # whichever isn't picked as the survivor's parent loses the episode, so
+        # its toggle offers to add it back as a cross-publication. The template
+        # JS hides the toggle matching the current parent selection.
+        'cross_publish_choices': (
+            [public_ep.podcast, private_ep.podcast]
+            if public_ep.podcast_id != private_ep.podcast_id else []
+        ),
         'is_chained': is_chained,
     })
 

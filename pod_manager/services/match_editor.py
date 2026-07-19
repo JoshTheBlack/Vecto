@@ -21,7 +21,8 @@ import json
 FIELD_SPECS = [
     ('title',                'title',                'Title',            'text'),
     ('clean_description',    'clean_description',    'Description',      'html'),
-    ('raw_description',      'raw_description',       'Raw Description',  'html'),
+    # raw_description is NOT reviewed separately — it follows the Description
+    # pick (resolve_field_choices ties it to the same side / edited text).
     ('tags',                 'tags',                 'Tags',             'tags'),
     ('chapters_public',      'chapters_public',       'Public Chapters',  'chapters'),
     ('chapters_private',     'chapters_private',      'Premium Chapters', 'chapters'),
@@ -166,6 +167,17 @@ def resolve_field_choices(post, public_episode, private_episode):
         elif sel == 'edit' and kind != 'datetime':
             choices[key] = _parse_edit(kind, post.get('edit_' + key, ''))
         # else: not chosen -> keep the survivor's current value.
+
+    # raw_description rides the Description pick — it isn't reviewed on its own
+    # (an inline-edited description becomes both the clean AND raw text; the
+    # primitive sanitizes each).
+    desc_sel = post.get('choice_clean_description', '')
+    if desc_sel == 'public':
+        choices['raw_description'] = public_episode.raw_description
+    elif desc_sel == 'private':
+        choices['raw_description'] = private_episode.raw_description
+    elif desc_sel == 'edit':
+        choices['raw_description'] = choices.get('clean_description') or ''
 
     # Flags (§3.6e): plain checkbox presence.
     choices['is_metadata_locked'] = bool(post.get('is_metadata_locked'))

@@ -76,15 +76,22 @@ def record_match_suggestion(public_episode, private_episode, *, source, target, 
                 )
         except IntegrityError:
             # A PENDING row for this pair already exists (partial unique
-            # constraint). Re-detection: bump last_seen_at on the existing row.
+            # constraint). Re-detection: bump last_seen_at AND refresh the GUID
+            # snapshots — the episodes' GUIDs may have changed since first
+            # detection (e.g. a manually-added guid_public), and the Suggested
+            # Pairs card renders the snapshots. Refreshing a PENDING row is
+            # safe: the sticky-dismiss triple is only consulted pre-insert, and
+            # a later dismissal captures the refreshed (current) triple.
             existing = EpisodeMatchSuggestion.objects.filter(
                 public_episode=public_episode,
                 private_episode=private_episode,
                 status=EpisodeMatchSuggestion.Status.PENDING,
             ).first()
             if existing:
+                existing.pub_guid = pub_guid
+                existing.priv_guid = priv_guid
                 existing.last_seen_at = timezone.now()
-                existing.save(update_fields=['last_seen_at'])
+                existing.save(update_fields=['pub_guid', 'priv_guid', 'last_seen_at'])
             return existing
 
     except Exception:

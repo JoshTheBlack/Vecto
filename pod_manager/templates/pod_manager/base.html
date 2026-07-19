@@ -18,6 +18,37 @@
     <script src="{% static 'pod_manager/js/bootstrap.bundle.min.js' %}"></script>
     <script src="{% static 'pod_manager/js/quill.js' %}"></script>
     <script src="{% static 'pod_manager/js/diff.min.js' %}"></script>
+    {% comment %}
+    Site-wide two-step slide-out confirm (data-confirm-slide) replacing every
+    window.confirm() popup. Deliberately OUTSIDE the boosted region: it binds
+    one persistent capture listener per full page load (own bind guard, not
+    VectoPage.on — region-swap cleanup would remove a listener this script
+    never re-registers). Bump ?v= on change; filenames are not hashed.
+    {% endcomment %}
+    <script src="{% static 'pod_manager/js/confirm_slide.js' %}?v=1" defer></script>
+    <style>
+        /* Two-step confirm (confirm_slide.js): checkmark + optional warning
+           sliding out the LEFT of an armed destructive control. */
+        .confirm-slide {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.5rem;
+            margin-right: 0.5rem;
+            vertical-align: middle;
+            opacity: 0;
+            transform: translateX(14px);
+            transition: opacity 0.18s ease, transform 0.22s ease;
+        }
+        .confirm-slide.show { opacity: 1; transform: translateX(0); }
+        .confirm-slide-warning {
+            font-size: 0.75rem;
+            line-height: 1.25;
+            max-width: 18rem;
+            text-align: right;
+            color: var(--bs-warning, #ffc107);
+        }
+        .confirm-armed { opacity: 0.55; }
+    </style>
 
     {% if current_network.custom_font_upload %}
         <style>

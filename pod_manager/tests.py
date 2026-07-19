@@ -428,8 +428,10 @@ def _tiny_gif_upload(name='anim.gif', frames=3):
 
 
 class PendingApprovalsContextProcessorTests(TestCase):
-    """pending_approvals(): badge count aggregated across owned networks, not
-    scoped to request.network (which is often None on the admin console)."""
+    """pending_approvals(): badge counts (edits + suggested pairs) aggregated
+    across owned networks, not scoped to request.network (which is often None
+    on the admin console). pending_approval_count is the TOTAL the badge
+    renders; the per-queue keys drive its link target and tooltip."""
 
     def setUp(self):
         self.factory = RequestFactory()
@@ -444,7 +446,7 @@ class PendingApprovalsContextProcessorTests(TestCase):
         self.other_network = Network.objects.create(name='Other', slug='other')
         self.other_network.owners.add(self.other_owner)
 
-        podcast_a = Podcast.objects.create(network=self.network_a, title='A Show', slug='a-show')
+        self.podcast_a = Podcast.objects.create(network=self.network_a, title='A Show', slug='a-show')
         podcast_b = Podcast.objects.create(network=self.network_b, title='B Show', slug='b-show')
         other_podcast = Podcast.objects.create(network=self.other_network, title='O Show', slug='o-show')
 
@@ -453,14 +455,27 @@ class PendingApprovalsContextProcessorTests(TestCase):
                 podcast=podcast, title=f'Ep {n}', pub_date=timezone.now(),
                 raw_description='x', clean_description='x',
             )
+        self._ep = _ep
 
         for ep, status in (
-            (_ep(podcast_a, 1), EpisodeEditSuggestion.Status.PENDING),
+            (_ep(self.podcast_a, 1), EpisodeEditSuggestion.Status.PENDING),
             (_ep(podcast_b, 2), EpisodeEditSuggestion.Status.PENDING),
-            (_ep(podcast_a, 3), EpisodeEditSuggestion.Status.APPROVED),
+            (_ep(self.podcast_a, 3), EpisodeEditSuggestion.Status.APPROVED),
             (_ep(other_podcast, 4), EpisodeEditSuggestion.Status.PENDING),
         ):
             EpisodeEditSuggestion.objects.create(episode=ep, user=self.owner, status=status)
+
+    def _pair(self, network, podcast, n, status='PENDING'):
+        from pod_manager.models import EpisodeMatchSuggestion
+        return EpisodeMatchSuggestion.objects.create(
+            network=network,
+            public_episode=self._ep(podcast, 100 + n),
+            private_episode=self._ep(podcast, 200 + n),
+            pub_guid=f'pub-{network.slug}-{n}', priv_guid=f'priv-{network.slug}-{n}',
+            source_podcast=podcast, target_podcast=podcast,
+            detected_reason='ambiguous_guid_divergence',
+            status=status,
+        )
 
     def _ctx(self, user):
         from pod_manager.context_processors import pending_approvals
@@ -472,19 +487,52 @@ class PendingApprovalsContextProcessorTests(TestCase):
         self.assertEqual(self._ctx(AnonymousUser()), {})
 
     def test_owner_count_aggregates_across_owned_networks_only(self):
-        # 2 pending across network_a + network_b; the 4th (other_network) must
-        # NOT be counted even though request.network is None here.
-        self.assertEqual(self._ctx(self.owner), {'pending_approval_count': 2})
+        # 2 pending edits across network_a + network_b; the 4th (other_network)
+        # must NOT be counted even though request.network is None here.
+        self.assertEqual(self._ctx(self.owner), {
+            'pending_approval_count': 2,
+            'pending_edit_count': 2,
+            'pending_pair_count': 0,
+        })
 
     def test_owner_with_no_networks_gets_no_key(self):
         bystander = User.objects.create_user('bystander', password='x')
         self.assertEqual(self._ctx(bystander), {})
 
     def test_superuser_counts_every_network(self):
-        self.assertEqual(self._ctx(self.superuser), {'pending_approval_count': 3})
+        self.assertEqual(self._ctx(self.superuser), {
+            'pending_approval_count': 3,
+            'pending_edit_count': 3,
+            'pending_pair_count': 0,
+        })
 
     def test_other_owner_only_sees_their_own_network(self):
-        self.assertEqual(self._ctx(self.other_owner), {'pending_approval_count': 1})
+        self.assertEqual(self._ctx(self.other_owner), {
+            'pending_approval_count': 1,
+            'pending_edit_count': 1,
+            'pending_pair_count': 0,
+        })
+
+    def test_pending_pairs_add_into_the_total(self):
+        # One PENDING pair in an owned network counts; DISMISSED doesn't; a
+        # foreign network's PENDING pair doesn't leak in.
+        self._pair(self.network_a, self.podcast_a, 1)
+        self._pair(self.network_a, self.podcast_a, 2, status='DISMISSED')
+        other_podcast = Podcast.objects.create(
+            network=self.other_network, title='O2 Show', slug='o2-show')
+        self._pair(self.other_network, other_podcast, 3)
+
+        self.assertEqual(self._ctx(self.owner), {
+            'pending_approval_count': 3,
+            'pending_edit_count': 2,
+            'pending_pair_count': 1,
+        })
+        # Superuser sees every network: 3 edits + 2 pending pairs.
+        self.assertEqual(self._ctx(self.superuser), {
+            'pending_approval_count': 5,
+            'pending_edit_count': 3,
+            'pending_pair_count': 2,
+        })
 
 
 @override_settings(CACHES=TEST_CACHES)
@@ -12605,6 +12653,19 @@ class RecordMatchSuggestionServiceTests(TestCase):
         self.assertEqual(s.target_podcast_id, self.target.id)
         self.assertEqual(s.detected_reason, 'ambiguous_guid_divergence')
 
+    def test_re_detection_refreshes_guid_snapshots(self):
+        # The Suggested Pairs card renders the snapshots; a GUID added to an
+        # episode after first detection must show up on the next re-detection
+        # (bump path), not only inside the editor (which reads live rows).
+        first = self._record()
+        Episode.objects.filter(pk=self.ep_pub.pk).update(guid_public='GX-NEW')
+        self.ep_pub.refresh_from_db()
+        again = self._record()
+        self.assertEqual(again.pk, first.pk)
+        again.refresh_from_db()
+        self.assertEqual(again.pub_guid, 'GX-NEW')
+        self.assertEqual(again.priv_guid, 'GY')
+
     def test_repeated_record_is_idempotent_and_bumps_last_seen(self):
         t0 = timezone.now()
         t1 = t0 + timedelta(minutes=7)
@@ -13365,6 +13426,29 @@ class MatchEditorServiceTests(TestCase):
         self.assertFalse(choices['is_metadata_locked'])
         # A field with no choice_ posted is omitted (survivor keeps its own value).
         self.assertNotIn('link', choices)
+        # No description choice posted -> raw_description is omitted too.
+        self.assertNotIn('raw_description', choices)
+
+    def test_raw_description_rides_the_description_pick(self):
+        # raw_description is not reviewed on its own: a side pick carries that
+        # side's raw text; an inline edit becomes both clean AND raw.
+        from pod_manager.services.match_editor import FIELD_SPECS, resolve_field_choices
+        self.assertNotIn('raw_description', [key for _, key, _, _ in FIELD_SPECS])
+
+        choices = resolve_field_choices(
+            {'choice_clean_description': 'public'}, self.pub, self.priv)
+        self.assertEqual(choices['clean_description'], 'cp')
+        self.assertEqual(choices['raw_description'], 'rp')
+
+        choices = resolve_field_choices(
+            {'choice_clean_description': 'private'}, self.pub, self.priv)
+        self.assertEqual(choices['raw_description'], 'rq')
+
+        choices = resolve_field_choices(
+            {'choice_clean_description': 'edit', 'edit_clean_description': '<p>new</p>'},
+            self.pub, self.priv)
+        self.assertEqual(choices['clean_description'], '<p>new</p>')
+        self.assertEqual(choices['raw_description'], '<p>new</p>')
 
 
 class MatchEditorViewAndActionTests(TestCase):
@@ -13506,6 +13590,55 @@ class MatchEditorViewAndActionTests(TestCase):
         })
         self.assertEqual(resp.status_code, 404)
         self.assertTrue(Episode.objects.filter(pk=self.o_priv.pk).exists())
+
+    def test_commit_cross_publishes_to_losing_feed_when_toggled(self):
+        # Cross-parent pair: priv row lives in `target`. Parent pick = target,
+        # so `low` (pub row's feed) loses the episode; the toggle adds it back
+        # as a manual cross-publication on the survivor.
+        from pod_manager.models import EpisodeCrossPublication
+        Episode.objects.filter(pk=self.priv.pk).update(podcast=self.target)
+        self.priv.refresh_from_db()
+
+        self.client.force_login(self.owner)
+        self._post({
+            'action': 'commit_match_merge',
+            'suggestion_id': self.suggestion.id,
+            'podcast': self.target.id,
+            'cross_publish_feed_ids': [self.low.id],
+            'choice_guid_public': 'public',
+            'choice_guid_private': 'private',
+        })
+
+        survivor = Episode.objects.get(pk=self.pub.pk)
+        self.assertEqual(survivor.podcast_id, self.target.id)
+        link = EpisodeCrossPublication.objects.get(episode=survivor, podcast=self.low)
+        self.assertFalse(link.auto_created)
+        self.assertEqual(link.added_by_id, self.owner.id)
+
+    def test_commit_ignores_cross_publish_ids_outside_the_pair(self):
+        # A crafted id (some unrelated feed / the chosen parent itself) is
+        # silently dropped — only the pair's own losing parents are honored.
+        from pod_manager.models import EpisodeCrossPublication
+        unrelated = Podcast.objects.create(
+            network=self.network, title='Unrelated', slug='mv-unrelated')
+
+        self.client.force_login(self.owner)
+        self._post({
+            'action': 'commit_match_merge',
+            'suggestion_id': self.suggestion.id,
+            'podcast': self.target.id,
+            'cross_publish_feed_ids': [unrelated.id, self.target.id],
+            'choice_guid_public': 'public',
+            'choice_guid_private': 'private',
+        })
+
+        survivor = Episode.objects.get(pk=self.pub.pk)
+        self.assertFalse(
+            EpisodeCrossPublication.objects.filter(
+                episode=survivor, podcast=unrelated).exists())
+        self.assertFalse(
+            EpisodeCrossPublication.objects.filter(
+                episode=survivor, podcast=self.target).exists())
 
 
 class CreatorSettingsReviewCountPillsTests(TestCase):

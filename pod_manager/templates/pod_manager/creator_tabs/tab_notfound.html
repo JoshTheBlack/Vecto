@@ -53,7 +53,7 @@ with none of that machinery. enctype stays for the no-JS submit.
                                 {% csrf_token %}
                                 <input type="hidden" name="action" value="delete_notfound_entry">
                                 <input type="hidden" name="entry_id" value="{{ entry.id }}">
-                                <button type="submit" class="btn btn-sm btn-outline-danger w-100" onclick="return confirm('Delete this 404 pool entry?');"><i class="bi bi-trash"></i> Delete</button>
+                                <button type="submit" class="btn btn-sm btn-outline-danger w-100" data-confirm-slide="Deletes this 404 pool entry."><i class="bi bi-trash"></i> Delete</button>
                             </form>
                         </div>
                     </div>

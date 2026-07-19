@@ -72,7 +72,7 @@ took both of the allowlist's entries back out.
             {% endcomment %}
             <button type="submit" name="remove" value="1" formnovalidate
                     class="btn btn-sm btn-outline-danger mt-2"
-                    {% if remove_confirm %}onclick="return confirm('{{ remove_confirm|escapejs }}');"{% endif %}>
+                    {% if remove_confirm %}data-confirm-slide="{{ remove_confirm }}"{% endif %}>
                 <i class="bi bi-trash"></i> Remove
             </button>
             {% endif %}

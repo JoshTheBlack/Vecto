@@ -495,12 +495,13 @@ _audio_upload.html for its own standalone upload.
                             </button>
                         </form>
                         <form method="POST" action="{% url 'publish_episode' %}?network={{ current_network.slug }}&tab=scheduled"
-                              class="d-inline" onsubmit="return confirm('Delete this episode?')">
+                              class="d-inline">
                             {% csrf_token %}
                             <input type="hidden" name="network_slug" value="{{ current_network.slug }}">
                             <input type="hidden" name="action" value="delete">
                             <input type="hidden" name="episode_id" value="{{ ep.id }}">
-                            <button type="submit" class="btn btn-sm btn-outline-danger" title="Delete">
+                            <button type="submit" class="btn btn-sm btn-outline-danger" title="Delete"
+                                    data-confirm-slide="Deletes this episode.">
                                 <i class="bi bi-trash"></i>
                             </button>
                         </form>

@@ -13,6 +13,7 @@ from django.conf import settings
 from django.contrib import messages
 from django.contrib.auth.models import User
 from django.core.cache import cache
+from django.db import transaction
 from django.shortcuts import get_object_or_404, redirect
 from django.urls import reverse
 from django.utils import timezone
@@ -743,16 +744,38 @@ def handle_commit_match_merge(request, current_network):
         Podcast, id=request.POST.get('podcast'), network=current_network)
     field_choices['podcast'] = parent.id
 
+    # Cross-publish-on-merge (§3.5): requested feed ids are honored only when
+    # they are one of the pair's OWN parents and not the chosen parent — the
+    # toggle exists so a feed losing its row can keep the episode as a
+    # cross-publication. Feed shells for both parents are already in the
+    # primitive's bust set, so no extra cache work is needed here.
+    losing_parents = {
+        p.id: p for p in (public_ep.podcast, private_ep.podcast) if p.id != parent.id
+    }
+    cross_publish_pods = [
+        losing_parents[int(pid)]
+        for pid in request.POST.getlist('cross_publish_feed_ids')
+        if pid.isdigit() and int(pid) in losing_parents
+    ]
+
     try:
         # Wrapper order (§7f): resolve the suggestion for the resolved_by audit,
         # THEN run the primitive (which deletes the loser — CASCADE would also
-        # clear the row, so the explicit resolve is belt-and-suspenders).
-        resolve_match_suggestion(suggestion, user=request.user)
-        merge_pair_with_choices(
-            survivor, deleted, field_choices,
-            actor=request.user,
-            base_url=request.build_absolute_uri('/')[:-1],
-        )
+        # clear the row, so the explicit resolve is belt-and-suspenders). One
+        # atomic block around both: a failed merge must roll the RESOLVE back
+        # too, or the card would vanish while the rows stay unmerged.
+        with transaction.atomic():
+            resolve_match_suggestion(suggestion, user=request.user)
+            merge_pair_with_choices(
+                survivor, deleted, field_choices,
+                actor=request.user,
+                base_url=request.build_absolute_uri('/')[:-1],
+            )
+            for pod in cross_publish_pods:
+                EpisodeCrossPublication.objects.get_or_create(
+                    episode=survivor, podcast=pod,
+                    defaults={'auto_created': False, 'added_by': request.user},
+                )
     except ValueError as e:
         logger.error("Match merge commit failed for suggestion #%s: %s", suggestion.id, e)
         messages.error(request, f"Merge failed: {e}")

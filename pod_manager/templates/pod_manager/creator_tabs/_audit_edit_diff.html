@@ -260,7 +260,7 @@ from the OUTER accordion-body in tab_audit_log.html (divergence C's split).
                         </div>
                         {% endif %}
                         <div class="mt-4 pt-3 border-top d-flex justify-content-between align-items-center" style="border-color: var(--bs-border-color) !important;">
-                            <form method="POST" class="d-inline" onsubmit="return confirm('WARNING: This will revert EVERY approved edit this user has ever made on this network, and drop their trust score to 0. Proceed?');">
+                            <form method="POST" class="d-inline">
                                 {% csrf_token %}
                                 <input type="hidden" name="action" value="bulk_rollback">
                                 <input type="hidden" name="spammer_id" value="{{ edit.user.id }}">
@@ -270,7 +270,8 @@ from the OUTER accordion-body in tab_audit_log.html (divergence C's split).
                                 <input type="hidden" name="audit_q" value="{{ request.GET.audit_q }}">
                                 <input type="hidden" name="audit_status" value="{{ request.GET.audit_status }}">
                                 <input type="hidden" name="audit_user" value="{{ request.GET.audit_user }}">
-                                <button type="submit" class="btn btn-sm btn-outline-danger" title="Ban User & Revert All Their Edits">
+                                <button type="submit" class="btn btn-sm btn-outline-danger" title="Ban User & Revert All Their Edits"
+                                        data-confirm-slide="Reverts EVERY approved edit by this user on this network and drops their trust to 0.">
                                     <i class="bi bi-radioactive"></i> Bulk Rollback User
                                 </button>
                             </form>
@@ -281,7 +282,7 @@ from the OUTER accordion-body in tab_audit_log.html (divergence C's split).
                                 Trust: {{ edit.membership.trust_score|default:0 }}<i class="bi bi-arrow-right mx-1"></i>{{ edit.trust_after_revert }}
                             </span>
                             {% endif %}
-                            <form method="POST" class="d-inline" onsubmit="return confirm('Are you sure you want to roll back this specific edit? The user will lose {{ edit.points|default:0 }} trust point{{ edit.points|default:0|pluralize }} (the exact amount this edit earned).');">
+                            <form method="POST" class="d-inline">
                                 {% csrf_token %}
                                 <input type="hidden" name="action" value="rollback_single_edit">
                                 <input type="hidden" name="edit_id" value="{{ edit.id }}">
@@ -292,6 +293,7 @@ from the OUTER accordion-body in tab_audit_log.html (divergence C's split).
                                 <input type="hidden" name="audit_status" value="{{ request.GET.audit_status }}">
                                 <input type="hidden" name="audit_user" value="{{ request.GET.audit_user }}">
                                 <button type="submit" class="btn btn-sm" title="Revert this specific edit"
+                                        data-confirm-slide="Rolls this edit back; the user loses the {{ edit.points|default:0 }} trust point{{ edit.points|default:0|pluralize }} it earned."
                                         style="background-color: transparent; border: 1px solid var(--vecto-surface-muted); color: var(--vecto-surface-muted); border-radius: var(--vecto-radius-md);">
                                     <i class="bi bi-arrow-counterclockwise"></i> Revert Edit (-{{ edit.points|default:0 }} Trust)
                                 </button>

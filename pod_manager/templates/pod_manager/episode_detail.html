@@ -878,7 +878,7 @@
                                     {% endfor %}
                                 </select>
                                 <button type="submit" class="btn btn-outline-warning btn-sm"
-                                        onclick="return confirm('Move this episode to the selected feed?')">
+                                        data-confirm-slide="Moves to the selected feed (pins the episode there).">
                                     <i class="bi bi-arrow-left-right me-1"></i>Move
                                 </button>
                             </div>
@@ -988,11 +988,11 @@
                             </form>
                             {% endif %}
                             {% if ep.is_published %}
-                            <form method="POST" action="{% url 'manage_episode' ep.id %}"
-                                  onsubmit="return confirm('Unpublish this episode? It will be hidden from all feeds.')">
+                            <form method="POST" action="{% url 'manage_episode' ep.id %}">
                                 {% csrf_token %}
                                 <input type="hidden" name="action" value="unpublish">
-                                <button type="submit" class="btn btn-outline-secondary">
+                                <button type="submit" class="btn btn-outline-secondary"
+                                        data-confirm-slide="Hides this episode from all feeds.">
                                     <i class="bi bi-eye-slash me-1"></i>Unpublish
                                 </button>
                             </form>

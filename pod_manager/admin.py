@@ -7,7 +7,7 @@ from django.contrib.auth.models import User
 from django.db.models import Q, F, BooleanField, ExpressionWrapper
 from django.utils.html import format_html, mark_safe
 from django.urls import reverse
-from .models import Network, PatreonTier, Podcast, Episode, EpisodeCrossPublication, UserMix, NetworkMix, PatronProfile, EpisodeEditSuggestion, NetworkMembership, LogEntry, Transcript, R2OrphanedObject, CalendarEntry, LiveSchedulePost
+from .models import Network, PatreonTier, Podcast, Episode, EpisodeCrossPublication, UserMix, NetworkMix, PatronProfile, EpisodeEditSuggestion, EpisodeMatchSuggestion, NetworkMembership, LogEntry, Transcript, R2OrphanedObject, CalendarEntry, LiveSchedulePost
 
 class S3SubscriberAudioFilter(SimpleListFilter):
     title = 'S3 Hosted Audio (Affected)'
@@ -403,6 +403,23 @@ class EpisodeEditSuggestionAdmin(admin.ModelAdmin):
     )
 
 
+@admin.register(EpisodeMatchSuggestion)
+class EpisodeMatchSuggestionAdmin(admin.ModelAdmin):
+    """Suggested Pairs (Merge Desk review queue) — mainly for inspection and
+    the occasional surgical fix (e.g. un-dismissing a pair by flipping status
+    back to PENDING, or deleting a bad row so backfill can re-seed it)."""
+    list_display = ('id', 'network', 'public_episode', 'private_episode', 'status',
+                    'detected_reason', 'last_seen_at', 'resolved_by', 'resolved_at')
+    list_filter = ('status', 'detected_reason', 'network')
+    search_fields = ('public_episode__title', 'private_episode__title',
+                     'pub_guid', 'priv_guid')
+    raw_id_fields = ('public_episode', 'private_episode', 'source_podcast',
+                     'target_podcast', 'resolved_by')
+    readonly_fields = ('created_at', 'last_seen_at')
+    list_select_related = ('network', 'public_episode', 'private_episode', 'resolved_by')
+    ordering = ('-last_seen_at',)
+
+
 _LEVEL_COLORS = {
     'DEBUG': '#6c757d',
     'INFO': '#0dcaf0',
@@ -605,8 +622,11 @@ class R2OrphanedObjectAdmin(admin.ModelAdmin):
     def expires_on(self, obj):
         from datetime import timedelta
         from django.conf import settings
-        days = (settings.R2_REKEY_GRACE_DAYS
-                if obj.reason == R2OrphanedObject.Reason.MOVE_REKEY
-                else settings.R2_ORPHAN_RETENTION_DAYS)
+        if obj.reason == R2OrphanedObject.Reason.MOVE_REKEY:
+            days = settings.R2_REKEY_GRACE_DAYS
+        elif obj.reason == R2OrphanedObject.Reason.MERGE_SUPERSEDED_TRANSCRIPT:
+            days = settings.R2_MERGE_TRANSCRIPT_RETENTION_DAYS
+        else:
+            days = settings.R2_ORPHAN_RETENTION_DAYS
         return obj.orphaned_at + timedelta(days=days)
     expires_on.short_description = 'Eligible for deletion'

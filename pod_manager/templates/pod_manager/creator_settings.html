@@ -115,11 +115,86 @@ returning browser runs the v=5 copy against these templates and every one of
 those fixes silently reverts for that user.
 {% endcomment %}
 <script src="{% static 'pod_manager/js/creator_tabs.js' %}?v=6"></script>
-<script src="{% static 'pod_manager/js/gdrive_recovery.js' %}?v=2"></script>
+{# v=3: rewind confirm moved from window.confirm() to data-confirm-slide. #}
+<script src="{% static 'pod_manager/js/gdrive_recovery.js' %}?v=3"></script>
 {# Shared chapter-row editor (Q10) — consumed by the inbox diff-grid and the merge editor partials. #}
 <script src="{% static 'pod_manager/js/chapter_editor.js' %}?v=1"></script>
+{# Shared tag pill-input widget + Quill theme css — the merge editor partial uses both (Quill JS itself is global in base.html). #}
+<script src="{% static 'pod_manager/js/tag_editor.js' %}?v=1"></script>
+<link href="{% static 'pod_manager/css/quill.snow.css' %}" rel="stylesheet">
 
 <style>
+    /* Editable tag pill-input (shared TagEditor widget — merge editor).
+       Pills match the read-only preview badges beside them (same primary
+       fill and .badge sizing) so the Edit column doesn't read as a different
+       widget. Display-only .tag-pill rules for the inbox/audit diffs below. */
+    .tag-input-wrapper {
+        display: flex; flex-wrap: wrap; gap: 0.35rem; align-items: center;
+        padding: 0.35rem; background: var(--vecto-surface-bg, #1e1e1e);
+        border: 1px solid var(--bs-border-color, #495057);
+        border-radius: var(--vecto-radius-md);
+    }
+    .tag-input-wrapper:focus-within { border-color: var(--vecto-primary, #ffc107); }
+    .tag-input-wrapper .tag-input-field {
+        flex: 1 1 6rem; min-width: 5rem; border: 0; outline: 0;
+        background: transparent; color: var(--vecto-surface-text, #f8f9fa);
+        font-size: 0.875rem;
+        padding: 0.15rem 0.25rem;
+    }
+    .tag-input-wrapper .tag-input-field::placeholder { color: var(--vecto-surface-muted, #adb5bd); }
+    .tag-input-wrapper .tag-pill {
+        display: inline-flex; align-items: center; gap: 0.35rem;
+        background-color: var(--vecto-primary, #ffc107);
+        color: var(--vecto-primary-text, #000);
+        border: 0;
+        border-radius: var(--vecto-radius-sm);
+        font-size: 0.75em; font-weight: 700; line-height: 1;
+        padding: 0.35em 0.65em;
+    }
+    .tag-input-wrapper .tag-remove {
+        background: none; border: 0; color: inherit; opacity: 0.6;
+        cursor: pointer; padding: 0; font-weight: bold; line-height: 1;
+    }
+    .tag-input-wrapper .tag-remove:hover { opacity: 1; }
+
+    /* Quill in the merge editor's Edit cells: dark chrome (ported from the
+       publish page's rules) + a compact single-row toolbar that scrolls
+       horizontally instead of wrapping to three lines in the narrow column. */
+    .me-edit-cell .ql-toolbar.ql-snow {
+        border-color: var(--bs-border-color, #495057) !important;
+        background: var(--vecto-surface-bg, #1e1e1e);
+        border-radius: var(--vecto-radius-sm) var(--vecto-radius-sm) 0 0;
+        display: flex; flex-wrap: nowrap; align-items: center;
+        overflow-x: auto; scrollbar-width: thin;
+        padding: 3px 4px;
+    }
+    .me-edit-cell .ql-toolbar.ql-snow .ql-formats {
+        display: inline-flex; flex-shrink: 0; margin-right: 8px;
+    }
+    .me-edit-cell .ql-toolbar.ql-snow button {
+        width: 22px; height: 22px; padding: 2px;
+    }
+    .me-edit-cell .ql-container.ql-snow {
+        border-color: var(--bs-border-color, #495057) !important;
+        background: var(--vecto-surface-bg, #1e1e1e);
+        border-radius: 0 0 var(--vecto-radius-sm) var(--vecto-radius-sm);
+        min-height: 6rem; max-height: 14rem; overflow-y: auto;
+        font-size: 0.875rem;
+        color: var(--vecto-surface-text, #f8f9fa);
+    }
+    .me-edit-cell .ql-snow .ql-stroke { stroke: var(--vecto-surface-text, #f8f9fa); }
+    .me-edit-cell .ql-snow .ql-fill,
+    .me-edit-cell .ql-snow .ql-stroke.ql-fill { fill: var(--vecto-surface-text, #f8f9fa); }
+    .me-edit-cell .ql-snow .ql-picker { color: var(--vecto-surface-text, #f8f9fa); }
+    .me-edit-cell .ql-snow .ql-picker-options { background: var(--vecto-surface-bg, #212529); border-color: var(--bs-border-color, #495057); }
+    .me-edit-cell .ql-snow .ql-tooltip {
+        background: var(--vecto-surface-bg, #212529); border-color: var(--bs-border-color, #495057);
+        color: var(--vecto-surface-text, #f8f9fa);
+        box-shadow: 0 2px 8px rgba(0,0,0,0.5); border-radius: var(--vecto-radius-sm);
+    }
+    .me-edit-cell .ql-snow .ql-tooltip input[type=text] { background: var(--vecto-surface-bg, #2b3035); border-color: var(--bs-border-color, #495057); color: var(--vecto-surface-text, #f8f9fa); }
+    .me-edit-cell .ql-snow .ql-tooltip a { color: var(--vecto-primary, #ffc107); }
+
     /* Shared styles for Community Edits (inbox) and Audit Log tabs. */
 
     /* Per-section trust-point chip. Shared here (not in a tab body) because the

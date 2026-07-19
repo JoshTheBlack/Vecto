@@ -390,6 +390,7 @@
             const rewindBtn = (r.mode === 'live' && r.status === 'completed' && r.recovery_csv_url)
                 ? `<button class="btn btn-xs btn-outline-danger py-0 px-1"
                            title="Rewind this run"
+                           data-confirm-slide="Restores the original S3 URLs for these episodes."
                            onclick="recoveryRewind('${escHtml(r.recovery_csv_url)}', '${cssId(csvFilename)}')">
                        <i class="bi bi-arrow-counterclockwise"></i>
                    </button>`
@@ -425,8 +426,8 @@
 
     // ── Rewind a past live run ──────────────────────────────────
     window.recoveryRewind = function (recoveryCsvUrl, cardId) {
-        if (!confirm('Rewind this recovery run? This will restore the original S3 URLs for these episodes.')) return;
-
+        // Confirmation is the button's data-confirm-slide (confirm_slide.js);
+        // this only runs on the confirmed pass-through click.
         fetch('/creator/gdrive-recovery/rewind/', {
             method: 'POST',
             headers: {'Content-Type': 'application/json', 'X-CSRFToken': getCsrf()},

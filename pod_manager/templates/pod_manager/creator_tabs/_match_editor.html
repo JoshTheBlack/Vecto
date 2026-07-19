@@ -101,12 +101,13 @@ is NOT exposed — it rides the audio_url_subscriber pick automatically (§3.5).
                                 <input class="form-check-input me-choice" type="radio" name="choice_{{ f.key }}" id="choice-{{ f.key }}-public" value="public" {% if f.default_choice == 'public' %}checked{% endif %}>
                                 <label class="form-check-label small text-muted" for="choice-{{ f.key }}-public"><i class="bi bi-globe me-1"></i>Public</label>
                             </div>
-                            <div class="small text-light bg-black border border-secondary rounded p-2 mt-1" style="max-height: 6rem; overflow:auto;">
-                                {% if f.kind == 'tags' %}{{ f.a_value|join:", "|default:"—" }}
+                            {# Full value, never truncated — the reviewer must see everything they're approving. Long values scroll. #}
+                            <div class="small text-light bg-black border border-secondary rounded p-2 mt-1" style="max-height: 14rem; overflow:auto; word-break: break-word;">
+                                {% if f.kind == 'tags' %}{% for t in f.a_value %}<span class="badge me-1 mb-1" style="background-color: var(--vecto-primary); color: var(--vecto-primary-text, #000);">{{ t }}</span>{% empty %}—{% endfor %}
                                 {% elif f.kind == 'datetime' %}{{ f.a_value|date:"M j, Y g:i A"|default:"—" }}
-                                {% elif f.kind == 'html' %}{{ f.a_value|striptags|truncatechars:160|default:"—" }}
+                                {% elif f.kind == 'html' %}{{ f.a_value|striptags|default:"—" }}
                                 {% elif f.kind == 'explicit' %}{{ f.a_value|yesno:"Yes,No,—" }}
-                                {% else %}{{ f.a_value|truncatechars:160|default:"—" }}{% endif %}
+                                {% else %}{{ f.a_value|default:"—" }}{% endif %}
                             </div>
                         </div>
                         <div class="col-md-4">
@@ -114,24 +115,37 @@ is NOT exposed — it rides the audio_url_subscriber pick automatically (§3.5).
                                 <input class="form-check-input me-choice" type="radio" name="choice_{{ f.key }}" id="choice-{{ f.key }}-private" value="private" {% if f.default_choice == 'private' %}checked{% endif %}>
                                 <label class="form-check-label small text-muted" for="choice-{{ f.key }}-private"><i class="bi bi-lock-fill me-1"></i>Premium</label>
                             </div>
-                            <div class="small text-light bg-black border border-secondary rounded p-2 mt-1" style="max-height: 6rem; overflow:auto;">
-                                {% if f.kind == 'tags' %}{{ f.b_value|join:", "|default:"—" }}
+                            <div class="small text-light bg-black border border-secondary rounded p-2 mt-1" style="max-height: 14rem; overflow:auto; word-break: break-word;">
+                                {% if f.kind == 'tags' %}{% for t in f.b_value %}<span class="badge me-1 mb-1" style="background-color: var(--vecto-primary); color: var(--vecto-primary-text, #000);">{{ t }}</span>{% empty %}—{% endfor %}
                                 {% elif f.kind == 'datetime' %}{{ f.b_value|date:"M j, Y g:i A"|default:"—" }}
-                                {% elif f.kind == 'html' %}{{ f.b_value|striptags|truncatechars:160|default:"—" }}
+                                {% elif f.kind == 'html' %}{{ f.b_value|striptags|default:"—" }}
                                 {% elif f.kind == 'explicit' %}{{ f.b_value|yesno:"Yes,No,—" }}
-                                {% else %}{{ f.b_value|truncatechars:160|default:"—" }}{% endif %}
+                                {% else %}{{ f.b_value|default:"—" }}{% endif %}
                             </div>
                         </div>
-                        <div class="col-md-4">
+                        <div class="col-md-4 me-edit-cell" data-key="{{ f.key }}">
                             {% if f.kind != 'datetime' %}
                             <div class="form-check">
                                 <input class="form-check-input me-choice" type="radio" name="choice_{{ f.key }}" id="choice-{{ f.key }}-edit" value="edit">
                                 <label class="form-check-label small text-muted" for="choice-{{ f.key }}-edit"><i class="bi bi-pencil me-1"></i>Edit</label>
                             </div>
                             {% if f.kind == 'html' %}
-                            <textarea name="edit_{{ f.key }}" rows="3" class="form-control form-control-sm bg-black text-light border-secondary mt-1">{% if f.default_choice == 'public' %}{{ f.a_value|default:'' }}{% else %}{{ f.b_value|default:'' }}{% endif %}</textarea>
+                            {# Rich text via the shared Quill snippet (seeded with the default side); serialized into the hidden input at request time. #}
+                            <input type="hidden" name="edit_{{ f.key }}">
+                            <div class="mt-1">
+                                {% if f.default_choice == 'public' %}
+                                {% include 'pod_manager/snippets/_quill_editor.html' with quill_content=f.a_value quill_class='bg-black text-light' %}
+                                {% else %}
+                                {% include 'pod_manager/snippets/_quill_editor.html' with quill_content=f.b_value quill_class='bg-black text-light' %}
+                                {% endif %}
+                            </div>
                             {% elif f.kind == 'tags' %}
-                            <input type="text" name="edit_{{ f.key }}" class="form-control form-control-sm bg-black text-light border-secondary mt-1" placeholder="comma,separated,tags" value="{% if f.default_choice == 'public' %}{{ f.a_value|join:', ' }}{% else %}{{ f.b_value|join:', ' }}{% endif %}">
+                            {# Shared TagEditor pill widget (seeded with the default side); serialized as JSON into the hidden input at request time. #}
+                            {% if f.default_choice == 'public' %}{{ f.a_value|json_script:'me-tags-default' }}{% else %}{{ f.b_value|json_script:'me-tags-default' }}{% endif %}
+                            <input type="hidden" name="edit_{{ f.key }}">
+                            <div class="tag-input-wrapper mt-1" id="me-tag-wrapper">
+                                <input type="text" class="tag-input-field" id="me-tag-input" placeholder="Type a tag…">
+                            </div>
                             {% elif f.kind == 'explicit' %}
                             <select name="edit_{{ f.key }}" class="form-select form-select-sm bg-black text-light border-secondary mt-1">
                                 <option value="">— (unset)</option>
@@ -189,11 +203,32 @@ is NOT exposed — it rides the audio_url_subscriber pick automatically (§3.5).
                 <div class="form-check form-switch">
                     <input class="form-check-input" type="checkbox" role="switch" name="keep_pin" id="me-keep-pin" {% if public_ep.podcast_pinned_at or private_ep.podcast_pinned_at %}checked{% endif %}>
                     <label class="form-check-label text-light" for="me-keep-pin">Keep pinned{% if public_ep.podcast_pinned_at or private_ep.podcast_pinned_at %} <span class="text-warning">(one row was pinned)</span>{% endif %}</label>
+                    <small class="text-muted d-block">A pin marks the episode as manually placed: auto-migration will never move it to another feed. Leave off to let a future ingest auto-migrate it out of a low-priority feed; keep on to freeze it in the podcast chosen above.</small>
                 </div>
             </div>
 
+            {% if cross_parent %}
+            {% comment %}
+            Cross-publish-on-merge (§3.5): only for cross-parent pairs. One
+            toggle per feed that would LOSE the episode under the current
+            parent pick; JS hides the toggle matching the selected parent.
+            Default OFF. (Never a multi-line {# #} — those render in the DOM.)
+            {% endcomment %}
+            <div class="border-top border-secondary pt-3" id="me-crosspub-section">
+                <h6 class="text-light fw-bold mb-2"><i class="bi bi-broadcast me-1"></i> Cross-publish on merge</h6>
+                <small class="text-muted d-block mb-2">The feed that doesn't become the survivor's parent loses this episode. Toggle to add it back there as a cross-publication when the merge commits.</small>
+                {% for pod in cross_publish_choices %}
+                <div class="form-check form-switch me-crosspub-toggle" data-feed-id="{{ pod.id }}">
+                    <input class="form-check-input" type="checkbox" role="switch" name="cross_publish_feed_ids" value="{{ pod.id }}" id="me-crosspub-{{ pod.id }}">
+                    <label class="form-check-label text-light" for="me-crosspub-{{ pod.id }}">Cross-publish to <strong>{{ pod.title }}</strong> feed on merge</label>
+                </div>
+                {% endfor %}
+            </div>
+            {% endif %}
+
             <div class="mt-4 pt-3 border-top border-secondary text-end">
-                <button type="submit" class="btn btn-warning fw-bold" onclick="return confirm('Commit this merge? The non-surviving row will be deleted and its relations moved to the survivor.');">
+                <button type="submit" class="btn btn-warning fw-bold"
+                        data-confirm-slide="Deletes the non-surviving row; its relations move to the survivor.">
                     <i class="bi bi-magic me-1"></i> Commit Merge
                 </button>
             </div>
@@ -268,29 +303,58 @@ is NOT exposed — it rides the audio_url_subscriber pick automatically (§3.5).
     bindLoad('me-load-pub-private', privCol, 'public');
     bindLoad('me-load-priv-private', privCol, 'private');
 
-    // Low-priority + kept-pin stranding warning.
+    // Low-priority + kept-pin stranding warning, and the cross-publish-on-merge
+    // toggles: a toggle only makes sense for a feed LOSING the episode, so the
+    // one matching the selected parent is hidden (and unchecked).
     var parentSel = document.getElementById('me-parent');
     var keepPin = document.getElementById('me-keep-pin');
     var warn = document.getElementById('me-lowpri-warning');
-    function syncWarn() {
+    function syncParent() {
         var opt = parentSel.options[parentSel.selectedIndex];
         var low = opt && opt.dataset.lowPriority === '1';
         warn.classList.toggle('d-none', !low);
+        root.querySelectorAll('.me-crosspub-toggle').forEach(function (t) {
+            var isParent = t.dataset.feedId === parentSel.value;
+            t.classList.toggle('d-none', isParent);
+            if (isParent) t.querySelector('input').checked = false;
+        });
     }
-    parentSel.addEventListener('change', syncWarn);
-    if (keepPin) keepPin.addEventListener('change', syncWarn);
-    syncWarn();
+    parentSel.addEventListener('change', syncParent);
+    if (keepPin) keepPin.addEventListener('change', syncParent);
+    syncParent();
 
-    // Serialize the chapter editors into the hidden inputs at request-build time
-    // (boosted-form serialize order isn't guaranteed — mirror publish_episode).
-    function writeChapters() {
+    // Tags: the shared pill widget, seeded from the default side.
+    var tagWrap = document.getElementById('me-tag-wrapper');
+    var tagEd = (tagWrap && window.TagEditor)
+        ? window.TagEditor.mount(tagWrap, document.getElementById('me-tag-input'),
+                                 readJSON('me-tags-default') || [])
+        : null;
+
+    // Interacting with an Edit widget selects its Edit radio — otherwise a
+    // typed edit would be silently ignored in favor of the checked side.
+    root.addEventListener('focusin', function (e) {
+        var cell = e.target.closest('.me-edit-cell');
+        if (!cell) return;
+        var radio = document.getElementById('choice-' + cell.dataset.key + '-edit');
+        if (radio && !radio.disabled) radio.checked = true;
+    });
+
+    // Serialize the widget-backed edits into their hidden inputs at
+    // request-build time (boosted-form serialize order isn't guaranteed —
+    // mirror publish_episode).
+    function writeWidgets() {
         document.getElementById('me-edit-chapters-public').value = JSON.stringify(pubCol.payload());
         document.getElementById('me-edit-chapters-private').value = JSON.stringify(privCol.payload());
+        var tagsHidden = form.querySelector('[name="edit_tags"]');
+        if (tagsHidden && tagEd) tagsHidden.value = JSON.stringify(tagEd.get());
+        var descMount = form.querySelector('.me-edit-cell[data-key="clean_description"] [data-quill-mount]');
+        var descHidden = form.querySelector('[name="edit_clean_description"]');
+        if (descMount && descMount._quill && descHidden) descHidden.value = descMount._quill.root.innerHTML;
     }
     window.VectoPage.on(document.body, 'htmx:configRequest', function (e) {
         if (e.detail.elt !== form) return;
-        writeChapters();
-        ['edit_chapters_public', 'edit_chapters_private'].forEach(function (name) {
+        writeWidgets();
+        ['edit_chapters_public', 'edit_chapters_private', 'edit_tags', 'edit_clean_description'].forEach(function (name) {
             var el = form.querySelector('[name="' + name + '"]');
             if (!el) return;
             if (e.detail.parameters && typeof e.detail.parameters.set === 'function') e.detail.parameters.set(name, el.value);
@@ -298,6 +362,6 @@ is NOT exposed — it rides the audio_url_subscriber pick automatically (§3.5).
         });
     });
     // Non-boosted fallback (should not happen inside the region, but safe).
-    form.addEventListener('submit', writeChapters);
+    form.addEventListener('submit', writeWidgets);
 })();
 </script>

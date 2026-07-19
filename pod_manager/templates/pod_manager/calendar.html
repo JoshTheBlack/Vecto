@@ -50,7 +50,25 @@
         overflow: hidden;
     }
     /* Scanner: two bright spots sweep in from both edges of the day divider,
-       meet in the middle, and bounce back out — Knight Rider, stereo. */
+       meet in the middle, and bounce back out — Knight Rider, stereo.
+
+       ONE animation, on #calendar (which persists across every FullCalendar
+       re-render), driving a registered custom property; each row's ::after
+       just READS the shared value per frame. Rows therefore cannot desync no
+       matter when they are created/re-created (skeleton render, events fetch,
+       date jumps) — per-row animations restarted at element creation and
+       drifted out of phase with rows that survived a render. */
+    @property --cal-scan-t {
+        syntax: '<number>';
+        inherits: true;
+        initial-value: 0;
+    }
+    #calendar { animation: calScannerT 3.6s ease-in-out infinite; }
+    @keyframes calScannerT {
+        0%   { --cal-scan-t: 0; }
+        50%  { --cal-scan-t: 1; }
+        100% { --cal-scan-t: 0; }
+    }
     #calendar .fc-list-day-cushion::after {
         content: "";
         position: absolute;
@@ -71,17 +89,16 @@
                 transparent);
         background-size: 180px 100%, 180px 100%;
         background-repeat: no-repeat, no-repeat;
-        background-position: calc(0% - 180px) 0, calc(100% + 180px) 0;
-        animation: calScanner 3.6s ease-in-out infinite;
+        /* Lerp both layers by the shared t: left spot -180px -> 50%,
+           right spot (100% + 180px) -> 50%. */
+        background-position:
+            calc(-180px + (50% + 180px) * var(--cal-scan-t)) 0,
+            calc((100% + 180px) - (50% + 180px) * var(--cal-scan-t)) 0;
         pointer-events: none;
     }
-    @keyframes calScanner {
-        0%   { background-position: calc(0% - 180px) 0, calc(100% + 180px) 0; }
-        50%  { background-position: calc(50% + 0px) 0, calc(50% + 0px) 0; }
-        100% { background-position: calc(0% - 180px) 0, calc(100% + 180px) 0; }
-    }
     @media (prefers-reduced-motion: reduce) {
-        #calendar .fc-list-day-cushion::after { animation: none; display: none; }
+        #calendar { animation: none; }
+        #calendar .fc-list-day-cushion::after { display: none; }
         #calendar .fc-list-day-cushion { border-bottom-color: var(--vecto-primary); }
     }
     #calendar .fc-list-day-text,

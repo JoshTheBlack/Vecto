@@ -98,9 +98,46 @@
     /* Native date/time picker indicator is black-on-dark by default — invert it
        so the built-in time picker is visible on the themed form. */
     #calEntryModal input[type="date"]::-webkit-calendar-picker-indicator,
-    #calEntryModal input[type="time"]::-webkit-calendar-picker-indicator,
-    #calJumpDate::-webkit-calendar-picker-indicator {
+    #calEntryModal input[type="time"]::-webkit-calendar-picker-indicator {
         filter: invert(1); opacity: 0.8; cursor: pointer;
+    }
+    /* Jump-to-date scroller panel (the toolbar's calendar button). */
+    .cal-jump-panel {
+        position: absolute;
+        z-index: 1060;
+        margin-top: 0.35rem;
+        padding: 0.6rem;
+        background: var(--bs-dark, #1a1d20);
+        border: 1px solid var(--bs-border-color, #495057);
+        border-radius: var(--vecto-radius-md, 8px);
+        box-shadow: 0 8px 24px rgba(0,0,0,0.5);
+        display: none;
+        gap: 0.4rem;
+    }
+    .cal-jump-panel.show { display: flex; }
+    .cal-jump-col {
+        max-height: 13rem;
+        overflow-y: auto;
+        min-width: 4.5rem;
+        scrollbar-width: thin;
+    }
+    .cal-jump-col button {
+        display: block;
+        width: 100%;
+        border: 0;
+        background: transparent;
+        color: #f8f9fa;
+        font-size: 0.85rem;
+        padding: 0.25rem 0.6rem;
+        border-radius: var(--vecto-radius-sm, 4px);
+        text-align: center;
+        cursor: pointer;
+    }
+    .cal-jump-col button:hover { background: rgba(255,255,255,0.08); }
+    .cal-jump-col button.selected {
+        background: color-mix(in srgb, var(--vecto-primary, #ffc107) 20%, transparent);
+        color: var(--vecto-primary, #ffc107);
+        font-weight: 700;
     }
     .cal-freeform-only.d-none, .cal-podcast-only.d-none, .cal-teaser-only.d-none { display: none !important; }
     /* Episode-type chips — same picker as the publish form (localStorage-backed). */
@@ -141,18 +178,6 @@
 
 <div class="card border-secondary">
     <div class="card-body">
-        {% comment %}
-        Jump-to-date: the native date input's own picker gives one-click year
-        navigation (scrolling month-by-month to an old entry was painful).
-        Lives OUTSIDE the FullCalendar mount — FC's headerToolbar can only
-        render buttons — and drives the calendar via gotoDate().
-        {% endcomment %}
-        <div class="d-flex justify-content-end mb-2">
-            <div class="input-group input-group-sm" style="max-width: 15rem;">
-                <span class="input-group-text bg-dark text-light border-secondary"><i class="bi bi-calendar-event"></i></span>
-                <input type="date" id="calJumpDate" class="form-control bg-dark text-light border-secondary" title="Jump to date" aria-label="Jump to date">
-            </div>
-        </div>
         {% comment %}
         #calendar keeps its id ONLY as a CSS + config hook — FullCalendar mounts on
         the inner, id-less div. htmx reverts an id'd element's attributes to the
@@ -226,11 +251,11 @@ region swap used to strand it as a dead grey overlay. base.html now disposes any
 open modal on htmx:beforeSwap, so adding/editing/deleting an entry swaps the
 region and the floating player keeps playing.
 {% endcomment %}
-<form method="post" action="{% url 'calendar_manage' %}" class="d-inline" id="calEventDeleteForm" onsubmit="return confirm('Delete this calendar entry?');">
+<form method="post" action="{% url 'calendar_manage' %}" class="d-inline" id="calEventDeleteForm">
                     {% csrf_token %}
                     <input type="hidden" name="action" value="delete">
                     <input type="hidden" name="entry_id" id="calEventDeleteId">
-                    <button type="submit" class="btn btn-sm btn-outline-danger"><i class="bi bi-trash me-1"></i>Delete</button>
+                    <button type="submit" class="btn btn-sm btn-outline-danger" data-confirm-slide="Deletes this calendar entry."><i class="bi bi-trash me-1"></i>Delete</button>
                 </form>
                 {% endif %}
             </div>
@@ -574,9 +599,15 @@ region and the floating player keeps playing.
                               // with the tz stripped, so the rendered clock is ET
             now: nowEastern,
             headerToolbar: {
-                left: 'prev,next today',
+                left: 'prev,next jumpDate today',
                 center: 'title',
                 right: 'listWeek,dayGridWeek,dayGridMonth',
+            },
+            customButtons: {
+                // Jump-to-date: pops the Month/Day/Year scroller panel (built
+                // in initJumpPanel below). Icon injected post-render — FC
+                // custom buttons are text-only.
+                jumpDate: { text: '', click: function () { toggleJumpPanel(); } },
             },
             buttonText: { today: 'today', listWeek: 'List', dayGridWeek: 'Week', dayGridMonth: 'Month' },
             // "List" (default) = a per-day agenda: each day a heading with its
@@ -647,16 +678,93 @@ region and the floating player keeps playing.
         });
         cal.render();
         window._vectoCal = cal;
+        initJumpPanel(cal);
+    }
 
-        // Jump-to-date: the native picker handles year-level navigation; FC
-        // just needs the landing date. UTC-noon guards against the date
-        // rolling back a day when FC (timeZone:'UTC') interprets it.
-        const jump = document.getElementById('calJumpDate');
-        if (jump) {
-            jump.addEventListener('change', function () {
-                if (jump.value) cal.gotoDate(jump.value + 'T12:00:00Z');
+    /* ── Jump-to-date scroller ─────────────────────────────────────────────
+       A Month / Day / Year column panel under the toolbar's calendar button.
+       Clicking any value updates the selection and jumps the calendar
+       immediately (UTC-noon anchor: FC runs timeZone:'UTC', so a bare date
+       could land a day early). Rebuilt per initCal — the panel lives inside
+       the mount, so swaps that rebuild the calendar rebuild it too. */
+    let toggleJumpPanel = function () {};
+    function initJumpPanel(cal) {
+        const btn = mountEl.querySelector('.fc-jumpDate-button');
+        if (!btn) return;
+        btn.innerHTML = '<i class="bi bi-calendar-event"></i>';
+        btn.title = 'Jump to date';
+        btn.setAttribute('aria-label', 'Jump to date');
+
+        const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+                        'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+        const now = new Date();
+        const YEAR_MIN = 2015, YEAR_MAX = now.getUTCFullYear() + 2;
+
+        const panel = document.createElement('div');
+        panel.className = 'cal-jump-panel';
+        const cols = {};
+        ['month', 'day', 'year'].forEach(function (name) {
+            const col = document.createElement('div');
+            col.className = 'cal-jump-col';
+            panel.appendChild(col);
+            cols[name] = col;
+        });
+        // Anchor inside the toolbar chunk so the panel tracks the button.
+        btn.parentElement.style.position = 'relative';
+        btn.parentElement.appendChild(panel);
+
+        const sel = { month: 0, day: 1, year: YEAR_MIN };
+
+        function daysIn(month, year) { return new Date(Date.UTC(year, month + 1, 0)).getUTCDate(); }
+
+        function fill(col, values, labels, current, onPick) {
+            col.innerHTML = '';
+            values.forEach(function (v, i) {
+                const b = document.createElement('button');
+                b.type = 'button';
+                b.textContent = labels ? labels[i] : String(v);
+                if (v === current) b.classList.add('selected');
+                b.addEventListener('click', function () { onPick(v); });
+                col.appendChild(b);
             });
         }
+
+        function rebuild() {
+            const dmax = daysIn(sel.month, sel.year);
+            if (sel.day > dmax) sel.day = dmax;
+            fill(cols.month, MONTHS.map(function (_, i) { return i; }), MONTHS, sel.month,
+                 function (v) { sel.month = v; rebuild(); jump(); });
+            const days = []; for (let d = 1; d <= dmax; d++) days.push(d);
+            fill(cols.day, days, null, sel.day,
+                 function (v) { sel.day = v; rebuild(); jump(); });
+            const years = []; for (let y = YEAR_MAX; y >= YEAR_MIN; y--) years.push(y);
+            fill(cols.year, years, null, sel.year,
+                 function (v) { sel.year = v; rebuild(); jump(); });
+            Object.values(cols).forEach(function (col) {
+                const s = col.querySelector('.selected');
+                if (s) col.scrollTop = Math.max(0, s.offsetTop - col.clientHeight / 2);
+            });
+        }
+
+        function jump() {
+            cal.gotoDate(new Date(Date.UTC(sel.year, sel.month, sel.day, 12)));
+        }
+
+        toggleJumpPanel = function () {
+            if (panel.classList.contains('show')) { panel.classList.remove('show'); return; }
+            const d = cal.getDate();   // seed from wherever the calendar sits now
+            sel.month = d.getUTCMonth(); sel.day = d.getUTCDate(); sel.year =
+                Math.min(YEAR_MAX, Math.max(YEAR_MIN, d.getUTCFullYear()));
+            rebuild();
+            panel.classList.add('show');
+        };
+
+        // Outside click closes; VectoPage.on so region swaps clean it up.
+        window.VectoPage.on(document, 'click', function (e) {
+            if (!panel.classList.contains('show')) return;
+            if (panel.contains(e.target) || btn.contains(e.target)) return;
+            panel.classList.remove('show');
+        });
     }
 
     if (typeof FullCalendar === 'undefined') {

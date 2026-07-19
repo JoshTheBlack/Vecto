@@ -114,7 +114,9 @@
         display: none;
         gap: 0.4rem;
     }
-    .cal-jump-panel.show { display: flex; }
+    .cal-jump-panel.show { display: block; }
+    .cal-jump-cols { display: flex; gap: 0.4rem; }
+    .cal-jump-apply { margin-top: 0.5rem; }
     .cal-jump-col {
         max-height: 13rem;
         overflow-y: auto;
@@ -702,13 +704,23 @@ region and the floating player keeps playing.
 
         const panel = document.createElement('div');
         panel.className = 'cal-jump-panel';
+        const colsWrap = document.createElement('div');
+        colsWrap.className = 'cal-jump-cols';
+        panel.appendChild(colsWrap);
         const cols = {};
         ['month', 'day', 'year'].forEach(function (name) {
             const col = document.createElement('div');
             col.className = 'cal-jump-col';
-            panel.appendChild(col);
+            colsWrap.appendChild(col);
             cols[name] = col;
         });
+        // Picks only highlight; Apply performs the jump (per-click jumping
+        // made a 3-part change cost six clicks). Click-away just closes.
+        const applyBtn = document.createElement('button');
+        applyBtn.type = 'button';
+        applyBtn.className = 'btn btn-sm btn-warning fw-bold w-100 cal-jump-apply';
+        applyBtn.innerHTML = '<i class="bi bi-check-lg me-1"></i>Go to date';
+        panel.appendChild(applyBtn);
         // Anchor inside the toolbar chunk so the panel tracks the button.
         btn.parentElement.style.position = 'relative';
         btn.parentElement.appendChild(panel);
@@ -733,22 +745,23 @@ region and the floating player keeps playing.
             const dmax = daysIn(sel.month, sel.year);
             if (sel.day > dmax) sel.day = dmax;
             fill(cols.month, MONTHS.map(function (_, i) { return i; }), MONTHS, sel.month,
-                 function (v) { sel.month = v; rebuild(); jump(); });
+                 function (v) { sel.month = v; rebuild(); });
             const days = []; for (let d = 1; d <= dmax; d++) days.push(d);
             fill(cols.day, days, null, sel.day,
-                 function (v) { sel.day = v; rebuild(); jump(); });
+                 function (v) { sel.day = v; rebuild(); });
             const years = []; for (let y = YEAR_MAX; y >= YEAR_MIN; y--) years.push(y);
             fill(cols.year, years, null, sel.year,
-                 function (v) { sel.year = v; rebuild(); jump(); });
+                 function (v) { sel.year = v; rebuild(); });
             Object.values(cols).forEach(function (col) {
                 const s = col.querySelector('.selected');
                 if (s) col.scrollTop = Math.max(0, s.offsetTop - col.clientHeight / 2);
             });
         }
 
-        function jump() {
+        applyBtn.addEventListener('click', function () {
             cal.gotoDate(new Date(Date.UTC(sel.year, sel.month, sel.day, 12)));
-        }
+            panel.classList.remove('show');
+        });
 
         toggleJumpPanel = function () {
             if (panel.classList.contains('show')) { panel.classList.remove('show'); return; }
@@ -760,8 +773,13 @@ region and the floating player keeps playing.
         };
 
         // Outside click closes; VectoPage.on so region swaps clean it up.
+        // isConnected guard: picking a value rebuilds the columns inside the
+        // click's own handler, so by the time this document listener runs the
+        // clicked button is detached and panel.contains() would be false —
+        // without the guard every in-panel pick "closed" the popup.
         window.VectoPage.on(document, 'click', function (e) {
             if (!panel.classList.contains('show')) return;
+            if (!e.target.isConnected) return;
             if (panel.contains(e.target) || btn.contains(e.target)) return;
             panel.classList.remove('show');
         });

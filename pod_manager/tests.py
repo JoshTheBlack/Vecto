@@ -1828,6 +1828,21 @@ class Custom404ViewTests(TestCase):
         self.assertContains(resp, 'Vecto', status_code=404)
         self.assertNotContains(resp, 'name="q"', status_code=404)
 
+    def test_renders_shared_dashboard_search_bar_with_show_filter(self):
+        # The 404 includes the dashboard's own search-bar snippet (one copy), so
+        # it carries the same search box and, with >1 visible feed, the show filter.
+        Podcast.objects.create(network=self.network, title='Alpha Show', slug='alpha')
+        Podcast.objects.create(network=self.network, title='Beta Show', slug='beta')
+        Podcast.objects.create(network=self.network, title='Hidden Show', slug='hid', is_hidden=True)
+        resp = self.client.get('/this-path-does-not-exist/', HTTP_HOST='themed.example.test')
+        self.assertEqual(resp.status_code, 404)
+        self.assertContains(resp, 'id="searchForm"', status_code=404)
+        self.assertContains(resp, 'name="q"', status_code=404)
+        self.assertContains(resp, 'id="showFilterBar"', status_code=404)
+        self.assertContains(resp, 'Alpha Show', status_code=404)
+        self.assertContains(resp, 'Beta Show', status_code=404)
+        self.assertNotContains(resp, 'Hidden Show', status_code=404)
+
 
 class EpisodeChapterMirrorTests(TestCase):
     """submit_episode_edit must mirror chapter writes to both the public

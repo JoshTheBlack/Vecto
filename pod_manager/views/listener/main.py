@@ -84,6 +84,29 @@ def _feed_cross_published_exists():
     return has_auto, has_links
 
 
+def visible_podcasts(network_slugs, show_hidden, owned_network_ids):
+    """The feeds the search bar's show filter lists (D6 visibility): not hidden,
+    OR cross-published, OR revealed by an owner of that network. Shared by the
+    dashboard and the 404 page so both render the same bar from the same rules."""
+    feed_has_auto, feed_has_links = _feed_cross_published_exists()
+    chip_visible = Q(is_hidden=False) | Q(_feed_has_auto=True) | Q(_feed_has_links=True)
+    if show_hidden and owned_network_ids:
+        chip_visible |= Q(network_id__in=owned_network_ids)
+    return (Podcast.objects
+            .filter(network__slug__in=network_slugs)
+            .annotate(_feed_has_auto=feed_has_auto, _feed_has_links=feed_has_links)
+            .filter(chip_visible)
+            .order_by('title'))
+
+
+def search_bar_podcasts(request, network):
+    """visible_podcasts for a page that isn't the dashboard (the 404): resolves the
+    requester's owned networks and reveal-hidden toggle itself."""
+    owned = (set(request.user.owned_networks.values_list('id', flat=True))
+             if request.user.is_authenticated else set())
+    return visible_podcasts([network.slug], _resolve_show_hidden(request), owned)
+
+
 def home(request):
     show_slugs = request.GET.getlist('show')
     search_query = request.GET.get('q', '').strip()
@@ -127,22 +150,13 @@ def home(request):
     if show_hidden and owned_network_ids:
         ep_visible |= Q(podcast__network_id__in=owned_network_ids)
 
-    feed_has_auto, feed_has_links = _feed_cross_published_exists()
-    chip_visible = Q(is_hidden=False) | Q(_feed_has_auto=True) | Q(_feed_has_links=True)
-    if show_hidden and owned_network_ids:
-        chip_visible |= Q(network_id__in=owned_network_ids)
-
     query = (Episode.objects
              .select_related('podcast', 'podcast__network', 'podcast__required_tier', 'transcript')
              .prefetch_related('cross_publications__podcast')
              .filter(podcast__network__slug__in=target_network_slugs, is_published=True)
              .annotate(_feed_has_auto=ep_has_auto, _feed_has_links=ep_has_links)
              .filter(ep_visible))
-    podcasts = (Podcast.objects
-                .filter(network__slug__in=target_network_slugs)
-                .annotate(_feed_has_auto=feed_has_auto, _feed_has_links=feed_has_links)
-                .filter(chip_visible)
-                .order_by('title'))
+    podcasts = visible_podcasts(target_network_slugs, show_hidden, owned_network_ids)
 
     if show_slugs:
         if include_cross_published:

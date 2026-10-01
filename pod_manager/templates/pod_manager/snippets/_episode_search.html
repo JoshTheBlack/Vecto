@@ -1,0 +1,468 @@
+{% comment %}
+The dashboard's unified search + show-filter bar (search box, date and transcript
+toggles, show multiselect, cross-publish switch). Included by home.html and 404.html
+so there is exactly one copy of the markup, CSS and JS.
+
+Context it reads (every one is optional; a missing one renders as empty/off):
+  podcasts, selected_shows, selected_networks, search_query, newer_than,
+  older_than, include_transcripts, include_cross_published
+The show filter only renders when podcasts has more than one entry.
+Submits GET to the home view.
+{% endcomment %}
+        <form method="GET" action="{% url 'home' %}" id="searchForm" class="mb-4">
+            {% for slug in selected_networks %}
+                <input type="hidden" name="network" value="{{ slug }}">
+            {% endfor %}
+            <div id="showFilterHidden">
+                {% for s in selected_shows %}
+                    <input type="hidden" name="show" value="{{ s }}">
+                {% endfor %}
+            </div>
+
+            <div class="combo-wrap position-relative">
+                <div class="combo-bar{% if newer_than or older_than %} search-bar-expanded{% endif %}" id="searchBarEl">
+                    <div class="combo-search">
+                        <span class="search-bar-lead-icon"><i class="bi bi-search"></i></span>
+
+                        <input type="text" name="q" id="searchInput"
+                               class="search-bar-input"
+                               placeholder="Search episodes..."
+                               autocomplete="off"
+                               value="{{ search_query }}">
+
+                        <button type="button"
+                                class="search-bar-tool-btn{% if newer_than or older_than %} active{% endif %}"
+                                id="dateToggleBtn"
+                                data-bs-toggle="tooltip"
+                                data-bs-placement="bottom"
+                                title="Date Filters">
+                            <i class="bi bi-calendar3"></i>
+                        </button>
+
+                        <button type="button"
+                                class="search-bar-tool-btn{% if include_transcripts %} active{% endif %}"
+                                id="transcriptToggleBtn"
+                                data-bs-toggle="tooltip"
+                                data-bs-placement="bottom"
+                                title="Search Within Transcripts">
+                            <i class="bi bi-chat-quote"></i>
+                        </button>
+                    </div>
+
+                    {% if podcasts|length > 1 %}
+                    <div class="combo-filter" id="showFilterBar" tabindex="0" role="combobox"
+                         aria-expanded="false" aria-haspopup="listbox" aria-controls="showFilterPanel"
+                         aria-label="Filter by show">
+                        <span class="show-filter-lead"><i class="bi bi-funnel"></i></span>
+                        <span class="show-filter-chips">
+                            {% for podcast in podcasts %}{% if podcast.slug in selected_shows %}
+                            <span class="show-chip" title="{{ podcast.title }}">
+                                {% if podcast.image_url %}
+                                    <img src="{{ podcast.image_url }}" alt="{{ podcast.title }}" class="show-chip-img">
+                                {% else %}
+                                    <span class="show-chip-img show-chip-fallback"><i class="bi bi-mic-fill"></i></span>
+                                {% endif %}
+                                <span class="show-chip-remove" role="button" tabindex="0" aria-label="Remove {{ podcast.title }}" data-slug="{{ podcast.slug }}"><i class="bi bi-x"></i></span>
+                            </span>
+                            {% endif %}{% endfor %}
+                            <span class="show-filter-placeholder"{% if selected_shows %} style="display:none;"{% endif %}>All shows</span>
+                        </span>
+                        <span class="show-filter-caret"><i class="bi bi-chevron-down"></i></span>
+                    </div>
+                    {% endif %}
+
+                    <button type="submit" class="search-bar-submit" aria-label="Search">
+                        <i class="bi bi-arrow-right-short" style="font-size:1.35rem;"></i>
+                    </button>
+                </div>
+
+                {% if podcasts|length > 1 %}
+                <div class="show-filter-panel d-none" id="showFilterPanel">
+                    <div class="show-filter-search">
+                        <i class="bi bi-search"></i>
+                        <input type="text" id="showFilterSearch" placeholder="Filter {{ podcasts|length }} shows..." autocomplete="off" aria-label="Type to filter shows">
+                    </div>
+                    <div class="show-filter-list" id="showFilterList" role="listbox" aria-multiselectable="true">
+                        {% for podcast in podcasts %}
+                        <label class="show-filter-option" data-title="{{ podcast.title|lower }}">
+                            <input type="checkbox" class="form-check-input show-filter-check" value="{{ podcast.slug }}"
+                                   {% if podcast.slug in selected_shows %}checked{% endif %}>
+                            {% if podcast.image_url %}
+                                <img src="{{ podcast.image_url }}" alt="" class="show-filter-option-img" loading="lazy">
+                            {% else %}
+                                <span class="show-filter-option-img show-filter-option-fallback"><i class="bi bi-mic-fill"></i></span>
+                            {% endif %}
+                            <span class="show-filter-option-title">{{ podcast.title }}</span>
+                        </label>
+                        {% endfor %}
+                        <div class="show-filter-empty d-none" id="showFilterEmpty">No shows match.</div>
+                    </div>
+                    <label class="show-filter-crosspub" for="crosspubToggle">
+                        <input class="form-check-input" type="checkbox" role="switch" id="crosspubToggle" {% if include_cross_published %}checked{% endif %}>
+                        <span>Include cross-published episodes</span>
+                    </label>
+                    <div class="show-filter-footer">
+                        <button type="button" class="show-filter-clear" id="showFilterClear">Clear all</button>
+                        <span class="show-filter-count" id="showFilterCount"></span>
+                    </div>
+                </div>
+                {% endif %}
+            </div>
+
+            <div id="dateFilterPanel" class="search-bar-expansion{% if not newer_than and not older_than %} d-none{% endif %}">
+                <div class="d-flex flex-wrap gap-4 align-items-end">
+                    <div>
+                        <label class="form-label small mb-1" style="color:var(--vecto-surface-muted);">
+                            <i class="bi bi-calendar-plus me-1"></i>Newer Than
+                        </label>
+                        <input type="date" name="newer_than" class="date-filter-input" value="{{ newer_than }}">
+                    </div>
+                    <div>
+                        <label class="form-label small mb-1" style="color:var(--vecto-surface-muted);">
+                            <i class="bi bi-calendar-minus me-1"></i>Older Than
+                        </label>
+                        <input type="date" name="older_than" class="date-filter-input" value="{{ older_than }}">
+                    </div>
+                </div>
+            </div>
+
+            {% if search_query or older_than or newer_than or include_transcripts %}
+            <div class="mt-2 ps-1">
+                <a href="{% url 'home' %}?{% for slug in selected_networks %}network={{ slug }}&{% endfor %}{% for s in selected_shows %}show={{ s }}&{% endfor %}"
+                   class="small text-decoration-none" style="color:var(--vecto-bg-muted);">
+                    <i class="bi bi-x-circle me-1"></i>Clear filters
+                </a>
+            </div>
+            {% endif %}
+        </form>
+
+<style>
+    /* ── Unified search + filter bar ── */
+    .combo-bar {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: stretch;
+        gap: 2px;
+        background: var(--vecto-surface-bg);
+        border: 1.5px solid var(--bs-border-color);
+        border-radius: var(--bs-border-radius);
+        padding: 4px;
+        transition: border-color 0.2s, border-radius 0.15s, box-shadow 0.2s;
+        box-shadow: 0 2px 10px rgba(0,0,0,0.35);
+    }
+    .combo-bar:focus-within,
+    .combo-bar.filter-open {
+        border-color: var(--vecto-primary);
+        box-shadow: 0 4px 20px rgba(0,0,0,0.5);
+    }
+    .combo-bar.search-bar-expanded {
+        border-radius: var(--bs-border-radius) var(--bs-border-radius) 0 0;
+        border-bottom-color: transparent;
+    }
+    .combo-search {
+        display: flex;
+        align-items: center;
+        flex: 1 1 260px;
+        min-width: 0;
+        padding-left: 14px;
+    }
+    .combo-filter {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        flex: 1 1 220px;
+        min-width: 0;
+        padding: 5px 12px;
+        border-radius: var(--vecto-radius-md);
+        cursor: pointer;
+        transition: background 0.15s;
+    }
+    .combo-filter:hover { background: rgba(255,255,255,0.04); }
+    .combo-filter:focus-visible {
+        outline: 1px solid var(--vecto-primary);
+        outline-offset: -1px;
+    }
+    @media (min-width: 768px) {
+        .combo-filter {
+            border-left: 1px solid var(--bs-border-color);
+            border-radius: 0 var(--vecto-radius-md) var(--vecto-radius-md) 0;
+        }
+    }
+
+    .search-bar-lead-icon {
+        color: var(--vecto-bg-muted);
+        font-size: 1rem;
+        margin-right: 10px;
+        flex-shrink: 0;
+        pointer-events: none;
+    }
+    .search-bar-input {
+        flex: 1;
+        min-width: 0;
+        background: transparent;
+        border: none;
+        outline: none;
+        color: var(--vecto-surface-text);
+        font-size: 1rem;
+        padding: 8px 0;
+        caret-color: var(--vecto-primary);
+    }
+    .search-bar-input::placeholder { color: var(--vecto-surface-muted); }
+
+    .search-bar-tool-btn {
+        width: 36px;
+        height: 36px;
+        border-radius: var(--vecto-radius-md);
+        border: none;
+        background: transparent;
+        color: var(--vecto-surface-muted);
+        font-size: 1rem;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        cursor: pointer;
+        transition: background 0.15s, color 0.15s;
+        flex-shrink: 0;
+    }
+    .search-bar-tool-btn:hover {
+        background: rgba(255,255,255,0.07);
+        color: var(--vecto-primary);
+    }
+    .search-bar-tool-btn.active {
+        color: var(--vecto-primary);
+        background: rgba(255,255,255,0.07);
+    }
+    .search-bar-submit {
+        width: 40px;
+        height: 40px;
+        align-self: center;
+        border-radius: var(--vecto-radius-md);
+        border: none;
+        background: var(--vecto-primary);
+        color: var(--vecto-primary-text);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        cursor: pointer;
+        margin-left: 4px;
+        flex-shrink: 0;
+        transition: opacity 0.15s;
+    }
+    .search-bar-submit:hover { opacity: 0.82; }
+
+    /* expansion panel drops down flush below the bar */
+    .search-bar-expansion {
+        background: var(--vecto-surface-bg);
+        border: 1.5px solid var(--bs-border-color);
+        border-top: none;
+        border-radius: 0 0 var(--bs-border-radius) var(--bs-border-radius);
+        padding: 14px 22px 18px;
+        transition: border-color 0.2s;
+    }
+    .combo-wrap:focus-within + .search-bar-expansion {
+        border-color: var(--vecto-primary);
+    }
+    .date-filter-input {
+        background: var(--vecto-bg);
+        border: 1px solid var(--bs-border-color);
+        border-radius: var(--vecto-radius-sm);
+        color: var(--vecto-surface-text);
+        padding: 5px 10px;
+        font-size: 0.875rem;
+        outline: none;
+        transition: border-color 0.15s;
+        color-scheme: dark;
+    }
+    .date-filter-input:focus { border-color: var(--vecto-primary); }
+</style>
+
+{% include 'pod_manager/snippets/show_multiselect_assets.html' %}
+
+<script>
+(function () {
+
+    // --- SEARCH BAR TOGGLES ---
+    const searchForm      = document.getElementById('searchForm');
+    const searchBarEl     = document.getElementById('searchBarEl');
+    const dateToggleBtn   = document.getElementById('dateToggleBtn');
+    const dateFilterPanel = document.getElementById('dateFilterPanel');
+    const newerThanInput  = dateFilterPanel.querySelector('[name="newer_than"]');
+    const olderThanInput  = dateFilterPanel.querySelector('[name="older_than"]');
+    const transcriptBtn   = document.getElementById('transcriptToggleBtn');
+
+    // Bootstrap tooltips
+    [dateToggleBtn, transcriptBtn].forEach(el =>
+        new bootstrap.Tooltip(el, { trigger: 'hover' })
+    );
+
+    function updateDateBtn() {
+        const isOpen    = !dateFilterPanel.classList.contains('d-none');
+        const hasValues = newerThanInput.value || olderThanInput.value;
+        dateToggleBtn.classList.toggle('active', isOpen || !!hasValues);
+    }
+
+    dateToggleBtn.addEventListener('click', () => {
+        const opening = dateFilterPanel.classList.contains('d-none');
+        dateFilterPanel.classList.toggle('d-none', !opening);
+        searchBarEl.classList.toggle('search-bar-expanded', opening);
+        updateDateBtn();
+    });
+    newerThanInput.addEventListener('change', updateDateBtn);
+    olderThanInput.addEventListener('change', updateDateBtn);
+    updateDateBtn();
+
+    let transcriptActive = {% if include_transcripts %}true{% else %}false{% endif %};
+
+    function syncTranscriptField() {
+        document.getElementById('transcriptsHidden')?.remove();
+        if (transcriptActive) {
+            const inp = document.createElement('input');
+            inp.type = 'hidden'; inp.name = 'transcripts'; inp.value = '1'; inp.id = 'transcriptsHidden';
+            searchForm.appendChild(inp);
+        }
+    }
+    transcriptBtn.addEventListener('click', () => {
+        transcriptActive = !transcriptActive;
+        transcriptBtn.classList.toggle('active', transcriptActive);
+        syncTranscriptField();
+    });
+    syncTranscriptField();
+
+    const crosspubToggle = document.getElementById('crosspubToggle');
+    function syncCrosspubField() {
+        document.getElementById('crosspubHidden')?.remove();
+        if (crosspubToggle && !crosspubToggle.checked) {
+            const inp = document.createElement('input');
+            inp.type = 'hidden'; inp.name = 'crosspub'; inp.value = '0'; inp.id = 'crosspubHidden';
+            searchForm.appendChild(inp);
+        }
+    }
+    syncCrosspubField();
+
+    // --- SHOW FILTER COMBOBOX ---
+    const filterBar  = document.getElementById('showFilterBar');
+    const hiddenWrap = document.getElementById('showFilterHidden');
+
+    function syncShowHidden() {
+        if (!filterBar) return;
+        hiddenWrap.innerHTML = '';
+        document.querySelectorAll('.show-filter-check:checked').forEach(c => {
+            const inp = document.createElement('input');
+            inp.type = 'hidden'; inp.name = 'show'; inp.value = c.value;
+            hiddenWrap.appendChild(inp);
+        });
+    }
+    searchForm.addEventListener('submit', () => { syncShowHidden(); syncCrosspubField(); });
+    window.VectoPage.on(document.body, 'htmx:configRequest', (e) => {
+        if (e.detail.elt !== searchForm) return;
+        syncShowHidden();
+        syncTranscriptField();
+        syncCrosspubField();
+        const p = e.detail.parameters;
+        if (!p || typeof p.delete !== 'function') return;
+        p.delete('show');
+        document.querySelectorAll('#showFilterHidden input[name="show"]').forEach(i => p.append('show', i.value));
+        p.delete('transcripts');
+        const t = document.getElementById('transcriptsHidden');
+        if (t) p.append('transcripts', t.value);
+        p.delete('crosspub');
+        const c = document.getElementById('crosspubHidden');
+        if (c) p.append('crosspub', c.value);
+    });
+
+    if (filterBar) {
+        const bar      = filterBar;
+        const panel    = document.getElementById('showFilterPanel');
+        const searchIn = document.getElementById('showFilterSearch');
+        const list     = document.getElementById('showFilterList');
+        const emptyMsg = document.getElementById('showFilterEmpty');
+        const countEl  = document.getElementById('showFilterCount');
+        const clearBtn = document.getElementById('showFilterClear');
+
+        const checks = () => [...list.querySelectorAll('.show-filter-check')];
+        const selectionKey = () => checks().filter(c => c.checked).map(c => c.value).sort().join(',')
+            + '|' + (crosspubToggle && crosspubToggle.checked ? '1' : '0');
+        const initialSelection = selectionKey();
+
+        function updateCount() {
+            const total = checks().length;
+            const n = checks().filter(c => c.checked).length;
+            countEl.textContent = n ? `${n} of ${total} selected` : `${total} shows`;
+        }
+
+        function filterList(term) {
+            term = term.trim().toLowerCase();
+            let any = false;
+            list.querySelectorAll('.show-filter-option').forEach(o => {
+                const hit = !term || o.dataset.title.includes(term);
+                o.classList.toggle('d-none', !hit);
+                if (hit) any = true;
+            });
+            emptyMsg.classList.toggle('d-none', !!term && !any);
+        }
+
+        function openPanel() {
+            // float checked shows to the top (stable sort keeps alphabetical order within groups)
+            [...list.querySelectorAll('.show-filter-option')]
+                .sort((a, b) => b.querySelector('input').checked - a.querySelector('input').checked)
+                .forEach(o => list.insertBefore(o, emptyMsg));
+            panel.classList.remove('d-none');
+            bar.setAttribute('aria-expanded', 'true');
+            searchBarEl.classList.add('filter-open');
+            searchIn.value = '';
+            filterList('');
+            searchIn.focus();
+        }
+
+        function closePanel(apply = true) {
+            if (panel.classList.contains('d-none')) return;
+            panel.classList.add('d-none');
+            bar.setAttribute('aria-expanded', 'false');
+            searchBarEl.classList.remove('filter-open');
+            if (apply && selectionKey() !== initialSelection) {
+                syncShowHidden();
+                searchForm.requestSubmit();
+            }
+        }
+
+        function togglePanel() {
+            panel.classList.contains('d-none') ? openPanel() : closePanel();
+        }
+
+        bar.addEventListener('click', (e) => {
+            const remover = e.target.closest('.show-chip-remove');
+            if (remover) {
+                e.stopPropagation();
+                const check = checks().find(c => c.value === remover.dataset.slug);
+                if (check) check.checked = false;
+                syncShowHidden();
+                searchForm.requestSubmit();
+                return;
+            }
+            togglePanel();
+        });
+        bar.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                togglePanel();
+            }
+        });
+
+        searchIn.addEventListener('input', () => filterList(searchIn.value));
+        list.addEventListener('change', updateCount);
+        clearBtn.addEventListener('click', () => {
+            checks().forEach(c => c.checked = false);
+            updateCount();
+        });
+
+        window.VectoPage.on(document, 'click', (e) => {
+            if (!bar.contains(e.target) && !panel.contains(e.target)) closePanel();
+        });
+        window.VectoPage.on(document, 'keydown', (e) => {
+            if (e.key === 'Escape') closePanel();
+        });
+
+        updateCount();
+    }
+})();
+</script>

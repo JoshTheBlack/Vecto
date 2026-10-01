@@ -26,12 +26,9 @@
     <p class="text-muted mb-4">This episode was never recorded.</p>
 
     {% if current_network %}
-    <form method="GET" action="{% url 'home' %}" class="d-flex justify-content-center">
-        <div class="input-group" style="max-width: 400px;">
-            <input type="text" name="q" class="form-control bg-dark text-light border-secondary" placeholder="Search episodes...">
-            <button type="submit" class="btn btn-outline-warning"><i class="bi bi-search"></i></button>
-        </div>
-    </form>
+    <div class="text-start mx-auto" style="max-width: 720px;">
+        {% include 'pod_manager/snippets/_episode_search.html' %}
+    </div>
     {% endif %}
 </div>
 {% endblock %}

@@ -9425,7 +9425,11 @@ class PublishCalendarEntryWiringTests(TestCase):
         planned = CalendarEntry.objects.create(
             network=self.network, podcast=self.podcast, title='New Ep',
             scheduled_at=timezone.now() + timedelta(days=3))
-        self._post_publish('schedule', scheduled_at='2026-07-20T12:00')
+        # Derived from the planned entry (not a hardcoded date): reconciliation only
+        # matches entries within MATCH_WINDOW of the scheduled time, so a fixed
+        # date silently stops matching once the calendar moves past it.
+        near = (planned.scheduled_at + timedelta(hours=1)).strftime('%Y-%m-%dT%H:%M')
+        self._post_publish('schedule', scheduled_at=near)
         planned.refresh_from_db()
         self.assertEqual(planned.episode, Episode.objects.get(title='New Ep'))
         self.assertEqual(CalendarEntry.objects.count(), 1)

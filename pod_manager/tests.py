@@ -14173,6 +14173,44 @@ class PublishFromImportToggleTests(TestCase):
         Episode.objects.create(podcast=self.podcast, title='C', pub_date=timezone.now(), guid_private=feed_guid)
         Episode.objects.create(podcast=self.podcast, title='D', pub_date=timezone.now(), guid_private=feed_guid)
 
+    def test_publish_remints_when_the_generated_guid_is_taken_concurrently(self):
+        # Simulates losing the race: the existence check passed, then another writer
+        # took the same GUID before our INSERT. The constraint rejects ours; the
+        # publisher must still end up with a published episode and a fresh GUID.
+        taken = f'https://{self.network.custom_domain}/?p=vecto-collide0001'
+        fresh = f'https://{self.network.custom_domain}/?p=vecto-fresh0000001'
+        Episode.objects.create(podcast=self.podcast, title='Winner', pub_date=timezone.now(),
+                               guid_private=taken)
+        with mock.patch('pod_manager.views.creator.publish.make_private_guid', return_value=taken), \
+             mock.patch('pod_manager.services.guid_links.make_private_guid', return_value=fresh):
+            resp = self._post(audio_url_public='https://x/pub.mp3')
+        self.assertEqual(resp.status_code, 302)
+        ep = Episode.objects.get(title='Toggle Ep')
+        self.assertTrue(ep.is_published)
+        self.assertEqual(ep.guid_private, fresh)
+        self.assertEqual(Episode.objects.get(title='Winner').guid_private, taken)
+
+    def test_save_with_generated_guid_gives_up_after_its_attempts(self):
+        from django.db import IntegrityError
+        from pod_manager.services.guid_links import save_with_generated_guid
+        taken = f'https://{self.network.custom_domain}/?p=vecto-collide0002'
+        Episode.objects.create(podcast=self.podcast, title='Winner', pub_date=timezone.now(),
+                               guid_private=taken)
+        ep = Episode(podcast=self.podcast, title='Loser', pub_date=timezone.now(), guid_private=taken)
+        with mock.patch('pod_manager.services.guid_links.make_private_guid', return_value=taken):
+            with self.assertRaises(IntegrityError):
+                save_with_generated_guid(ep, self.network, attempts=3)
+        self.assertFalse(Episode.objects.filter(title='Loser').exists())
+
+    def test_save_with_generated_guid_does_not_swallow_unrelated_integrity_errors(self):
+        from django.db import IntegrityError
+        from pod_manager.services.guid_links import save_with_generated_guid
+        ep = Episode(podcast=self.podcast, title='Fine', pub_date=timezone.now(),
+                     guid_private='https://baldmove.com/?p=5')
+        with mock.patch.object(Episode, 'save', side_effect=IntegrityError('some other constraint')):
+            with self.assertRaises(IntegrityError):
+                save_with_generated_guid(ep, self.network)
+
     def test_merge_desk_applies_the_first_feed_by_default(self):
         # The selector has no "all" option and shows its first feed; the query must
         # filter to that same feed instead of listing every feed's episodes.

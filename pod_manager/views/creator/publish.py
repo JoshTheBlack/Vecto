@@ -17,7 +17,7 @@ from django.utils.dateparse import parse_datetime
 from django.views.decorators.http import require_POST
 
 from ...models import Episode, EpisodeCrossPublication, Network, Podcast
-from ...services.guid_links import make_private_guid
+from ...services.guid_links import make_private_guid, save_with_generated_guid
 from ...services.cross_publish import (
     apply_auto_cross_publish, current_target_ids, sync_cross_publications,
     validate_cross_targets,
@@ -347,7 +347,7 @@ def _handle_publish_post(request, current_network, podcasts, networks):
         ep.is_published = False
         ep.scheduled_at = scheduled_dt
         ep.pub_date     = scheduled_dt
-        ep.save()
+        save_with_generated_guid(ep, current_network)
         _sync_cross(ep)
         _attach_audio()
         entry = ensure_calendar_entry_for_episode(ep, calendar_entry_id=request.POST.get('calendar_entry_id'))
@@ -361,7 +361,7 @@ def _handle_publish_post(request, current_network, podcasts, networks):
         ep.scheduled_at = None
         if not ep.pub_date:
             ep.pub_date = timezone.now()
-        ep.save()
+        save_with_generated_guid(ep, current_network)
         _sync_cross(ep)
         _attach_audio()
         logger.info(f"[publish] Episode {ep.id} '{ep.title}' saved as draft by {request.user.username}")
@@ -372,7 +372,7 @@ def _handle_publish_post(request, current_network, podcasts, networks):
         ep.is_published = True
         ep.scheduled_at = None
         ep.pub_date     = timezone.now()
-        ep.save()
+        save_with_generated_guid(ep, current_network)
         _sync_cross(ep)
         _attach_audio()
         ensure_calendar_entry_for_episode(ep, calendar_entry_id=request.POST.get('calendar_entry_id'))

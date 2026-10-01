@@ -20,6 +20,7 @@ import secrets
 from urllib.parse import parse_qs, urlparse
 
 from django.conf import settings
+from django.db import IntegrityError, transaction
 from django.db.models import Q
 
 logger = logging.getLogger(__name__)
@@ -47,6 +48,30 @@ def make_private_guid(network) -> str:
         guid = f"{base}/?p={GENERATED_PREFIX}{secrets.token_hex(6)}"
         if not Episode.objects.filter(guid_private=guid).exists():
             return guid
+
+
+def save_with_generated_guid(episode, network, attempts=5):
+    """episode.save() that survives losing a race for its generated private GUID.
+
+    make_private_guid checks for an unused GUID, but the check and the INSERT are
+    not atomic: two publishes minting at the same instant could pick the same
+    token, and the unique constraint (uniq_generated_guid_private) rejects the
+    second. Instead of surfacing that as an error — the publisher would lose their
+    form — re-mint and try again. Only a conflict on OUR GUID is retried; any other
+    integrity error is re-raised untouched."""
+    from pod_manager.models import Episode
+    for attempt in range(attempts):
+        try:
+            with transaction.atomic():      # savepoint: a failed INSERT mustn't poison the caller's transaction
+                episode.save()
+            return
+        except IntegrityError:
+            guid = episode.guid_private
+            taken = bool(guid) and Episode.objects.filter(guid_private=guid).exclude(pk=episode.pk).exists()
+            if not taken or attempt == attempts - 1:
+                raise
+            logger.warning("guid_links: generated GUID %s was taken concurrently; re-minting", guid)
+            episode.guid_private = make_private_guid(network)
 
 
 def resolve_private_guid(network, value, host=None, include_unpublished=False):

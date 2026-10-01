@@ -21,6 +21,9 @@ from django.conf import settings
 logger = logging.getLogger(__name__)
 
 
+_CLIENTS: dict = {}
+
+
 def _build_config() -> Config:
     """botocore Config with R2's required region + the checksum workaround.
 
@@ -30,6 +33,10 @@ def _build_config() -> Config:
     base = dict(
         region_name="auto",
         retries={"max_attempts": 3, "mode": "standard"},
+        # botocore's default is 60s. A dropped SYN is retransmitted at 1s/2s/4s, so
+        # fail the attempt fast and let the retry open a fresh connection instead.
+        # Connect only: read_timeout is left alone so large audio uploads are safe.
+        connect_timeout=3,
     )
     try:
         return Config(
@@ -53,13 +60,21 @@ def get_r2_client():
             "R2 is not configured: set R2_ENDPOINT, R2_ACCESS_KEY_ID and "
             "R2_SECRET_ACCESS_KEY in the environment."
         )
-    return boto3.client(
-        "s3",
-        endpoint_url=settings.R2_ENDPOINT,
-        aws_access_key_id=settings.R2_ACCESS_KEY_ID,
-        aws_secret_access_key=settings.R2_SECRET_ACCESS_KEY,
-        config=_build_config(),
-    )
+    # One client per credential set, reused across calls: building a boto3 client
+    # loads the service model and every fresh client opens a new TLS connection,
+    # which cost seconds per request when done on each transcript read. boto3
+    # clients are thread-safe and pool connections.
+    ident = (settings.R2_ENDPOINT, settings.R2_ACCESS_KEY_ID, settings.R2_SECRET_ACCESS_KEY)
+    client = _CLIENTS.get(ident)
+    if client is None:
+        client = _CLIENTS[ident] = boto3.client(
+            "s3",
+            endpoint_url=settings.R2_ENDPOINT,
+            aws_access_key_id=settings.R2_ACCESS_KEY_ID,
+            aws_secret_access_key=settings.R2_SECRET_ACCESS_KEY,
+            config=_build_config(),
+        )
+    return client
 
 
 def prefixed_key(key: str) -> str:

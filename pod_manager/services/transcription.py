@@ -252,8 +252,20 @@ def read_transcript_bytes(episode_id: int, ext: str, version: int, token: str | 
     ``token`` (the row's r2_key_token) selects the keyed vs legacy object key.
     """
     if settings.R2_MEDIA_ENABLED and (version or 0) >= 1:
+        from django.core.cache import cache
         from pod_manager.services.r2_storage import get_media_object
-        data, _ = get_media_object(transcript_r2_key(episode_id, ext, token))
+        key = transcript_r2_key(episode_id, ext, token)
+        # Bytes are immutable per (key, version): a re-transcribe bumps the version
+        # and a rekey changes the token, so both miss the cache naturally. Saves
+        # two R2 round-trips on every episode page view.
+        cache_key = f"transcript-bytes:{key}:v{version}"
+        data = cache.get(cache_key)
+        if data is None:
+            data, _ = get_media_object(key)
+            try:
+                cache.set(cache_key, data, 24 * 3600)
+            except Exception:
+                pass
         return data
     return transcript_path(episode_id, ext).read_bytes()
 

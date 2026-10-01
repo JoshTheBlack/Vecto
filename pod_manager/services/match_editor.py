@@ -62,14 +62,14 @@ def default_survivor(public_episode, private_episode):
       - exactly one row owns a Transcript  -> that row survives (not editable);
       - BOTH own one (the pre-fix-corruption norm, §4b) -> owner picks, default
         the private-GUID row, editable;
-      - neither -> the private-GUID row.
+      - neither -> owner picks, default the private-GUID row, editable.
 
     The private row is the default survivor because it is the canonical Vecto
     episode: a Vecto-published episode IS a private row (its id, /?p= link GUID,
     R2 audio and calendar link live there) and the public side may arrive later
-    from a feed import. The only override is a transcript that exists solely on
-    the public row — transcript R2 keys embed the episode id, so that row must
-    survive. Field choices still pull every public-tier value across.
+    from a feed import. The only forced case is a transcript that exists solely on
+    one row — transcript R2 keys embed the episode id, so that row must survive.
+    Field choices still pull every value across from whichever row holds it.
 
     Returns (survivor, deleted, both_transcripts, survivor_editable)."""
     pub_tx = _has_transcript(public_episode)
@@ -78,7 +78,9 @@ def default_survivor(public_episode, private_episode):
         return private_episode, public_episode, True, True
     if pub_tx:
         return public_episode, private_episode, False, False
-    return private_episode, public_episode, False, False
+    if priv_tx:
+        return private_episode, public_episode, False, False
+    return private_episode, public_episode, False, True
 
 
 def _is_empty(val):

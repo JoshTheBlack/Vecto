@@ -60,7 +60,7 @@ is NOT exposed — it rides the audio_url_subscriber pick automatically (§3.5).
             <input type="hidden" name="private_episode_id" value="{{ private_ep.id }}">
             {% endif %}
 
-            {# Survivor pick — only meaningful in the both-transcripts edge; otherwise the transcript owner is forced server-side. #}
+            {# Survivor pick — editable unless exactly one row owns a transcript (then that row is forced server-side). #}
             <div class="mb-3">
                 <label class="form-label fw-bold text-light"><i class="bi bi-trophy me-1"></i> Surviving row</label>
                 <div class="d-flex gap-3 flex-wrap">
@@ -75,7 +75,7 @@ is NOT exposed — it rides the audio_url_subscriber pick automatically (§3.5).
                         <label class="form-check-label text-light" for="survivor-private">Premium row — <span class="text-muted">{{ private_ep.title|truncatechars:60 }}</span></label>
                     </div>
                 </div>
-                {% if not survivor_editable %}<small class="text-muted d-block mt-1">The transcript-owning row survives automatically (no transcript-repoint path exists by design).</small>{% endif %}
+                {% if not survivor_editable %}<small class="text-muted d-block mt-1">The row that owns the transcript survives automatically (a transcript can't be moved to another episode).</small>{% endif %}
             </div>
 
             {# REQUIRED parent podcast (§3.5), with a low-priority stranding warning. #}

@@ -13399,11 +13399,19 @@ class MatchEditorServiceTests(TestCase):
         self.assertTrue(both)
         self.assertTrue(editable)
 
-    def test_no_transcripts_defaults_to_the_private_row(self):
+    def test_no_transcripts_defaults_to_the_private_row_and_is_editable(self):
         from pod_manager.services.match_editor import default_survivor
         survivor, deleted, both, editable = default_survivor(self.pub, self.priv)
         self.assertEqual(survivor.id, self.priv.id)
         self.assertEqual(deleted.id, self.pub.id)
+        self.assertFalse(both)
+        self.assertTrue(editable)    # nothing constrains the pick, so the owner may flip it
+
+    def test_lone_private_transcript_forces_the_private_row(self):
+        from pod_manager.services.match_editor import default_survivor
+        self._transcript(self.priv)
+        survivor, _deleted, _both, editable = default_survivor(self.pub, self.priv)
+        self.assertEqual(survivor.id, self.priv.id)
         self.assertFalse(editable)
 
     def test_private_row_survives_even_when_the_public_row_has_subscriber_audio(self):
@@ -14263,6 +14271,24 @@ class OrphanMergeEditorTests(TestCase):
             commit_episode(self.show, _FakeEntry(id=pub_guid, title='Public Side'), None,
                            'GUID Match', mock.Mock())
         self.assertEqual(Episode.objects.filter(podcast=self.show).count(), 1)
+
+    def test_owner_may_flip_the_survivor_when_no_transcript_constrains_it(self):
+        resp = self._editor()
+        self.assertTrue(resp.context['survivor_editable'])
+        self.assertNotRegex(resp.content.decode(), r'name="survivor_episode_id"[^>]*disabled')
+        self._commit(survivor_episode_id=self.pub.id)
+        self.assertTrue(Episode.objects.filter(pk=self.pub.pk).exists())
+        self.assertFalse(Episode.objects.filter(pk=self.priv.pk).exists())
+        survivor = Episode.objects.get(pk=self.pub.pk)
+        self.assertEqual(survivor.guid_private, 'https://om.example.test/?p=vecto-aaaaaaaaaaaa')
+        self.assertEqual(survivor.guid_public, 'feed-guid-1')
+
+    def test_survivor_pick_is_ignored_when_a_transcript_forces_it(self):
+        Transcript.objects.create(episode=self.priv, status=Transcript.Status.COMPLETED)
+        self.assertFalse(self._editor().context['survivor_editable'])
+        self._commit(survivor_episode_id=self.pub.id)       # tries to override
+        self.assertTrue(Episode.objects.filter(pk=self.priv.pk).exists())
+        self.assertFalse(Episode.objects.filter(pk=self.pub.pk).exists())
 
     def test_a_transcript_only_on_the_public_row_makes_it_survive(self):
         Transcript.objects.create(episode=self.pub, status=Transcript.Status.COMPLETED)

@@ -10542,7 +10542,7 @@ class PublishFormCalendarSelectorTests(TestCase):
 
 
 
-# â”€â”€ 13. Transcript access gate (Section A/B/E1) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ── 13. Transcript access gate (Section A/B/E1) ──────────────────────────────
 
 _ALLOWED_TX_EXTS = ('vtt', 'json', 'srt', 'html', 'words')
 
@@ -10555,7 +10555,7 @@ _R2_SERVE_SETTINGS = {
 
 
 class TranscriptKeyShapeTests(SimpleTestCase):
-    """transcript_r2_key(episode_id, ext, token=None) â€” the single derivation
+    """transcript_r2_key(episode_id, ext, token=None) — the single derivation
     chokepoint. Legacy vs keyed shapes (Section E1)."""
 
     def test_legacy_key_when_no_token(self):
@@ -10575,7 +10575,7 @@ class TranscriptKeyShapeTests(SimpleTestCase):
 
 
 class TranscriptTokenDefaultTests(TestCase):
-    """Section A2 / D4 â€” new transcripts are born keyed; existing rows (migrated
+    """Section A2 / D4 — new transcripts are born keyed; existing rows (migrated
     as NULL) stay legacy. The field default fires on INSERT only."""
 
     def test_new_transcript_born_with_token(self):
@@ -10591,7 +10591,7 @@ class TranscriptTokenDefaultTests(TestCase):
 
 @override_settings(**_R2_SERVE_SETTINGS)
 class TranscriptServeAccessTests(TestCase):
-    """Section B â€” serve_transcript gate across both audiences, all five exts,
+    """Section B — serve_transcript gate across both audiences, all five exts,
     and the ?download branch. Also verifies the 302 target's key shape (Keys)."""
 
     def setUp(self):
@@ -10749,11 +10749,11 @@ class TranscriptServeAccessTests(TestCase):
         )
 
 
-# â”€â”€ 14. Episode-page transcript gate (Section D) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ── 14. Episode-page transcript gate (Section D) ─────────────────────────────
 
 @override_settings(**TRANSCRIPTION_SETTINGS)
 class EpisodePageTranscriptGateTests(TestCase):
-    """Section D â€” episode_detail is a second content-delivery path (inline HTML +
+    """Section D — episode_detail is a second content-delivery path (inline HTML +
     words JSON via read_transcript_bytes). The gate is real enforcement: a
     non-viewer's page must carry no transcript bytes and no data-words-url."""
 
@@ -10768,7 +10768,7 @@ class EpisodePageTranscriptGateTests(TestCase):
         self.tier = PatreonTier.objects.create(network=self.net, name='Premium', minimum_cents=500)
         # Gated show, but with BOTH public + subscriber audio so the tab stays
         # visible (raw_audio_url resolves to the public cut) while the transcript
-        # itself is gated â€” the Bald Movies "First Run" shape.
+        # itself is gated — the Bald Movies "First Run" shape.
         self.pod = Podcast.objects.create(
             network=self.net, title='Show', slug='show-page', required_tier=self.tier)
         self.ep = Episode.objects.create(

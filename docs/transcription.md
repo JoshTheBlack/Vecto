@@ -136,7 +136,7 @@ The `learnedmachine/whisperx-asr-service` `/asr` endpoint accepts a `model` quer
 
 ## Transcript Formats
 
-Each completed transcription produces five files. They live in **Cloudflare R2** (the `vecto-cdn` bucket, served via `cdn.joshtheblack.com`) at `transcripts/{episode_id // 1000}/{episode_id}.{ext}` — see [Transcript Storage on Cloudflare R2](#transcript-storage-on-cloudflare-r2-cdn). When R2 is disabled (`R2_MEDIA_ENABLED=False`, e.g. dev) they fall back to `MEDIA_ROOT/transcriptions/{bucket}/{episode_id}.{ext}` (where `bucket = episode_id // 1000`).
+Each completed transcription produces five files. They live in **Cloudflare R2** (the `vecto-cdn` bucket, served via `cdn.joshtheblack.com`) at `{r2_key_stem}.{ext}` (by default `transcripts/{episode_id // 1000}/{episode_id}.{token}.{ext}`) — see [Transcript Storage on Cloudflare R2](#transcript-storage-on-cloudflare-r2-cdn). When R2 is disabled (`R2_MEDIA_ENABLED=False`, e.g. dev) they fall back to `MEDIA_ROOT/transcriptions/{bucket}/{episode_id}.{ext}` (where `bucket = episode_id // 1000`).
 
 | Format | Extension | Use |
 |---|---|---|
@@ -158,13 +158,41 @@ from the edge — see the serving split in [Transcript Storage on Cloudflare R2]
 
 Transcript files are stored in the same `vecto-cdn` bucket as uploaded avatars and mix covers (see [User Image Assets on R2](images.md) for the shared storage backend, cache rule, and CORS setup). This moves the feed-referenced transcript traffic — hit by every podcast app — onto an edge CDN instead of reading each file into a gunicorn worker per request, and is part of making the app container stateless.
 
-Like the images, transcripts use **stable keys + a version-int cache-bust**, so there is **no content hashing, no orphan table, and no GC**:
+Like the images, transcripts use **stable keys + a version-int cache-bust**, so there is **no content hashing, no orphan table, and no GC** (the one exception is the move ledger described below):
 
 ```
-transcripts/{episode_id // 1000}/{episode_id}.{ext}    # ext ∈ vtt json srt html words
+{r2_key_stem}.{ext}            # ext ∈ vtt json srt html words
+# default stem:  transcripts/{episode_id // 1000}/{episode_id}.{token}
 ```
 
-The key is derived from `episode_id + ext`, so no URL column is stored — the serve view recomputes the target from the key + `Transcript.version`. The `// 1000` bucket folder mirrors the local layout and keeps each prefix to ~1000 episodes (5 objects each) so the bucket stays navigable for recovery. A re-transcribe **overwrites** the same keys in place and bumps `version`; this is safe (unlike audio) because transcripts are tiny single GETs, not range-streamed sessions, so there's no in-flight-stream concern.
+**The stem is stored, not derived.** `Transcript.r2_key_stem` records where a transcript's objects live, and every read, write, serve and cleanup path goes through `Transcript.r2_key(ext)` / `Transcript.stem()` — nothing re-derives a key from the owning episode's id. That is what makes the layout safe to change and a transcript safe to move between episodes:
+
+- **A merge repoints, never moves.** When only the deleted episode owns a transcript (or the survivor's is an empty placeholder), the merge engine repoints that `Transcript` row to the survivor with one `UPDATE`; its objects stay exactly where they are. Either row can be the survivor. When *both* rows have real transcripts only the survivor's is kept and the other's keys go to the orphan queue under `MERGE_SUPERSEDED_TRANSCRIPT`.
+- **Recovery and storage migration.** A bucket can be copied as-is to another provider (stored stems stay valid), and a restore after a DB rebuild only has to re-attach rows to objects that are already in the bucket — no renaming.
+- **`{id // 1000}` is only the *episode* id divided by 1000**, a folder name that keeps each prefix to ~1000 episodes. It has nothing to do with a transcript's own primary key.
+
+The `.words`/`.vtt`/… *markers* (`vtt_file`, `words_json_file`, …) only say which formats exist; they are not the key.
+
+#### Key pattern (per network, admin-only)
+
+`Network.transcript_key_pattern` (Django admin → Network) controls the stem of **newly created** transcripts and is what `rekey_transcripts --normalize` treats as canonical. Blank = the default above, which equals the historical tokened layout, so adopting stored stems moved nothing. Rules (enforced by validation): it must start with `transcripts/`, must contain `{token}` (the unguessable part), and may use `{bucket}`, `{episode_id}`, `{token}`, `{network_slug}`, `{podcast_slug}`. `{network_slug}`/`{podcast_slug}` are informational and *mutable* (an episode can change feeds), so a stem using them can drift from canonical — `--normalize` reconciles that. Stems are bare: the environment prefix (`R2_MEDIA_KEY_PREFIX`, `dev/` in IDE) is applied at I/O time, and the extension is appended per format.
+
+Changing the pattern never moves existing transcripts. To apply it:
+
+```
+python manage.py rekey_transcripts --normalize                       # dry run: episode: old stem -> new stem
+python manage.py rekey_transcripts --normalize --network <slug> --apply
+```
+
+#### Moving transcripts: `rekey_transcripts`
+
+Every mode copies the objects to the new stem, flips the stored stem in one guarded `UPDATE` (the 302 target changes atomically), then deletes and CDN-purges the old objects. Order is strict — record-orphan → copy → flip → delete → purge — so a crash leaves a durable retry record and a rerun converges. Dry run by default; `--apply` executes; `--podcast`, `--network` and `--limit` scope it.
+
+| mode | selects | does |
+|---|---|---|
+| *(default)* | untokened (legacy) rows | give a fresh random token and move to the canonical stem |
+| `--normalize` | tokened rows whose stored stem ≠ canonical | move to the canonical stem, **same token** (URLs stay secret; only the path changes) — needed after a merge repoint or a pattern change |
+| `--rotate-token` | tokened rows | **new token** + canonical stem; the old URLs are deleted and purged — use if a URL leaked. Needs `--podcast`/`--network` or `--all` |
 
 > **Recovery metadata is baked into `.words` at upload time.** The `.words` header carries `title`, `guid_public`, `guid_private`, and `audio_url` (alongside `episode_id`, `language`, `model`, `transcribed_at`) so a transcript can be re-matched to its episode after a DB rebuild — episode IDs change on re-import, but those survive. Written by `run_transcription` for new transcripts and merged in by the backfill for existing ones, so no second PUT is ever needed.
 
@@ -457,7 +485,7 @@ When deploying to PROD for the first time:
 
 ## File Storage & Recovery
 
-Transcript files are stored in R2 at `transcripts/{episode_id // 1000}/{episode_id}.{ext}` when `R2_MEDIA_ENABLED` (see [Transcript Storage on Cloudflare R2](#transcript-storage-on-cloudflare-r2-cdn)). With R2 disabled they fall back to:
+Transcript files are stored in R2 at `{r2_key_stem}.{ext}` (default `transcripts/{episode_id // 1000}/{episode_id}.{token}.{ext}`) when `R2_MEDIA_ENABLED` (see [Transcript Storage on Cloudflare R2](#transcript-storage-on-cloudflare-r2-cdn)). With R2 disabled they fall back to:
 ```
 MEDIA_ROOT/transcriptions/{bucket}/{episode_id}.{ext}
 ```

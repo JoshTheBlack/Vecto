@@ -474,6 +474,9 @@ class TranscriptAdmin(admin.ModelAdmin):
         'vtt_file', 'json_file', 'srt_file', 'html_file', 'words_json_file',
         'source_audio_url', 'whisper_model_used', 'worker', 'retry_count',
         'requested_at', 'started_at', 'completed_at', 'error_message',
+        # Where the R2 objects live. Read-only on purpose: editing it here would not
+        # move the objects; `manage.py rekey_transcripts` is what changes it.
+        'r2_key_stem',
     )
     ordering = ('-requested_at',)
     actions = (

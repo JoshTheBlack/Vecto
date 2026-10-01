@@ -57,30 +57,22 @@ def _has_transcript(episode):
 
 
 def default_survivor(public_episode, private_episode):
-    """§3.6 survivor rule (deterministic, no transcript repoint path exists):
+    """The default survivor is the private-GUID row — and the owner may always flip it.
 
-      - exactly one row owns a Transcript  -> that row survives (not editable);
-      - BOTH own one (the pre-fix-corruption norm, §4b) -> owner picks, default
-        the private-GUID row, editable;
-      - neither -> owner picks, default the private-GUID row, editable.
+    The private row is the canonical Vecto episode: a Vecto-published episode IS a
+    private row (its id, /?p= link GUID, R2 audio and calendar link live there) and
+    the public side may arrive later from a feed import. A transcript no longer
+    constrains the choice: it stores where its own objects live, so the merge engine
+    repoints it to whichever row survives. Field choices still pull every value across
+    from whichever row holds it.
 
-    The private row is the default survivor because it is the canonical Vecto
-    episode: a Vecto-published episode IS a private row (its id, /?p= link GUID,
-    R2 audio and calendar link live there) and the public side may arrive later
-    from a feed import. The only forced case is a transcript that exists solely on
-    one row — transcript R2 keys embed the episode id, so that row must survive.
-    Field choices still pull every value across from whichever row holds it.
+    ``both_transcripts`` is only a warning flag: when both rows own a transcript only
+    the survivor's is kept (the other is discarded to the R2 orphan pool).
 
-    Returns (survivor, deleted, both_transcripts, survivor_editable)."""
-    pub_tx = _has_transcript(public_episode)
-    priv_tx = _has_transcript(private_episode)
-    if pub_tx and priv_tx:
-        return private_episode, public_episode, True, True
-    if pub_tx:
-        return public_episode, private_episode, False, False
-    if priv_tx:
-        return private_episode, public_episode, False, False
-    return private_episode, public_episode, False, True
+    Returns (survivor, deleted, both_transcripts, survivor_editable) — the last is
+    always True (kept in the tuple so existing callers don't change)."""
+    both = _has_transcript(public_episode) and _has_transcript(private_episode)
+    return private_episode, public_episode, both, True
 
 
 def _is_empty(val):

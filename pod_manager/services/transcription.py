@@ -126,27 +126,43 @@ def transcript_path(episode_id: int, ext: str) -> Path:
 
 
 def transcript_r2_key(episode_id: int, ext: str, token: str | None = None) -> str:
-    """Cdn key for a transcript format. The single derivation chokepoint — every
-    read/write/serve path routes through here so the two key shapes stay in sync:
+    """LEGACY derivation of a transcript's bare key from episode id + token:
 
-        token is None -> transcripts/{id // 1000}/{id}.{ext}          (legacy)
-        token set     -> transcripts/{id // 1000}/{id}.{token}.{ext}  (keyed)
+        token is None -> transcripts/{id // 1000}/{id}.{ext}          (untokened)
+        token set     -> transcripts/{id // 1000}/{id}.{token}.{ext}  (tokened)
 
-    The {id} prefix stays for bucket navigability/recovery; secrecy lives entirely
-    in the ~128-bit token, which makes the object key non-derivable from the (small,
-    enumerable) episode id. The serve view recomputes the target from the key +
-    Transcript.version; the token is stored on the row, never in a feed URL.
-
-    The // 1000 bucket folder mirrors the local layout and keeps each prefix to
-    ~1000 episodes so the bucket stays navigable for recovery. Overwritten in place
-    on re-transcribe (transcripts are tiny single GETs, no in-flight-stream concern).
+    Where a transcript's objects actually live is the STORED stem — use
+    ``Transcript.r2_key(ext)`` / ``Transcript.stem()``. This function remains for
+    the one thing it is still right for: computing the key a row that has no stored
+    stem was written under (the migration backfill uses the same formula), and
+    building expected keys in tests. It must NOT be used to locate a live
+    transcript's objects: after a merge repoints a transcript, or a layout change,
+    the id in the key no longer matches the owner.
     """
     if ext not in ALLOWED_EXTENSIONS:
         raise ValueError(
             f"Extension '{ext}' not allowed. Must be one of: {', '.join(sorted(ALLOWED_EXTENSIONS))}"
         )
-    stem = f"{episode_id}.{token}" if token else str(episode_id)
-    return f"transcripts/{episode_id // 1000}/{stem}.{ext}"
+    from pod_manager.services.transcript_keys import legacy_stem
+    return f"{legacy_stem(episode_id, token)}.{ext}"
+
+
+def local_transcript_path(transcript, ext: str) -> Path:
+    """Filesystem path of a LOCAL (version-0 / R2-disabled) transcript format.
+
+    The *_file marker holds the MEDIA_ROOT-relative path the file was actually
+    written to, so it — not the owning episode's id — is the source of truth; that
+    keeps local files readable after a merge repoints the row. R2 markers start
+    with 'transcripts/' and are ignored here; a row with no local marker falls back
+    to the historical id-derived path."""
+    field = 'words_json_file' if ext == 'words' else f'{ext}_file'
+    marker = getattr(transcript, field, None)
+    if marker and not marker.replace('\\', '/').startswith('transcripts/'):
+        root = Path(settings.MEDIA_ROOT)
+        p = root / marker
+        if p.resolve().is_relative_to(root.resolve()):
+            return p
+    return transcript_path(transcript.episode_id, ext)
 
 
 def episode_recovery_metadata(episode) -> dict:
@@ -163,19 +179,22 @@ def episode_recovery_metadata(episode) -> dict:
     }
 
 
-def write_transcript_file(episode_id: int, ext: str, content: bytes, token: str | None = None) -> str:
+def write_transcript_file(episode_id: int, ext: str, content: bytes, token: str | None = None,
+                          *, stem: str | None = None, local_path: Path | None = None) -> str:
     """Write one transcript format and return its Transcript.*_file marker.
 
     R2 (vecto-cdn) when R2_MEDIA_ENABLED, else the legacy MEDIA_ROOT path (dev /
     pre-cutover). Callers bump Transcript.version after writing all formats.
-    ``token`` (the row's r2_key_token) selects the keyed vs legacy object key.
+    ``stem`` (the row's stored r2_key_stem) names the R2 object; without it the
+    legacy id+token derivation is used. ``local_path`` pins the local file (the
+    row's existing marker) so a repointed transcript keeps writing where it lives.
     """
     if settings.R2_MEDIA_ENABLED:
         from pod_manager.services.r2_storage import put_media_object
-        key = transcript_r2_key(episode_id, ext, token)
+        key = f"{stem}.{ext}" if stem else transcript_r2_key(episode_id, ext, token)
         put_media_object(key, content, CONTENT_TYPES[ext])
         return key
-    p = transcript_path(episode_id, ext)
+    p = Path(local_path) if local_path else transcript_path(episode_id, ext)
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_bytes(content)
     return str(p.relative_to(settings.MEDIA_ROOT))
@@ -211,6 +230,7 @@ def _r2_format_matches(key: str, new_bytes: bytes) -> bool:
 
 def write_transcript_formats(
     episode_id: int, rendered: list[tuple[str, bytes]], token: str | None = None,
+    *, stem: str | None = None, local_paths: dict | None = None,
 ) -> tuple[dict[str, str], list[str]]:
     """Idempotently write rendered transcript formats; return ({ext: marker},
     changed_exts).
@@ -231,7 +251,7 @@ def write_transcript_formats(
     if settings.R2_MEDIA_ENABLED:
         from pod_manager.services.r2_storage import put_media_object
         for ext, content in rendered:
-            key = transcript_r2_key(episode_id, ext, token)
+            key = f"{stem}.{ext}" if stem else transcript_r2_key(episode_id, ext, token)
             markers[ext] = key
             if _r2_format_matches(key, content):
                 continue
@@ -239,24 +259,39 @@ def write_transcript_formats(
             changed.append(ext)
     else:
         for ext, content in rendered:
-            markers[ext] = write_transcript_file(episode_id, ext, content, token)
+            markers[ext] = write_transcript_file(
+                episode_id, ext, content, token,
+                local_path=(local_paths or {}).get(ext))
             changed.append(ext)
     return markers, changed
 
 
-def read_transcript_bytes(episode_id: int, ext: str, version: int, token: str | None = None) -> bytes:
+def write_transcript(transcript, rendered: list[tuple[str, bytes]]) -> tuple[dict[str, str], list[str]]:
+    """write_transcript_formats for a Transcript row: writes under the row's STORED
+    stem (and its existing local files), never a re-derived key."""
+    return write_transcript_formats(
+        transcript.episode_id, rendered, transcript.r2_key_token,
+        stem=transcript.stem(),
+        local_paths={ext: local_transcript_path(transcript, ext) for ext, _ in rendered},
+    )
+
+
+def read_transcript_bytes(episode_id: int, ext: str, version: int, token: str | None = None,
+                          *, stem: str | None = None, local_path: Path | None = None) -> bytes:
     """Read one transcript format's bytes.
 
     Reads from R2 when the transcript is R2-backed (version >= 1 and R2 enabled),
     else from the legacy local file (version 0 / R2 disabled). Raises on miss.
-    ``token`` (the row's r2_key_token) selects the keyed vs legacy object key.
+    ``stem`` (the row's stored r2_key_stem) names the R2 object — without it the
+    legacy id+token derivation is used. ``local_path`` pins the local file.
+    Prefer read_transcript(transcript, ext), which supplies both.
     """
     if settings.R2_MEDIA_ENABLED and (version or 0) >= 1:
         from django.core.cache import cache
         from pod_manager.services.r2_storage import get_media_object
-        key = transcript_r2_key(episode_id, ext, token)
+        key = f"{stem}.{ext}" if stem else transcript_r2_key(episode_id, ext, token)
         # Bytes are immutable per (key, version): a re-transcribe bumps the version
-        # and a rekey changes the token, so both miss the cache naturally. Saves
+        # and a rekey changes the stem, so both miss the cache naturally. Saves
         # two R2 round-trips on every episode page view.
         cache_key = f"transcript-bytes:{key}:v{version}"
         data = cache.get(cache_key)
@@ -267,7 +302,14 @@ def read_transcript_bytes(episode_id: int, ext: str, version: int, token: str | 
             except Exception:
                 pass
         return data
-    return transcript_path(episode_id, ext).read_bytes()
+    return (Path(local_path) if local_path else transcript_path(episode_id, ext)).read_bytes()
+
+
+def read_transcript(transcript, ext: str) -> bytes:
+    """read_transcript_bytes for a Transcript row, from its STORED stem / markers."""
+    return read_transcript_bytes(
+        transcript.episode_id, ext, transcript.version, transcript.r2_key_token,
+        stem=transcript.stem(), local_path=local_transcript_path(transcript, ext))
 
 
 def source_audio_filename(episode) -> str:
@@ -1062,16 +1104,16 @@ def run_transcription(
         # after the rekey deleted and purged it, while serving points at the
         # (now stale) keyed copy.
         try:
-            transcript.refresh_from_db(fields=['r2_key_token'])
+            transcript.refresh_from_db(fields=['r2_key_token', 'r2_key_stem'])
         except Transcript.DoesNotExist:
             pass  # row deleted mid-task — keep prior behavior (save re-inserts)
-        written, changed_formats = write_transcript_formats(episode_id, [
+        written, changed_formats = write_transcript(transcript, [
             ('vtt',   _to_vtt(segments)),
             ('json',  _to_podcast_index_json(segments)),
             ('srt',   _to_srt(segments)),
             ('html',  _to_html(segments)),
             ('words', _to_words_json(segments, metadata=words_metadata)),
-        ], transcript.r2_key_token)
+        ])
 
         # 7. Mark completed. Bump the cache-bust version only when ≥1 format
         # actually changed, so a re-transcribe that produces identical bytes
@@ -1255,7 +1297,7 @@ def apply_speaker_labels(episode_id: int) -> None:
             return
 
         try:
-            words_bytes = read_transcript_bytes(episode_id, 'words', transcript.version, transcript.r2_key_token)
+            words_bytes = read_transcript(transcript, 'words')
         except Exception as exc:
             logger.error("apply_speaker_labels: .words unreadable for episode %d — %s", episode_id, exc)
             return
@@ -1298,13 +1340,13 @@ def apply_speaker_labels(episode_id: int) -> None:
         # Idempotent write (§4): hash-check all five formats, PUT only those that
         # changed, bump version only on real change — so a rollback to a prior
         # state or a no-op re-fold costs no Class A writes and no cache bust.
-        written, changed = write_transcript_formats(episode_id, [
+        written, changed = write_transcript(transcript, [
             ('vtt',   _to_vtt(segments)),
             ('json',  _to_podcast_index_json(segments)),
             ('srt',   _to_srt(segments)),
             ('html',  _to_html(segments)),
             ('words', _to_words_json(segments, metadata=metadata)),
-        ], transcript.r2_key_token)
+        ])
 
         if changed:
             transcript.version = (transcript.version or 0) + 1

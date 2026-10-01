@@ -438,16 +438,16 @@ def episode_detail(request, episode_id):
     transcript_speaker_data = []
     # Inline render reads the html + words FROM R2 (or local when not R2-backed)
     # via the transcript store, so the page no longer depends on local disk.
-    from pod_manager.services.transcription import read_transcript_bytes, fold_speaker_mappings
+    from pod_manager.services.transcription import read_transcript, fold_speaker_mappings
     if transcript_viewable and transcript and transcript.status == Transcript.Status.COMPLETED and transcript.html_file:
         try:
-            transcript_html = read_transcript_bytes(ep.id, 'html', transcript.version, transcript.r2_key_token).decode('utf-8')
+            transcript_html = read_transcript(transcript, 'html').decode('utf-8')
         except Exception:
             pass
 
     if transcript_viewable and transcript and transcript.status == Transcript.Status.COMPLETED and transcript.words_json_file:
         try:
-            words_doc = _json.loads(read_transcript_bytes(ep.id, 'words', transcript.version, transcript.r2_key_token).decode('utf-8'))
+            words_doc = _json.loads(read_transcript(transcript, 'words').decode('utf-8'))
             # Resolved names come from the approved-edit fold over the immutable
             # speaker_id base (not from distinct seg.speaker), so the form reflects
             # the same source of truth replay writes. Pre-backfill .words without a

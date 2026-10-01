@@ -60,10 +60,11 @@ from pod_manager.services.transcription import (
     _to_vtt,
     _to_words_json,
     fold_speaker_mappings,
-    read_transcript_bytes,
+    local_transcript_path,
+    read_transcript,
     speaker_edit_points,
     transcript_path,
-    write_transcript_formats,
+    write_transcript,
 )
 
 logger = logging.getLogger(__name__)
@@ -208,7 +209,7 @@ class Command(BaseCommand):
 
         # Read the current .words (local for the majority, R2 for version>=1).
         try:
-            current_bytes = read_transcript_bytes(episode_id, 'words', t.version, t.r2_key_token)
+            current_bytes = read_transcript(t, 'words')
             current_doc = json.loads(current_bytes.decode('utf-8'))
         except Exception as exc:
             self.stdout.write(self.style.ERROR(f"  ep {episode_id}: .words unreadable — skipping ({exc})"))
@@ -289,7 +290,7 @@ class Command(BaseCommand):
         episode_id = t.episode_id
         is_r2_resident = settings.R2_MEDIA_ENABLED and (t.version or 0) >= 1
         if is_r2_resident:
-            written, changed = write_transcript_formats(episode_id, rendered, t.r2_key_token)
+            written, changed = write_transcript(t, rendered)
             if changed:
                 for ext in _FORMATS:
                     setattr(t, _MARKER[ext], written[ext])
@@ -297,7 +298,7 @@ class Command(BaseCommand):
                 t.save(update_fields=[*( _MARKER[e] for e in _FORMATS), 'version'])
         else:
             for ext, content in rendered:
-                p = transcript_path(episode_id, ext)
+                p = local_transcript_path(t, ext)
                 p.parent.mkdir(parents=True, exist_ok=True)
                 p.write_bytes(content)
 

@@ -18,14 +18,15 @@ EpisodeMatchSuggestion; the suggested-pair wrapper (Chat 3) resolves its
 suggestion row itself, so plain manual merges and future bulk merges (a
 Celery loop over pairs) reuse this unchanged.
 
-The survivor rule (§3.6) is also the caller's job: the transcript-owning row
-must be passed as ``survivor`` — no transcript repoint/rekey path exists by
-design (transcript R2 keys embed the episode id). If the deleted row
-nonetheless owns a transcript (the both-transcripts edge), it is SUPERSEDED,
-never repointed: its R2 files go to the orphan queue under
-MERGE_SUPERSEDED_TRANSCRIPT (30-day retention via r2_cleanup_orphans), its
-legacy local files are unlinked after commit, and its speaker edits are
-marked SUPERSEDED.
+A transcript is never a reason to pick a survivor: each Transcript row stores
+where its R2 objects live (r2_key_stem), so when only the deleted row owns one it is
+REPOINTED to the survivor with a plain UPDATE — no object moves, no cache purge. The
+both-transcripts edge still keeps the survivor's and SUPERSEDES the deleted row's
+(never repointed — a OneToOne can't hold two): its R2 objects go to the orphan queue
+under MERGE_SUPERSEDED_TRANSCRIPT (30-day retention via r2_cleanup_orphans), its
+legacy local files are unlinked after commit, and its speaker edits are marked
+SUPERSEDED. A survivor whose transcript is only an empty placeholder (pending/failed,
+no files) yields to a deleted row's real one.
 
 (f) is intentionally absent: R2OrphanedObject.episode is a SET_NULL audit
 pointer that nulls harmlessly when the loser dies, and LiveSchedulePost /
@@ -174,23 +175,40 @@ def apply_lock_and_pin_choices(survivor, deleted, field_choices, *, actor=None):
 
 
 def merge_transcript(survivor, deleted):
-    """(a) The survivor keeps its own transcript; nothing ever moves or
-    rekeys. A transcript on the deleted row (both-transcripts edge) is
-    superseded: its R2 object keys become MERGE_SUPERSEDED_TRANSCRIPT orphan
-    rows (rows only — the objects are untouched inside the transaction and
-    die in r2_cleanup_orphans after 30 days), its legacy local files are
-    returned for on_commit deletion, and the Transcript row is deleted with
-    auto_delete_transcript_files bypassed so the CASCADE-equivalent delete
-    performs no inline file I/O.
+    """(a) Keep exactly one transcript on the survivor, losing none that can be kept.
 
-    Returns {'superseded': bool, 'orphaned_keys': [...], 'local_paths': [...]}."""
+      - Only the deleted row has one, or the survivor's is an empty placeholder
+        (no files) and the deleted row's has files -> the deleted row's transcript is
+        REPOINTED to the survivor (a single UPDATE of the OneToOne; its R2 objects
+        stay exactly where they are because the row stores their location). The
+        survivor's empty placeholder, if any, is dropped first.
+      - Both have real transcripts -> the survivor's is kept and the deleted row's is
+        SUPERSEDED: its R2 object keys become MERGE_SUPERSEDED_TRANSCRIPT orphan rows
+        (rows only — the objects are untouched inside the transaction and die in
+        r2_cleanup_orphans after 30 days), its legacy local files are returned for
+        on_commit deletion, and the Transcript row is deleted with
+        auto_delete_transcript_files bypassed so the CASCADE-equivalent delete
+        performs no inline file I/O.
+
+    Returns {'moved': bool, 'superseded': bool, 'orphaned_keys': [...], 'local_paths': [...]}."""
     from pathlib import Path
-    from .transcription import transcript_r2_key
     from .r2_maintenance import _transcript_marker_exts
 
-    result = {'superseded': False, 'orphaned_keys': [], 'local_paths': []}
+    result = {'moved': False, 'superseded': False, 'orphaned_keys': [], 'local_paths': []}
     transcript = Transcript.objects.filter(episode=deleted).first()
     if transcript is None:
+        return result
+
+    survivor_tx = Transcript.objects.filter(episode=survivor).first()
+    if survivor_tx is None or (
+            not _transcript_marker_exts(survivor_tx) and _transcript_marker_exts(transcript)):
+        if survivor_tx is not None:
+            survivor_tx._defer_file_deletion = True    # an empty placeholder: no files to clean
+            survivor_tx.delete()
+        Transcript.objects.filter(pk=transcript.pk).update(episode=survivor)
+        # Drop the stale cached reverse relation so deleted.delete() doesn't see it.
+        deleted._state.fields_cache.pop('transcript', None)
+        result['moved'] = True
         return result
 
     # R2-backed files -> orphan queue (mirrors the signal's R2 gate). The
@@ -198,7 +216,7 @@ def merge_transcript(survivor, deleted):
     # SET_NULL would erase a loser pointer anyway.
     if settings.R2_MEDIA_ENABLED and (transcript.version or 0) >= 1:
         for ext in _transcript_marker_exts(transcript):
-            key = transcript_r2_key(deleted.id, ext, transcript.r2_key_token)
+            key = transcript.r2_key(ext)
             R2OrphanedObject.objects.get_or_create(
                 key=key,
                 defaults={
@@ -222,24 +240,29 @@ def merge_transcript(survivor, deleted):
     return result
 
 
-def merge_edit_suggestions(survivor, deleted):
+def merge_edit_suggestions(survivor, deleted, transcript_moved=False):
     """(b) Rekey the deleted row's edit suggestions to the survivor so trust
     history and rollback survive the merge. Metadata edits repoint with their
     banked points / counter_deltas and created_at untouched (the replay fold
     keeps its exact ordering; rollback still reverses exactly). Speaker edits
-    additionally flip to SUPERSEDED (§3.6a): they reference the superseded
-    transcript's diarization and can never replay, but stay for audit and
-    trust history — which is exactly why they repoint instead of riding the
-    CASCADE into deletion.
+    repoint too, and flip to SUPERSEDED (§3.6a) unless the deleted row's
+    transcript was REPOINTED to the survivor (``transcript_moved``): then they
+    still reference the diarization the survivor now owns, so they keep their
+    status and keep replaying. Otherwise they reference a discarded transcript's
+    diarization, can never replay, and stay only for audit and trust history.
 
-    Returns {'metadata': n, 'speaker_superseded': n}."""
-    counts = {'metadata': 0, 'speaker_superseded': 0}
+    Returns {'metadata': n, 'speaker_superseded': n, 'speaker_kept': n}."""
+    counts = {'metadata': 0, 'speaker_superseded': 0, 'speaker_kept': 0}
     for edit in EpisodeEditSuggestion.objects.filter(episode=deleted):
         edit.episode = survivor
         if 'speaker_mappings' in (edit.suggested_data or {}):
-            edit.status = EpisodeEditSuggestion.Status.SUPERSEDED
-            edit.save(update_fields=['episode', 'status'])
-            counts['speaker_superseded'] += 1
+            if transcript_moved:
+                edit.save(update_fields=['episode'])
+                counts['speaker_kept'] += 1
+            else:
+                edit.status = EpisodeEditSuggestion.Status.SUPERSEDED
+                edit.save(update_fields=['episode', 'status'])
+                counts['speaker_superseded'] += 1
         else:
             edit.save(update_fields=['episode'])
             counts['metadata'] += 1
@@ -340,7 +363,7 @@ def merge_pair_with_choices(survivor, deleted, field_choices, *, actor, base_url
                 reeval_auto_cross_publish([survivor.pk], survivor.podcast))
 
         transcript_result = merge_transcript(survivor, deleted)
-        merge_edit_suggestions(survivor, deleted)
+        merge_edit_suggestions(survivor, deleted, transcript_moved=transcript_result['moved'])
         merge_calendar_entry(survivor, deleted)
         merge_cross_publications(survivor, deleted)
 

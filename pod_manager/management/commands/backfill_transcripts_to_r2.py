@@ -1,11 +1,11 @@
 """Backfill existing local transcript files to Cloudflare R2 (vecto-cdn).
 
 For each completed Transcript, this uploads the on-disk formats (vtt/json/srt/
-html/words) to R2 at transcripts/{episode_id}.{ext} (ContentType + immutable
+html/words) to R2 at {r2_key_stem}.{ext} (ContentType + immutable
 cache) and sets Transcript.version so the serve view + feed switch to the cdn.
 
-The R2 key is DERIVED from id+ext, so no URL column is needed; the *_file
-existence markers are kept as-is. Idempotent: a transcript already at version
+The R2 key is the row's STORED stem + ext (Transcript.r2_key), so no URL column
+is needed; the *_file existence markers are kept as-is. Idempotent: a transcript already at version
 >= 1 whose objects are present in R2 is skipped (--only-missing default).
 
     # rehearse — list what would move, change nothing (preview is the default)
@@ -37,8 +37,7 @@ from django.core.management.base import BaseCommand, CommandError
 
 from pod_manager.models import Transcript
 from pod_manager.services.transcription import (episode_recovery_metadata,
-                                                transcript_path,
-                                                transcript_r2_key)
+                                                local_transcript_path)
 
 _FORMATS = ['vtt', 'json', 'srt', 'html', 'words']
 # Transcript.*_file field name per extension.
@@ -137,21 +136,21 @@ class Command(BaseCommand):
         # Already in R2 -> skip (presence-checked, not just version, so a row
         # written locally during a flag flip still gets pushed).
         if not force and (t.version or 0) >= 1:
-            if all(media_object_exists(transcript_r2_key(t.episode_id, e, t.r2_key_token)) for e in exts):
+            if all(media_object_exists(t.r2_key(e)) for e in exts):
                 return 'skipped'
 
         if dry_run:
-            self.stdout.write(f"  would upload ep {t.episode_id}: {', '.join(exts)} -> transcripts/{t.episode_id}.*")
+            self.stdout.write(f"  would upload ep {t.episode_id}: {', '.join(exts)} -> {t.stem()}.*")
             return 'migrated'
 
         try:
             for ext in exts:
                 # Read straight off local disk (version may already be >= 1, which
                 # would route read_transcript_bytes at R2 where nothing exists).
-                data = transcript_path(t.episode_id, ext).read_bytes()
+                data = local_transcript_path(t, ext).read_bytes()
                 if ext == 'words':
                     data = self._enrich_words(data, t.episode)
-                put_media_object(transcript_r2_key(t.episode_id, ext, t.r2_key_token), data, CONTENT_TYPES[ext])
+                put_media_object(t.r2_key(ext), data, CONTENT_TYPES[ext])
             t.version = (t.version or 0) + 1
             t.save(update_fields=['version'])
             self.stdout.write(self.style.SUCCESS(f"  uploaded ep {t.episode_id}: {', '.join(exts)} (v{t.version})"))
@@ -182,7 +181,7 @@ class Command(BaseCommand):
     def _verify(self, qs):
         from pod_manager.services.r2_storage import media_object_exists
         total = qs.count()
-        self.stdout.write(f"Verifying {total} transcript(s) against R2 (HEAD per format)...")
+        self.stdout.write(f"Verifying {total} episode transcript(s) against R2 (one HEAD per file, up to 5 files each)...")
         present = missing = unmigrated = 0
         for i, t in enumerate(qs.iterator(), start=1):
             exts = [e for e in _FORMATS if getattr(t, _MARKER[e], None)]
@@ -191,20 +190,24 @@ class Command(BaseCommand):
                 self.stdout.write(self.style.WARNING(f"  not yet migrated: ep {t.episode_id} (version 0)"))
             else:
                 for ext in exts:
-                    if media_object_exists(transcript_r2_key(t.episode_id, ext, t.r2_key_token)):
+                    if media_object_exists(t.r2_key(ext)):
                         present += 1
                     else:
                         missing += 1
                         self.stdout.write(self.style.ERROR(f"  MISSING in R2: ep {t.episode_id}.{ext}"))
             if i % _PROGRESS_EVERY == 0:
                 self.stdout.write(
-                    f"  …{i}/{total} checked ({present} present, {missing} missing, "
-                    f"{unmigrated} not-yet-migrated)")
+                    f"  …{i}/{total} episodes checked ({present} files present, "
+                    f"{missing} files missing, {unmigrated} episodes not yet migrated)")
         style = self.style.SUCCESS if (missing == 0 and unmigrated == 0) else self.style.ERROR
-        self.stdout.write(style(f"\nVerify: {present} present, {missing} missing, {unmigrated} not-yet-migrated."))
+        per_episode = f"{present / total:.1f}" if total else "0"
+        self.stdout.write(style(
+            f"\nVerify: {present} files present across {total} episodes ({per_episode} files per episode), "
+            f"{missing} files missing, {unmigrated} episodes not yet migrated."))
         from pod_manager.admin_console.summary import emit_summary
         emit_summary(self.stdout, {
             "mode": "verify",
+            "episodes": total,
             "present": present,
             "missing": missing,
             "unmigrated": unmigrated,
@@ -238,13 +241,13 @@ class Command(BaseCommand):
             if (t.version or 0) < 1:
                 skipped += 1
                 continue  # not migrated — nothing to prune against
-            if not all(media_object_exists(transcript_r2_key(t.episode_id, e, t.r2_key_token)) for e in exts):
+            if not all(media_object_exists(t.r2_key(e)) for e in exts):
                 refused += 1
                 self.stdout.write(self.style.ERROR(
                     f"  ep {t.episode_id}: not fully in R2 — refusing to prune"))
                 continue
             for ext in exts:
-                p = transcript_path(t.episode_id, ext)
+                p = local_transcript_path(t, ext)
                 if not p.exists():
                     continue
                 if dry_run:

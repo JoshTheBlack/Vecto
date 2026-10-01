@@ -4,6 +4,7 @@ from urllib.parse import urlparse
 from django.db import models
 from django.contrib.auth.models import User
 from django.core.cache import cache
+from django.core.exceptions import ValidationError
 from django.core.files.base import ContentFile
 from django.core.files.storage import FileSystemStorage
 from django.db.models.signals import post_delete, post_save, pre_delete, pre_save
@@ -18,8 +19,17 @@ from django.utils import timezone
 
 from .services.images import process_image_field
 from .services.r2_storage import select_media_storage
+from .services.transcript_keys import validate_key_pattern
 
 logger = logging.getLogger(__name__)
+
+
+def validate_transcript_key_pattern(value):
+    """Field validator for Network.transcript_key_pattern (admin-only setting)."""
+    try:
+        validate_key_pattern(value)
+    except ValueError as exc:
+        raise ValidationError(str(exc))
 
 
 class CrossPublishAccessMode(models.TextChoices):
@@ -300,6 +310,18 @@ class Network(ProcessedImageMixin, models.Model):
     owners = models.ManyToManyField(User, related_name="owned_networks", blank=True, help_text="Users who have admin access to this network's settings.")
     theme_config = models.JSONField(default=default_theme_config, blank=True)
     custom_domain = models.CharField(max_length=255, unique=True, blank=True, null=True, db_index=True)
+    # Admin-only (Django admin): how NEW transcripts of this network are laid out in
+    # R2, and what `rekey_transcripts --normalize` treats as canonical. Blank = the
+    # default. Existing transcripts are never moved by editing this — only by running
+    # the rekey command — because each row stores its own key.
+    transcript_key_pattern = models.CharField(
+        max_length=200, blank=True, default='',
+        validators=[validate_transcript_key_pattern],
+        help_text="R2 key stem for new transcripts. Blank = transcripts/{bucket}/{episode_id}.{token}. "
+                  "Must start with 'transcripts/' and contain {token}. Placeholders: {bucket} "
+                  "(episode id // 1000), {episode_id}, {token}, {network_slug}, {podcast_slug}. "
+                  "Changing it only affects transcripts created afterwards; run "
+                  "`manage.py rekey_transcripts --normalize --apply` to move existing ones.")
     contact_email = models.EmailField(default="hosts@example.com", help_text="The official contact email displayed in RSS feeds for podcatcher verification.")
     
     patreon_campaign_id = models.CharField(max_length=100, blank=True, help_text="The numeric ID of the Patreon Campaign")
@@ -1401,6 +1423,16 @@ class Transcript(models.Model):
     # (written before the R2 cutover / when R2_MEDIA_ENABLED is off).
     version = models.IntegerField(default=0)
 
+    # SOURCE OF TRUTH for where this transcript's objects live: each format is the
+    # object `{r2_key_stem}.{ext}` (bare — no env prefix, no extension). Nothing on
+    # the read/serve path re-derives it from the episode id, so a merge can repoint
+    # this row to another episode without touching R2. Generated from the network's
+    # transcript_key_pattern at creation; changed only by the rekey command.
+    r2_key_stem = models.CharField(
+        max_length=300, null=True, blank=True, db_index=True,
+        help_text="Where this transcript's R2 objects live ({stem}.{ext}). Managed by the "
+                  "system; change it with `rekey_transcripts`, which moves the objects too.")
+
     r2_key_token = models.CharField(
         max_length=32, null=True, blank=True, default=new_transcript_token,
         help_text="Random suffix mixed into the R2 object keys so they "
@@ -1429,6 +1461,53 @@ class Transcript(models.Model):
 
     def __str__(self):
         return f"Transcript [{self.status}] – {self.episode}"
+
+    def stem(self) -> str:
+        """The stored stem, or — for a row that somehow has none — the historical
+        derivation, so a missing value can never produce a different key than the
+        one the objects were written under."""
+        from pod_manager.services.transcript_keys import legacy_stem
+        return self.r2_key_stem or legacy_stem(self.episode_id, self.r2_key_token)
+
+    def r2_key(self, ext: str) -> str:
+        """Bare R2 key of one format. The only supported way to turn a transcript
+        into an object key."""
+        from pod_manager.services.transcription import ALLOWED_EXTENSIONS
+        if ext not in ALLOWED_EXTENSIONS:
+            raise ValueError(f"Extension '{ext}' not allowed. Must be one of: {', '.join(sorted(ALLOWED_EXTENSIONS))}")
+        return f"{self.stem()}.{ext}"
+
+    def canonical_stem(self, token: str | None = None) -> str:
+        """The stem this row WOULD get if generated today: its current owner and
+        token under the network's transcript_key_pattern. ``token`` overrides the
+        row's own (the rekey flow uses it to compute the stem for a NEW token).
+        Untokened (legacy) rows have no canonical stem yet — they keep the legacy
+        form until tokened."""
+        from pod_manager.services.transcript_keys import (DEFAULT_KEY_PATTERN, legacy_stem,
+                                                          render_stem, validate_key_pattern)
+        token = token or self.r2_key_token
+        if not token:
+            return legacy_stem(self.episode_id, None)
+        podcast = self.episode.podcast
+        network = podcast.network
+        pattern = network.transcript_key_pattern or DEFAULT_KEY_PATTERN
+        try:
+            validate_key_pattern(pattern)
+        except ValueError:
+            pattern = DEFAULT_KEY_PATTERN   # a bad admin edit must never break writes
+        return render_stem(pattern, episode_id=self.episode_id, token=token,
+                           network_slug=network.slug, podcast_slug=podcast.slug)
+
+    def save(self, *args, **kwargs):
+        # Born with its stem: new rows (and any row predating the backfill) get one
+        # before they are written, so there is never a window where objects exist
+        # but the row can't say where.
+        if not self.r2_key_stem and self.episode_id:
+            self.r2_key_stem = self.canonical_stem()
+            update_fields = kwargs.get('update_fields')
+            if update_fields is not None:
+                kwargs['update_fields'] = {*update_fields, 'r2_key_stem'}
+        super().save(*args, **kwargs)
 
     def get_url(self, ext: str) -> str | None:
         """Public URL for a transcript file, or None if not yet written."""
@@ -1561,7 +1640,7 @@ def delete_auto_created_calendar_entry(sender, instance, **kwargs):
 def auto_delete_transcript_files(sender, instance, **kwargs):
     from pathlib import Path
     from django.conf import settings as django_settings
-    from pod_manager.services.transcription import ALLOWED_EXTENSIONS, transcript_r2_key
+    from pod_manager.services.transcription import ALLOWED_EXTENSIONS
 
     # Merge supersede path (services/episode_merge.merge_transcript): the files
     # are handed to the R2 orphan queue and deleted after commit instead —
@@ -1575,7 +1654,7 @@ def auto_delete_transcript_files(sender, instance, **kwargs):
         from pod_manager.services.r2_storage import delete_media_object
         for ext in ALLOWED_EXTENSIONS:
             try:
-                delete_media_object(transcript_r2_key(instance.episode_id, ext, instance.r2_key_token))
+                delete_media_object(instance.r2_key(ext))
             except Exception as e:
                 logger.error("Failed to delete R2 transcript %s.%s: %s", instance.episode_id, ext, e)
 

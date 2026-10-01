@@ -5289,7 +5289,7 @@ class BackfillSpeakerIdsTests(TestCase):
         }).encode('utf-8')
         puts = []
         with override_settings(R2_MEDIA_ENABLED=True), \
-             mock.patch('pod_manager.management.commands.backfill_speaker_ids.read_transcript_bytes',
+             mock.patch('pod_manager.management.commands.backfill_speaker_ids.read_transcript',
                         return_value=legacy), \
              mock.patch('pod_manager.services.r2_storage.media_object_etag', return_value=None), \
              mock.patch('pod_manager.services.r2_storage.put_media_object',
@@ -10738,8 +10738,10 @@ class TranscriptServeAccessTests(TestCase):
 
     def test_redirect_uses_legacy_key_when_untokened(self):
         self._set_flag(True)
-        self.transcript.r2_key_token = None
-        self.transcript.save(update_fields=['r2_key_token'])
+        # A genuinely legacy row: untokened AND stored at the plain stem (the stem,
+        # not the token, is what the serve view follows).
+        Transcript.objects.filter(pk=self.transcript.pk).update(
+            r2_key_token=None, r2_key_stem=f'transcripts/{self.ep.id // 1000}/{self.ep.id}')
         resp = self.client.get(self._url('vtt'))
         self.assertEqual(
             resp['Location'],
@@ -12951,7 +12953,8 @@ class MergePairWithChoicesTests(TestCase):
     @override_settings(R2_MEDIA_ENABLED=True)
     def test_both_transcripts_edge_orphans_files_and_supersedes_speaker_edits(self):
         Transcript.objects.create(
-            episode=self.survivor, status=Transcript.Status.COMPLETED, version=2)
+            episode=self.survivor, status=Transcript.Status.COMPLETED, version=2,
+            vtt_file='s.vtt')
         loser_tx = Transcript.objects.create(
             episode=self.loser, status=Transcript.Status.COMPLETED, version=1,
             r2_key_token='tok12345', vtt_file='x.vtt', json_file='x.json')
@@ -12992,7 +12995,8 @@ class MergePairWithChoicesTests(TestCase):
         local.parent.mkdir(parents=True)
         local.write_text('WEBVTT')
         Transcript.objects.create(
-            episode=self.survivor, status=Transcript.Status.COMPLETED, version=0)
+            episode=self.survivor, status=Transcript.Status.COMPLETED, version=0,
+            vtt_file='transcriptions/0/survivor.vtt')
         Transcript.objects.create(
             episode=self.loser, status=Transcript.Status.COMPLETED, version=0,
             vtt_file=rel)
@@ -13386,13 +13390,20 @@ class MatchEditorServiceTests(TestCase):
     def _transcript(self, ep):
         return Transcript.objects.create(episode=ep, status=Transcript.Status.COMPLETED)
 
-    def test_survivor_is_lone_transcript_owner_not_editable(self):
+    def test_a_lone_transcript_does_not_constrain_the_default_survivor(self):
+        # The transcript stores where its own objects live, so the merge engine
+        # repoints it to whichever row survives: the default stays the private row
+        # and the owner may always flip it, whichever row owns the transcript.
         from pod_manager.services.match_editor import default_survivor
-        self._transcript(self.pub)
-        survivor, deleted, both, editable = default_survivor(self.pub, self.priv)
-        self.assertEqual(survivor.id, self.pub.id)
-        self.assertFalse(both)
-        self.assertFalse(editable)
+        for owner in (self.pub, self.priv):
+            with self.subTest(transcript_on=owner.title):
+                Transcript.objects.all().delete()
+                self._transcript(owner)
+                survivor, deleted, both, editable = default_survivor(self.pub, self.priv)
+                self.assertEqual(survivor.id, self.priv.id)
+                self.assertEqual(deleted.id, self.pub.id)
+                self.assertFalse(both)
+                self.assertTrue(editable)
 
     def test_both_transcripts_defaults_private_and_is_editable(self):
         from pod_manager.services.match_editor import default_survivor
@@ -13410,13 +13421,6 @@ class MatchEditorServiceTests(TestCase):
         self.assertEqual(deleted.id, self.pub.id)
         self.assertFalse(both)
         self.assertTrue(editable)    # nothing constrains the pick, so the owner may flip it
-
-    def test_lone_private_transcript_forces_the_private_row(self):
-        from pod_manager.services.match_editor import default_survivor
-        self._transcript(self.priv)
-        survivor, _deleted, _both, editable = default_survivor(self.pub, self.priv)
-        self.assertEqual(survivor.id, self.priv.id)
-        self.assertFalse(editable)
 
     def test_private_row_survives_even_when_the_public_row_has_subscriber_audio(self):
         from pod_manager.services.match_editor import default_survivor
@@ -14325,21 +14329,32 @@ class OrphanMergeEditorTests(TestCase):
         self.assertEqual(survivor.guid_private, 'https://om.example.test/?p=vecto-aaaaaaaaaaaa')
         self.assertEqual(survivor.guid_public, 'feed-guid-1')
 
-    def test_survivor_pick_is_ignored_when_a_transcript_forces_it(self):
-        Transcript.objects.create(episode=self.priv, status=Transcript.Status.COMPLETED)
-        self.assertFalse(self._editor().context['survivor_editable'])
-        self._commit(survivor_episode_id=self.pub.id)       # tries to override
-        self.assertTrue(Episode.objects.filter(pk=self.priv.pk).exists())
-        self.assertFalse(Episode.objects.filter(pk=self.pub.pk).exists())
-
-    def test_a_transcript_only_on_the_public_row_makes_it_survive(self):
-        Transcript.objects.create(episode=self.pub, status=Transcript.Status.COMPLETED)
-        self.assertEqual(self._editor().context['survivor'].id, self.pub.id)
-        self._commit()
+    def test_owner_may_keep_the_public_row_even_when_only_the_private_one_has_a_transcript(self):
+        tx = Transcript.objects.create(episode=self.priv, status=Transcript.Status.COMPLETED,
+                                       vtt_file='t.vtt', version=1)
+        stem = tx.r2_key_stem
+        self.assertTrue(self._editor().context['survivor_editable'])
+        self._commit(survivor_episode_id=self.pub.id)
         self.assertTrue(Episode.objects.filter(pk=self.pub.pk).exists())
         self.assertFalse(Episode.objects.filter(pk=self.priv.pk).exists())
-        survivor = Episode.objects.get(pk=self.pub.pk)
+        tx.refresh_from_db()
+        self.assertEqual(tx.episode_id, self.pub.pk)       # the transcript followed the survivor
+        self.assertEqual(tx.r2_key_stem, stem)             # ...and its objects never moved
+
+    def test_a_public_only_transcript_follows_the_private_survivor(self):
+        tx = Transcript.objects.create(episode=self.pub, status=Transcript.Status.COMPLETED,
+                                       vtt_file='t.vtt', version=1)
+        stem = tx.r2_key_stem
+        self.assertEqual(self._editor().context['survivor'].id, self.priv.id)   # default stays private
+        self._commit()
+        self.assertTrue(Episode.objects.filter(pk=self.priv.pk).exists())
+        self.assertFalse(Episode.objects.filter(pk=self.pub.pk).exists())
+        survivor = Episode.objects.get(pk=self.priv.pk)
         self.assertEqual(survivor.guid_private, 'https://om.example.test/?p=vecto-aaaaaaaaaaaa')
+        self.assertEqual(survivor.guid_public, 'feed-guid-1')
+        tx.refresh_from_db()
+        self.assertEqual(tx.episode_id, self.priv.pk)      # transcript kept, not discarded
+        self.assertEqual(tx.r2_key_stem, stem)
 
     def test_a_private_transcript_stays_with_the_surviving_private_row(self):
         Transcript.objects.create(episode=self.priv, status=Transcript.Status.COMPLETED)
@@ -14363,3 +14378,336 @@ class OrphanMergeEditorTests(TestCase):
                                          raw_description='x', clean_description='x', guid_private='f2')
         self.assertEqual(self._commit(private_episode_id=foreign.id).status_code, 404)
         self.assertTrue(Episode.objects.filter(pk=self.pub.pk).exists())
+
+
+@override_settings(CACHES=TEST_CACHES)
+class TranscriptStoredStemTests(TestCase):
+    """Transcript.r2_key_stem is the source of truth for where a transcript's R2
+    objects live: generated from the network's key pattern at creation, followed by
+    every read/write/serve/cleanup path, unaffected by which episode owns the row
+    (a merge repoints it without moving objects), and reconciled to the canonical
+    layout only by the rekey command."""
+
+    def setUp(self):
+        cache.clear()
+        self.owner = User.objects.create_user('stem-owner', password='x')
+        self.net = Network.objects.create(name='Stem Net', slug='stem-net',
+                                          custom_domain='stem.example.test')
+        self.net.owners.add(self.owner)
+        self.pod = Podcast.objects.create(network=self.net, title='Stem Show', slug='stem-show',
+                                          allow_public_transcripts=True)
+        self.ep_a = self._episode('A')
+        self.ep_b = self._episode('B')
+
+    def _episode(self, title):
+        return Episode.objects.create(podcast=self.pod, title=title, pub_date=timezone.now(),
+                                      raw_description='x', clean_description='x',
+                                      audio_url_subscriber='https://x/a.mp3')
+
+    def _tx(self, episode, **kw):
+        kw.setdefault('status', Transcript.Status.COMPLETED)
+        kw.setdefault('version', 2)
+        kw.setdefault('r2_key_token', 'tokAAAAAAAAAAAAAAAAAA')
+        for e in ('vtt', 'words'):
+            kw.setdefault('words_json_file' if e == 'words' else f'{e}_file', 'm')
+        return Transcript.objects.create(episode=episode, **kw)
+
+    def _merge(self, survivor, deleted, choices=None):
+        from pod_manager.services.episode_merge import merge_pair_with_choices
+        return merge_pair_with_choices(survivor, deleted, choices or {}, actor=self.owner)
+
+    # ---- generation ------------------------------------------------------------
+    def test_new_transcript_gets_the_default_stem(self):
+        t = self._tx(self.ep_a)
+        self.assertEqual(t.r2_key_stem, f'transcripts/{self.ep_a.id // 1000}/{self.ep_a.id}.{t.r2_key_token}')
+        self.assertEqual(t.r2_key('vtt'), t.r2_key_stem + '.vtt')
+
+    def test_default_pattern_equals_the_historical_tokened_key(self):
+        from pod_manager.services.transcription import transcript_r2_key
+        t = self._tx(self.ep_a)
+        self.assertEqual(t.r2_key('words'), transcript_r2_key(self.ep_a.id, 'words', t.r2_key_token))
+
+    def test_network_pattern_drives_new_transcripts_only(self):
+        old = self._tx(self.ep_a)
+        old_stem = old.r2_key_stem
+        self.net.transcript_key_pattern = 'transcripts/{network_slug}/{podcast_slug}/{episode_id}.{token}'
+        self.net.save()
+        new = self._tx(self.ep_b, r2_key_token='tokBBBBBBBBBBBBBBBBBB')
+        self.assertEqual(new.r2_key_stem,
+                         f'transcripts/stem-net/stem-show/{self.ep_b.id}.tokBBBBBBBBBBBBBBBBBB')
+        old.refresh_from_db()
+        self.assertEqual(old.r2_key_stem, old_stem)      # editing the pattern never moves existing rows
+
+    def test_untokened_legacy_rows_keep_the_legacy_stem(self):
+        t = self._tx(self.ep_a, r2_key_token=None)
+        self.assertEqual(t.r2_key_stem, f'transcripts/{self.ep_a.id // 1000}/{self.ep_a.id}')
+
+    def test_a_row_with_no_stored_stem_falls_back_to_the_legacy_derivation(self):
+        t = self._tx(self.ep_a)
+        Transcript.objects.filter(pk=t.pk).update(r2_key_stem=None)
+        t.refresh_from_db()
+        self.assertIsNone(t.r2_key_stem)
+        self.assertEqual(t.stem(), f'transcripts/{self.ep_a.id // 1000}/{self.ep_a.id}.{t.r2_key_token}')
+
+    def test_an_invalid_pattern_in_the_db_cannot_break_new_transcripts(self):
+        Network.objects.filter(pk=self.net.pk).update(transcript_key_pattern='no-token-here')
+        t = self._tx(self.ep_a)
+        self.assertEqual(t.r2_key_stem, f'transcripts/{self.ep_a.id // 1000}/{self.ep_a.id}.{t.r2_key_token}')
+
+    # ---- pattern validation ----------------------------------------------------------
+    def test_pattern_validation(self):
+        from pod_manager.services.transcript_keys import validate_key_pattern
+        for ok in ('', 'transcripts/{bucket}/{episode_id}.{token}', 'transcripts/{token}',
+                   'transcripts/{network_slug}/{podcast_slug}/{token}'):
+            validate_key_pattern(ok)
+        for bad in ('transcripts/{bucket}/{episode_id}',          # no token: guessable
+                    'audio/{token}',                               # outside the transcripts prefix
+                    'transcripts/{nope}.{token}',                  # unknown placeholder
+                    'transcripts/../{token}', 'transcripts//{token}',
+                    'transcripts/{token}/', 'transcripts/{token}.',
+                    'transcripts/{token} x', 'transcripts/{token', '/transcripts/{token}'):
+            with self.subTest(bad=bad):
+                with self.assertRaises(ValueError):
+                    validate_key_pattern(bad)
+
+    def test_admin_field_validates_and_is_on_the_network_form(self):
+        from django.core.exceptions import ValidationError
+        self.net.transcript_key_pattern = 'transcripts/{bucket}/{episode_id}'
+        with self.assertRaises(ValidationError):
+            self.net.full_clean()
+        su = User.objects.create_superuser('stem-su', 's@example.com', 'x')
+        self.client.force_login(su)
+        resp = self.client.get(reverse('admin:pod_manager_network_change', args=[self.net.pk]),
+                               HTTP_HOST='stem.example.test')
+        self.assertContains(resp, 'name="transcript_key_pattern"')
+
+    # ---- migration backfill --------------------------------------------------------------
+    def test_migration_backfills_the_exact_historical_stems(self):
+        import importlib
+        from django.apps import apps
+        mod = importlib.import_module('pod_manager.migrations.0109_transcript_key_stem')
+        tokened = self._tx(self.ep_a)
+        untokened = self._tx(self.ep_b, r2_key_token=None)
+        Transcript.objects.update(r2_key_stem=None)
+        mod.backfill_stems(apps, None)
+        tokened.refresh_from_db()
+        untokened.refresh_from_db()
+        self.assertEqual(tokened.r2_key_stem, f'transcripts/{self.ep_a.id // 1000}/{self.ep_a.id}.{tokened.r2_key_token}')
+        self.assertEqual(untokened.r2_key_stem, f'transcripts/{self.ep_b.id // 1000}/{self.ep_b.id}')
+
+    # ---- a repointed transcript still resolves to its ORIGINAL objects -------------------------
+    @override_settings(R2_MEDIA_ENABLED=True, R2_MEDIA_PUBLIC_HOST='https://cdn.test', R2_MEDIA_KEY_PREFIX='')
+    def test_merge_repoints_the_transcript_and_every_path_still_finds_its_objects(self):
+        from pod_manager.services import r2_maintenance
+        from pod_manager.services.transcription import read_transcript
+        tx = self._tx(self.ep_a)
+        stem = tx.r2_key_stem                      # contains ep_a's id
+        a_id = self.ep_a.id
+        survivor = self._merge(self.ep_b, self.ep_a)
+        moved = Transcript.objects.get(episode=survivor)
+        self.assertEqual(moved.pk, tx.pk)          # same row, new owner
+        self.assertEqual(moved.r2_key_stem, stem)  # objects did not move
+        self.assertNotEqual(stem, moved.canonical_stem())   # stored differs from what the new owner's id would derive
+        self.assertFalse(Episode.objects.filter(pk=a_id).exists())
+
+        asked = []
+
+        def fake_get(key):
+            asked.append(key)
+            return b'{"segments": []}', 'application/json'
+
+        with mock.patch('pod_manager.services.r2_storage.get_media_object', side_effect=fake_get):
+            read_transcript(moved, 'words')
+        self.assertEqual(asked, [stem + '.words'])           # read by STORED key, not the new owner's id
+
+        resp = self.client.get(f'/transcripts/{survivor.id}.vtt', HTTP_HOST='stem.example.test')
+        self.assertEqual(resp.status_code, 302)
+        self.assertTrue(resp['Location'].startswith('https://cdn.test/' + stem + '.vtt'))
+
+        self.assertTrue(r2_maintenance._transcript_key_still_live(stem + '.vtt'))
+
+    @override_settings(R2_MEDIA_ENABLED=True)
+    def test_cleanup_never_deletes_the_objects_of_a_repointed_transcript(self):
+        from pod_manager.services import r2_maintenance
+        tx = self._tx(self.ep_a)
+        stem = tx.r2_key_stem
+        self._merge(self.ep_b, self.ep_a)
+        # A stale ledger row for one of the live keys (e.g. left by an earlier move).
+        R2OrphanedObject.objects.create(key=stem + '.vtt',
+                                        reason=R2OrphanedObject.Reason.MOVE_REKEY)
+        with mock.patch.object(r2_maintenance, '_delete_and_purge_transcript_key') as delete:
+            result = r2_maintenance.cleanup_orphans(apply=True)
+        delete.assert_not_called()
+        self.assertEqual(result['readopted'], 1)
+        self.assertFalse(R2OrphanedObject.objects.filter(key=stem + '.vtt').exists())
+
+    @override_settings(R2_MEDIA_ENABLED=True)
+    def test_writes_after_a_repoint_go_to_the_stored_stem(self):
+        from pod_manager.services.transcription import write_transcript
+        tx = self._tx(self.ep_a)
+        stem = tx.r2_key_stem
+        survivor = self._merge(self.ep_b, self.ep_a)
+        moved = Transcript.objects.get(episode=survivor)
+        with mock.patch('pod_manager.services.r2_storage.put_media_object') as put, \
+             mock.patch('pod_manager.services.transcription._r2_format_matches', return_value=False):
+            write_transcript(moved, [('vtt', b'WEBVTT')])
+        self.assertEqual(put.call_args.args[0], stem + '.vtt')
+
+    # ---- merge semantics --------------------------------------------------------------------
+    def test_lone_transcript_on_either_side_survives_whichever_row_wins(self):
+        tx = self._tx(self.ep_a)
+        survivor = self._merge(self.ep_b, self.ep_a)         # the row WITHOUT the transcript survives
+        self.assertEqual(Transcript.objects.get(pk=tx.pk).episode_id, survivor.id)
+        ep_c, ep_d = self._episode('C'), self._episode('D')
+        tx2 = self._tx(ep_d, r2_key_token='tokDDDDDDDDDDDDDDDDDD')
+        survivor2 = self._merge(ep_d, ep_c)                   # the row WITH it survives: nothing to move
+        self.assertEqual(Transcript.objects.get(pk=tx2.pk).episode_id, survivor2.id)
+
+    def test_speaker_edits_stay_approved_when_the_transcript_moves(self):
+        self._tx(self.ep_a)
+        edit = EpisodeEditSuggestion.objects.create(
+            episode=self.ep_a, user=self.owner, suggested_data={'speaker_mappings': {'SPEAKER_00': 'Josh'}},
+            status=EpisodeEditSuggestion.Status.APPROVED, points=2, resolved_at=timezone.now())
+        survivor = self._merge(self.ep_b, self.ep_a)
+        edit.refresh_from_db()
+        self.assertEqual(edit.episode_id, survivor.id)
+        self.assertEqual(edit.status, EpisodeEditSuggestion.Status.APPROVED)   # still replays
+
+    @override_settings(R2_MEDIA_ENABLED=True)
+    def test_both_transcripts_supersede_by_the_losers_stored_stem(self):
+        keep = self._tx(self.ep_b, r2_key_token='tokBBBBBBBBBBBBBBBBBB')
+        lose = self._tx(self.ep_a)
+        Transcript.objects.filter(pk=lose.pk).update(r2_key_stem='transcripts/custom/place/xyz')
+        edit = EpisodeEditSuggestion.objects.create(
+            episode=self.ep_a, user=self.owner, suggested_data={'speaker_mappings': {'SPEAKER_00': 'Josh'}},
+            status=EpisodeEditSuggestion.Status.APPROVED, resolved_at=timezone.now())
+        survivor = self._merge(self.ep_b, self.ep_a)
+        self.assertEqual(Transcript.objects.get(episode=survivor).pk, keep.pk)
+        self.assertFalse(Transcript.objects.filter(pk=lose.pk).exists())
+        self.assertEqual(
+            set(R2OrphanedObject.objects.values_list('key', flat=True)),
+            {'transcripts/custom/place/xyz.vtt', 'transcripts/custom/place/xyz.words'})
+        edit.refresh_from_db()
+        self.assertEqual(edit.status, EpisodeEditSuggestion.Status.SUPERSEDED)
+
+    def test_an_empty_placeholder_yields_to_a_real_transcript(self):
+        placeholder = Transcript.objects.create(episode=self.ep_b, status=Transcript.Status.PENDING)
+        real = self._tx(self.ep_a)
+        survivor = self._merge(self.ep_b, self.ep_a)
+        self.assertEqual(Transcript.objects.get(episode=survivor).pk, real.pk)
+        self.assertFalse(Transcript.objects.filter(pk=placeholder.pk).exists())
+
+    # ---- rekey: normalize / rotate ------------------------------------------------------------------
+    def _run_rekey(self, **kwargs):
+        from pod_manager.services import cloudflare as cf, r2_maintenance
+        client = mock.MagicMock()
+        purge = mock.MagicMock(return_value=True)
+        with override_settings(R2_MEDIA_ENABLED=True, R2_MEDIA_PUBLIC_HOST='https://cdn.test', R2_MEDIA_KEY_PREFIX=''), \
+             mock.patch.object(r2_maintenance, 'get_r2_client', return_value=client), \
+             mock.patch('pod_manager.services.r2_storage.get_r2_client', return_value=client), \
+             mock.patch.object(cf, 'purge_urls', purge), \
+             mock.patch('pod_manager.services.r2_storage.delete_media_object') as delete:
+            result = r2_maintenance.rekey_transcripts(**kwargs)
+        return result, client, purge, delete
+
+    def test_normalize_moves_a_repointed_transcript_to_its_owners_canonical_stem(self):
+        tx = self._tx(self.ep_a)
+        old_stem, token = tx.r2_key_stem, tx.r2_key_token
+        survivor = self._merge(self.ep_b, self.ep_a)
+        want = f'transcripts/{survivor.id // 1000}/{survivor.id}.{token}'
+
+        dry, client, _, _ = self._run_rekey(normalize=True)
+        self.assertEqual(dry['candidates'], [survivor.id])
+        self.assertEqual(dry['changes'], [(survivor.id, old_stem, want)])
+        client.copy_object.assert_not_called()
+
+        result, client, purge, delete = self._run_rekey(normalize=True, apply=True)
+        self.assertEqual({k: result[k] for k in ('rekeyed', 'retry_pending', 'errors')},
+                         {'rekeyed': 1, 'retry_pending': 0, 'errors': 0})
+        tx.refresh_from_db()
+        self.assertEqual(tx.r2_key_stem, want)
+        self.assertEqual(tx.r2_key_token, token)                # normalize keeps the token
+        copied = {(c.kwargs['CopySource']['Key'], c.kwargs['Key']) for c in client.copy_object.call_args_list}
+        self.assertEqual(copied, {(f'{old_stem}.{e}', f'{want}.{e}') for e in ('vtt', 'words')})
+        self.assertEqual({c.args[0] for c in delete.call_args_list}, {f'{old_stem}.vtt', f'{old_stem}.words'})
+        self.assertTrue(purge.called)
+        self.assertEqual(R2OrphanedObject.objects.count(), 0)   # ledger converged
+        # Idempotent: nothing left to normalize.
+        again, *_ = self._run_rekey(normalize=True)
+        self.assertEqual(again['candidates'], [])
+
+    def test_normalize_follows_a_changed_network_pattern(self):
+        tx = self._tx(self.ep_a)
+        self.net.transcript_key_pattern = 'transcripts/{network_slug}/{episode_id}.{token}'
+        self.net.save()
+        result, *_ = self._run_rekey(normalize=True, apply=True)
+        self.assertEqual(result['rekeyed'], 1)
+        tx.refresh_from_db()
+        self.assertEqual(tx.r2_key_stem, f'transcripts/stem-net/{self.ep_a.id}.{tx.r2_key_token}')
+
+    def test_normalize_skips_canonical_untokened_and_unfinished_rows(self):
+        self._tx(self.ep_a)                                     # already canonical
+        self._tx(self._episode('U'), r2_key_token=None)         # legacy: the default mode's job
+        self._tx(self._episode('P'), status=Transcript.Status.PENDING)
+        result, *_ = self._run_rekey(normalize=True)
+        self.assertEqual(result['candidates'], [])
+
+    def test_rotate_token_issues_a_new_token_and_revokes_the_old_urls(self):
+        tx = self._tx(self.ep_a)
+        old_stem, old_token = tx.r2_key_stem, tx.r2_key_token
+        result, client, purge, delete = self._run_rekey(rotate_token=True, apply=True)
+        self.assertEqual(result['rekeyed'], 1)
+        tx.refresh_from_db()
+        self.assertNotEqual(tx.r2_key_token, old_token)
+        self.assertEqual(tx.r2_key_stem, f'transcripts/{self.ep_a.id // 1000}/{self.ep_a.id}.{tx.r2_key_token}')
+        self.assertTrue({f'{old_stem}.vtt', f'{old_stem}.words'} <= {c.args[0] for c in delete.call_args_list})
+        self.assertTrue(purge.called)
+
+    def test_the_default_mode_tokens_legacy_rows_under_the_networks_pattern(self):
+        self.net.transcript_key_pattern = 'transcripts/{network_slug}/{token}'
+        self.net.save()
+        tx = self._tx(self.ep_a, r2_key_token=None)
+        result, *_ = self._run_rekey(apply=True)
+        self.assertEqual(result['rekeyed'], 1)
+        tx.refresh_from_db()
+        self.assertTrue(tx.r2_key_token)
+        self.assertEqual(tx.r2_key_stem, f'transcripts/stem-net/{tx.r2_key_token}')
+
+    def test_a_row_that_changed_under_the_move_is_not_clobbered(self):
+        from pod_manager.services import r2_maintenance
+        tx = self._tx(self.ep_a)
+        client = mock.MagicMock()
+        stale = Transcript.objects.get(pk=tx.pk)
+        Transcript.objects.filter(pk=tx.pk).update(r2_key_stem='transcripts/someone/else')   # a concurrent rekey won
+        with override_settings(R2_MEDIA_ENABLED=True), \
+             mock.patch('pod_manager.services.r2_storage.delete_media_object') as delete:
+            status = r2_maintenance._move_transcript(client, 'bucket', stale, 'transcripts/new/stem')
+        self.assertEqual(status, 'error')
+        delete.assert_not_called()
+        tx.refresh_from_db()
+        self.assertEqual(tx.r2_key_stem, 'transcripts/someone/else')
+
+    def test_command_flag_validation(self):
+        from django.core.management import call_command
+        from django.core.management.base import CommandError
+        with self.assertRaises(CommandError):
+            call_command('rekey_transcripts', '--normalize', '--rotate-token')
+        with self.assertRaises(CommandError):
+            call_command('rekey_transcripts', '--rotate-token')            # unscoped rotation needs --all
+        with self.assertRaises(CommandError):
+            call_command('rekey_transcripts', '--network', 'no-such-network')
+
+    @override_settings(R2_MEDIA_ENABLED=True)
+    def test_verify_reports_files_and_episodes_separately(self):
+        # `--verify` counts FILES present but checks EPISODES, so the summary must say
+        # which is which (prod showed "4044 checked, 20220 present" and read as a bug).
+        from io import StringIO
+        from django.core.management import call_command
+        self._tx(self.ep_a)                                    # 2 formats (vtt, words)
+        self._tx(self.ep_b, r2_key_token='tokBBBBBBBBBBBBBBBBBB')
+        out = StringIO()
+        with mock.patch('pod_manager.services.r2_storage.media_object_exists', return_value=True):
+            call_command('backfill_transcripts_to_r2', '--all', '--verify', stdout=out)
+        text = out.getvalue()
+        self.assertIn('Verify: 4 files present across 2 episodes (2.0 files per episode), '
+                      '0 files missing, 0 episodes not yet migrated.', text)

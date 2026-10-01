@@ -256,39 +256,59 @@ def _transcript_marker_exts(transcript) -> list[str]:
     ]
 
 
-def _parse_transcript_key(key: str):
-    """(episode_id, token, ext) from a bare transcript key, or None if the key
-    doesn't match either shape (legacy {id}.{ext} / keyed {id}.{token}.{ext})."""
+def _split_transcript_key(key: str):
+    """(stem, ext) of a bare transcript key, or None when it doesn't end in a
+    transcript extension. The stem is everything before the final '.ext' — which
+    is exactly what Transcript.r2_key_stem stores, so a key maps straight back to
+    the row that owns it with no knowledge of the layout."""
     from pod_manager.services.transcription import ALLOWED_EXTENSIONS
-    parts = key.rsplit('/', 1)[-1].split('.')
-    if len(parts) == 2:
-        ep_raw, token, ext = parts[0], None, parts[1]
-    elif len(parts) == 3:
-        ep_raw, token, ext = parts
-    else:
+    stem, _, ext = key.rpartition('.')
+    if not stem or ext not in ALLOWED_EXTENSIONS:
         return None
-    if ext not in ALLOWED_EXTENSIONS:
+    return stem, ext
+
+
+def _legacy_owner_id(key: str):
+    """Episode id parsed from a key in the historical shapes
+    transcripts/{id // 1000}/{id}[.{token}].{ext}; None otherwise. Only used as a
+    fallback for a transcript row that has no stored stem (never the case after the
+    0109 backfill, but liveness must fail SAFE, never mis-judge a live object)."""
+    parts = key.rsplit('/', 1)[-1].split('.')
+    if len(parts) not in (2, 3):
         return None
     try:
-        return int(ep_raw), token, ext
+        return int(parts[0])
     except ValueError:
         return None
 
 
-def _transcript_key_still_live(key: str) -> bool:
-    """Re-validation for transcript orphan rows: True if the episode's live
-    Transcript still RESOLVES to this key (token null and key is the plain shape,
-    or the token matches) — i.e. deleting it would break the serve path."""
+def _transcript_for_key(key: str, *fields):
+    """The live Transcript whose objects include ``key``, or None."""
     from pod_manager.models import Transcript
     from pod_manager.services.transcription import transcript_r2_key
-    parsed = _parse_transcript_key(key)
-    if parsed is None:
-        return False
-    episode_id, _, ext = parsed
-    row = Transcript.objects.filter(episode_id=episode_id).only('r2_key_token').first()
-    if row is None:
-        return False
-    return transcript_r2_key(episode_id, ext, row.r2_key_token) == key
+    split = _split_transcript_key(key)
+    if split is None:
+        return None
+    stem, ext = split
+    qs = Transcript.objects.only(*fields) if fields else Transcript.objects.all()
+    row = qs.filter(r2_key_stem=stem).first()
+    if row is not None:
+        return row
+    # Fail-safe fallback: a row with no stored stem is judged by the old derivation.
+    episode_id = _legacy_owner_id(key)
+    if episode_id is not None:
+        legacy = Transcript.objects.filter(episode_id=episode_id, r2_key_stem__isnull=True).first()
+        if legacy is not None and transcript_r2_key(episode_id, ext, legacy.r2_key_token) == key:
+            return legacy
+    return None
+
+
+def _transcript_key_still_live(key: str) -> bool:
+    """Re-validation for transcript orphan rows: True if a live Transcript's STORED
+    stem resolves to this key — i.e. deleting it would break the serve path. Keyed
+    by stem, not by the episode id in the path, so a transcript repointed to another
+    episode by a merge (its objects never moved) is still recognised as live."""
+    return _transcript_for_key(key, 'id') is not None
 
 
 def _transcript_purge_urls(key: str, version: int) -> list[str]:
@@ -304,7 +324,6 @@ def _delete_and_purge_transcript_key(key: str) -> bool:
     """Hard-delete one bare transcript key from the MEDIA bucket, then purge its
     CDN URLs. True only when both succeed — callers keep their orphan row (the
     retry ledger) on any failure."""
-    from pod_manager.models import Transcript
     from pod_manager.services.cloudflare import purge_urls
     from pod_manager.services.r2_storage import delete_media_object
 
@@ -314,11 +333,18 @@ def _delete_and_purge_transcript_key(key: str) -> bool:
     # generous fixed range instead. Versions are tiny ints (a handful of
     # re-transcribes), and the whole range still fits one 30-URL purge call.
     version = _FALLBACK_PURGE_VERSIONS
-    parsed = _parse_transcript_key(key)
-    if parsed:
-        row = Transcript.objects.filter(episode_id=parsed[0]).only('version').first()
-        if row is not None:
-            version = row.version or 0
+    row = _transcript_for_key(key, 'id', 'version')
+    if row is None:
+        # An OLD key (a ledger row left by a move) no longer matches any stem, but
+        # the transcript it used to belong to still holds the version that bounds
+        # which ?v=N URLs ever reached the edge cache. The id in the old path is
+        # only a hint here — it can't make us delete anything, just narrow a purge.
+        from pod_manager.models import Transcript
+        owner_id = _legacy_owner_id(key)
+        if owner_id is not None:
+            row = Transcript.objects.filter(episode_id=owner_id).only('version').first()
+    if row is not None:
+        version = row.version or 0
     try:
         delete_media_object(key)
     except ClientError as exc:
@@ -327,35 +353,33 @@ def _delete_and_purge_transcript_key(key: str) -> bool:
     return purge_urls(_transcript_purge_urls(key, version))
 
 
-def _rekey_one_transcript(client, bucket, transcript) -> str:
-    """Move one legacy transcript's objects to a keyed location. Strict order:
-    record-orphan -> copy -> set token -> delete -> purge -> clear rows, so a
-    crash at any point leaves a durable retry record and a rerun converges.
+def _move_transcript(client, bucket, transcript, new_stem: str, new_token: str | None = None) -> str:
+    """Move one transcript's objects to ``new_stem`` (optionally under a new token)
+    and flip the row's STORED stem. Strict order: record-orphan -> copy -> flip ->
+    delete -> purge -> clear rows, so a crash at any point leaves a durable retry
+    record and a rerun converges.
 
-    Returns 'rekeyed' | 'retry_pending' (token set; delete/purge left to the
-    orphan rows) | 'error' (copy failed; token NOT set — rerun retries)."""
-    from pod_manager.models import R2OrphanedObject, Transcript, new_transcript_token
+    Returns 'rekeyed' | 'retry_pending' (flipped; delete/purge left to the orphan
+    rows) | 'error' (copy failed or the row changed under us; nothing flipped)."""
+    from django.db.models import Q
+    from pod_manager.models import R2OrphanedObject, Transcript
     from pod_manager.services.cloudflare import purge_urls
     from pod_manager.services.r2_storage import delete_media_object, media_object_key
-    from pod_manager.services.transcription import transcript_r2_key
 
     episode_id = transcript.episode_id
-    old_keys = [
-        transcript_r2_key(episode_id, ext, None)
-        for ext in _transcript_marker_exts(transcript)
-    ]
+    old_stem = transcript.stem()
+    exts = _transcript_marker_exts(transcript)
+    old_keys = [f"{old_stem}.{ext}" for ext in exts]
+    new_keys = [f"{new_stem}.{ext}" for ext in exts]
 
     # 1. Durable retry records BEFORE the risky steps (mirror's record-then-clear
     #    pattern) — a crash mid-operation leaves rows cleanup_orphans can finish.
     for key in old_keys:
         _record_orphan(key, transcript.episode, reason=R2OrphanedObject.Reason.MOVE_REKEY)
 
-    token = new_transcript_token()
-
-    # 2. Server-side copies old -> keyed (Class A; no egress).
+    # 2. Server-side copies old -> new (Class A; no egress).
     try:
-        for old_key in old_keys:
-            new_key = transcript_r2_key(episode_id, old_key.rsplit('.', 1)[-1], token)
+        for old_key, new_key in zip(old_keys, new_keys):
             client.copy_object(
                 Bucket=bucket,
                 CopySource={'Bucket': bucket, 'Key': media_object_key(old_key)},
@@ -368,25 +392,31 @@ def _rekey_one_transcript(client, bucket, transcript) -> str:
         )
         return 'error'
 
-    # 3. Single UPDATE — the 302 target flips atomically here. The isnull guard
-    #    means a concurrent rekey can't clobber an already-set token (one-way
-    #    ratchet); if we lost that race our copies are unreferenced cruft and the
-    #    orphan rows still converge via cleanup re-validation.
-    updated = Transcript.objects.filter(
-        pk=transcript.pk, r2_key_token__isnull=True,
-    ).update(r2_key_token=token)
-    if not updated:
-        logger.warning("transcript rekey: episode %d was tokened concurrently", episode_id)
+    # 3. Single guarded UPDATE — the 302 target flips atomically here. The guard
+    #    (same stem, same token) means a concurrent rekey or re-tokening can't be
+    #    clobbered; if we lost the race our copies are unreferenced cruft, so ledger
+    #    them too and let cleanup's liveness re-validation sort both sets out.
+    guard = Q(pk=transcript.pk) & (Q(r2_key_stem=old_stem) | Q(r2_key_stem__isnull=True))
+    guard &= (Q(r2_key_token__isnull=True) if transcript.r2_key_token is None
+              else Q(r2_key_token=transcript.r2_key_token))
+    changes = {'r2_key_stem': new_stem}
+    if new_token is not None:
+        changes['r2_key_token'] = new_token
+    if not Transcript.objects.filter(guard).update(**changes):
+        logger.warning("transcript rekey: episode %d changed concurrently", episode_id)
+        for key in new_keys:
+            _record_orphan(key, transcript.episode, reason=R2OrphanedObject.Reason.MOVE_REKEY)
         return 'error'
-    transcript.r2_key_token = token
+    transcript.r2_key_stem = new_stem
+    if new_token is not None:
+        transcript.r2_key_token = new_token
 
     # 4./5. Delete the old objects, purge their CDN URLs, and only then clear the
     #       orphan rows — any failure keeps the rows for cleanup_orphans to retry.
     #       On failure the ledger is re-recorded first: a cleanup run racing the
-    #       pre-token window sees the plain key still resolving live, classifies
-    #       the rows as re-adopted, and DROPS them — so they can't be assumed to
-    #       still exist here (_record_orphan is get_or_create, so this is free
-    #       when they do).
+    #       pre-flip window sees the old key still resolving live, classifies the
+    #       rows as re-adopted, and DROPS them — so they can't be assumed to still
+    #       exist here (_record_orphan is get_or_create, so this is free when they do).
     def _reassert_ledger():
         for key in old_keys:
             _record_orphan(key, transcript.episode, reason=R2OrphanedObject.Reason.MOVE_REKEY)
@@ -417,55 +447,113 @@ def _rekey_one_transcript(client, bucket, transcript) -> str:
     return 'rekeyed'
 
 
+def _rekey_one_transcript(client, bucket, transcript) -> str:
+    """Legacy (untokened) -> tokened: give the row a fresh random token and move it
+    to the canonical stem for that token."""
+    from pod_manager.models import new_transcript_token
+    token = new_transcript_token()
+    return _move_transcript(client, bucket, transcript,
+                            transcript.canonical_stem(token=token), new_token=token)
+
+
 def rekey_transcripts(podcast_slug: str | None = None, podcast_id: int | None = None,
-                      limit: int | None = None, apply: bool = False) -> dict:
-    """Churn legacy (untokened) transcripts to keyed R2 locations (section E2).
+                      limit: int | None = None, apply: bool = False, *,
+                      network_slug: str | None = None,
+                      normalize: bool = False, rotate_token: bool = False) -> dict:
+    """Move transcript objects to where the row SHOULD keep them (section E2).
 
-    Scope: COMPLETED, version >= 1 (R2-backed), r2_key_token null — so the run is
-    idempotent and resumable (tokened rows never re-enter the queryset). Optional
-    podcast scoping (slug or id) and a --limit-style stop after N tokens set.
-    Default is a dry run reporting the candidate episode ids; apply=True executes.
-    """
-    from pod_manager.models import Transcript
+    Three modes over COMPLETED, R2-backed (version >= 1) transcripts, selected by
+    the flags (mutually exclusive; the default is the original churn):
 
+      default        untokened rows -> tokened (a fresh random token + the canonical
+                     stem). Run after flipping a feed's allow_public_transcripts off.
+      --normalize    tokened rows whose STORED stem differs from the canonical one
+                     (their owner's id, or the network's transcript_key_pattern,
+                     changed — e.g. after a merge repointed the transcript, or an
+                     admin changed the pattern) -> moved to the canonical stem, SAME
+                     token (so URLs keep their secrecy; only the path changes).
+      --rotate-token tokened rows -> a NEW random token + the canonical stem.
+                     Revokes the old object URLs (they are deleted and CDN-purged);
+                     use it if a transcript URL leaked.
+
+    Every mode is idempotent and resumable: a row that already satisfies the mode's
+    condition never re-enters the queryset (rotate-token excepted — it re-rotates by
+    design, so scope it). Optional scoping by podcast / network and a --limit-style
+    stop after N moved. Default is a dry run reporting the candidates (and, for the
+    stem modes, old -> new); apply=True executes."""
+    from pod_manager.models import Transcript, new_transcript_token
+
+    if normalize and rotate_token:
+        raise ValueError("normalize and rotate_token are mutually exclusive.")
     if not settings.R2_MEDIA_ENABLED:
         raise RuntimeError("R2_MEDIA_ENABLED is off — transcripts are not R2-backed here.")
 
     qs = (
         Transcript.objects
-        .filter(status=Transcript.Status.COMPLETED, version__gte=1,
-                r2_key_token__isnull=True)
-        .select_related('episode')
+        .filter(status=Transcript.Status.COMPLETED, version__gte=1)
+        .select_related('episode__podcast__network')
         .order_by('episode_id')
     )
+    if normalize or rotate_token:
+        qs = qs.filter(r2_key_token__isnull=False)
+    else:
+        qs = qs.filter(r2_key_token__isnull=True)
     if podcast_slug:
         qs = qs.filter(episode__podcast__slug=podcast_slug)
     if podcast_id:
         qs = qs.filter(episode__podcast_id=podcast_id)
+    if network_slug:
+        qs = qs.filter(episode__podcast__network__slug=network_slug)
+
+    def _plan(transcript):
+        """(new_stem, new_token) for this row under the active mode."""
+        if rotate_token:
+            token = new_transcript_token()
+            return transcript.canonical_stem(token=token), token
+        if normalize:
+            return transcript.canonical_stem(), None
+        token = new_transcript_token()
+        return transcript.canonical_stem(token=token), token
+
+    def _candidates():
+        for transcript in qs.iterator():
+            if normalize and transcript.stem() == transcript.canonical_stem():
+                continue
+            yield transcript
+
+    mode = 'rotate_token' if rotate_token else 'normalize' if normalize else 'legacy'
 
     if not apply:
-        ids = list(qs.values_list('episode_id', flat=True))
-        if limit is not None:
-            ids = ids[:limit]
-        return {'applied': False, 'candidates': ids,
+        rows = []
+        for transcript in _candidates():
+            rows.append(transcript)
+            if limit is not None and len(rows) >= limit:
+                break
+        changes = []
+        if normalize or rotate_token:
+            for transcript in rows:
+                new_stem, _ = _plan(transcript)
+                changes.append((transcript.episode_id, transcript.stem(), new_stem))
+        return {'applied': False, 'mode': mode,
+                'candidates': [t.episode_id for t in rows], 'changes': changes,
                 'rekeyed': 0, 'retry_pending': 0, 'errors': 0}
 
     client = get_r2_client()
     bucket = settings.R2_MEDIA_BUCKET
     counts = {'rekeyed': 0, 'retry_pending': 0, 'errors': 0}
-    for transcript in qs.iterator():
-        tokened = counts['rekeyed'] + counts['retry_pending']
-        if limit is not None and tokened >= limit:
+    for transcript in _candidates():
+        moved = counts['rekeyed'] + counts['retry_pending']
+        if limit is not None and moved >= limit:
             break
-        status = _rekey_one_transcript(client, bucket, transcript)
+        new_stem, new_token = _plan(transcript)
+        status = _move_transcript(client, bucket, transcript, new_stem, new_token)
         counts['errors' if status == 'error' else status] += 1
     logger.info(
-        "transcript rekey: rekeyed=%d retry_pending=%d errors=%d (podcast=%s limit=%s)",
-        counts['rekeyed'], counts['retry_pending'], counts['errors'],
-        podcast_slug or podcast_id or 'ALL', limit,
+        "transcript rekey[%s]: rekeyed=%d retry_pending=%d errors=%d (podcast=%s network=%s limit=%s)",
+        mode, counts['rekeyed'], counts['retry_pending'], counts['errors'],
+        podcast_slug or podcast_id or 'ALL', network_slug or 'ALL', limit,
     )
-    return {'applied': True, 'candidates': [], **counts}
-
+    return {'applied': True, 'mode': mode, 'candidates': [], 'changes': [], **counts}
 
 # ---------------------------------------------------------------------------
 # Re-key on move (section J)

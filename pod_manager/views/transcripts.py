@@ -8,9 +8,8 @@ from django.http import (Http404, HttpResponse, HttpResponseNotModified,
 
 from pod_manager.services.transcription import (ALLOWED_EXTENSIONS,
                                                 CONTENT_TYPES,
-                                                source_audio_filename,
-                                                transcript_path,
-                                                transcript_r2_key)
+                                                local_transcript_path,
+                                                source_audio_filename)
 
 logger = logging.getLogger(__name__)
 
@@ -145,7 +144,7 @@ def serve_transcript(request, episode_id, ext: str):
         from botocore.exceptions import ClientError
         from pod_manager.services.r2_storage import (get_media_object,
                                                      media_public_url)
-        key = transcript_r2_key(int(episode_id), ext, transcript.r2_key_token)
+        key = transcript.r2_key(ext)
         if download:
             try:
                 data, ctype = get_media_object(key)
@@ -164,7 +163,7 @@ def serve_transcript(request, episode_id, ext: str):
 
     # --- Legacy local: serve from disk, ETag so the browser revalidates ---
     try:
-        path = transcript_path(int(episode_id), ext)
+        path = local_transcript_path(transcript, ext)
     except (ValueError, TypeError):
         raise Http404
     if not path.exists():

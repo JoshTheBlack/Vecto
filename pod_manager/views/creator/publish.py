@@ -17,6 +17,7 @@ from django.utils.dateparse import parse_datetime
 from django.views.decorators.http import require_POST
 
 from ...models import Episode, EpisodeCrossPublication, Network, Podcast
+from ...services.guid_links import make_private_guid
 from ...services.cross_publish import (
     apply_auto_cross_publish, current_target_ids, sync_cross_publications,
     validate_cross_targets,
@@ -257,6 +258,18 @@ def _handle_publish_post(request, current_network, podcasts, networks):
 
     audio_public     = request.POST.get('audio_url_public', '').strip() or None
     audio_subscriber = request.POST.get('audio_url_subscriber', '').strip() or None
+
+    # "Public version comes from a feed import": this episode is the PRIVATE half.
+    # No public GUID/URL is generated, so it sits in the Merge Desk's Premium
+    # (private) Orphans until the matching public-feed episode is imported and paired. It
+    # only makes sense with private audio (drafts may still add it later).
+    public_from_import = request.POST.get('public_from_import') == '1'
+    if public_from_import:
+        audio_public = None
+        if action != 'draft' and not (audio_subscriber or audio_file):
+            messages.error(request, "An episode whose public version comes from a feed "
+                                    "import needs Premium / Ad-Free audio (a URL or an upload).")
+            return _back_to_form()
     duration         = request.POST.get('duration', '').strip()
 
     try:
@@ -275,10 +288,18 @@ def _handle_publish_post(request, current_network, podcasts, networks):
     if episode_id:
         ep = get_object_or_404(Episode, pk=episode_id, podcast__network=current_network, is_published=False)
     else:
-        ep = Episode(
-            podcast=podcast,
-            guid_public=str(uuid.uuid4()),
-        )
+        ep = Episode(podcast=podcast)
+
+    # GUIDs: every Vecto-created episode gets a generated private GUID (the /?p=
+    # link target); the public GUID is skipped when the public side is coming from
+    # a feed import. Applied to drafts on every save, so flipping the toggle on a
+    # draft takes effect (a draft has never been in a feed).
+    if public_from_import:
+        ep.guid_public = None
+    elif not ep.guid_public:
+        ep.guid_public = str(uuid.uuid4())
+    if not ep.guid_private:
+        ep.guid_private = make_private_guid(current_network)
 
     ep.title              = title
     ep.raw_description    = raw_desc

@@ -123,3 +123,37 @@ def resolve_match_suggestion(suggestion, *, user=None):
     suggestion.resolved_by = user
     suggestion.save(update_fields=['status', 'resolved_at', 'resolved_by'])
     return suggestion
+
+
+MANUAL_REASON = 'manual_orphan_merge'
+
+
+def build_manual_suggestion(network, public_episode, private_episode):
+    """An UNSAVED EpisodeMatchSuggestion for an owner-picked orphan pair, so the
+    field-level merge editor can render it without anything being persisted (an
+    abandoned review leaves no stray row in the Suggested Pairs queue)."""
+    from pod_manager.models import EpisodeMatchSuggestion
+    return EpisodeMatchSuggestion(
+        network=network,
+        public_episode=public_episode, private_episode=private_episode,
+        pub_guid=public_episode.guid_public or '',
+        priv_guid=private_episode.guid_private or '',
+        source_podcast=public_episode.podcast, target_podcast=private_episode.podcast,
+        detected_reason=MANUAL_REASON,
+        status=EpisodeMatchSuggestion.Status.PENDING,
+    )
+
+
+def ensure_manual_suggestion(network, public_episode, private_episode):
+    """The PENDING suggestion for an owner-picked pair — the existing one, or a new
+    one persisted now (at commit time). Sticky dismissal is deliberately ignored:
+    it only guards against automatic re-detection, and an explicit owner pick wins."""
+    from pod_manager.models import EpisodeMatchSuggestion
+    existing = EpisodeMatchSuggestion.objects.filter(
+        public_episode=public_episode, private_episode=private_episode,
+        status=EpisodeMatchSuggestion.Status.PENDING).first()
+    if existing:
+        return existing
+    suggestion = build_manual_suggestion(network, public_episode, private_episode)
+    suggestion.save()
+    return suggestion

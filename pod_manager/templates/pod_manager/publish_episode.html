@@ -265,9 +265,19 @@ the region, once below from here).
         <div class="card-body">
             <div class="tab-content">
                 <div class="tab-pane fade show active" id="audioUrlPane" role="tabpanel">
-                    <div class="mb-3">
+                    <div class="form-check form-switch mb-3">
+                        <input class="form-check-input" type="checkbox" role="switch" id="publicFromImport"
+                               name="public_from_import" value="1"{% if edit_ep and not edit_ep.guid_public %} checked{% endif %}>
+                        <label class="form-check-label text-light" for="publicFromImport">Public version comes from a feed import</label>
+                        <div class="form-text text-muted">
+                            Skips the public URL and public GUID. This episode is the private half, listed under
+                            Merge Desk &rarr; Merge Orphans &rarr; Premium Orphans so it can be paired with the public episode when that
+                            feed is imported. Needs Premium / Ad-Free audio.
+                        </div>
+                    </div>
+                    <div class="mb-3{% if edit_ep and not edit_ep.guid_public %} d-none{% endif %}" id="publicAudioGroup">
                         <label class="form-label text-light">Public Audio URL <small class="text-muted fw-normal">(optional)</small></label>
-                        <input type="url" name="audio_url_public" class="form-control bg-dark text-light border-secondary"
+                        <input type="url" name="audio_url_public" id="audioUrlPublicInput" class="form-control bg-dark text-light border-secondary"
                                value="{% if edit_ep %}{{ edit_ep.audio_url_public|default:'' }}{% endif %}"
                                placeholder="https://example.com/episode.mp3">
                         <div class="form-text text-muted">Served to all listeners. Can be added later once the episode is live on Megaphone.</div>
@@ -280,6 +290,20 @@ the region, once below from here).
                         <div class="form-text text-muted">If set and different from public URL, served to paying subscribers. The feed ingestor will match this with the public URL on first sync.</div>
                     </div>
                 </div>
+                <script>
+                (function () {
+                    const toggle = document.getElementById('publicFromImport');
+                    const pub = document.getElementById('audioUrlPublicInput');
+                    const group = document.getElementById('publicAudioGroup');
+                    if (!toggle || !pub || !group) return;
+                    function sync() {
+                        group.classList.toggle('d-none', toggle.checked);
+                        pub.disabled = toggle.checked;
+                    }
+                    toggle.addEventListener('change', sync);
+                    sync();
+                })();
+                </script>
                 <div class="tab-pane fade" id="audioUploadPane" role="tabpanel">
                     {% comment %}
                     A raw file input + the shared progress bar, NOT _audio_upload.html

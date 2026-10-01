@@ -13,6 +13,7 @@ from django.db.models import Q, Case, When, CharField, Max, Count, F
 from django.db.models.functions import Substr, Lower
 
 from ...models import EpisodeEditSuggestion, EpisodeMatchSuggestion, NetworkMembership, Episode
+from ...services.guid_links import generated_guid_q
 from ...services.edits import chapter_items, score_contribution, scoring_config, FIRST_RESPONDER_BONUS, REJECT_PENALTY
 from ...utils import diagnostic_timer
 
@@ -280,14 +281,21 @@ def pending_match_suggestion_count(current_network):
 
 
 @diagnostic_timer("3. Gather Merge Desk")
-def gather_merge_desk(request, current_network):
+def gather_merge_desk(request, current_network, network_podcasts=None):
     # 'pairs' is the desk's default mode: Suggested Pairs is the actionable
     # review queue (badged on the left nav), so it greets first; the orphan
     # and matched tools sit behind their mode buttons.
     merge_view = request.GET.get('merge_view', 'pairs')
     merge_podcast_id = request.GET.get('merge_podcast_id', '')
+    if not merge_podcast_id:
+        # The feed selector has no "all feeds" option, so it displays its first
+        # entry; apply that same feed to the query or the desk shows one feed while
+        # listing every feed's episodes until the user re-picks.
+        pods = network_podcasts if network_podcasts is not None else network_podcast_list(current_network)
+        merge_podcast_id = str(pods[0].id) if pods else ''
     merge_q = request.GET.get('merge_q', '').strip()
     merge_reason = request.GET.get('merge_reason', '').strip()
+    merge_published = request.GET.get('merge_published') == '1'
 
     base_episodes = Episode.objects.filter(podcast__network=current_network).select_related('podcast')
     if merge_podcast_id:
@@ -303,9 +311,14 @@ def gather_merge_desk(request, current_network):
     if merge_view == 'pairs':
         suggested_pairs = _gather_suggested_pairs(current_network, merge_podcast_id, merge_q, request)
     elif merge_view == 'orphans':
-        pub_qs = base_episodes.filter(
-            Q(guid_private__isnull=True) | Q(guid_private__exact='')
-        ).exclude(
+        # A Vecto-published episode carries a generated private GUID (link target)
+        # and is complete as published, so by default it is not an orphan awaiting a
+        # partner. merge_published opts them back in for the case where the public
+        # feed is imported and the private side is published on Vecto instead.
+        pub_orphan_q = Q(guid_private__isnull=True) | Q(guid_private__exact='')
+        if merge_published:
+            pub_orphan_q |= generated_guid_q()
+        pub_qs = base_episodes.filter(pub_orphan_q).exclude(
             Q(audio_url_public__isnull=True) | Q(audio_url_public__exact='')
         ).order_by('-pub_date')
         public_orphans = Paginator(pub_qs, 20).get_page(request.GET.get('pub_page', 1))
@@ -321,7 +334,7 @@ def gather_merge_desk(request, current_network):
         matched_qs = base_episodes.exclude(
             Q(guid_public__isnull=True) | Q(guid_public__exact='')
         ).exclude(
-            Q(guid_private__isnull=True) | Q(guid_private__exact='')
+            Q(guid_private__isnull=True) | Q(guid_private__exact='') | generated_guid_q()
         )
         match_reasons = (
             Episode.objects.filter(podcast__network=current_network)
@@ -337,6 +350,7 @@ def gather_merge_desk(request, current_network):
         'merge_podcast_id': merge_podcast_id,
         'merge_q': merge_q,
         'merge_reason': merge_reason,
+        'merge_published': merge_published,
         'public_orphans': public_orphans,
         'private_orphans': private_orphans,
         'matched_episodes': matched_episodes,

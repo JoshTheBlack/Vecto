@@ -23,6 +23,7 @@ from ...models import (
 from ...services.access import (_evaluate_access, _build_episode_description,
                                 _evaluate_mix_access, can_view_transcript)
 from ...services.analytics import get_live_user_stats
+from ...services.guid_links import resolve_private_guid
 from ...utils import get_membership
 from .actions import MIX_ACTION_HANDLERS
 
@@ -107,7 +108,27 @@ def search_bar_podcasts(request, network):
     return visible_podcasts([network.slug], _resolve_show_hidden(request), owned)
 
 
+def _redirect_guid_link(request):
+    """`/?p=<value>`: follow a private-GUID URL to its episode page. The value is
+    matched against the network's private GUIDs (see services/guid_links). A 302,
+    not a 301: merges and re-adds can repoint a GUID, so it must not be cached.
+    Unpublished episodes resolve only for the network's owners, so the redirect
+    can't be used to probe for drafts. No match is a themed 404."""
+    network = request.network
+    user = request.user
+    is_owner = user.is_authenticated and (
+        user.is_superuser or network.owners.filter(pk=user.pk).exists())
+    episode = resolve_private_guid(
+        network, request.GET.get('p'), host=request.get_host(),
+        include_unpublished=is_owner)
+    if episode is None:
+        raise Http404("No episode matches that link.")
+    return redirect('episode_detail', episode_id=episode.id)
+
+
 def home(request):
+    if 'p' in request.GET and request.network:
+        return _redirect_guid_link(request)
     show_slugs = request.GET.getlist('show')
     search_query = request.GET.get('q', '').strip()
     older_than = request.GET.get('older_than', '').strip()

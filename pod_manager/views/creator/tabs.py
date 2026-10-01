@@ -44,7 +44,8 @@ def _crosspub(request, net):
 
 
 def _merge(request, net):
-    return {**_data.gather_merge_desk(request, net), 'network_podcasts': _data.network_podcast_list(net)}
+    pods = _data.network_podcast_list(net)
+    return {**_data.gather_merge_desk(request, net, pods), 'network_podcasts': pods}
 
 
 def _sync(request, net):

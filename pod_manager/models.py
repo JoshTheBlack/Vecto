@@ -629,6 +629,16 @@ class Episode(models.Model):
             models.Index(fields=['podcast', 'guid_public']),
             models.Index(fields=['podcast', 'guid_private']),
         ]
+        constraints = [
+            # Vecto-generated private GUIDs (services/guid_links, marker '?p=vecto-')
+            # are link targets and must never repeat. Feed-ingested GUIDs are NOT
+            # constrained: real feeds produce duplicates the Merge Desk exists to fix.
+            models.UniqueConstraint(
+                fields=['guid_private'],
+                condition=models.Q(guid_private__contains='?p=vecto-'),
+                name='uniq_generated_guid_private',
+            ),
+        ]
         ordering = ['-pub_date']
     
     def __str__(self):

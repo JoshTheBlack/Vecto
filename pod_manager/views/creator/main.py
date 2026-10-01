@@ -150,31 +150,12 @@ def creator_audit_edit(request, edit_id):
     })
 
 
-@login_required(login_url='/login/')
-@diagnostic_page("Match Merge Editor (partial)")
-def creator_match_editor(request, suggestion_id):
-    """The field-level merge editor for one EpisodeMatchSuggestion (§3.5), fetched
-    into #merge-desk-body from the Suggested Pairs list. Owner-gated via
-    _resolve_creator_network; the suggestion is scoped to the resolved network so
-    a foreign one 404s (mirrors creator_audit_edit). Renders both rows
-    column-by-column with per-field A/B picks; the commit form POSTs the
-    commit_match_merge action back into creator_settings."""
-    from ...models import EpisodeMatchSuggestion
+def _render_match_editor(request, current_network, suggestion):
+    """Render the field-level merge editor for a PENDING suggestion. Shared by the
+    Suggested Pairs "Review & Merge" fetch and the Merge Orphans button, so both
+    land in the same editor with the same survivor rule."""
     from ...services.match_editor import build_editor_fields, default_survivor
 
-    current_network, forbidden = _resolve_creator_network(request)
-    if forbidden:
-        return forbidden
-
-    suggestion = get_object_or_404(
-        EpisodeMatchSuggestion.objects.select_related(
-            'public_episode', 'public_episode__podcast',
-            'private_episode', 'private_episode__podcast',
-            'source_podcast', 'target_podcast',
-        ),
-        id=suggestion_id, network=current_network,
-        status=EpisodeMatchSuggestion.Status.PENDING,
-    )
     public_ep = suggestion.public_episode
     private_ep = suggestion.private_episode
 
@@ -223,6 +204,65 @@ def creator_match_editor(request, suggestion_id):
         ),
         'is_chained': is_chained,
     })
+
+
+@login_required(login_url='/login/')
+@diagnostic_page("Match Merge Editor (partial)")
+def creator_match_editor(request, suggestion_id):
+    """The field-level merge editor for one EpisodeMatchSuggestion (§3.5), fetched
+    into #merge-desk-body from the Suggested Pairs list. Owner-gated via
+    _resolve_creator_network; the suggestion is scoped to the resolved network so
+    a foreign one 404s (mirrors creator_audit_edit). Renders both rows
+    column-by-column with per-field A/B picks; the commit form POSTs the
+    commit_match_merge action back into creator_settings."""
+    from ...models import EpisodeMatchSuggestion
+    from ...services.match_editor import build_editor_fields, default_survivor
+
+    current_network, forbidden = _resolve_creator_network(request)
+    if forbidden:
+        return forbidden
+
+    suggestion = get_object_or_404(
+        EpisodeMatchSuggestion.objects.select_related(
+            'public_episode', 'public_episode__podcast',
+            'private_episode', 'private_episode__podcast',
+            'source_podcast', 'target_podcast',
+        ),
+        id=suggestion_id, network=current_network,
+        status=EpisodeMatchSuggestion.Status.PENDING,
+    )
+    return _render_match_editor(request, current_network, suggestion)
+
+
+@login_required(login_url='/login/')
+@diagnostic_page("Orphan Merge Editor (partial)")
+def creator_orphan_merge_editor(request):
+    """Merge Orphans -> the SAME field-level editor Suggested Pairs uses. The two
+    selected orphans are rendered through an unsaved suggestion (nothing is
+    persisted by looking); the commit form carries the two episode ids and
+    commit_match_merge creates the suggestion row then. A manual merge therefore
+    gets the full relation-preserving engine and the survivor rule (the private
+    row survives) instead of a blind delete of the private row."""
+    from ...services.match_suggestions import build_manual_suggestion
+
+    current_network, forbidden = _resolve_creator_network(request)
+    if forbidden:
+        return forbidden
+
+    def _pick(name):
+        raw = request.GET.get(name, '')
+        return get_object_or_404(
+            Episode.objects.select_related('podcast'),
+            id=raw if raw.isdigit() else 0, podcast__network=current_network)
+
+    public_ep = _pick('public_episode_id')
+    private_ep = _pick('private_episode_id')
+    if public_ep.pk == private_ep.pk:
+        messages.error(request, "Pick two different episodes to merge.")
+        return redirect(f"{reverse('creator_settings')}?network={current_network.slug}&tab=merge&merge_view=orphans")
+
+    suggestion = build_manual_suggestion(current_network, public_ep, private_ep)
+    return _render_match_editor(request, current_network, suggestion)
 
 
 @require_POST

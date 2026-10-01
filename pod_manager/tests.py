@@ -2969,22 +2969,6 @@ class CreatorMergeAndMoveTests(TestCase):
                                    data=data, user=self.owner)
         return views.creator_settings(req)
 
-    def test_merge_transfers_private_data_and_deletes_orphan(self):
-        pub_ep = self._ep(title='Public', guid_public='pub-guid')
-        priv_ep = self._ep(
-            title='Private', guid_private='priv-guid',
-            audio_url_subscriber='https://cdn.example.com/priv.mp3',
-        )
-        self._post({
-            'action': 'merge_episodes',
-            'public_episode_id': pub_ep.id,
-            'private_episode_id': priv_ep.id,
-        })
-        pub_ep.refresh_from_db()
-        self.assertEqual(pub_ep.guid_private, 'priv-guid')
-        self.assertEqual(pub_ep.audio_url_subscriber, 'https://cdn.example.com/priv.mp3')
-        self.assertFalse(Episode.objects.filter(id=priv_ep.id).exists())
-
     def test_split_creates_new_episode_and_clears_private_data(self):
         ep = self._ep(
             title='Paired', guid_private='priv-guid',
@@ -13415,13 +13399,19 @@ class MatchEditorServiceTests(TestCase):
         self.assertTrue(both)
         self.assertTrue(editable)
 
-    def test_no_transcripts_prefers_subscriber_audio_row(self):
+    def test_no_transcripts_defaults_to_the_private_row(self):
         from pod_manager.services.match_editor import default_survivor
-        Episode.objects.filter(pk=self.priv.pk).update(audio_url_subscriber='https://cdn/x.mp3')
-        self.priv.refresh_from_db()
         survivor, deleted, both, editable = default_survivor(self.pub, self.priv)
         self.assertEqual(survivor.id, self.priv.id)
+        self.assertEqual(deleted.id, self.pub.id)
         self.assertFalse(editable)
+
+    def test_private_row_survives_even_when_the_public_row_has_subscriber_audio(self):
+        from pod_manager.services.match_editor import default_survivor
+        Episode.objects.filter(pk=self.pub.pk).update(audio_url_subscriber='https://cdn/x.mp3')
+        self.pub.refresh_from_db()
+        survivor, _deleted, _both, _editable = default_survivor(self.pub, self.priv)
+        self.assertEqual(survivor.id, self.priv.id)
 
     def test_resolve_field_choices_maps_sides_and_flags(self):
         from pod_manager.services.match_editor import resolve_field_choices
@@ -13570,14 +13560,14 @@ class MatchEditorViewAndActionTests(TestCase):
         })
         self.assertEqual(resp.status_code, 302)
 
-        # Survivor (the transcript-less public row) now carries BOTH GUIDs, lives
-        # in the chosen parent, and the loser is gone.
-        survivor = Episode.objects.get(pk=self.pub.pk)
+        # Survivor (the private row — neither owns a transcript) now carries BOTH
+        # GUIDs, lives in the chosen parent, and the loser is gone.
+        survivor = Episode.objects.get(pk=self.priv.pk)
         self.assertEqual(survivor.guid_public, 'GX')
         self.assertEqual(survivor.guid_private, 'GY')
         self.assertEqual(survivor.podcast_id, self.target.id)
         self.assertEqual(survivor.match_reason, 'Manual Merge (Merge Desk)')
-        self.assertFalse(Episode.objects.filter(pk=self.priv.pk).exists())
+        self.assertFalse(Episode.objects.filter(pk=self.pub.pk).exists())
 
         # The suggestion is resolved-then-CASCADE'd away — no PENDING row remains
         # for this network (the foreign-net PENDING row is untouched).
@@ -13624,7 +13614,7 @@ class MatchEditorViewAndActionTests(TestCase):
             'choice_guid_private': 'private',
         })
 
-        survivor = Episode.objects.get(pk=self.pub.pk)
+        survivor = Episode.objects.get(pk=self.priv.pk)   # private row survives by default
         self.assertEqual(survivor.podcast_id, self.target.id)
         link = EpisodeCrossPublication.objects.get(episode=survivor, podcast=self.low)
         self.assertFalse(link.auto_created)
@@ -13647,7 +13637,7 @@ class MatchEditorViewAndActionTests(TestCase):
             'choice_guid_private': 'private',
         })
 
-        survivor = Episode.objects.get(pk=self.pub.pk)
+        survivor = Episode.objects.get(pk=self.priv.pk)   # private row survives by default
         self.assertFalse(
             EpisodeCrossPublication.objects.filter(
                 episode=survivor, podcast=unrelated).exists())
@@ -13943,3 +13933,365 @@ class BackfillMatchSuggestionsCommandTests(TestCase):
         from django.core.management.base import CommandError
         with self.assertRaises(CommandError):
             call_command('backfill_match_suggestions', stdout=StringIO(), stderr=StringIO())
+
+
+@override_settings(CACHES=TEST_CACHES)
+class PrivateGuidLinkTests(TestCase):
+    """`/?p=<value>` resolves a private-GUID URL to its episode page, and the publish
+    flow mints a generated private GUID in the same shape (services/guid_links)."""
+
+    HOST = 'guidnet.example.test'
+
+    def setUp(self):
+        cache.clear()
+        self.network = Network.objects.create(name='GuidNet', slug='guidnet', custom_domain=self.HOST)
+        self.owner = User.objects.create_user('guid-owner', password='x')
+        self.network.owners.add(self.owner)
+        self.podcast = Podcast.objects.create(network=self.network, title='Show', slug='guid-show')
+
+    def _ep(self, **kw):
+        kw.setdefault('title', 'Ep')
+        kw.setdefault('pub_date', timezone.now())
+        return Episode.objects.create(podcast=self.podcast, **kw)
+
+    def _get(self, qs, **extra):
+        return self.client.get('/' + qs, HTTP_HOST=self.HOST, **extra)
+
+    def test_imported_wordpress_style_guid_redirects_to_episode(self):
+        ep = self._ep(guid_private='https://baldmove.com/?p=110339')
+        resp = self._get('?p=110339')
+        self.assertEqual(resp.status_code, 302)
+        self.assertEqual(resp['Location'], reverse('episode_detail', args=[ep.id]))
+
+    def test_value_must_match_exactly(self):
+        self._ep(guid_private='https://baldmove.com/?p=110339')
+        self.assertEqual(self._get('?p=0339').status_code, 404)
+        self.assertEqual(self._get('?p=11033').status_code, 404)
+
+    def test_unknown_value_is_a_404(self):
+        self.assertEqual(self._get('?p=999').status_code, 404)
+
+    def test_other_networks_episodes_do_not_resolve(self):
+        other = Network.objects.create(name='Other', slug='other-guid', custom_domain='other.example.test')
+        op = Podcast.objects.create(network=other, title='O', slug='o-show')
+        Episode.objects.create(podcast=op, title='Theirs', pub_date=timezone.now(),
+                               guid_private='https://other.example.test/?p=5')
+        self.assertEqual(self._get('?p=5').status_code, 404)
+
+    def test_unpublished_resolves_only_for_owners(self):
+        ep = self._ep(guid_private='https://baldmove.com/?p=42', is_published=False)
+        self.assertEqual(self._get('?p=42').status_code, 404)
+        self.client.force_login(self.owner)
+        resp = self._get('?p=42')
+        self.assertEqual(resp.status_code, 302)
+        self.assertEqual(resp['Location'], reverse('episode_detail', args=[ep.id]))
+
+    def test_same_value_on_two_hosts_prefers_the_request_host(self):
+        self._ep(title='Elsewhere', guid_private='https://elsewhere.test/?p=7',
+                 pub_date=timezone.now())
+        mine = self._ep(title='Mine', guid_private=f'https://{self.HOST}/?p=7',
+                        pub_date=timezone.now() - datetime.timedelta(days=30))
+        resp = self._get('?p=7')
+        self.assertEqual(resp['Location'], reverse('episode_detail', args=[mine.id]))
+
+    def test_dashboard_still_renders_without_p(self):
+        self.assertEqual(self._get('').status_code, 200)
+
+    def _publish(self, title):
+        data = {'action': 'publish', 'network_slug': self.network.slug,
+                'podcast_id': self.podcast.id, 'title': title,
+                'tags_json': '[]', 'chapters_json': 'null'}
+        self.client.force_login(self.owner)
+        with mock.patch('pod_manager.views.creator.publish.task_rebuild_episode_fragments'):
+            return self.client.post(reverse('publish_episode'), data, HTTP_HOST=self.HOST)
+
+    def test_publish_mints_a_private_guid_that_resolves_back(self):
+        self._publish('Brand New')
+        ep = Episode.objects.get(title='Brand New')
+        self.assertTrue(ep.guid_public)
+        self.assertRegex(ep.guid_private, rf'^https://{self.HOST}/\?p=vecto-[0-9a-f]{{12}}$')
+        value = ep.guid_private.split('?p=')[1]
+        # Opaque: not the episode id and never numeric, so it can't collide with a
+        # WordPress post id.
+        self.assertNotEqual(value, str(ep.id))
+        self.assertFalse(value.isdigit())
+        self.client.logout()
+        resp = self._get(f'?p={value}')
+        self.assertEqual(resp.status_code, 302)
+        self.assertEqual(resp['Location'], reverse('episode_detail', args=[ep.id]))
+
+    def test_each_published_episode_gets_a_distinct_guid(self):
+        self._publish('One')
+        self._publish('Two')
+        a, b = (Episode.objects.get(title=t).guid_private for t in ('One', 'Two'))
+        self.assertNotEqual(a, b)
+
+    def test_published_episodes_are_not_orphans_unless_opted_in(self):
+        # A Vecto-published episode is complete as published: it needs no merge, so
+        # it stays out of the orphan list (and out of "matched", which is for
+        # feed pairs) by default. merge_published=1 surfaces it as a public orphan
+        # for the import-public-feed / publish-private-on-Vecto workflow.
+        from pod_manager.services.guid_links import make_private_guid
+        self._ep(title='PublishedEp', guid_public='pub-1',
+                 audio_url_public='https://x/a.mp3',
+                 guid_private=make_private_guid(self.network))
+        self._ep(title='RealPair', guid_public='pub-2', audio_url_public='https://x/b.mp3',
+                 guid_private='https://baldmove.com/?p=1')
+        self._ep(title='PlainOrphan', guid_public='pub-3', audio_url_public='https://x/c.mp3')
+        factory = RequestFactory()
+
+        def merge(view, **extra):
+            req = _make_tenant_request(factory, self.network, method='get',
+                                       path='/creator/tab/merge/',
+                                       data={'network': self.network.slug, 'merge_view': view, **extra},
+                                       user=self.owner)
+            req.META['HTTP_HX_REQUEST'] = 'true'
+            return views.creator_tab_partial(req, 'merge').content.decode()
+
+        default = merge('orphans')
+        self.assertIn('PlainOrphan', default)
+        self.assertNotIn('PublishedEp', default)
+        self.assertNotIn('RealPair', default)
+
+        opted_in = merge('orphans', merge_published='1')
+        self.assertIn('PlainOrphan', opted_in)
+        self.assertIn('PublishedEp', opted_in)
+        self.assertNotIn('RealPair', opted_in)
+        self.assertIn('id="mergePublishedToggle"', opted_in)
+
+        matched = merge('matched', merge_published='1')
+        self.assertIn('RealPair', matched)
+        self.assertNotIn('PublishedEp', matched)
+
+
+@override_settings(CACHES=TEST_CACHES)
+class PublishFromImportToggleTests(TestCase):
+    """The publish page's "Public version comes from a feed import" toggle: the
+    episode becomes the private half (no public GUID/URL), listed under Merge Desk
+    Private Orphans until the public feed episode is imported and paired."""
+
+    def setUp(self):
+        cache.clear()
+        self.network = Network.objects.create(name='ToggleNet', slug='togglenet',
+                                              custom_domain='togglenet.example.test')
+        self.owner = User.objects.create_user('toggle-owner', password='x')
+        self.network.owners.add(self.owner)
+        self.podcast = Podcast.objects.create(network=self.network, title='Show', slug='toggle-show')
+        self.client.force_login(self.owner)
+
+    def _post(self, action='publish', **extra):
+        data = {'action': action, 'network_slug': self.network.slug,
+                'podcast_id': self.podcast.id, 'title': 'Toggle Ep',
+                'tags_json': '[]', 'chapters_json': 'null'}
+        data.update(extra)
+        with mock.patch('pod_manager.views.creator.publish.task_rebuild_episode_fragments'),              mock.patch('pod_manager.views.creator.publish.task_refresh_live_schedules'):
+            return self.client.post(reverse('publish_episode'), data, HTTP_HOST='togglenet.example.test')
+
+    def _merge(self, view, **extra):
+        req = _make_tenant_request(RequestFactory(), self.network, method='get',
+                                   path='/creator/tab/merge/',
+                                   data={'network': self.network.slug, 'merge_view': view, **extra},
+                                   user=self.owner)
+        req.META['HTTP_HX_REQUEST'] = 'true'
+        return views.creator_tab_partial(req, 'merge').content.decode()
+
+    def test_toggle_on_makes_a_private_only_episode(self):
+        self._post(public_from_import='1', audio_url_subscriber='https://x/private.mp3',
+                   audio_url_public='https://x/ignored.mp3')
+        ep = Episode.objects.get(title='Toggle Ep')
+        self.assertIsNone(ep.guid_public)
+        self.assertIsNone(ep.audio_url_public)
+        self.assertIn('?p=vecto-', ep.guid_private)
+        self.assertEqual(ep.audio_url_subscriber, 'https://x/private.mp3')
+        # Listed on the Premium (private) orphan side, never the public one — with or
+        # without the "include Vecto-published" switch (that only affects public).
+        for extra in ({}, {'merge_published': '1'}):
+            html = self._merge('orphans', **extra)
+            self.assertIn('Public Orphans (0)', html)
+            self.assertIn('Premium Orphans (1)', html)
+            self.assertIn('Toggle Ep', html)
+
+    def test_toggle_off_keeps_both_guids(self):
+        self._post(audio_url_public='https://x/pub.mp3')
+        ep = Episode.objects.get(title='Toggle Ep')
+        self.assertTrue(ep.guid_public)
+        self.assertIn('?p=vecto-', ep.guid_private)
+
+    def test_toggle_on_publish_without_private_audio_is_rejected(self):
+        resp = self._post(public_from_import='1')
+        self.assertEqual(resp.status_code, 302)
+        self.assertFalse(Episode.objects.filter(title='Toggle Ep').exists())
+
+    def test_toggle_on_draft_may_omit_audio(self):
+        self._post('draft', public_from_import='1')
+        ep = Episode.objects.get(title='Toggle Ep')
+        self.assertFalse(ep.is_published)
+        self.assertIsNone(ep.guid_public)
+
+    def test_flipping_the_toggle_on_a_draft_takes_effect(self):
+        self._post('draft')
+        ep = Episode.objects.get(title='Toggle Ep')
+        self.assertTrue(ep.guid_public)
+        private = ep.guid_private
+        self._post('draft', episode_id=ep.id, public_from_import='1')
+        ep.refresh_from_db()
+        self.assertIsNone(ep.guid_public)
+        self.assertEqual(ep.guid_private, private)          # the link GUID is stable
+        self._post('draft', episode_id=ep.id)
+        ep.refresh_from_db()
+        self.assertTrue(ep.guid_public)
+        self.assertEqual(ep.guid_private, private)
+
+    def test_publish_page_reflects_the_drafts_toggle_state(self):
+        self._post('draft', public_from_import='1')
+        ep = Episode.objects.get(title='Toggle Ep')
+        url = f"{reverse('publish_episode')}?network={self.network.slug}&edit={ep.id}"
+        html = self.client.get(url, HTTP_HOST='togglenet.example.test').content.decode()
+        self.assertRegex(html, r'id="publicFromImport"[^>]*checked')
+
+    def test_generated_guid_is_unique_but_feed_guids_are_not_constrained(self):
+        from django.db import IntegrityError, transaction
+        from pod_manager.services.guid_links import GENERATED_PREFIX
+        self.assertEqual(f'?p={GENERATED_PREFIX}', '?p=vecto-')   # model constraint hardcodes this
+        guid = f'https://{self.network.custom_domain}/?p={GENERATED_PREFIX}abc123'
+        Episode.objects.create(podcast=self.podcast, title='A', pub_date=timezone.now(), guid_private=guid)
+        with self.assertRaises(IntegrityError), transaction.atomic():
+            Episode.objects.create(podcast=self.podcast, title='B', pub_date=timezone.now(), guid_private=guid)
+        feed_guid = 'https://baldmove.com/?p=1'
+        Episode.objects.create(podcast=self.podcast, title='C', pub_date=timezone.now(), guid_private=feed_guid)
+        Episode.objects.create(podcast=self.podcast, title='D', pub_date=timezone.now(), guid_private=feed_guid)
+
+    def test_merge_desk_applies_the_first_feed_by_default(self):
+        # The selector has no "all" option and shows its first feed; the query must
+        # filter to that same feed instead of listing every feed's episodes.
+        alpha = Podcast.objects.create(network=self.network, title='Aardvark Show', slug='aardvark')
+        Episode.objects.create(podcast=alpha, title='InAardvark', pub_date=timezone.now(),
+                               guid_public='g-a', audio_url_public='https://x/a.mp3')
+        Episode.objects.create(podcast=self.podcast, title='InOtherShow', pub_date=timezone.now(),
+                               guid_public='g-b', audio_url_public='https://x/b.mp3')
+        html = self._merge('orphans')
+        self.assertIn('InAardvark', html)
+        self.assertNotIn('InOtherShow', html)
+        # An explicit pick still wins.
+        html = self._merge('orphans', merge_podcast_id=str(self.podcast.id))
+        self.assertIn('InOtherShow', html)
+        self.assertNotIn('InAardvark', html)
+
+
+@override_settings(CACHES=TEST_CACHES)
+class OrphanMergeEditorTests(TestCase):
+    """Merge Orphans goes through the Suggested Pairs field-level editor/engine:
+    GET opens the editor for the picked pair without persisting anything, commit
+    creates the suggestion and merges with the PRIVATE row surviving."""
+
+    def setUp(self):
+        cache.clear()
+        self.owner = User.objects.create_user('om-owner', password='x')
+        self.network = Network.objects.create(name='OM', slug='om-net', custom_domain='om.example.test')
+        self.network.owners.add(self.owner)
+        self.show = Podcast.objects.create(network=self.network, title='Show', slug='om-show')
+        self.pub = Episode.objects.create(
+            podcast=self.show, title='Public Side', pub_date=timezone.now(),
+            raw_description='r', clean_description='c', guid_public='feed-guid-1',
+            audio_url_public='https://x/pub.mp3')
+        self.priv = Episode.objects.create(
+            podcast=self.show, title='Vecto Side', pub_date=timezone.now(),
+            raw_description='r', clean_description='c',
+            guid_private='https://om.example.test/?p=vecto-aaaaaaaaaaaa',
+            audio_url_subscriber='https://x/priv.mp3')
+        self.client.force_login(self.owner)
+
+    def _editor(self, pub=None, priv=None, **extra):
+        qs = {'network': self.network.slug,
+              'public_episode_id': (pub or self.pub).id,
+              'private_episode_id': (priv or self.priv).id}
+        qs.update(extra)
+        return self.client.get(reverse('creator_orphan_merge_editor'), qs)
+
+    def _commit(self, **extra):
+        data = {'action': 'commit_match_merge', 'podcast': self.show.id,
+                'public_episode_id': self.pub.id, 'private_episode_id': self.priv.id,
+                'choice_guid_public': 'public', 'choice_guid_private': 'private',
+                'choice_audio_url_public': 'public', 'choice_audio_url_subscriber': 'private'}
+        data.update(extra)
+        return self.client.post(f"/creator/?network={self.network.slug}&tab=merge", data)
+
+    def test_opening_the_editor_persists_nothing(self):
+        resp = self._editor()
+        self.assertEqual(resp.status_code, 200)
+        self.assertTemplateUsed(resp, 'pod_manager/creator_tabs/_match_editor.html')
+        self.assertEqual(EpisodeMatchSuggestion.objects.count(), 0)
+        html = resp.content.decode()
+        self.assertIn(f'name="public_episode_id" value="{self.pub.id}"', html)
+        self.assertIn(f'name="private_episode_id" value="{self.priv.id}"', html)
+        self.assertNotIn('name="suggestion_id"', html)
+
+    def test_private_row_is_the_default_survivor_in_the_editor(self):
+        self.assertEqual(self._editor().context['survivor'].id, self.priv.id)
+
+    def test_editor_rejects_same_row_foreign_network_and_non_owners(self):
+        self.assertEqual(self._editor(priv=self.pub).status_code, 302)
+        other = Network.objects.create(name='Other', slug='om-other')
+        op = Podcast.objects.create(network=other, title='O', slug='om-o')
+        foreign = Episode.objects.create(podcast=op, title='F', pub_date=timezone.now(),
+                                         raw_description='x', clean_description='x', guid_private='f')
+        self.assertEqual(self._editor(priv=foreign).status_code, 404)
+        self.client.logout()
+        User.objects.create_user('om-nobody', password='x')
+        self.client.login(username='om-nobody', password='x')
+        self.assertEqual(self._editor().status_code, 403)
+
+    def test_commit_merges_into_the_private_row_and_keeps_both_guids(self):
+        pub_guid = self.pub.guid_public
+        link_guid = self.priv.guid_private
+        keep_id = self.priv.id
+        resp = self._commit()
+        self.assertEqual(resp.status_code, 302)
+        survivor = Episode.objects.get(pk=keep_id)                  # same id: stable URLs
+        self.assertEqual(survivor.guid_private, link_guid)           # the /?p= link survives
+        self.assertEqual(survivor.guid_public, pub_guid)             # next feed poll attaches here
+        self.assertEqual(survivor.audio_url_subscriber, 'https://x/priv.mp3')
+        self.assertEqual(survivor.audio_url_public, 'https://x/pub.mp3')
+        self.assertFalse(Episode.objects.filter(pk=self.pub.pk).exists())
+        self.assertEqual(EpisodeMatchSuggestion.objects.filter(status='PENDING').count(), 0)
+        # The generated link still resolves to the (same) surviving episode.
+        resp = self.client.get('/?p=' + link_guid.split('?p=')[1], HTTP_HOST='om.example.test')
+        self.assertEqual(resp['Location'], reverse('episode_detail', args=[keep_id]))
+        # And a re-poll of the public feed finds the survivor instead of duplicating.
+        from pod_manager.ingesters.default import commit_episode
+        with mock.patch('pod_manager.ingesters.default.task_rebuild_episode_fragments'):
+            commit_episode(self.show, _FakeEntry(id=pub_guid, title='Public Side'), None,
+                           'GUID Match', mock.Mock())
+        self.assertEqual(Episode.objects.filter(podcast=self.show).count(), 1)
+
+    def test_a_transcript_only_on_the_public_row_makes_it_survive(self):
+        Transcript.objects.create(episode=self.pub, status=Transcript.Status.COMPLETED)
+        self.assertEqual(self._editor().context['survivor'].id, self.pub.id)
+        self._commit()
+        self.assertTrue(Episode.objects.filter(pk=self.pub.pk).exists())
+        self.assertFalse(Episode.objects.filter(pk=self.priv.pk).exists())
+        survivor = Episode.objects.get(pk=self.pub.pk)
+        self.assertEqual(survivor.guid_private, 'https://om.example.test/?p=vecto-aaaaaaaaaaaa')
+
+    def test_a_private_transcript_stays_with_the_surviving_private_row(self):
+        Transcript.objects.create(episode=self.priv, status=Transcript.Status.COMPLETED)
+        self._commit()
+        self.assertTrue(Transcript.objects.filter(episode_id=self.priv.pk).exists())
+
+    def test_commit_reuses_an_existing_pending_suggestion_for_the_pair(self):
+        EpisodeMatchSuggestion.objects.create(
+            network=self.network, public_episode=self.pub, private_episode=self.priv,
+            pub_guid='feed-guid-1', priv_guid=self.priv.guid_private,
+            source_podcast=self.show, target_podcast=self.show,
+            detected_reason='backfill_duplicate_guid', status='PENDING')
+        self._commit()
+        # Reused (no second row created) and cascaded away with the deleted loser.
+        self.assertEqual(EpisodeMatchSuggestion.objects.count(), 0)
+
+    def test_commit_with_a_foreign_episode_404s(self):
+        other = Network.objects.create(name='Other2', slug='om-other2')
+        op = Podcast.objects.create(network=other, title='O2', slug='om-o2')
+        foreign = Episode.objects.create(podcast=op, title='F', pub_date=timezone.now(),
+                                         raw_description='x', clean_description='x', guid_private='f2')
+        self.assertEqual(self._commit(private_episode_id=foreign.id).status_code, 404)
+        self.assertTrue(Episode.objects.filter(pk=self.pub.pk).exists())

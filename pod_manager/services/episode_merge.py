@@ -40,6 +40,7 @@ from django.utils import timezone
 
 from ..models import (
     CalendarEntry,
+    Episode,
     EpisodeCrossPublication,
     EpisodeEditSuggestion,
     Podcast,
@@ -318,6 +319,12 @@ def merge_pair_with_choices(survivor, deleted, field_choices, *, actor, base_url
         apply_field_choices(survivor, deleted, field_choices)
         apply_lock_and_pin_choices(survivor, deleted, field_choices, actor=actor)
         survivor.match_reason = MANUAL_MERGE_REASON
+        if survivor.guid_private and survivor.guid_private == deleted.guid_private:
+            # The survivor is about to take the loser's private GUID. A Vecto-
+            # generated GUID is unique (uniq_generated_guid_private), so release it
+            # from the loser first; the loser is deleted below anyway.
+            Episode.objects.filter(pk=deleted.pk).update(guid_private=None)
+            deleted.guid_private = None
         survivor.save()
 
         parent_changed = survivor.podcast_id != original_parent_id

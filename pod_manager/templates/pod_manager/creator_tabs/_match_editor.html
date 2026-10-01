@@ -53,7 +53,12 @@ is NOT exposed — it rides the audio_url_subscriber pick automatically (§3.5).
         <form method="POST" action="{% url 'creator_settings' %}?network={{ current_network.slug }}&tab=merge" id="match-editor-form">
             {% csrf_token %}
             <input type="hidden" name="action" value="commit_match_merge">
+            {% if suggestion.id %}
             <input type="hidden" name="suggestion_id" value="{{ suggestion.id }}">
+            {% else %}
+            <input type="hidden" name="public_episode_id" value="{{ public_ep.id }}">
+            <input type="hidden" name="private_episode_id" value="{{ private_ep.id }}">
+            {% endif %}
 
             {# Survivor pick — only meaningful in the both-transcripts edge; otherwise the transcript owner is forced server-side. #}
             <div class="mb-3">

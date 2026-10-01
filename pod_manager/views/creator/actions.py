@@ -668,25 +668,6 @@ def handle_add_show(request, current_network):
     return redirect(f"{reverse('creator_settings')}?network={current_network.slug}&auto_import={new_show.id}")
 
 
-def handle_merge_episodes(request, current_network):
-    pub_id = request.POST.get('public_episode_id')
-    priv_id = request.POST.get('private_episode_id')
-    if pub_id and priv_id:
-        pub_ep = Episode.objects.get(id=pub_id, podcast__network=current_network)
-        priv_ep = Episode.objects.get(id=priv_id, podcast__network=current_network)
-        pub_ep.guid_private = priv_ep.guid_private or priv_ep.guid_public
-        pub_ep.audio_url_subscriber = priv_ep.audio_url_subscriber
-        if priv_ep.chapters_private: pub_ep.chapters_private = priv_ep.chapters_private
-        if priv_ep.tags and not pub_ep.tags: pub_ep.tags = priv_ep.tags
-        pub_ep.match_reason = "Manual Merge (Merge Desk)"
-        pub_ep.save()
-        priv_ep.delete()
-        base_url = request.build_absolute_uri('/')[:-1]
-        task_rebuild_episode_fragments.delay(pub_ep.id, base_url)
-        logger.info(f"Episodes merged: '{priv_ep.title}' (id={priv_id}) into '{pub_ep.title}' (id={pub_id}) by {request.user.username}")
-        messages.success(request, f"Successfully merged '{priv_ep.title}' into '{pub_ep.title}'.")
-
-
 def handle_dismiss_match_suggestion(request, current_network):
     """Dismiss a Suggested Pair (§3.3). Network-scoped so a foreign suggestion
     404s; sticky per §3.1 (dismiss_match_suggestion records the GUID triple, so
@@ -718,13 +699,23 @@ def handle_commit_match_merge(request, current_network):
     from ...services.match_editor import default_survivor, resolve_field_choices
     from ...services.match_suggestions import resolve_match_suggestion
 
-    suggestion = get_object_or_404(
-        EpisodeMatchSuggestion.objects.select_related('public_episode', 'private_episode'),
-        id=request.POST.get('suggestion_id'),
-        network=current_network, status=EpisodeMatchSuggestion.Status.PENDING,
-    )
-    # Both episodes must belong to this network (mirror handle_merge_episodes'
-    # podcast__network filter — the primitive trusts the caller for scoping).
+    if request.POST.get('suggestion_id'):
+        suggestion = get_object_or_404(
+            EpisodeMatchSuggestion.objects.select_related('public_episode', 'private_episode'),
+            id=request.POST.get('suggestion_id'),
+            network=current_network, status=EpisodeMatchSuggestion.Status.PENDING,
+        )
+    else:
+        # Merge Orphans: an owner-picked pair with no stored suggestion yet — it is
+        # persisted now, at commit, so abandoning the editor leaves nothing behind.
+        from ...services.match_suggestions import ensure_manual_suggestion
+        picked_pub = get_object_or_404(
+            Episode, id=request.POST.get('public_episode_id') or 0, podcast__network=current_network)
+        picked_priv = get_object_or_404(
+            Episode, id=request.POST.get('private_episode_id') or 0, podcast__network=current_network)
+        suggestion = ensure_manual_suggestion(current_network, picked_pub, picked_priv)
+    # Both episodes must belong to this network (the primitive trusts the caller
+    # for scoping).
     public_ep = get_object_or_404(
         Episode, id=suggestion.public_episode_id, podcast__network=current_network)
     private_ep = get_object_or_404(
@@ -737,6 +728,7 @@ def handle_commit_match_merge(request, current_network):
         if picked and str(deleted.id) == picked:
             survivor, deleted = deleted, survivor
 
+    suggestion_id, deleted_id = suggestion.id, deleted.id
     field_choices = resolve_field_choices(request.POST, public_ep, private_ep)
 
     # Parent podcast is a REQUIRED, in-network pick (§3.5).
@@ -782,8 +774,8 @@ def handle_commit_match_merge(request, current_network):
         return
 
     logger.info(
-        "Match suggestion #%s committed: episode %d merged into %d on '%s' by %s",
-        suggestion.id, deleted.id, survivor.id, current_network.name, request.user.username,
+        "Match suggestion #%s committed: episode %s merged into %s on '%s' by %s",
+        suggestion_id, deleted_id, survivor.id, current_network.name, request.user.username,
     )
     messages.success(
         request,
@@ -794,18 +786,23 @@ def handle_commit_match_merge(request, current_network):
 
 def handle_split_episode(request, current_network):
     ep = Episode.objects.get(id=request.POST.get('episode_id'), podcast__network=current_network)
-    new_ep = Episode.objects.create(
-        podcast=ep.podcast, title=ep.title, pub_date=ep.pub_date,
-        raw_description=ep.raw_description, clean_description=ep.clean_description,
-        duration=ep.duration, link=ep.link, tags=ep.tags,
-        guid_private=ep.guid_private, audio_url_subscriber=ep.audio_url_subscriber,
-        chapters_private=ep.chapters_private, match_reason="Manually Unpaired",
-    )
+    private_guid = ep.guid_private
+    private_audio = ep.audio_url_subscriber
+    private_chapters = ep.chapters_private
+    # Clear the private side BEFORE creating the new row: a Vecto-generated private
+    # GUID is unique, so two rows can't hold it even for an instant.
     ep.guid_private = None
     ep.audio_url_subscriber = ""
     ep.chapters_private = None
     ep.match_reason = "Manually Unpaired"
     ep.save()
+    new_ep = Episode.objects.create(
+        podcast=ep.podcast, title=ep.title, pub_date=ep.pub_date,
+        raw_description=ep.raw_description, clean_description=ep.clean_description,
+        duration=ep.duration, link=ep.link, tags=ep.tags,
+        guid_private=private_guid, audio_url_subscriber=private_audio,
+        chapters_private=private_chapters, match_reason="Manually Unpaired",
+    )
     base_url = request.build_absolute_uri('/')[:-1]
     task_rebuild_episode_fragments.delay(ep.id, base_url)
     task_rebuild_episode_fragments.delay(new_ep.id, base_url)
@@ -1033,7 +1030,6 @@ ACTION_HANDLERS = {
     'update_network_logo':  handle_update_network_logo,
     'update_show':          handle_update_show,
     'add_show':             handle_add_show,
-    'merge_episodes':       handle_merge_episodes,
     'dismiss_match_suggestion': handle_dismiss_match_suggestion,
     'commit_match_merge':   handle_commit_match_merge,
     'split_episode':        handle_split_episode,

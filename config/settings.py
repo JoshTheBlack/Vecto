@@ -117,7 +117,7 @@ CLOUDFLARE_ZONE_ID       = os.getenv("CLOUDFLARE_ZONE_ID", "")
 CLOUDFLARE_PURGE_TOKEN   = os.getenv("CLOUDFLARE_PURGE_TOKEN", "")
 
 # Django's internal DEBUG needs to be a boolean, so it's True if 'True' OR 'IDE'
-DEBUG = (RAW_DEBUG in ['True', 'IDE'])
+DEBUG = (RAW_DEBUG in ['True', 'IDE']) and os.getenv('DEBUG_PAGES', '1') != '0'
 
 # TOTP Issuer
 OTP_TOTP_ISSUER = 'Vecto'

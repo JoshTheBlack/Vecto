@@ -14711,3 +14711,329 @@ class TranscriptStoredStemTests(TestCase):
         text = out.getvalue()
         self.assertIn('Verify: 4 files present across 2 episodes (2.0 files per episode), '
                       '0 files missing, 0 episodes not yet migrated.', text)
+
+
+class _FakeMediaBucket:
+    """In-memory stand-in for the vecto-cdn bucket: just the calls transcript
+    recovery makes (paginated listing, ranged + full GET)."""
+
+    def __init__(self, prefix=''):
+        self.prefix = prefix
+        self.objects = {}            # full bucket key -> bytes
+        self.get_calls = []          # (key, Range)
+
+    def put(self, bare_key, data=b'x'):
+        self.objects[self.prefix + bare_key] = data
+
+    def get_paginator(self, name):
+        bucket = self
+
+        class _Pages:
+            def paginate(self, Bucket, Prefix=None):
+                keys = sorted(k for k in bucket.objects if not Prefix or k.startswith(Prefix))
+                yield {'Contents': [{'Key': k, 'LastModified': timezone.now()} for k in keys]}
+        return _Pages()
+
+    def get_object(self, Bucket, Key, Range=None):
+        self.get_calls.append((Key, Range))
+        data = self.objects[Key]
+        if Range:
+            data = data[:int(Range.split('-')[1]) + 1]
+        import io
+        return {'Body': io.BytesIO(data)}
+
+
+def _words_doc(header, segments=2, indent=2):
+    doc = {'version': '1.1.0', **header,
+           'segments': [{'startTime': i, 'endTime': i + 1, 'body': f'hello {i}'} for i in range(segments)]}
+    return json.dumps(doc, ensure_ascii=False, indent=indent).encode('utf-8')
+
+
+@override_settings(CACHES=TEST_CACHES, R2_MEDIA_ENABLED=True, R2_MEDIA_KEY_PREFIX='',
+                   R2_MEDIA_PUBLIC_HOST='https://cdn.test')
+class TranscriptRecoveryTests(TestCase):
+    """recover_transcripts: re-attach transcript objects that are in the bucket to
+    their episodes using the .words recovery header, recording the stem it FINDS."""
+
+    TOKEN = 'tokAAAAAAAAAAAAAAAAAA'
+
+    def setUp(self):
+        cache.clear()
+        self.net = Network.objects.create(name='Rec Net', slug='rec-net', custom_domain='rec.example.test')
+        self.pod = Podcast.objects.create(network=self.net, title='Rec Show', slug='rec-show',
+                                          allow_public_transcripts=True)
+        self.bucket = _FakeMediaBucket()
+
+    def _ep(self, title='Episode One', **kw):
+        kw.setdefault('pub_date', timezone.now())
+        kw.setdefault('raw_description', 'x')
+        kw.setdefault('clean_description', 'x')
+        return Episode.objects.create(podcast=kw.pop('podcast', self.pod), title=title, **kw)
+
+    def _stem(self, old_id=99, token=None):
+        return f'transcripts/{old_id // 1000}/{old_id}.{token or self.TOKEN}'
+
+    def _put(self, stem, header, formats=('vtt', 'words'), words=None):
+        for ext in formats:
+            if ext == 'words':
+                self.bucket.put(f'{stem}.{ext}', words or _words_doc(header))
+            else:
+                self.bucket.put(f'{stem}.{ext}', b'WEBVTT')
+        return stem
+
+    def _recover(self, **kw):
+        from pod_manager.services.transcript_recovery import recover_transcripts
+        kw.setdefault('client', self.bucket)
+        return recover_transcripts(**kw)
+
+    # ---- matching ---------------------------------------------------------------
+    def test_dry_run_matches_by_guid_and_writes_nothing(self):
+        ep = self._ep(guid_private='g-priv')
+        stem = self._put(self._stem(), {'title': 'Whatever', 'guid_private': 'g-priv'})
+        report = self._recover()
+        self.assertEqual([(m['episode_id'], m['confidence'], m['action'], m['stem']) for m in report['matches']],
+                         [(ep.id, 'exact', 'create', stem)])
+        self.assertEqual(Transcript.objects.count(), 0)
+        self.assertTrue(all(rng for _, rng in self.bucket.get_calls),
+                        'a dry run must only do small ranged header reads, never a full download')
+
+    def test_apply_links_the_stem_it_found_and_everything_reads_through_it(self):
+        from pod_manager.services.transcription import read_transcript
+        ep = self._ep(guid_public='g-pub')
+        stem = self._put(self._stem(old_id=99), {
+            'episode_id': 99, 'title': 'Old Title', 'guid_public': 'g-pub', 'language': 'en',
+            'model': 'medium.en', 'transcribed_at': '2026-03-04T05:06:07+00:00',
+            'audio_url': 'https://cdn/old.mp3'})
+        report = self._recover(apply=True)
+        self.assertEqual(report['recovered'], 1)
+        tx = Transcript.objects.get(episode=ep)
+        self.assertEqual(tx.r2_key_stem, stem)                      # the FOUND stem, not one derived from ep.id
+        self.assertNotEqual(tx.r2_key_stem, tx.canonical_stem())
+        self.assertEqual(tx.r2_key_token, self.TOKEN)               # parsed back out of the stem
+        self.assertEqual((tx.status, tx.version, tx.language, tx.whisper_model_used),
+                         (Transcript.Status.COMPLETED, 1, 'en', 'medium.en'))
+        self.assertEqual(tx.completed_at.isoformat(), '2026-03-04T05:06:07+00:00')
+        self.assertEqual(tx.source_audio_url, 'https://cdn/old.mp3')
+        self.assertEqual((tx.vtt_file, tx.words_json_file), (stem + '.vtt', stem + '.words'))
+        self.assertIsNone(tx.json_file)                              # only formats that exist are marked
+        self.assertEqual(tx.transcript_text, 'hello 0 hello 1')
+
+        asked = []
+
+        def fake_get(key):
+            asked.append(key)
+            return b'{"segments": []}', 'application/json'
+
+        with mock.patch('pod_manager.services.r2_storage.get_media_object', side_effect=fake_get):
+            read_transcript(tx, 'words')
+        self.assertEqual(asked, [stem + '.words'])
+        resp = self.client.get(f'/transcripts/{ep.id}.vtt', HTTP_HOST='rec.example.test')
+        self.assertEqual(resp.status_code, 302)
+        self.assertTrue(resp['Location'].startswith(f'https://cdn.test/{stem}.vtt'))
+
+    def test_confidence_levels_and_the_threshold(self):
+        by_audio = self._ep('Audio Ep', audio_url_subscriber='https://cdn/a.mp3')
+        by_id = self._ep('Id Ep')
+        by_title = self._ep('A Unique Title')
+        self._put(self._stem(1), {'title': 'zzz', 'audio_url': 'https://cdn/a.mp3'})
+        self._put(self._stem(2), {'episode_id': by_id.id, 'title': 'Id Ep'})
+        self._put(self._stem(3), {'title': 'a  UNIQUE   title'})            # normalized
+        report = self._recover()
+        got = {m['episode_id']: (m['confidence'], m['reason']) for m in report['matches']}
+        self.assertEqual(got, {by_audio.id: ('high', 'audio url'), by_id.id: ('high', 'episode id + title')})
+        self.assertEqual([r['episode_id'] for r in report['skipped_low_confidence']], [by_title.id])
+        medium = self._recover(min_confidence='medium')
+        self.assertEqual({m['episode_id'] for m in medium['matches']}, {by_audio.id, by_id.id, by_title.id})
+
+    def test_an_episode_id_whose_title_disagrees_is_not_evidence(self):
+        ep = self._ep('Real Title')
+        self._put(self._stem(), {'episode_id': ep.id, 'title': 'A Different Show Entirely'})
+        report = self._recover()
+        self.assertEqual(report['matches'], [])
+        self.assertEqual(len(report['unmatched']), 1)             # ids get reused after a rebuild
+
+    def test_ambiguity_is_never_auto_linked(self):
+        a, b = self._ep('Same Title'), self._ep('Same Title')
+        self._put(self._stem(1), {'title': 'Same Title'})
+        g1, g2 = self._ep('G1', guid_private='gx'), self._ep('G2', guid_private='gx')   # duplicate feed GUIDs
+        self._put(self._stem(2), {'title': 'G1', 'guid_private': 'gx'})
+        report = self._recover(min_confidence='medium', apply=True)
+        self.assertEqual(report['recovered'], 0)
+        self.assertEqual(Transcript.objects.count(), 0)
+        self.assertEqual(sorted(tuple(r['episode_ids']) for r in report['ambiguous']),
+                         sorted([tuple(sorted([a.id, b.id])), tuple(sorted([g1.id, g2.id]))]))
+
+    def test_guids_resolving_to_different_episodes_are_ambiguous(self):
+        a, b = self._ep('A', guid_private='pp'), self._ep('B', guid_public='qq')
+        self._put(self._stem(), {'title': 'A', 'guid_private': 'pp', 'guid_public': 'qq'})
+        report = self._recover()
+        self.assertEqual([sorted(r['episode_ids']) for r in report['ambiguous']], [sorted([a.id, b.id])])
+
+    def test_two_bucket_copies_for_one_episode_are_not_both_linked(self):
+        ep = self._ep(guid_private='dup')
+        self._put(self._stem(1, 'tokAAAAAAAAAAAAAAAAAA'), {'title': 'x', 'guid_private': 'dup'})
+        self._put(self._stem(2, 'tokBBBBBBBBBBBBBBBBBB'), {'title': 'x', 'guid_private': 'dup'})
+        report = self._recover(apply=True)
+        self.assertEqual(report['recovered'], 1)
+        self.assertEqual(Transcript.objects.filter(episode=ep).count(), 1)
+        self.assertEqual(len(report['ambiguous']), 1)
+        self.assertIn('also claimed', report['ambiguous'][0]['note'])
+
+    # ---- what already exists -----------------------------------------------------------
+    def test_stems_a_row_already_claims_are_skipped_without_reading(self):
+        ep = self._ep(guid_private='g1')
+        stem = self._put(self._stem(), {'title': 'x', 'guid_private': 'g1'})
+        Transcript.objects.create(episode=ep, status=Transcript.Status.COMPLETED, version=2,
+                                  r2_key_stem=stem, vtt_file='m', words_json_file='m')
+        report = self._recover()
+        self.assertEqual((report['already_linked'], report['matches']), (1, []))
+        self.assertEqual(self.bucket.get_calls, [])
+
+    def test_a_placeholder_row_is_filled_in_place(self):
+        ep = self._ep(guid_private='g1')
+        placeholder = Transcript.objects.create(episode=ep, status=Transcript.Status.PENDING, version=3)
+        stem = self._put(self._stem(), {'title': 'x', 'guid_private': 'g1'})
+        report = self._recover(apply=True)
+        self.assertEqual(report['matches'][0]['action'], 'fill')
+        placeholder.refresh_from_db()
+        self.assertEqual((placeholder.status, placeholder.r2_key_stem, placeholder.version),
+                         (Transcript.Status.COMPLETED, stem, 4))      # same row; version moved on
+
+    def test_a_row_whose_objects_are_gone_is_repointed(self):
+        ep = self._ep(guid_private='g1')
+        stale = Transcript.objects.create(episode=ep, status=Transcript.Status.COMPLETED, version=2,
+                                          vtt_file='m', words_json_file='m')   # stem points at nothing
+        stem = self._put(self._stem(), {'title': 'x', 'guid_private': 'g1'})
+        report = self._recover(apply=True)
+        self.assertEqual(report['matches'][0]['action'], 'relink')
+        stale.refresh_from_db()
+        self.assertEqual((stale.r2_key_stem, stale.version), (stem, 3))
+
+    def test_an_episode_with_a_live_transcript_is_a_conflict_and_untouched(self):
+        ep = self._ep(guid_private='g1')
+        live = self._put(self._stem(5, 'tokLIVEXXXXXXXXXXXXXX'), {'title': 'live', 'guid_private': 'someone-else'})
+        row = Transcript.objects.create(episode=ep, status=Transcript.Status.COMPLETED, version=1,
+                                        r2_key_stem=live, vtt_file='m', words_json_file='m')
+        self._put(self._stem(6), {'title': 'x', 'guid_private': 'g1'})
+        report = self._recover(apply=True)
+        self.assertEqual(report['recovered'], 0)
+        self.assertEqual([(c['episode_id'], c['live_stem']) for c in report['conflicts']], [(ep.id, live)])
+        row.refresh_from_db()
+        self.assertEqual(row.r2_key_stem, live)
+
+    def test_ledger_unreadable_and_no_words_stems(self):
+        self._ep(guid_private='g1')
+        ledgered = self._put(self._stem(1, 'tokLEDGERXXXXXXXXXXXX'), {'title': 'x', 'guid_private': 'g1'})
+        R2OrphanedObject.objects.create(key=ledgered + '.vtt', reason=R2OrphanedObject.Reason.MOVE_REKEY)
+        self.bucket.put(self._stem(2) + '.words', b'this is not json')
+        self.bucket.put(self._stem(3) + '.vtt', b'WEBVTT')                     # no .words at all
+        report = self._recover(apply=True)
+        self.assertEqual((report['ledger_skipped'], report['unreadable'], report['no_words']),
+                         ([ledgered], [self._stem(2)], [self._stem(3)]))
+        self.assertEqual(Transcript.objects.count(), 0)
+
+    # ---- scoping, limits, environments ---------------------------------------------------------
+    def test_scope_limits_which_episodes_can_match(self):
+        other = Network.objects.create(name='Other', slug='rec-other')
+        other_pod = Podcast.objects.create(network=other, title='O', slug='rec-o')
+        mine, theirs = self._ep('Mine', guid_private='gm'), self._ep('Theirs', guid_private='gt', podcast=other_pod)
+        self._put(self._stem(1), {'title': 'Mine', 'guid_private': 'gm'})
+        self._put(self._stem(2, 'tokBBBBBBBBBBBBBBBBBB'), {'title': 'Theirs', 'guid_private': 'gt'})
+        report = self._recover(network_slug='rec-net')
+        self.assertEqual([m['episode_id'] for m in report['matches']], [mine.id])
+        self.assertEqual(len(report['unmatched']), 1)                   # the other network's, out of scope
+
+    def test_limit_stops_after_n_matches(self):
+        for i in range(3):
+            self._ep(f'E{i}', guid_private=f'g{i}')
+            self._put(self._stem(10 + i, f'tok{i}' + 'X' * 17), {'title': f'E{i}', 'guid_private': f'g{i}'})
+        self.assertEqual(len(self._recover(limit=2)['matches']), 2)
+
+    @override_settings(R2_MEDIA_KEY_PREFIX='dev/')
+    def test_environment_prefix_is_stripped_and_other_environments_are_ignored(self):
+        self.bucket = _FakeMediaBucket(prefix='dev/')
+        ep = self._ep(guid_private='g1')
+        stem = self._put(self._stem(), {'title': 'x', 'guid_private': 'g1'})
+        # A prod (unprefixed) object in the same bucket must not be listed by a dev run.
+        self.bucket.objects[self._stem(7, 'tokPRODXXXXXXXXXXXXXX') + '.words'] = _words_doc(
+            {'title': 'p', 'guid_private': 'g1'})
+        report = self._recover(apply=True)
+        self.assertEqual(report['scanned'], 1)
+        tx = Transcript.objects.get(episode=ep)
+        self.assertEqual(tx.r2_key_stem, stem)                             # bare: no 'dev/'
+        self.assertFalse(tx.r2_key_stem.startswith('dev/'))
+
+    def test_the_cdn_purge_and_fragment_cache_bust(self):
+        ep = self._ep(guid_private='g1')
+        stem = self._put(self._stem(), {'title': 'x', 'guid_private': 'g1'})
+        cache.set(f'ep_frag_public_{ep.id}', 'stale')
+        cache.set(f'ep_frag_private_{ep.id}', 'stale')
+        with mock.patch('pod_manager.services.cloudflare.purge_urls', return_value=True) as purge:
+            report = self._recover(apply=True, purge_cdn=True)
+        self.assertTrue(report['purged'])
+        urls = purge.call_args.args[0]
+        self.assertIn(f'https://cdn.test/{stem}.vtt', urls)
+        self.assertIn(f'https://cdn.test/{stem}.words?v=3', urls)
+        self.assertIsNone(cache.get(f'ep_frag_public_{ep.id}'))
+        self.assertIsNone(cache.get(f'ep_frag_private_{ep.id}'))
+
+    # ---- parsing helpers ----------------------------------------------------------------------
+    def test_token_from_stem(self):
+        from pod_manager.services.transcript_keys import DEFAULT_KEY_PATTERN
+        from pod_manager.services.transcript_recovery import token_from_stem
+        t = self.TOKEN
+        self.assertEqual(token_from_stem(f'transcripts/0/99.{t}', [DEFAULT_KEY_PATTERN]), t)
+        self.assertEqual(token_from_stem(f'transcripts/rec-net/{t}',
+                                         ['transcripts/{network_slug}/{token}', DEFAULT_KEY_PATTERN]), t)
+        self.assertEqual(token_from_stem(f'transcripts/{t}/{t}', ['transcripts/{token}/{token}']), t)
+        self.assertIsNone(token_from_stem('transcripts/0/99', [DEFAULT_KEY_PATTERN]))           # untokened legacy
+        self.assertIsNone(token_from_stem('transcripts/anything/else', [DEFAULT_KEY_PATTERN]))
+        self.assertIsNone(token_from_stem(f'transcripts/0/99.{t}', ['transcripts/{nope}.{token}']))
+
+    def test_header_parsing(self):
+        from pod_manager.services import transcript_recovery as tr
+        header = {'title': 'T', 'guid_public': 'g', 'speaker_mappings': {'SPEAKER_00': 'Josh'}}
+        full = _words_doc(header, segments=500)
+        self.assertEqual(tr.parse_words_header(full[:2000])['guid_public'], 'g')            # a partial read is enough
+        self.assertEqual(tr.parse_words_header(_words_doc(header, indent=None))['title'], 'T')   # compact JSON too
+        self.assertIsNone(tr.parse_words_header(b'{"version": "1.1.0", "title": "cut'))
+        self.assertIsNone(tr.parse_words_header(b'garbage'))
+        # A header larger than the read window falls back to one full read.
+        stem = self._put(self._stem(), {'title': 'Big', 'guid_private': 'g1', 'pad': 'x' * 400})
+        with mock.patch.object(tr, 'HEADER_WINDOW', 64):
+            got = tr.read_words_header(self.bucket, stem + '.words')
+        self.assertEqual(got['guid_private'], 'g1')
+        self.assertIsNone(self.bucket.get_calls[-1][1])                                       # the full read
+
+    # ---- the command -------------------------------------------------------------------------------
+    def _command(self, *args):
+        from io import StringIO
+        from django.core.management import call_command
+        out = StringIO()
+        with mock.patch('pod_manager.services.r2_client.get_r2_client', return_value=self.bucket):
+            call_command('recover_transcripts', *args, stdout=out)
+        return out.getvalue()
+
+    def test_command_dry_run_then_apply(self):
+        ep = self._ep('Cmd Ep', guid_private='g1')
+        self._put(self._stem(), {'title': 'Cmd Ep', 'guid_private': 'g1'})
+        text = self._command()
+        self.assertIn('Would link', text)
+        self.assertIn(f'episode {ep.id} <-', text)
+        self.assertIn('Dry run', text)
+        self.assertEqual(Transcript.objects.count(), 0)
+        text = self._command('--apply')
+        self.assertIn('Recovered 1 transcript(s).', text)
+        self.assertEqual(Transcript.objects.count(), 1)
+        self.assertIn('1 already linked', self._command())            # idempotent: now claimed
+
+    def test_command_validation(self):
+        from django.core.management import call_command
+        from django.core.management.base import CommandError
+        with self.assertRaises(CommandError):
+            call_command('recover_transcripts', '--network', 'nope')
+        with self.assertRaises(CommandError):
+            call_command('recover_transcripts', '--purge-cdn')
+        with override_settings(R2_MEDIA_ENABLED=False):
+            with self.assertRaises(CommandError):
+                call_command('recover_transcripts')

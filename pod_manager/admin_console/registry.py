@@ -148,10 +148,18 @@ REGISTRY = {
     "rekey_transcripts": CommandSpec(
         name="rekey_transcripts",
         category="R2 / Storage",
-        # A move, not destruction: the old plain-key object is deleted (and its
-        # CDN URLs purged) only after a byte-identical copy is live at the keyed
-        # location, so --apply alone executes (no --yes). --podcast auto-infers
-        # the picker; --limit is a plain int.
+        # A move, not destruction: the old object is deleted (and its CDN URLs
+        # purged) only after a byte-identical copy is live at the new location, so
+        # --apply alone executes (no --yes) for the default and --normalize modes.
+        # --rotate-token additionally REVOKES the old URLs, so it engages the typed
+        # confirm. --podcast/--network auto-infer the picker; --limit is a plain int.
+        danger_fields=frozenset({"rotate_token"}),
+    ),
+    "recover_transcripts": CommandSpec(
+        name="recover_transcripts",
+        category="R2 / Storage",
+        # Creates/fills/repoints Transcript rows from the bucket's .words headers;
+        # never moves or deletes bucket objects, so --apply alone executes.
     ),
     "r2_smoke_test": CommandSpec(
         name="r2_smoke_test",

@@ -491,4 +491,13 @@ MEDIA_ROOT/transcriptions/{bucket}/{episode_id}.{ext}
 ```
 where `bucket = episode_id // 1000` (keeps each directory to ~1000 files). Both layouts use the same `// 1000` bucketing.
 
-The `.words` JSON file embeds `title`, `guid_public`, `guid_private`, and `audio_url` in its metadata header. This makes recovery possible even after a database rebuild — episodes can be re-matched by GUID/title/audio URL when the episode ID changes. A future `recover_transcripts` management command will automate this process (spec documented in [planned_features.txt](../planned_features.txt)).
+The `.words` JSON file embeds `title`, `guid_public`, `guid_private`, and `audio_url` in its metadata header. This makes recovery possible even after a database rebuild — episodes can be re-matched by GUID/title/audio URL when the episode ID changes. `manage.py recover_transcripts` automates it (dry run by default):
+
+```
+python manage.py recover_transcripts                     # what would be re-attached
+python manage.py recover_transcripts --apply             # link exact/high-confidence matches
+python manage.py recover_transcripts --network <slug> --apply
+python manage.py recover_transcripts --min-confidence medium --apply   # also unique-title matches
+```
+
+It lists the media bucket's `transcripts/` objects, skips every stem a `Transcript` row already claims, and for each remaining one reads just the `.words` header (a small ranged read — the header precedes the segments). It matches the header to an episode, strongest evidence first: **exact** (a `guid_private`/`guid_public` equals the episode's), **high** (`audio_url` equals the episode's subscriber audio, or the header's `episode_id` is a real episode with the same title), **medium** (the normalized title is unique among the episodes in scope). The first level with any candidate decides; more than one candidate there is *ambiguous* and is never auto-linked. A match creates the `Transcript` row (or fills an empty placeholder, or repoints a row whose objects are gone) with `r2_key_stem` set to the stem it **found** — nothing in the bucket is moved, renamed or deleted — and fills the search text from the `.words` body. An episode that already has a live transcript is reported as a conflict and left alone; stems on the orphan ledger are skipped. `--purge-cdn` also purges the recovered objects' past `?v=N` URLs from the edge. Afterwards, `backfill_transcripts_to_r2 --all --verify` confirms every row's objects exist, and `rekey_transcripts --normalize` can optionally move recovered transcripts to the canonical stem.

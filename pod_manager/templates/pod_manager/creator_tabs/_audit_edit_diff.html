@@ -14,6 +14,23 @@ from the OUTER accordion-body in tab_audit_log.html (divergence C's split).
 {% endcomment %}
 <div class="diff-wrapper">
                         
+                        {% if edit.speaker_only %}
+                        <div class="mb-2">
+                            <strong class="small d-block mb-2" style="color: var(--vecto-surface-muted);">
+                                <i class="bi bi-person-badge me-1"></i>SPEAKER LABELS{% if edit.pts_speaker %}<span class="pts-badge">+{{ edit.pts_speaker }}</span>{% endif %}
+                            </strong>
+                            <div class="small" style="display: grid; grid-template-columns: max-content minmax(0, 1fr) minmax(0, 1fr); gap: .35rem 1.25rem; align-items: baseline;">
+                                <span style="color: var(--vecto-surface-muted);">Speaker</span>
+                                <span class="text-danger fw-bold">Was</span>
+                                <span class="text-success fw-bold">Now</span>
+                                {% for sid, before, after in edit.speaker_diff %}
+                                <span class="font-monospace" style="color: var(--vecto-primary);">{{ sid }}</span>
+                                <span style="color: var(--vecto-surface-muted);">{% if before and before != sid %}{{ before }}{% else %}<em>unlabeled</em>{% endif %}</span>
+                                <span style="color: var(--vecto-surface-text);">{% if after %}{{ after }}{% else %}<em style="color: var(--vecto-surface-muted);">cleared</em>{% endif %}</span>
+                                {% endfor %}
+                            </div>
+                        </div>
+                        {% else %}
                         <div class="row g-0 mb-3">
                             <div class="col-md-6 p-2 border-end" style="border-color: var(--bs-border-color) !important;">
                                 <h6 class="text-danger fw-bold mb-0"><i class="bi bi-clock-history"></i> Previous Data</h6>
@@ -23,21 +40,6 @@ from the OUTER accordion-body in tab_audit_log.html (divergence C's split).
                             </div>
                         </div>
 
-                        {% if edit.suggested_data.speaker_mappings and not edit.suggested_data.title and not edit.suggested_data.description and not edit.suggested_data.tags and not edit.suggested_data.chapters %}
-                        <div class="mb-2 mt-2">
-                            <strong class="small d-block mb-2" style="color: var(--vecto-surface-muted);">
-                                <i class="bi bi-person-badge me-1"></i>SPEAKER LABELS{% if edit.pts_speaker %}<span class="pts-badge">+{{ edit.pts_speaker }}</span>{% endif %}
-                            </strong>
-                            {% for sid, before, after in edit.speaker_diff %}
-                            <div class="small mb-1">
-                                <span class="font-monospace" style="color: var(--vecto-primary);">{{ sid }}</span>
-                                {% if before and before != sid %}<span style="color: var(--vecto-surface-muted);">{{ before }}</span>{% endif %}
-                                <i class="bi bi-arrow-right mx-1" style="color: var(--vecto-surface-muted);"></i>
-                                <span style="color: var(--vecto-surface-text);">{{ after }}</span>
-                            </div>
-                            {% endfor %}
-                        </div>
-                        {% else %}
                         <div class="diff-grid">
 
                             {% if not edit.has_changes %}

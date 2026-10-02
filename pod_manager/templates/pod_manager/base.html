@@ -416,6 +416,15 @@
         color: var(--fp-accent);
     }
     .fp-chapters-menu .dropdown-item:hover .fp-ch-time { color: var(--fp-accent); }
+    /* Explicit-content marker on episode cards and the episode page. Squared and token-driven
+       like the rest of the theme; only shown for episodes that resolve to explicit. */
+    .explicit-tag {
+        display: inline-flex; align-items: center; justify-content: center;
+        min-width: 1.15rem; height: 1.15rem; padding: 0 .3rem;
+        border: 1px solid currentColor; border-radius: var(--vecto-radius-sm);
+        color: var(--vecto-surface-muted); font-size: .65rem; font-weight: 700; line-height: 1;
+        letter-spacing: .02em;
+    }
     /* Plyr instance backing the bar is hidden — the bar is the UI. */
     #floatingPlayer .plyr { display: none !important; }
     /* --fp-height is the player's measured height, set by showBar() so the

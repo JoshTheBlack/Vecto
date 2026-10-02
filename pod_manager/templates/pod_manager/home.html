@@ -5,6 +5,15 @@
 <div class="row">
     <div class="col-12 col-xxl-10 mx-auto">
 
+        {% if selected_show_titles %}
+        <nav aria-label="breadcrumb" class="mb-3">
+            <ol class="breadcrumb mb-0">
+                <li class="breadcrumb-item"><a href="{% url 'home' %}?{% for slug in selected_networks %}network={{ slug }}{% if not forloop.last %}&{% endif %}{% endfor %}" class="text-decoration-none text-warning">All</a></li>
+                <li class="breadcrumb-item active text-light" aria-current="page">{{ selected_show_titles|join:", " }}</li>
+            </ol>
+        </nav>
+        {% endif %}
+
         <div class="dash-header d-flex justify-content-between align-items-center flex-wrap gap-2 mb-4 pb-2">
             <h3 class="fw-bold mb-0 text-light"><i class="bi bi-collection-play text-warning"></i> Latest Episodes</h3>
 
@@ -101,6 +110,7 @@
                             <div class="episode-meta">
                                 <span class="episode-meta-show text-truncate"><i class="bi bi-mic-fill me-1"></i>{{ ep.podcast.title }}</span>
                                 <span class="d-flex align-items-center gap-2 flex-shrink-0">
+                                    {% if ep.effective_explicit %}<span class="explicit-tag" title="Explicit" aria-label="Explicit">E</span>{% endif %}
                                     {% if ep.is_premium and not ep.user_has_access %}
                                         <span class="badge bg-warning episode-badge"><i class="bi bi-unlock-fill me-1"></i>Ad-Free Available</span>
                                     {% elif ep.is_premium and ep.user_has_access %}

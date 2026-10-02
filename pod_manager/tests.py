@@ -15861,3 +15861,97 @@ class JavaScriptUnitTests(SimpleTestCase):
         self.assertTrue(tests, 'no JS tests found')
         result = subprocess.run([node, '--test', *tests], cwd=root, capture_output=True, text=True, timeout=120)
         self.assertEqual(result.returncode, 0, result.stdout[-4000:] + result.stderr[-2000:])
+
+
+class AuditSpeakerEditDiffTests(TestCase):
+    """A speaker-label edit changes nothing but transcript labels, so the audit shows it as a
+    Speaker / Was / Now table instead of the Previous/Suggested grid with one empty side."""
+
+    def setUp(self):
+        cache.clear()
+        self.network = Network.objects.create(name='SpkNet', slug='spknet', custom_domain='spknet.example.test')
+        self.owner = User.objects.create_user(username='spk-owner', password='pw')
+        self.network.owners.add(self.owner)
+        pod = Podcast.objects.create(network=self.network, title='Spk Show', slug='spk-show')
+        self.ep = Episode.objects.create(podcast=pod, title='Spk Ep', pub_date=timezone.now(),
+                                         raw_description='x', clean_description='x', audio_url_public='https://x/a.mp3')
+        self.client.force_login(self.owner)
+
+    def _diff(self, original, suggested):
+        edit = EpisodeEditSuggestion.objects.create(
+            episode=self.ep, user=self.owner, status=EpisodeEditSuggestion.Status.APPROVED, points=2,
+            original_data=original, suggested_data=suggested, resolved_at=timezone.now())
+        resp = self.client.get(reverse('creator_audit_edit', args=[edit.id]), {'network': self.network.slug},
+                               HTTP_HOST='spknet.example.test', HTTP_HX_REQUEST='true')
+        self.assertEqual(resp.status_code, 200)
+        return resp.content.decode('utf-8')
+
+    def test_speaker_only_edit_is_a_was_now_table(self):
+        body = self._diff({'speaker_mappings': {'SPEAKER_01': 'Old Name'}},
+                          {'speaker_mappings': {'SPEAKER_00': 'Jim', 'SPEAKER_01': 'Aron', 'SPEAKER_02': ''}})
+        self.assertNotIn('Previous Data', body)
+        self.assertNotIn('Suggested Data', body)
+        self.assertIn('SPEAKER LABELS', body)
+        for text in ('SPEAKER_00', 'Jim', 'Old Name', 'Aron', '<em>unlabeled</em>', 'cleared'):
+            self.assertIn(text, body)
+
+    def test_a_field_edit_keeps_the_previous_suggested_grid(self):
+        body = self._diff({'title': 'a'}, {'title': 'b'})
+        self.assertIn('Previous Data', body)
+        self.assertIn('Suggested Data', body)
+
+    def test_an_edit_mixing_speakers_with_fields_keeps_the_grid(self):
+        body = self._diff({'title': 'a'}, {'title': 'b', 'speaker_mappings': {'SPEAKER_00': 'Jim'}})
+        self.assertIn('Previous Data', body)
+
+
+class HomeBreadcrumbAndExplicitMarkerTests(TestCase):
+    """The dashboard shows an All > Show breadcrumb while a show is filtered, and explicit
+    episodes carry an E marker on their card and on their own page."""
+
+    HOST = 'homecrumb.example.test'
+
+    def setUp(self):
+        cache.clear()
+        self.network = Network.objects.create(name='CrumbNet', slug='crumbnet', custom_domain=self.HOST)
+        self.user = User.objects.create_user(username='crumb-user', password='pw')
+        self.pod = Podcast.objects.create(network=self.network, title='Crumb Show', slug='crumb-show',
+                                          feed_explicit=False)
+        self.other = Podcast.objects.create(network=self.network, title='Other Show', slug='other-show')
+        mk = lambda pod, title, **kw: Episode.objects.create(
+            podcast=pod, title=title, pub_date=timezone.now(), raw_description='x', clean_description='x',
+            audio_url_public='https://x/a.mp3', is_published=True, **kw)
+        self.clean = mk(self.pod, 'Clean Episode')                      # inherits the show: clean
+        self.loud = mk(self.pod, 'Loud Episode', explicit=True)         # set by hand
+        self.inherits_explicit = mk(self.other, 'Inherited Explicit')   # show states nothing: explicit
+        self.client.force_login(self.user)
+
+    def _home(self, **params):
+        resp = self.client.get(reverse('home'), params, HTTP_HOST=self.HOST)
+        self.assertEqual(resp.status_code, 200)
+        return resp.content.decode('utf-8')
+
+    def test_no_breadcrumb_on_the_unfiltered_dashboard(self):
+        self.assertNotIn('aria-label="breadcrumb"', self._home())
+
+    def test_filtered_dashboard_shows_all_then_the_show(self):
+        body = self._home(show='crumb-show')
+        self.assertIn('aria-label="breadcrumb"', body)
+        self.assertIn('>All</a>', body)
+        self.assertIn('Crumb Show', body.split('aria-label="breadcrumb"', 1)[1].split('</nav>', 1)[0])
+
+    def test_all_link_clears_the_show_filter_and_keeps_the_network(self):
+        crumb = self._home(show='crumb-show').split('aria-label="breadcrumb"', 1)[1].split('</nav>', 1)[0]
+        self.assertIn('?network=crumbnet"', crumb)
+        self.assertNotIn('show=', crumb)
+
+    def test_cards_mark_only_episodes_that_resolve_to_explicit(self):
+        body = self._home()
+        marked = body.count('class="explicit-tag"')
+        self.assertEqual(marked, 2)       # Loud Episode + Inherited Explicit, not Clean Episode
+
+    def test_episode_page_marks_an_explicit_episode_only(self):
+        for ep, expected in ((self.loud, 1), (self.clean, 0)):
+            resp = self.client.get(reverse('episode_detail', args=[ep.id]), HTTP_HOST=self.HOST)
+            self.assertEqual(resp.status_code, 200)
+            self.assertEqual(resp.content.decode('utf-8').count('class="explicit-tag"'), expected, ep.title)

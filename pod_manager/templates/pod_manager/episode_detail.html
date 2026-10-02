@@ -378,6 +378,7 @@
                         <div class="col-md d-flex flex-column justify-content-between">
                             <h1 class="card-title h3 fw-bold mb-2">{{ ep.title }}</h1>
                             <div class="d-flex flex-wrap gap-2 align-items-center mb-3" style="font-size: 0.9rem;">
+                                {% if ep.effective_explicit %}<span class="explicit-tag" title="Explicit" aria-label="Explicit">E</span>{% endif %}
                                 {% if ep.is_premium and not ep.user_has_access %}
                                     <span class="badge bg-warning"><i class="bi bi-unlock-fill"></i> Ad-Free Available</span>
                                 {% elif ep.is_premium and ep.user_has_access %}

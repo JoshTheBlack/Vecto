@@ -231,6 +231,7 @@ def home(request):
     context = {
         'episodes': page_obj, 'page_obj': page_obj, 'podcasts': podcasts,
         'selected_shows': show_slugs, 'current_network': request.network,
+        'selected_show_titles': [p.title for p in podcasts if p.slug in show_slugs],
         'search_query': search_query, 'tenant_profile': tenant_profile,
         'older_than': older_than, 'newer_than': newer_than,
         'include_transcripts': include_transcripts,

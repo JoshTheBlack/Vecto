@@ -52,6 +52,10 @@ def _annotate_edit_changes(edit):
         (sid, orig_speakers.get(sid, sid), after) for sid, after in sugg_speakers.items()
     ]
     edit.speaker_changed = any(before != after for _, before, after in edit.speaker_diff)
+    # A speaker-label edit is its own single-field edit (it only touches transcript files),
+    # so the audit renders it as a Speaker / Was / Now table, not the Previous/Suggested grid.
+    edit.speaker_only = bool(sugg_speakers) and not any(
+        sugg.get(k) for k in ('title', 'description', 'tags', 'chapters'))
     edit.has_changes = any([
         edit.title_changed, edit.desc_changed, edit.tags_changed, edit.chapters_changed,
         edit.season_changed, edit.epnum_changed, edit.eptype_changed,

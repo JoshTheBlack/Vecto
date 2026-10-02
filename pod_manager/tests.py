@@ -15419,3 +15419,87 @@ class TranscriptHeaderRefreshTests(TestCase):
         with override_settings(R2_MEDIA_ENABLED=False):
             with self.assertRaises(CommandError):
                 call_command('refresh_transcript_headers')
+
+
+class CeleryBeatScheduleTests(TestCase):
+    """The beat schedule has ONE source (settings.CELERY_BEAT_SCHEDULE). With
+    namespace='CELERY' that value is looked up before anything assigned to
+    app.conf.beat_schedule, so a second definition is silently ignored — which once left
+    the R2 jobs unscheduled for months. These tests make that a failure, and pin every
+    job's run time (all on CELERY_TIMEZONE, America/New_York)."""
+
+    # name -> (minute, hour, day_of_week, day_of_month, timezone) for every crontab entry
+    EXPECTED = {
+        'smart-feed-polling':               ('*/15', '*', '*', '*', 'America/New_York'),
+        'sync-patreon-daily':               ('0', '2', '*', '*', 'America/New_York'),
+        'generate-invoices-first-of-month': ('0', '0', '*', '1', 'America/New_York'),
+        'sweep-analytics-hourly':           ('0', '*', '*', '*', 'America/New_York'),
+        'r2-reconcile-weekly':              ('30', '3', '1', '*', 'America/New_York'),
+        'r2-orphan-cleanup-daily':          ('0', '4', '*', '*', 'America/New_York'),
+        'transcript-headers-nightly':       ('0', '3', '*', '*', 'America/New_York'),
+    }
+
+    def test_there_is_exactly_one_definition_and_it_is_the_effective_one(self):
+        import re
+        from django.conf import settings
+        from config.celery import app
+        source = (Path(settings.BASE_DIR) / 'config' / 'celery.py').read_text(encoding='utf-8')
+        self.assertIsNone(re.search(r'^\s*app\.conf\.beat_schedule\s*=', source, flags=re.M),
+                          'config/celery.py must not define a schedule: settings.CELERY_BEAT_SCHEDULE wins')
+        self.assertEqual(set(app.conf.beat_schedule), set(settings.CELERY_BEAT_SCHEDULE))
+
+    def test_the_retired_active_timestamps_job_is_not_scheduled(self):
+        # Replaced by sweep_analytics_buffer in April; scheduling the old name only
+        # produced an "unregistered task" error every hour.
+        from django.conf import settings
+        self.assertNotIn('sync-active-timestamps-hourly', settings.CELERY_BEAT_SCHEDULE)
+        self.assertIn('sweep-analytics-hourly', settings.CELERY_BEAT_SCHEDULE)
+
+    def test_every_scheduled_task_exists(self):
+        from django.conf import settings
+        from config.celery import app
+        app.loader.import_default_modules()
+        for name, entry in settings.CELERY_BEAT_SCHEDULE.items():
+            with self.subTest(name=name):
+                self.assertIn(entry['task'], app.tasks, f"{name} schedules an unregistered task")
+
+    def test_run_times(self):
+        from django.conf import settings
+        for name, (minute, hour, dow, dom, tz) in self.EXPECTED.items():
+            sch = settings.CELERY_BEAT_SCHEDULE[name]['schedule']
+            with self.subTest(name=name):
+                self.assertEqual(tuple(str(v) for v in (sch._orig_minute, sch._orig_hour, sch._orig_day_of_week,
+                                                        sch._orig_day_of_month)) + (str(sch.tz),),
+                                 (minute, hour, dow, dom, tz))
+
+    def test_a_beat_restart_moves_the_old_utc_rows_onto_new_york_time_and_nothing_else(self):
+        # Beat rewrites every named PeriodicTask from the dict on startup. Seed the four
+        # pre-existing live jobs the way production has them (crontab rows stamped UTC), run the
+        # real startup upsert, and check that ONLY the timezone moved: same task, same
+        # minute/hour/day fields, still enabled.
+        from django.conf import settings
+        from django_celery_beat.models import CrontabSchedule, PeriodicTask
+        from django_celery_beat.schedulers import ModelEntry
+        from config.celery import app
+        names = ('smart-feed-polling', 'sync-patreon-daily', 'generate-invoices-first-of-month',
+                 'sweep-analytics-hourly')
+        seeded = {}
+        for name in names:
+            minute, hour, dow, dom, _tz = self.EXPECTED[name]
+            row = CrontabSchedule.objects.create(minute=minute, hour=hour, day_of_week=dow,
+                                                 day_of_month=dom, month_of_year='*', timezone='UTC')
+            seeded[name] = PeriodicTask.objects.create(
+                name=name, task=settings.CELERY_BEAT_SCHEDULE[name]['task'], crontab=row)
+        for name, entry in settings.CELERY_BEAT_SCHEDULE.items():
+            ModelEntry.from_entry(name, app=app, **entry)
+        for name, task_row in seeded.items():
+            task_row.refresh_from_db()
+            minute, hour, dow, dom, tz = self.EXPECTED[name]
+            with self.subTest(name=name):
+                cron = task_row.crontab
+                self.assertEqual((cron.minute, cron.hour, cron.day_of_week, cron.day_of_month, str(cron.timezone)),
+                                 (minute, hour, dow, dom, tz))
+                self.assertTrue(task_row.enabled)
+                self.assertEqual(task_row.task, settings.CELERY_BEAT_SCHEDULE[name]['task'])
+        self.assertTrue(PeriodicTask.objects.filter(name='r2-orphan-cleanup-daily', enabled=True).exists())
+        self.assertTrue(PeriodicTask.objects.filter(name='transcript-headers-nightly', enabled=True).exists())

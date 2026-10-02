@@ -459,6 +459,18 @@ CELERY_WORKER_PREFETCH_MULTIPLIER = 1
 
 from celery.schedules import crontab
 
+
+# THE beat schedule: the only place periodic tasks are defined. (Do not assign
+# app.conf.beat_schedule in config/celery.py: with namespace='CELERY' the settings
+# value is looked up first and silently wins, which once left the R2 jobs unscheduled
+# for months. tests.CeleryBeatScheduleTests enforces a single source.)
+#
+# Crontab entries run on CELERY_TIMEZONE (America/New_York). django-celery-beat REWRITES
+# each named PeriodicTask row from this dict on every beat start, including its timezone:
+# the entries seeded before this consolidation were stamped UTC and moved to New York
+# time the first time beat started with this dict (hourly/15-minute jobs are unaffected;
+# the daily Patreon sync moved from 02:00 UTC to 02:00 New York, and the monthly invoice
+# run from 00:00 UTC to 00:00 New York on the 1st, so the invoice date reads the 1st).
 CELERY_BEAT_SCHEDULE = {
     'sync-bot-avatar-hourly': {
         'task': 'pod_manager.tasks.task_sync_bot_avatar',
@@ -472,10 +484,39 @@ CELERY_BEAT_SCHEDULE = {
         'task': 'pod_manager.tasks.task_publish_scheduled_episodes',
         'schedule': 60,  # every minute
     },
-    # Keep each transcript's .words recovery header (title/GUIDs/audio URL) in step
-    # with its episode: a database-only comparison, R2 touched only for what changed.
-    # (Defined HERE, not in config/celery.py: the CELERY_-namespaced settings win over
-    # the dict assigned in celery.py at load time, so only entries in this dict apply.)
+    # --- seeded before consolidation (originally UTC; see the note above). The old
+    # 'sync-active-timestamps-hourly' entry is gone on purpose: it scheduled
+    # task_sync_last_active_timestamps, which commit 27f7e0a (2026-04-25) replaced with
+    # sweep_analytics_buffer, so it only produced an 'unregistered task' error every hour.
+    'smart-feed-polling': {
+        'task': 'pod_manager.tasks.task_smart_poll_feeds',
+        'schedule': crontab(minute='*/15'),
+    },
+    'sync-patreon-daily': {
+        'task': 'pod_manager.tasks.task_sync_all_networks',
+        'schedule': crontab(hour=2, minute=0),
+    },
+    'generate-invoices-first-of-month': {
+        'task': 'pod_manager.tasks.task_generate_monthly_invoices',
+        'schedule': crontab(day_of_month='1', hour=0, minute=0),
+    },
+    'sweep-analytics-hourly': {
+        'task': 'pod_manager.tasks.sweep_analytics_buffer',
+        'schedule': crontab(minute=0),
+    },
+    # --- R2 orphan lifecycle (planned_features.txt section I). Reconcile weekly to record
+    # partial-failure orphans; cleanup daily to delete expired ones (the 90-day / 7-day
+    # retention windows make the exact cadence non-critical).
+    'r2-reconcile-weekly': {
+        'task': 'pod_manager.tasks.task_r2_reconcile',
+        'schedule': crontab(day_of_week=1, hour=3, minute=30),
+    },
+    'r2-orphan-cleanup-daily': {
+        'task': 'pod_manager.tasks.task_r2_orphan_cleanup',
+        'schedule': crontab(hour=4, minute=0),
+    },
+    # Keep each transcript's .words recovery header (title/GUIDs/audio URL) in step with
+    # its episode: a database-only comparison, R2 touched only for what changed.
     'transcript-headers-nightly': {
         'task': 'pod_manager.tasks.task_refresh_transcript_headers',
         'schedule': crontab(hour=3, minute=0),

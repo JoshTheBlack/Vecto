@@ -276,6 +276,12 @@ def write_transcript(transcript, rendered: list[tuple[str, bytes]]) -> tuple[dic
     )
 
 
+def transcript_bytes_cache_key(key: str, version: int) -> str:
+    """Redis key under which read_transcript_bytes caches an object's bytes. Anything
+    that rewrites an object WITHOUT bumping its version must delete this entry."""
+    return f"transcript-bytes:{key}:v{version}"
+
+
 def read_transcript_bytes(episode_id: int, ext: str, version: int, token: str | None = None,
                           *, stem: str | None = None, local_path: Path | None = None) -> bytes:
     """Read one transcript format's bytes.
@@ -293,7 +299,7 @@ def read_transcript_bytes(episode_id: int, ext: str, version: int, token: str | 
         # Bytes are immutable per (key, version): a re-transcribe bumps the version
         # and a rekey changes the stem, so both miss the cache naturally. Saves
         # two R2 round-trips on every episode page view.
-        cache_key = f"transcript-bytes:{key}:v{version}"
+        cache_key = transcript_bytes_cache_key(key, version)
         data = cache.get(cache_key)
         if data is None:
             data, _ = get_media_object(key)
@@ -1131,10 +1137,14 @@ def run_transcription(
         transcript.words_json_file = written['words']
         transcript.transcript_text = _plain_text(segments)
         transcript.error_message = None
+        # The header was just written from the episode's current values (words_metadata
+        # above), so record that: the nightly header sweep then has nothing to do.
+        from pod_manager.services.transcript_headers import header_stamp_for
+        transcript.header_stamp = header_stamp_for(episode)
         transcript.save(update_fields=[
             'status', 'completed_at', 'language', 'whisper_model_used', 'version',
             'vtt_file', 'json_file', 'srt_file', 'html_file', 'words_json_file',
-            'transcript_text', 'error_message',
+            'transcript_text', 'error_message', 'header_stamp',
         ])
         logger.info(
             "transcribe: episode %d completed — %d segments, lang=%s",

@@ -457,6 +457,8 @@ CELERY_TASK_DEFAULT_PRIORITY = 5
 # waiting and get redelivered as duplicates.
 CELERY_WORKER_PREFETCH_MULTIPLIER = 1
 
+from celery.schedules import crontab
+
 CELERY_BEAT_SCHEDULE = {
     'sync-bot-avatar-hourly': {
         'task': 'pod_manager.tasks.task_sync_bot_avatar',
@@ -469,6 +471,14 @@ CELERY_BEAT_SCHEDULE = {
     'publish-scheduled-episodes': {
         'task': 'pod_manager.tasks.task_publish_scheduled_episodes',
         'schedule': 60,  # every minute
+    },
+    # Keep each transcript's .words recovery header (title/GUIDs/audio URL) in step
+    # with its episode: a database-only comparison, R2 touched only for what changed.
+    # (Defined HERE, not in config/celery.py: the CELERY_-namespaced settings win over
+    # the dict assigned in celery.py at load time, so only entries in this dict apply.)
+    'transcript-headers-nightly': {
+        'task': 'pod_manager.tasks.task_refresh_transcript_headers',
+        'schedule': crontab(hour=3, minute=0),
     },
 }
 

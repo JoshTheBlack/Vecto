@@ -381,6 +381,12 @@ def merge_pair_with_choices(survivor, deleted, field_choices, *, actor, base_url
         ) and not Transcript.objects.filter(episode=survivor).exists()
 
         survivor_id = survivor.pk
+        # The survivor now carries both rows' GUIDs/audio: its transcript's .words
+        # header is stale. Queue a refresh (R2-resident transcripts only).
+        survivor_tx_id = (Transcript.objects
+                          .filter(episode=survivor, version__gte=1)
+                          .exclude(words_json_file__isnull=True).exclude(words_json_file='')
+                          .values_list('pk', flat=True).first())
         rekey_survivor = parent_changed and bool(survivor.r2_url)
         local_paths = transcript_result['local_paths']
 
@@ -394,6 +400,9 @@ def merge_pair_with_choices(survivor, deleted, field_choices, *, actor, base_url
             if base_url:
                 from ..tasks import task_rebuild_episode_fragments
                 task_rebuild_episode_fragments.delay(survivor_id, base_url.rstrip('/'))
+            if survivor_tx_id and getattr(settings, 'R2_MEDIA_ENABLED', False):
+                from ..tasks import task_refresh_transcript_header
+                task_refresh_transcript_header.delay(survivor_tx_id)
             if rekey_survivor and getattr(settings, 'R2_MIRROR_ENABLED', True):
                 from ..tasks import task_rekey_episode_audio
                 task_rekey_episode_audio.delay(survivor_id)

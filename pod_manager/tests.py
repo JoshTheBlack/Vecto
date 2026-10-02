@@ -4402,6 +4402,23 @@ class RunTranscriptionTests(TestCase):
     @mock.patch('pod_manager.tasks.task_rebuild_episode_fragments')
     @mock.patch('pod_manager.services.transcription.requests.post')
     @mock.patch('pod_manager.services.transcription.requests.Session')
+    def test_the_header_stamp_matches_the_header_written(self, mock_session_cls, mock_post, mock_rebuild):
+        # A fresh transcription must leave nothing for the nightly header sweep to do.
+        self._mock_dl(self._session_get(mock_session_cls))
+        self._mock_asr(mock_post)
+        from pod_manager.services.transcription import run_transcription
+        from pod_manager.services.transcript_headers import header_fields, header_stamp_for
+        with override_settings(**self._settings(WHISPER_ENABLED=True)):
+            run_transcription(self.ep.id)
+        t = Transcript.objects.get(episode=self.ep)
+        self.assertEqual(t.header_stamp, header_stamp_for(self.ep))
+        doc = json.loads((Path(self.tmp) / t.words_json_file).read_text(encoding='utf-8'))
+        for key, value in header_fields(self.ep).items():
+            self.assertEqual(doc.get(key), value, key)
+
+    @mock.patch('pod_manager.tasks.task_rebuild_episode_fragments')
+    @mock.patch('pod_manager.services.transcription.requests.post')
+    @mock.patch('pod_manager.services.transcription.requests.Session')
     def test_all_five_files_written_to_disk(self, mock_session_cls, mock_post, mock_rebuild):
         self._mock_dl(self._session_get(mock_session_cls))
         self._mock_asr(mock_post)
@@ -14760,9 +14777,14 @@ class _FakeMediaBucket:
         self.prefix = prefix
         self.objects = {}            # full bucket key -> bytes
         self.get_calls = []          # (key, Range)
+        self.puts = []               # put_object calls, for assertions
 
     def put(self, bare_key, data=b'x'):
         self.objects[self.prefix + bare_key] = data
+
+    def put_object(self, Bucket, Key, Body, ContentType=None, CacheControl=None):
+        self.puts.append({'Key': Key, 'ContentType': ContentType, 'CacheControl': CacheControl})
+        self.objects[Key] = Body if isinstance(Body, bytes) else Body.read()
 
     def get_paginator(self, name):
         bucket = self
@@ -15153,3 +15175,247 @@ class EpisodePageSpeakerListTests(TestCase):
         self.pod.save()
         _, asked = self._get()
         self.assertEqual(asked, [])
+
+
+@override_settings(CACHES=TEST_CACHES, R2_MEDIA_ENABLED=True, R2_MEDIA_KEY_PREFIX='')
+class TranscriptHeaderRefreshTests(TestCase):
+    """Keeping each .words recovery header in step with its episode: a database-only
+    comparison finds the stale ones (zero R2 operations on a quiet night), and only
+    those are read and — if the header really differs — rewritten, header only."""
+
+    def setUp(self):
+        cache.clear()
+        self.net = Network.objects.create(name='Hdr Net', slug='hdr-net')
+        self.owner = User.objects.create_user('hdr-owner', password='x')
+        self.pod = Podcast.objects.create(network=self.net, title='Hdr Show', slug='hdr-show')
+        self.bucket = _FakeMediaBucket()
+        self._n = 0
+
+    def _ep(self, title='Ep', **kw):
+        kw.setdefault('pub_date', timezone.now())
+        kw.setdefault('raw_description', 'x')
+        kw.setdefault('clean_description', 'x')
+        kw.setdefault('guid_public', f'gp-{title}')
+        return Episode.objects.create(podcast=self.pod, title=title, **kw)
+
+    def _tx(self, ep, header='current', stamp=None, segments=3, **kw):
+        """An R2-resident transcript whose .words object is in the fake bucket."""
+        from pod_manager.services.transcript_headers import header_fields
+        self._n += 1
+        token = f'tok{self._n:018d}'
+        kw.setdefault('version', 2)
+        tx = Transcript.objects.create(episode=ep, status=Transcript.Status.COMPLETED, r2_key_token=token,
+                                       words_json_file='m', vtt_file='m', header_stamp=stamp, **kw)
+        if header == 'current':
+            header = {**header_fields(ep), 'language': 'en', 'model': 'm'}
+        if header is not None:
+            self.bucket.put(tx.r2_key('words'), _words_doc(header, segments=segments))
+        return tx
+
+    def _stale_header(self, ep):
+        return {'episode_id': 1, 'title': 'An Old Title', 'guid_public': 'old-guid', 'language': 'en',
+                'model': 'medium.en', 'speaker_mappings': {'SPEAKER_00': 'Josh'}}
+
+    def _sweep(self, **kw):
+        from pod_manager.services.transcript_headers import refresh_transcript_headers
+        kw.setdefault('client', self.bucket)
+        return refresh_transcript_headers(**kw)
+
+    def _doc(self, tx):
+        return json.loads(self.bucket.objects[tx.r2_key('words')])
+
+    # ---- the stamp --------------------------------------------------------------------------
+    def test_the_stamp_tracks_exactly_the_header_fields(self):
+        from pod_manager.services.transcript_headers import header_stamp_for
+        ep = self._ep(guid_private='gx', audio_url_subscriber='https://x/a.mp3')
+        base = header_stamp_for(ep)
+        self.assertEqual(header_stamp_for(ep), base)
+        for field, value in (('title', 'New'), ('guid_public', 'g2'), ('guid_private', 'g3'),
+                             ('audio_url_subscriber', 'https://x/b.mp3')):
+            with self.subTest(field=field):
+                setattr(ep, field, value)
+                self.assertNotEqual(header_stamp_for(ep), base)
+                ep.refresh_from_db()
+        ep.clean_description = 'something else entirely'
+        self.assertEqual(header_stamp_for(ep), base)              # not a header field
+
+    def test_the_header_the_transcriber_writes_is_what_the_sweep_compares(self):
+        # run_transcription builds its header from {'episode_id'} + episode_recovery_metadata.
+        from pod_manager.services.transcript_headers import HEADER_KEYS, header_fields
+        from pod_manager.services.transcription import episode_recovery_metadata
+        ep = self._ep(guid_private='gx')
+        self.assertEqual(header_fields(ep), {'episode_id': ep.id, **episode_recovery_metadata(ep)})
+        self.assertEqual(set(header_fields(ep)), set(HEADER_KEYS))
+
+    # ---- one transcript ------------------------------------------------------------------------
+    def test_a_current_stamp_costs_no_r2_operations(self):
+        from pod_manager.services.transcript_headers import header_stamp_for, refresh_transcript_header
+        ep = self._ep()
+        tx = self._tx(ep, stamp=header_stamp_for(ep))
+        self.assertEqual(refresh_transcript_header(tx.pk, client=self.bucket), 'unchanged')
+        self.assertEqual((self.bucket.get_calls, self.bucket.puts), ([], []))
+
+    def test_a_correct_header_with_no_stamp_is_stamped_with_a_read_and_no_write(self):
+        from pod_manager.services.transcript_headers import header_stamp_for, refresh_transcript_header
+        ep = self._ep()
+        tx = self._tx(ep)                                          # header already matches; stamp unset
+        self.assertEqual(refresh_transcript_header(tx.pk, client=self.bucket), 'stamped')
+        self.assertEqual((len(self.bucket.get_calls), self.bucket.puts), (1, []))
+        tx.refresh_from_db()
+        self.assertEqual(tx.header_stamp, header_stamp_for(ep))
+
+    def test_a_stale_header_is_rewritten_in_place_and_nothing_else_changes(self):
+        from pod_manager.services.transcript_headers import (header_fields, header_stamp_for,
+                                                             refresh_transcript_header)
+        from pod_manager.services.transcript_recovery import parse_words_header
+        from pod_manager.services.transcription import transcript_bytes_cache_key
+        ep = self._ep('Brand New Title', guid_private='gx', audio_url_subscriber='https://x/a.mp3')
+        tx = self._tx(ep, header=self._stale_header(ep), segments=50)
+        before = self._doc(tx)
+        cache_key = transcript_bytes_cache_key(tx.r2_key('words'), tx.version)
+        cache.set(cache_key, b'stale cached bytes')
+
+        self.assertEqual(refresh_transcript_header(tx.pk, client=self.bucket), 'refreshed')
+        after = self._doc(tx)
+        for key, value in header_fields(ep).items():
+            self.assertEqual(after[key], value)                                  # header brought up to date
+        self.assertEqual(after['language'], 'en')                                # unrelated header keys kept
+        self.assertEqual(after['speaker_mappings'], {'SPEAKER_00': 'Josh'})
+        self.assertEqual(after['segments'], before['segments'])                  # segments untouched
+        self.assertEqual(list(after)[-1], 'segments')                            # ...and still last
+        self.assertEqual(parse_words_header(self.bucket.objects[tx.r2_key('words')][:2000])['title'],
+                         'Brand New Title')                                     # reachable by a ranged read
+        tx.refresh_from_db()
+        self.assertEqual((tx.version, tx.header_stamp), (2, header_stamp_for(ep)))   # NO version bump
+        self.assertIsNone(cache.get(cache_key))                                   # the byte cache can't undo it
+        self.assertEqual((len(self.bucket.get_calls), len(self.bucket.puts)), (1, 1))   # one read, one write
+        self.assertEqual(self.bucket.puts[0]['Key'], tx.r2_key('words'))
+
+    def test_only_completed_r2_resident_transcripts_with_words_are_touched(self):
+        from pod_manager.services.transcript_headers import refresh_transcript_header
+        pending = Transcript.objects.create(episode=self._ep('P'), status=Transcript.Status.PENDING)
+        local = self._tx(self._ep('L'), version=0)
+        no_words = Transcript.objects.create(episode=self._ep('N'), status=Transcript.Status.COMPLETED,
+                                             version=2, vtt_file='m')
+        for tx in (pending, local, no_words):
+            self.assertEqual(refresh_transcript_header(tx.pk, client=self.bucket), 'skipped')
+        with override_settings(R2_MEDIA_ENABLED=False):
+            self.assertEqual(refresh_transcript_header(self._tx(self._ep('R')).pk, client=self.bucket), 'skipped')
+        self.assertEqual(self.bucket.get_calls, [])
+
+    def test_an_r2_failure_leaves_the_stamp_so_the_next_run_retries(self):
+        from pod_manager.services.transcript_headers import refresh_transcript_header
+        tx = self._tx(self._ep(), header=None)                    # the .words object is missing
+        self.assertEqual(refresh_transcript_header(tx.pk, client=self.bucket), 'error')
+        tx.refresh_from_db()
+        self.assertIsNone(tx.header_stamp)
+
+    # ---- the sweep ---------------------------------------------------------------------------------
+    def test_the_sweep_touches_r2_only_for_stale_rows_and_a_quiet_night_is_free(self):
+        from pod_manager.services.transcript_headers import header_stamp_for
+        current_ep = self._ep('Current')
+        current = self._tx(current_ep, stamp=header_stamp_for(current_ep))     # nothing to do
+        stale_ep = self._ep('Stale')
+        stale = self._tx(stale_ep, header=self._stale_header(stale_ep))        # read + write
+        unstamped = self._tx(self._ep('Unstamped'))                            # read only
+        stale2_ep = self._ep('Stale Two')
+        stale2 = self._tx(stale2_ep, header=self._stale_header(stale2_ep))     # beyond the limit
+
+        dry = self._sweep()
+        self.assertEqual((dry['checked'], dry['stale'], dry['applied']), (4, 3, False))
+        self.assertEqual((self.bucket.get_calls, self.bucket.puts), ([], []))  # finding them is DB-only
+
+        first = self._sweep(apply=True, limit=2)
+        self.assertEqual((first['batch'], first['refreshed'], first['stamped'], first['errors']), (2, 1, 1, 0))
+        self.assertEqual((len(self.bucket.get_calls), len(self.bucket.puts)), (2, 1))
+
+        second = self._sweep(apply=True)
+        self.assertEqual((second['stale'], second['refreshed']), (1, 1))
+        self.assertEqual(self._doc(stale2)['title'], 'Stale Two')
+
+        calls_before = (len(self.bucket.get_calls), len(self.bucket.puts))
+        quiet = self._sweep(apply=True)
+        self.assertEqual((quiet['stale'], quiet['batch']), (0, 0))
+        self.assertEqual((len(self.bucket.get_calls), len(self.bucket.puts)), calls_before)   # ZERO R2 operations
+
+    def test_an_edit_makes_a_transcript_stale_again(self):
+        ep = self._ep('Before')
+        tx = self._tx(ep)
+        self._sweep(apply=True)
+        self.assertEqual(self._sweep()['stale'], 0)
+        Episode.objects.filter(pk=ep.pk).update(title='After', guid_private='freshly-merged')
+        self.assertEqual(self._sweep()['stale'], 1)
+        self.assertEqual(self._sweep(apply=True)['refreshed'], 1)
+        self.assertEqual((self._doc(tx)['title'], self._doc(tx)['guid_private']), ('After', 'freshly-merged'))
+
+    def test_scope_limits_the_sweep(self):
+        other = Network.objects.create(name='Other', slug='hdr-other')
+        op = Podcast.objects.create(network=other, title='O', slug='hdr-o')
+        mine = self._tx(self._ep('Mine'), header=self._stale_header(None))
+        theirs_ep = Episode.objects.create(podcast=op, title='Theirs', pub_date=timezone.now(),
+                                           raw_description='x', clean_description='x')
+        theirs = self._tx(theirs_ep, header=self._stale_header(None))
+        report = self._sweep(network_slug='hdr-net', apply=True)
+        self.assertEqual((report['checked'], report['refreshed']), (1, 1))
+        self.assertNotEqual(self._doc(theirs)['title'], 'Theirs')                 # untouched
+
+    # ---- triggers -------------------------------------------------------------------------------------
+    def test_a_merge_queues_a_refresh_for_the_survivor(self):
+        from pod_manager.services.episode_merge import merge_pair_with_choices
+        survivor, loser = self._ep('Survivor'), self._ep('Loser')
+        tx = self._tx(loser)
+        with mock.patch('pod_manager.tasks.task_refresh_transcript_header.delay') as queued:
+            with self.captureOnCommitCallbacks(execute=True):
+                merge_pair_with_choices(survivor, loser, {}, actor=self.owner)
+        queued.assert_called_once_with(tx.pk)                      # the moved transcript, under its new owner
+
+    def test_a_merge_without_a_words_file_queues_nothing(self):
+        from pod_manager.services.episode_merge import merge_pair_with_choices
+        survivor, loser = self._ep('Survivor'), self._ep('Loser')
+        with mock.patch('pod_manager.tasks.task_refresh_transcript_header.delay') as queued:
+            with self.captureOnCommitCallbacks(execute=True):
+                merge_pair_with_choices(survivor, loser, {}, actor=self.owner)
+        queued.assert_not_called()
+
+    def test_the_nightly_task_is_scheduled_and_a_no_op_without_r2(self):
+        from config.celery import app
+        self.assertEqual(app.conf.beat_schedule['transcript-headers-nightly']['task'],
+                         'pod_manager.tasks.task_refresh_transcript_headers')
+        from pod_manager import tasks
+        with override_settings(R2_MEDIA_ENABLED=False), \
+             mock.patch('pod_manager.services.transcript_headers.refresh_transcript_headers') as sweep:
+            tasks.task_refresh_transcript_headers()
+        sweep.assert_not_called()
+        with mock.patch('pod_manager.services.transcript_headers.refresh_transcript_headers') as sweep:
+            tasks.task_refresh_transcript_headers(limit=7)
+        sweep.assert_called_once_with(apply=True, limit=7)
+
+    # ---- the command ------------------------------------------------------------------------------------
+    def _command(self, *args):
+        from io import StringIO
+        from django.core.management import call_command
+        out = StringIO()
+        with mock.patch('pod_manager.services.r2_client.get_r2_client', return_value=self.bucket):
+            call_command('refresh_transcript_headers', *args, stdout=out)
+        return out.getvalue()
+
+    def test_command_dry_run_then_apply(self):
+        ep = self._ep('Cmd')
+        tx = self._tx(ep, header=self._stale_header(ep))
+        text = self._command()
+        self.assertIn('1 stale', text)
+        self.assertIn('Dry run', text)
+        self.assertEqual(self.bucket.puts, [])
+        text = self._command('--apply')
+        self.assertIn('Refreshed 1 header(s)', text)
+        self.assertEqual(self._doc(tx)['title'], 'Cmd')
+        self.assertIn('0 stale', self._command())
+
+    def test_command_validation(self):
+        from django.core.management import call_command
+        from django.core.management.base import CommandError
+        with self.assertRaises(CommandError):
+            call_command('refresh_transcript_headers', '--network', 'nope')
+        with override_settings(R2_MEDIA_ENABLED=False):
+            with self.assertRaises(CommandError):
+                call_command('refresh_transcript_headers')

@@ -476,7 +476,7 @@ class TranscriptAdmin(admin.ModelAdmin):
         'requested_at', 'started_at', 'completed_at', 'error_message',
         # Where the R2 objects live. Read-only on purpose: editing it here would not
         # move the objects; `manage.py rekey_transcripts` is what changes it.
-        'r2_key_stem',
+        'r2_key_stem', 'header_stamp',
     )
     ordering = ('-requested_at',)
     actions = (

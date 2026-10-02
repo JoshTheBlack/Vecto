@@ -1433,6 +1433,13 @@ class Transcript(models.Model):
         help_text="Where this transcript's R2 objects live ({stem}.{ext}). Managed by the "
                   "system; change it with `rekey_transcripts`, which moves the objects too.")
 
+    # Hash of the episode fields embedded in the .words recovery header (episode id,
+    # title, both GUIDs, audio URL) as of the last time they were written there. The
+    # nightly header sweep compares this to the episode's current values IN THE
+    # DATABASE, so a night with no changes costs no R2 operations; null = never
+    # checked (the first sweep reads the header once and stamps it).
+    header_stamp = models.CharField(max_length=40, null=True, blank=True)
+
     r2_key_token = models.CharField(
         max_length=32, null=True, blank=True, default=new_transcript_token,
         help_text="Random suffix mixed into the R2 object keys so they "

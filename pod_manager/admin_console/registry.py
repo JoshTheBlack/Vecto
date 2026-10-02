@@ -155,6 +155,12 @@ REGISTRY = {
         # confirm. --podcast/--network auto-infer the picker; --limit is a plain int.
         danger_fields=frozenset({"rotate_token"}),
     ),
+    "refresh_transcript_headers": CommandSpec(
+        name="refresh_transcript_headers",
+        category="R2 / Storage",
+        # Rewrites only the .words recovery header of transcripts whose episode data
+        # changed; never moves or deletes objects, so --apply alone executes.
+    ),
     "recover_transcripts": CommandSpec(
         name="recover_transcripts",
         category="R2 / Storage",

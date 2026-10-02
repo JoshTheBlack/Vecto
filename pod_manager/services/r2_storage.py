@@ -54,7 +54,8 @@ def media_public_url(key: str) -> str:
     return f"{settings.R2_MEDIA_PUBLIC_HOST}/{media_object_key(key).lstrip('/')}"
 
 
-def put_media_object(key: str, body, content_type: str, *, cache_control: str = MEDIA_CACHE_CONTROL) -> None:
+def put_media_object(key: str, body, content_type: str, *, cache_control: str = MEDIA_CACHE_CONTROL,
+                     client=None) -> None:
     """PUT a non-FileField object (e.g. a transcript) to the vecto-cdn bucket.
 
     Uses the account R2 client directly (like the audio mirror) so Content-Type
@@ -62,7 +63,7 @@ def put_media_object(key: str, body, content_type: str, *, cache_control: str = 
     transcript extensions (.words, .vtt, .srt) don't all map cleanly via
     mimetypes. file_overwrite is implicit: PUT replaces the stable key in place.
     """
-    get_r2_client().put_object(
+    (client or get_r2_client()).put_object(
         Bucket=settings.R2_MEDIA_BUCKET,
         Key=media_object_key(key),
         Body=body,

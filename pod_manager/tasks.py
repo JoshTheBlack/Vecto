@@ -997,3 +997,23 @@ def task_r2_orphan_cleanup():
     """Daily: hard-delete expired, still-unreferenced orphan objects (section I)."""
     from pod_manager.services.r2_maintenance import cleanup_orphans
     cleanup_orphans(apply=True)
+
+
+@shared_task
+def task_refresh_transcript_headers(limit=500):
+    """Nightly: bring stale .words recovery headers up to date (see
+    services/transcript_headers). Finding stale rows is database-only; R2 is touched
+    only for those, at most ``limit`` per run, so the first sweep over an existing
+    catalogue spreads across several nights and a no-change night costs nothing."""
+    from django.conf import settings
+    if not settings.R2_MEDIA_ENABLED:
+        return
+    from pod_manager.services.transcript_headers import refresh_transcript_headers
+    refresh_transcript_headers(apply=True, limit=limit)
+
+
+@shared_task
+def task_refresh_transcript_header(transcript_id):
+    """Refresh ONE transcript's header (queued after a merge for the survivor)."""
+    from pod_manager.services.transcript_headers import refresh_transcript_header
+    refresh_transcript_header(transcript_id)

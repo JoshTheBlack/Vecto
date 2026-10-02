@@ -15955,3 +15955,33 @@ class HomeBreadcrumbAndExplicitMarkerTests(TestCase):
             resp = self.client.get(reverse('episode_detail', args=[ep.id]), HTTP_HOST=self.HOST)
             self.assertEqual(resp.status_code, 200)
             self.assertEqual(resp.content.decode('utf-8').count('class="explicit-tag"'), expected, ep.title)
+
+
+from pod_manager.models import Invoice  # noqa: E402
+
+
+class MonthlyInvoiceIdempotencyTests(TestCase):
+    """task_generate_monthly_invoices bills once per network per calendar month, so a beat
+    restart that re-sends the due task can't create a duplicate invoice."""
+
+    def setUp(self):
+        self.network = Network.objects.create(
+            name='BillNet', slug='billnet', patreon_sync_enabled=True, base_cost=10, per_user_cost=1)
+
+    def _run(self):
+        from pod_manager.tasks import task_generate_monthly_invoices
+        with mock.patch('pod_manager.tasks.pdfkit.from_string', return_value=b'%PDF-fake'), \
+             override_settings(MEDIA_ROOT=tempfile.mkdtemp()):
+            task_generate_monthly_invoices()
+
+    def test_a_second_run_in_the_same_month_does_not_bill_again(self):
+        self._run()
+        self.assertEqual(Invoice.objects.filter(network=self.network).count(), 1)
+        self._run()
+        self.assertEqual(Invoice.objects.filter(network=self.network).count(), 1)
+
+    def test_a_previous_months_invoice_does_not_block_this_month(self):
+        self._run()
+        Invoice.objects.filter(network=self.network).update(created_at=timezone.now() - timedelta(days=40))
+        self._run()
+        self.assertEqual(Invoice.objects.filter(network=self.network).count(), 2)

@@ -80,8 +80,15 @@ def task_generate_monthly_invoices():
     logger.info("Starting monthly invoice generation...")
     networks = Network.objects.filter(patreon_sync_enabled=True)
     thirty_days_ago_date = (timezone.now() - timedelta(days=30)).date()
+    month_start = timezone.localtime().replace(day=1, hour=0, minute=0, second=0, microsecond=0)
 
     for network in networks:
+        # One invoice per network per calendar month. Beat can re-send a due task when it
+        # restarts, and this task isn't otherwise idempotent: a second run would bill again.
+        if Invoice.objects.filter(network=network, created_at__gte=month_start).exists():
+            logger.info(f"Skipping invoice for {network.name}: already generated this month")
+            continue
+
         # 1. Query Active Patrons
         active_patrons_count = NetworkMembership.objects.filter(
             network=network,

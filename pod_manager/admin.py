@@ -7,7 +7,7 @@ from django.contrib.auth.models import User
 from django.db.models import Q, F, BooleanField, ExpressionWrapper
 from django.utils.html import format_html, mark_safe
 from django.urls import reverse
-from .models import Network, PatreonTier, Podcast, Episode, EpisodeCrossPublication, UserMix, NetworkMix, PatronProfile, EpisodeEditSuggestion, EpisodeMatchSuggestion, NetworkMembership, LogEntry, Transcript, R2OrphanedObject, CalendarEntry, LiveSchedulePost
+from .models import Network, PatreonTier, Podcast, Episode, EpisodeCrossPublication, UserMix, NetworkMix, PatronProfile, EpisodeEditSuggestion, EpisodeMatchSuggestion, NetworkMembership, LogEntry, Transcript, R2OrphanedObject, CalendarEntry, LiveSchedulePost, Invoice
 
 class S3SubscriberAudioFilter(SimpleListFilter):
     title = 'S3 Hosted Audio (Affected)'
@@ -329,6 +329,19 @@ class CalendarEntryAdmin(admin.ModelAdmin):
     date_hierarchy = 'scheduled_at'
     raw_id_fields = ('episode', 'podcast', 'created_by')
     list_select_related = ('network', 'podcast', 'episode', 'created_by')
+
+
+@admin.register(Invoice)
+class InvoiceAdmin(admin.ModelAdmin):
+    """Generated monthly by task_generate_monthly_invoices. Records only: nothing here is
+    billed or sent, so they are read-only."""
+    list_display = ('network', 'created_at', 'amount_due', 'active_user_count', 'pdf_file')
+    list_filter = ('network',)
+    date_hierarchy = 'created_at'
+    readonly_fields = ('network', 'created_at', 'amount_due', 'active_user_count', 'pdf_file')
+
+    def has_add_permission(self, request):
+        return False
 
 
 @admin.register(LiveSchedulePost)

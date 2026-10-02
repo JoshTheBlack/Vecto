@@ -15985,3 +15985,12 @@ class MonthlyInvoiceIdempotencyTests(TestCase):
         Invoice.objects.filter(network=self.network).update(created_at=timezone.now() - timedelta(days=40))
         self._run()
         self.assertEqual(Invoice.objects.filter(network=self.network).count(), 2)
+
+
+class InvoiceAdminTests(TestCase):
+    def test_invoices_are_visible_in_the_admin(self):
+        admin_user = User.objects.create_superuser('inv-admin', 'a@example.test', 'pw')
+        self.client.force_login(admin_user)
+        resp = self.client.get(reverse('admin:pod_manager_invoice_changelist'))
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(self.client.get(reverse('admin:pod_manager_invoice_add')).status_code, 403)

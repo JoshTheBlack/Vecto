@@ -15999,3 +15999,249 @@ class InvoiceAdminTests(TestCase):
         resp = self.client.get(reverse('admin:pod_manager_invoice_changelist'))
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(self.client.get(reverse('admin:pod_manager_invoice_add')).status_code, 403)
+
+
+class DbBackupCryptoTests(SimpleTestCase):
+    """The backup file format: round-trips at any size, and refuses a wrong key or any damage."""
+
+    def setUp(self):
+        from pod_manager.services import db_backup
+        self.db = db_backup
+        self.key = db_backup.load_key(db_backup.generate_key())
+
+    def _enc(self, data, chunk=1024):
+        import io
+        out = io.BytesIO()
+        self.db.encrypt_stream(io.BytesIO(data), out, self.key, chunk_size=chunk)
+        return out.getvalue()
+
+    def _dec(self, blob, key=None):
+        import io
+        out = io.BytesIO()
+        self.db.decrypt_stream(io.BytesIO(blob), out, key or self.key)
+        return out.getvalue()
+
+    @staticmethod
+    def _chunks(blob):
+        import struct
+        out, pos = [], 12
+        while pos < len(blob):
+            n = 4 + struct.unpack('>I', blob[pos:pos + 4])[0]
+            out.append(blob[pos:pos + n])
+            pos += n
+        return out
+
+    def test_round_trips_across_chunk_boundaries(self):
+        import os
+        for size in (0, 1, 1023, 1024, 1025, 10 * 1024 + 7):
+            data = os.urandom(size)
+            self.assertEqual(self._dec(self._enc(data)), data, size)
+
+    def test_ciphertext_does_not_contain_the_plaintext(self):
+        self.assertNotIn(b'secret-email@example.test', self._enc(b'x' * 50 + b'secret-email@example.test'))
+
+    def test_a_wrong_key_is_refused(self):
+        blob = self._enc(b'data' * 1000)
+        with self.assertRaises(self.db.BackupError):
+            self._dec(blob, key=self.db.load_key(self.db.generate_key()))
+
+    def test_a_flipped_byte_is_refused(self):
+        import os
+        blob = bytearray(self._enc(os.urandom(5000)))
+        blob[len(blob) // 2] ^= 0x01
+        with self.assertRaises(self.db.BackupError):
+            self._dec(bytes(blob))
+
+    def test_truncation_is_refused_even_on_a_chunk_boundary(self):
+        import os
+        blob = self._enc(os.urandom(5000))            # several 1 KiB chunks
+        chunks = self._chunks(blob)
+        # dropping the last whole chunk leaves every remaining chunk intact on its own
+        with self.assertRaises(self.db.BackupError):
+            self._dec(blob[:12] + b''.join(chunks[:-1]))
+        with self.assertRaises(self.db.BackupError):
+            self._dec(blob[:-5])
+
+    def test_reordered_chunks_are_refused(self):
+        import os
+        blob = self._enc(os.urandom(4000))
+        chunks = self._chunks(blob)
+        chunks[0], chunks[1] = chunks[1], chunks[0]
+        with self.assertRaises(self.db.BackupError):
+            self._dec(blob[:12] + b''.join(chunks))
+
+    def test_not_a_backup_file(self):
+        with self.assertRaises(self.db.BackupError):
+            self._dec(b'not a backup at all, definitely')
+        with self.assertRaises(self.db.BackupError):
+            self._dec(b'')
+
+    def test_key_validation(self):
+        for bad in ('', 'not base64!!', self.db.generate_key()[:-8]):
+            with self.assertRaises(self.db.BackupError, msg=bad):
+                self.db.load_key(bad)
+
+
+class DbBackupPipelineTests(SimpleTestCase):
+    """run_backup / prune / list / verify / restore with pg_dump and R2 mocked."""
+
+    def setUp(self):
+        from types import SimpleNamespace
+        from pod_manager.services import db_backup
+        self.db = db_backup
+        self.cfg = SimpleNamespace(
+            DATABASES={'default': {'ENGINE': 'django.db.backends.postgresql', 'NAME': 'vecto',
+                                   'USER': 'u', 'PASSWORD': 'p'}},
+            DB_BACKUP_BUCKET='private-backups', DB_BACKUP_KEY=db_backup.generate_key(),
+            DB_BACKUP_PREFIX='db-backups/', DB_BACKUP_KEEP=2)
+        patcher = mock.patch.object(db_backup, 'settings', self.cfg)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.client = mock.Mock()
+        self.client.list_objects_v2.return_value = {'Contents': [], 'IsTruncated': False}
+        client_patch = mock.patch.object(db_backup, '_client', return_value=self.client)
+        client_patch.start()
+        self.addCleanup(client_patch.stop)
+
+    def _fake_dump(self, content=b'PGDMP-fake-dump'):
+        def run(dest):
+            Path(dest).write_bytes(content)
+            return Path(dest)
+        return run
+
+    def test_unconfigured_is_skipped_without_touching_anything(self):
+        good_key = self.cfg.DB_BACKUP_KEY
+        for attr in ('DB_BACKUP_BUCKET', 'DB_BACKUP_KEY'):
+            with self.subTest(attr):
+                self.cfg.DB_BACKUP_BUCKET, self.cfg.DB_BACKUP_KEY = 'private-backups', good_key
+                setattr(self.cfg, attr, '')
+                with mock.patch.object(self.db, 'run_pg_dump') as dump:
+                    result = self.db.run_backup()
+                self.assertIn('skipped', result)
+                dump.assert_not_called()
+                self.client.upload_file.assert_not_called()
+
+    def test_a_non_postgres_database_is_skipped(self):
+        self.cfg.DATABASES['default']['ENGINE'] = 'django.db.backends.sqlite3'
+        self.assertIn('not PostgreSQL', self.db.run_backup()['skipped'])
+
+    def test_uploads_an_encrypted_copy_that_decrypts_to_the_dump(self):
+        import io
+        uploaded = {}
+
+        def capture(path, bucket, key):
+            uploaded.update(bucket=bucket, key=key, blob=Path(path).read_bytes())
+        self.client.upload_file.side_effect = capture
+        with mock.patch.object(self.db, 'run_pg_dump', side_effect=self._fake_dump()), \
+             mock.patch.object(self.db, 'verify_dump', return_value=41):
+            result = self.db.run_backup()
+        self.assertEqual(uploaded['bucket'], 'private-backups')
+        self.assertTrue(uploaded['key'].startswith('db-backups/vecto-') and uploaded['key'].endswith('.dump.enc'))
+        self.assertNotIn(b'PGDMP', uploaded['blob'])
+        out = io.BytesIO()
+        self.db.decrypt_stream(io.BytesIO(uploaded['blob']), out, self.db.load_key())
+        self.assertEqual(out.getvalue(), b'PGDMP-fake-dump')
+        self.assertEqual(result['tables'], 41)
+
+    def test_a_failed_or_unreadable_dump_uploads_nothing(self):
+        with mock.patch.object(self.db, 'run_pg_dump', side_effect=self.db.BackupError('pg_dump failed: auth')):
+            with self.assertRaises(self.db.BackupError):
+                self.db.run_backup()
+        with mock.patch.object(self.db, 'run_pg_dump', side_effect=self._fake_dump()), \
+             mock.patch.object(self.db, 'verify_dump', side_effect=self.db.BackupError('empty')):
+            with self.assertRaises(self.db.BackupError):
+                self.db.run_backup()
+        self.client.upload_file.assert_not_called()
+
+    def test_keeps_only_the_newest_backups(self):
+        keys = [f'db-backups/vecto-2026-10-0{d}-000000.dump.enc' for d in range(1, 6)]
+        when = datetime.datetime(2026, 10, 1)
+        self.client.list_objects_v2.return_value = {
+            'Contents': [{'Key': k, 'Size': 1, 'LastModified': when} for k in keys]
+                        + [{'Key': 'db-backups/notes.txt', 'Size': 1, 'LastModified': when}],
+            'IsTruncated': False}
+        deleted = self.db.prune_backups()
+        self.assertEqual(sorted(deleted), sorted(keys[:3]))          # keep=2: the two newest survive
+        self.assertEqual(self.client.delete_object.call_count, 3)    # and the .txt is never touched
+
+    def test_list_follows_pagination_newest_first(self):
+        when = datetime.datetime(2026, 10, 1)
+        mk = lambda k: {'Key': k, 'Size': 5, 'LastModified': when}
+        self.client.list_objects_v2.side_effect = [
+            {'Contents': [mk('db-backups/vecto-a.dump.enc')], 'IsTruncated': True, 'NextContinuationToken': 't'},
+            {'Contents': [mk('db-backups/vecto-b.dump.enc')], 'IsTruncated': False}]
+        self.assertEqual([b['key'] for b in self.db.list_backups()],
+                         ['db-backups/vecto-b.dump.enc', 'db-backups/vecto-a.dump.enc'])
+
+    def _toc(self, text, returncode=0):
+        return mock.Mock(returncode=returncode, stdout=text, stderr='boom')
+
+    def test_verify_dump_rejects_bad_dumps(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / 'd.dump'
+            with self.assertRaises(self.db.BackupError):                    # missing
+                self.db.verify_dump(path)
+            path.write_bytes(b'')
+            with self.assertRaises(self.db.BackupError):                    # empty
+                self.db.verify_dump(path)
+            path.write_bytes(b'x')
+            with mock.patch.object(self.db, '_require_tool', return_value='pg_restore'):
+                with mock.patch.object(self.db, '_run', return_value=self._toc('', 1)):
+                    with self.assertRaises(self.db.BackupError):            # unreadable archive
+                        self.db.verify_dump(path)
+                with mock.patch.object(self.db, '_run', return_value=self._toc('1; 0 1 TABLE DATA public other u')):
+                    with self.assertRaises(self.db.BackupError):            # not a Django database
+                        self.db.verify_dump(path)
+                with mock.patch.object(self.db, '_run', return_value=self._toc(
+                        '1; 0 1 TABLE DATA public django_migrations u\n2; 0 2 TABLE DATA public auth_user u')):
+                    self.assertEqual(self.db.verify_dump(path), 2)
+
+    def test_restore_refuses_the_live_database(self):
+        with mock.patch.object(self.db, '_run') as run:
+            with self.assertRaises(self.db.BackupError):
+                self.db.restore_into('x.dump', 'vecto')
+        run.assert_not_called()
+
+    def test_restore_creates_a_new_database_then_loads_it(self):
+        calls = []
+
+        def fake_run(cmd, **kw):
+            calls.append(cmd)
+            return mock.Mock(returncode=0, stderr='')
+        with mock.patch.object(self.db, '_require_tool', side_effect=lambda n: n), \
+             mock.patch.object(self.db, '_run', side_effect=fake_run):
+            self.db.restore_into('x.dump', 'vecto_check')
+        self.assertEqual([c[0] for c in calls], ['createdb', 'pg_restore'])
+        self.assertIn('vecto_check', calls[1])
+        self.assertIn('--no-owner', calls[1])
+
+
+class DbBackupCommandTests(SimpleTestCase):
+    def test_generate_key_prints_a_usable_key(self):
+        from io import StringIO
+        from django.core.management import call_command
+        from pod_manager.services import db_backup
+        out = StringIO()
+        call_command('backup_database', generate_key=True, stdout=out)
+        key_line = out.getvalue().splitlines()[0].strip()
+        self.assertEqual(len(db_backup.load_key(key_line)), 32)
+
+    def test_restore_needs_a_backup_and_a_destination(self):
+        from django.core.management import call_command
+        from django.core.management.base import CommandError
+        with mock.patch('pod_manager.services.db_backup.is_configured', return_value=(True, '')):
+            with self.assertRaises(CommandError):
+                call_command('restore_database_backup', out='x')
+            with self.assertRaises(CommandError):
+                call_command('restore_database_backup', latest=True)
+
+    def test_restore_preview_downloads_nothing(self):
+        from io import StringIO
+        from django.core.management import call_command
+        with mock.patch('pod_manager.services.db_backup.is_configured', return_value=(True, '')), \
+             mock.patch('pod_manager.services.db_backup.list_backups', return_value=[{'key': 'db-backups/v.dump.enc'}]), \
+             mock.patch('pod_manager.services.db_backup.download_backup') as download:
+            out = StringIO()
+            call_command('restore_database_backup', latest=True, into='scratch', stdout=out)
+        download.assert_not_called()
+        self.assertIn('Would download', out.getvalue())

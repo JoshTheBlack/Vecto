@@ -1020,6 +1020,15 @@ def task_refresh_transcript_headers(limit=500):
 
 
 @shared_task
+def task_backup_database():
+    """Weekly: pg_dump, verify, encrypt and upload to the private backup bucket, then prune
+    to the newest DB_BACKUP_KEEP (see services/db_backup). Any failure raises, so it shows
+    as a failed task in the worker log instead of quietly leaving a stale backup."""
+    from pod_manager.services.db_backup import run_backup
+    return run_backup()
+
+
+@shared_task
 def task_refresh_transcript_header(transcript_id):
     """Refresh ONE transcript's header (queued after a merge for the survivor)."""
     from pod_manager.services.transcript_headers import refresh_transcript_header

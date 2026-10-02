@@ -116,6 +116,16 @@ R2_MEDIA_ENABLED         = os.getenv("R2_MEDIA_ENABLED", "False") == "True"
 CLOUDFLARE_ZONE_ID       = os.getenv("CLOUDFLARE_ZONE_ID", "")
 CLOUDFLARE_PURGE_TOKEN   = os.getenv("CLOUDFLARE_PURGE_TOKEN", "")
 
+# --- Encrypted database backups (services/db_backup.py, docs/database-backups.md) ---
+# A PRIVATE bucket (no public custom domain: the dump holds user data). Unset = the weekly
+# task logs a warning and skips. The key encrypts every dump before upload: generate one with
+# `manage.py backup_database --generate-key`, and keep a copy OFF the server, because a
+# backup without its key cannot be opened.
+DB_BACKUP_BUCKET         = os.getenv("DB_BACKUP_BUCKET", "")
+DB_BACKUP_KEY            = os.getenv("DB_BACKUP_KEY", "")
+DB_BACKUP_PREFIX         = os.getenv("DB_BACKUP_PREFIX", "db-backups/")
+DB_BACKUP_KEEP           = int(os.getenv("DB_BACKUP_KEEP", "8"))
+
 # Django's internal DEBUG needs to be a boolean, so it's True if 'True' OR 'IDE'
 DEBUG = (RAW_DEBUG in ['True', 'IDE']) and os.getenv('DEBUG_PAGES', '1') != '0'
 
@@ -520,6 +530,12 @@ CELERY_BEAT_SCHEDULE = {
     'transcript-headers-nightly': {
         'task': 'pod_manager.tasks.task_refresh_transcript_headers',
         'schedule': crontab(hour=3, minute=0),
+    },
+    # Encrypted pg_dump to the private backup bucket (see DB_BACKUP_* above). Sunday 02:30,
+    # after the 02:00 Patreon sync and clear of the 03:00-04:00 R2 jobs.
+    'db-backup-weekly': {
+        'task': 'pod_manager.tasks.task_backup_database',
+        'schedule': crontab(day_of_week=0, hour=2, minute=30),
     },
 }
 

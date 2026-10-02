@@ -17,6 +17,7 @@ celery
 redis
 django-celery-beat
 django-cryptography
+cryptography
 
 # Object Storage (Cloudflare R2 audio mirror + user-asset CDN)
 boto3>=1.36

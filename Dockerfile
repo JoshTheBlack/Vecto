@@ -18,6 +18,12 @@ RUN apt-get update && apt-get install -y \
     xfonts-75dpi \
     xfonts-base \
     nano \
+    gnupg \
+    lsb-release \
+    && install -d /usr/share/postgresql-common/pgdg \
+    && wget -qO /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc https://www.postgresql.org/media/keys/ACCC4CF8.asc \
+    && echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" > /etc/apt/sources.list.d/pgdg.list \
+    && apt-get update && apt-get install -y postgresql-client-15 \
     && wget -q https://github.com/wkhtmltopdf/packaging/releases/download/0.12.6.1-3/wkhtmltox_0.12.6.1-3.bookworm_amd64.deb \
     && apt-get install -y ./wkhtmltox_0.12.6.1-3.bookworm_amd64.deb \
     && rm wkhtmltox_0.12.6.1-3.bookworm_amd64.deb \

@@ -173,6 +173,15 @@ REGISTRY = {
         # Creates/fills/repoints Transcript rows from the bucket's .words headers;
         # never moves or deletes bucket objects, so --apply alone executes.
     ),
+    "backup_database": CommandSpec(
+        name="backup_database",
+        category="Maintenance",
+    ),
+    "restore_database_backup": CommandSpec(
+        name="restore_database_backup",
+        category="Maintenance",
+        # --into restores into a NEW database (the live one is refused), and only with --apply.
+    ),
     "r2_smoke_test": CommandSpec(
         name="r2_smoke_test",
         category="R2 / Storage",

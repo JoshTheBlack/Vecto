@@ -4740,8 +4740,9 @@ class ApplySpeakerLabelsTests(TestCase):
 # ── Phase 7: listener context, §8b review diff, submit key validation ─────────
 
 class EpisodeDetailSpeakerContextTests(TestCase):
-    """The episode page exposes, per speaker_id, the CURRENT resolved name derived
-    from fold_speaker_mappings over the .words speaker_id base (not seg.speaker)."""
+    """The episode page embeds the CURRENT resolved speaker names (the approved-edit
+    fold, DB-only) and the browser derives the speaker list from the .words document
+    it already fetches — the server no longer reads that file."""
 
     def setUp(self):
         self.tmp = tempfile.mkdtemp()
@@ -4777,14 +4778,34 @@ class EpisodeDetailSpeakerContextTests(TestCase):
         with override_settings(MEDIA_ROOT=self.tmp):
             return views.episode_detail(req, self.ep.id).content.decode('utf-8')
 
-    def _speaker_data(self, body):
-        m = re.search(r'const speakerData = (\[.*?\]);', body)
-        self.assertIsNotNone(m, "speakerData JSON not found in page")
+    def _server_mappings(self, body):
+        m = re.search(r'const serverMappings = (\{.*?\});', body)
+        self.assertIsNotNone(m, "serverMappings JSON not found in page")
         return json.loads(m.group(1))
 
-    def test_resolved_name_comes_from_fold_not_seg_speaker(self):
+    def _speakers_from_doc(self, body, doc):
+        """Run the page's own speakersFromDoc() under Node on ``doc``. The speaker
+        list is derived in the browser now, so its behavior is tested where it lives."""
+        import shutil as _shutil
+        import subprocess
+        node = _shutil.which('node')
+        if not node:
+            self.skipTest('node is not installed')
+        start = body.index('function speakersFromDoc(doc) {')
+        depth, i = 0, body.index('{', start)
+        for j in range(i, len(body)):
+            depth += (body[j] == '{') - (body[j] == '}')
+            if depth == 0:
+                fn = body[start:j + 1]
+                break
+        out = subprocess.run(
+            [node, '-e', fn + '; console.log(JSON.stringify(speakersFromDoc(JSON.parse(process.argv[1]))))',
+             json.dumps(doc)], capture_output=True, text=True, check=True)
+        return json.loads(out.stdout)
+
+    def test_the_server_serves_names_from_the_fold_and_never_reads_the_words_file(self):
         # .words still carries the raw label in seg.speaker (apply not run), but the
-        # context resolves names from the APPROVED fold → Aron.
+        # mapping the page embeds is the APPROVED fold -> Aron. Reading it is DB-only.
         segs = [
             {'start': 0, 'end': 1, 'text': 'Hi', 'speaker_id': 'SPEAKER_00', 'speaker': 'SPEAKER_00', 'words': []},
             {'start': 1, 'end': 2, 'text': 'Yo', 'speaker_id': 'SPEAKER_01', 'speaker': 'SPEAKER_01', 'words': []},
@@ -4795,16 +4816,34 @@ class EpisodeDetailSpeakerContextTests(TestCase):
             suggested_data={'speaker_mappings': {'SPEAKER_00': 'Aron'}},
             status=EpisodeEditSuggestion.Status.APPROVED, resolved_at=timezone.now(),
         )
-        names = {d['id']: d['name'] for d in self._speaker_data(self._render())}
-        self.assertEqual(names['SPEAKER_00'], 'Aron')
-        self.assertEqual(names['SPEAKER_01'], 'SPEAKER_01')  # unmapped → raw label
+        read = []
+        from pod_manager.services import transcription as tr
+        real = tr.read_transcript
+        with mock.patch.object(tr, 'read_transcript', side_effect=lambda t, ext: (read.append(ext), real(t, ext))[1]):
+            body = self._render()
+        self.assertEqual(self._server_mappings(body), {'SPEAKER_00': 'Aron'})
+        self.assertNotIn('words', read)
+
+    def test_the_browser_resolves_names_from_the_effective_mapping_not_seg_speaker(self):
+        body = self._render()
+        doc = {'speaker_mappings': {'SPEAKER_00': 'Aron'}, 'segments': [
+            {'speaker_id': 'SPEAKER_00', 'speaker': 'SPEAKER_00'},
+            {'speaker_id': 'SPEAKER_01', 'speaker': 'SPEAKER_01'},
+            {'speaker_id': 'SPEAKER_00', 'speaker': 'SPEAKER_00'},      # repeat: listed once, in timeline order
+        ]}
+        got = self._speakers_from_doc(body, doc)
+        self.assertEqual(got, [{'id': 'SPEAKER_00', 'name': 'Aron'},
+                               {'id': 'SPEAKER_01', 'name': 'SPEAKER_01'}])    # unmapped -> raw label
 
     def test_pre_backfill_falls_back_to_speaker(self):
-        segs = [{'start': 0, 'end': 1, 'text': 'Hi', 'speaker': 'SPEAKER_00', 'words': []}]
-        self._write_words(segs)
-        data = self._speaker_data(self._render())
-        self.assertEqual(data[0]['id'], 'SPEAKER_00')
-        self.assertEqual(data[0]['name'], 'SPEAKER_00')
+        body = self._render()
+        got = self._speakers_from_doc(body, {'segments': [{'speaker': 'SPEAKER_00'}]})
+        self.assertEqual(got, [{'id': 'SPEAKER_00', 'name': 'SPEAKER_00'}])
+
+    def test_a_transcript_without_speakers_yields_an_empty_list(self):
+        body = self._render()
+        self.assertEqual(self._speakers_from_doc(body, {'segments': [{'body': 'x'}, {}]}), [])
+        self.assertEqual(self._speakers_from_doc(body, {}), [])
 
 
 class SpeakerDiffAnnotationTests(TestCase):
@@ -15037,3 +15076,80 @@ class TranscriptRecoveryTests(TestCase):
         with override_settings(R2_MEDIA_ENABLED=False):
             with self.assertRaises(CommandError):
                 call_command('recover_transcripts')
+
+
+@override_settings(CACHES=TEST_CACHES, R2_MEDIA_ENABLED=True, R2_MEDIA_KEY_PREFIX='')
+class EpisodePageSpeakerListTests(TestCase):
+    """The episode page no longer reads the multi-MB .words file: the browser, which
+    already fetches it to render the transcript, derives the speaker list from it.
+    The server still supplies the html fallback and the DB-only name mapping."""
+
+    def setUp(self):
+        cache.clear()
+        self.net = Network.objects.create(name='Spk Net', slug='spk-net', custom_domain='spk.example.test')
+        self.owner = User.objects.create_user('spk-owner', password='x')
+        self.net.owners.add(self.owner)
+        self.pod = Podcast.objects.create(network=self.net, title='Spk Show', slug='spk-show')
+        self.ep = Episode.objects.create(podcast=self.pod, title='Spk Ep', pub_date=timezone.now(),
+                                         raw_description='x', clean_description='x',
+                                         audio_url_public='https://x/a.mp3')
+        self.tx = Transcript.objects.create(
+            episode=self.ep, status=Transcript.Status.COMPLETED, version=2,
+            html_file='m', words_json_file='m', vtt_file='m')
+        self.client.force_login(self.owner)
+
+    def _get(self):
+        asked = []
+
+        def fake_get(key):
+            asked.append(key)
+            if key.endswith('.html'):
+                return b'<p>fallback transcript html</p>', 'text/html'
+            return (json.dumps({'segments': [{'body': 'x', 'speaker_id': 'SPEAKER_00'}]}).encode(),
+                    'application/json')
+
+        with mock.patch('pod_manager.services.r2_storage.get_media_object', side_effect=fake_get):
+            resp = self.client.get(f'/episode/{self.ep.id}/', HTTP_HOST='spk.example.test')
+        self.assertEqual(resp.status_code, 200)
+        return resp, asked
+
+    def test_a_page_view_reads_the_html_but_never_the_words_file(self):
+        resp, asked = self._get()
+        self.assertEqual(asked, [self.tx.r2_key('html')])
+        self.assertContains(resp, 'fallback transcript html')
+
+    def test_the_speaker_list_is_no_longer_embedded_by_the_server(self):
+        resp, _ = self._get()
+        self.assertNotIn('transcript_speakers', resp.context)
+        self.assertNotIn('transcript_speaker_data_json', resp.context)
+        # The form is always rendered, hidden behind a loading state the browser resolves.
+        for hook in ('data-sp-loading', 'data-sp-body', 'data-sp-none', 'tx:docready',
+                     'speakersFromDoc', 'announceDoc'):
+            self.assertContains(resp, hook)
+        self.assertNotContains(resp, 'SPEAKER_00')
+
+    def test_the_state_blocks_carry_no_ids(self):
+        # An id'd element's attributes are reverted by a same-page htmx settle, which
+        # would undo the script's reveal and strand the "Loading speakers" text.
+        resp, _ = self._get()
+        body = resp.content.decode()
+        for marker in ('data-sp-loading', 'data-sp-body', 'data-sp-none'):
+            tag = body[body.rfind('<', 0, body.index(marker)):body.index('>', body.index(marker))]
+            self.assertNotIn(' id=', tag, marker)
+
+    def test_names_still_come_from_the_database_fold(self):
+        EpisodeEditSuggestion.objects.create(
+            episode=self.ep, user=self.owner, suggested_data={'speaker_mappings': {'SPEAKER_00': 'Josh'}},
+            status=EpisodeEditSuggestion.Status.APPROVED, resolved_at=timezone.now())
+        resp, asked = self._get()
+        self.assertEqual(resp.context['transcript_speaker_names'], {'SPEAKER_00': 'Josh'})
+        self.assertContains(resp, '"SPEAKER_00": "Josh"')
+        self.assertNotIn(self.tx.r2_key('words'), asked)
+
+    def test_a_viewer_without_transcript_access_triggers_no_reads_at_all(self):
+        self.client.logout()
+        self.pod.allow_public_transcripts = False
+        self.pod.required_tier = PatreonTier.objects.create(network=self.net, name='P', minimum_cents=500)
+        self.pod.save()
+        _, asked = self._get()
+        self.assertEqual(asked, [])

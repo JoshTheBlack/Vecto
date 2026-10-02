@@ -664,24 +664,30 @@
                             Know who the speakers are? Assign names to improve the transcript.
                             Submissions go through the same review process as episode edits.
                         </p>
+                        {% comment %}
+                        The speaker list is derived in the browser from the .words document the transcript
+                        script already fetches, so the server never reads that file for a page view. The
+                        data-sp-* blocks are revealed once the document arrives. They carry no ids on purpose:
+                        a same-page htmx swap reverts the attributes of id'd elements, which would undo the reveal.
+                        {% endcomment %}
                         <div id="speakerLabelForm">
-                            {% if transcript_speakers %}
-                            <div class="form-check form-switch mb-3">
-                                <input class="form-check-input" type="checkbox" role="switch" id="speakerSplitToggle">
-                                <label class="form-check-label text-muted small" for="speakerSplitToggle">
-                                    Show individual diarized speakers
-                                </label>
+                            <p class="text-muted small" data-sp-loading>Loading speakers&hellip;</p>
+                            <div class="d-none" data-sp-body>
+                                <div class="form-check form-switch mb-3">
+                                    <input class="form-check-input" type="checkbox" role="switch" id="speakerSplitToggle">
+                                    <label class="form-check-label text-muted small" for="speakerSplitToggle">
+                                        Show individual diarized speakers
+                                    </label>
+                                </div>
+                                <div class="row g-2 mb-3" id="speakerMappingRows"></div>
+                                <div class="d-flex align-items-center gap-3">
+                                    <button type="button" id="submitSpeakerLabelsBtn" class="btn btn-sm btn-primary fw-bold">
+                                        <i class="bi bi-send me-1"></i>Submit Speaker Labels
+                                    </button>
+                                    <span id="speakerLabelStatus" class="text-muted small"></span>
+                                </div>
                             </div>
-                            <div class="row g-2 mb-3" id="speakerMappingRows"></div>
-                            <div class="d-flex align-items-center gap-3">
-                                <button type="button" id="submitSpeakerLabelsBtn" class="btn btn-sm btn-primary fw-bold">
-                                    <i class="bi bi-send me-1"></i>Submit Speaker Labels
-                                </button>
-                                <span id="speakerLabelStatus" class="text-muted small"></span>
-                            </div>
-                            {% else %}
-                            <p class="text-muted small">No speaker labels found in this transcript (diarization may not have run).</p>
-                            {% endif %}
+                            <p class="text-muted small d-none" data-sp-none>No speaker labels found in this transcript (diarization may not have run).</p>
                         </div>
                     </div>
                     {% endif %}
@@ -1629,14 +1635,22 @@
         }
     });
 
+    // Tell the speaker-labels form (a separate script) that the document is ready, or
+    // that it never will be (doc = null), so it can build its boxes from it. __txDoc
+    // covers a listener that registers after the event has already fired.
+    function announceDoc(doc) {
+        container.__txDoc = doc;
+        container.dispatchEvent(new CustomEvent('tx:docready', { detail: { doc } }));
+    }
+
     async function init() {
         let doc;
         try {
             const resp = await fetch(wordsUrl);
-            if (!resp.ok) return;
+            if (!resp.ok) { announceDoc(null); return; }
             doc = await resp.json();
-        } catch (_) { return; }
-        if (!doc.segments || !doc.segments.length) return;
+        } catch (_) { announceDoc(null); return; }
+        if (!doc.segments || !doc.segments.length) { announceDoc(null); return; }
 
         // The .words fetch revalidates via ETag, but defensively override
         // speaker_mappings with the value the server read fresh from disk on this
@@ -1650,6 +1664,7 @@
         container.innerHTML = buildEnhancedTranscript(doc);
         rebuildWordSync();
         document.dispatchEvent(new CustomEvent('vecto:playerupdate'));
+        announceDoc(doc);
     }
 
     // Called by the speaker-label approval handler with a cache-busted fresh doc
@@ -1659,6 +1674,7 @@
         lastDoc = doc;
         container.innerHTML = buildEnhancedTranscript(doc);
         rebuildWordSync();
+        announceDoc(doc);        // a speaker-label approval changed the names: refresh the form too
     });
 
     // The Speaker Labels toggle (combined↔split) re-renders the cached doc in place.
@@ -1753,10 +1769,36 @@
     const statusEl  = document.getElementById('speakerLabelStatus');
     const rows      = document.getElementById('speakerMappingRows');
     const toggle    = document.getElementById('speakerSplitToggle');
-    if (!submitBtn || !rows) return;
+    const form      = document.getElementById('speakerLabelForm');
+    if (!submitBtn || !rows || !form) return;
+    const loadingEl = form.querySelector('[data-sp-loading]');
+    const bodyEl    = form.querySelector('[data-sp-body]');
+    const noneEl    = form.querySelector('[data-sp-none]');
 
-    // Per speaker_id: {id, name} in timeline order (resolved name = the fold).
-    const speakerData = {{ transcript_speaker_data_json|safe }};
+    // Per speaker_id: {id, name} in timeline order. Derived in the browser from the
+    // .words document the transcript script already fetched (names are the effective
+    // mapping: the server's approved-edit fold, applied to the doc before it is announced).
+    let speakerData = [];
+
+    function speakersFromDoc(doc) {
+        const names = (doc && doc.speaker_mappings) || {};
+        const seen = new Set();
+        const out = [];
+        for (const seg of (doc && doc.segments) || []) {
+            const id = seg.speaker_id || seg.speaker || '';
+            if (id && !seen.has(id)) { seen.add(id); out.push({ id, name: names[id] || id }); }
+        }
+        return out;
+    }
+
+    function showDoc(doc) {
+        speakerData = speakersFromDoc(doc);
+        loadingEl.classList.add('d-none');
+        const any = speakerData.length > 0;
+        bodyEl.classList.toggle('d-none', !any);
+        noneEl.classList.toggle('d-none', any);
+        if (any) renderBoxes();
+    }
 
     const SPLIT_KEY = 'vecto_speaker_split';
     function loadSplit() { try { return localStorage.getItem(SPLIT_KEY) === '1'; } catch (_) { return false; } }
@@ -1795,7 +1837,13 @@
         }
     }
 
-    renderBoxes();
+    const txBody = document.getElementById('transcriptBody');
+    if (txBody) {
+        txBody.addEventListener('tx:docready', e => showDoc(e.detail && e.detail.doc));
+        if (txBody.__txDoc !== undefined) showDoc(txBody.__txDoc);   // the event may have fired already
+    } else {
+        showDoc(null);                                                // html unavailable: nothing to derive from
+    }
 
     if (toggle) {
         toggle.checked = loadSplit();

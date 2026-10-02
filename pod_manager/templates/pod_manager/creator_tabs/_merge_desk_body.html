@@ -36,10 +36,15 @@
                                 <select name="merge_podcast_id" class="form-select bg-black text-warning fw-bold border-secondary" onchange="this.form.requestSubmit()">
                                     {% for pod in network_podcasts %}
                                         <option value="{{ pod.id }}" {% if merge_podcast_id == pod.id|stringformat:"s" %}selected{% endif %}>
-                                            {{ pod.title }}
+                                            {% if merge_view == 'orphans' %}{% if pod.reconcilable %}&#9679; {% endif %}{{ pod.title }}{% if pod.pub_orphans or pod.priv_orphans %} &mdash; {{ pod.pub_orphans }} public &middot; {{ pod.priv_orphans }} premium{% endif %}{% else %}{{ pod.title }}{% endif %}
                                         </option>
                                     {% endfor %}
                                 </select>
+                                {% if merge_view == 'orphans' %}
+                                <div class="form-text small" style="color:var(--vecto-surface-muted);">
+                                    <span style="color:var(--vecto-primary);">&#9679;</span> feed has both public and premium orphans &mdash; they may pair up
+                                </div>
+                                {% endif %}
                             </div>
 
                             <div class="col-md-{% if merge_view == 'matched' %}6{% else %}8{% endif %} mb-2">

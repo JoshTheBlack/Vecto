@@ -15503,3 +15503,95 @@ class CeleryBeatScheduleTests(TestCase):
                 self.assertEqual(task_row.task, settings.CELERY_BEAT_SCHEDULE[name]['task'])
         self.assertTrue(PeriodicTask.objects.filter(name='r2-orphan-cleanup-daily', enabled=True).exists())
         self.assertTrue(PeriodicTask.objects.filter(name='transcript-headers-nightly', enabled=True).exists())
+
+
+@override_settings(CACHES=TEST_CACHES)
+class MergeDeskOrphanIndicatorTests(TestCase):
+    """On Merge Orphans, the feed selector says which feeds have orphans on BOTH sides
+    (public + premium) — the candidates that may pair up."""
+
+    def setUp(self):
+        cache.clear()
+        self.owner = User.objects.create_user('ind-owner', password='x')
+        self.net = Network.objects.create(name='Ind Net', slug='ind-net')
+        self.net.owners.add(self.owner)
+        mk = lambda title: Podcast.objects.create(network=self.net, title=title, slug=f'ind-{title.lower()}')
+        self.both, self.pub_only, self.priv_only, self.none = mk('Both'), mk('PubOnly'), mk('PrivOnly'), mk('Neither')
+
+    def _orphan(self, pod, side, **kw):
+        base = dict(podcast=pod, pub_date=timezone.now(), raw_description='x', clean_description='x',
+                    title=f'{pod.title}-{side}-{Episode.objects.count()}')
+        if side == 'public':
+            base.update(guid_public=f'gp{Episode.objects.count()}', audio_url_public='https://x/p.mp3')
+        else:
+            base.update(guid_private=f'gx{Episode.objects.count()}', audio_url_subscriber='https://x/s.mp3')
+            base.pop('guid_public', None)
+        base.update(kw)
+        return Episode.objects.create(**base)
+
+    def _html(self, view='orphans', **extra):
+        req = _make_tenant_request(RequestFactory(), self.net, method='get', path='/creator/tab/merge/',
+                                   data={'network': self.net.slug, 'merge_view': view, **extra}, user=self.owner)
+        req.META['HTTP_HX_REQUEST'] = 'true'
+        return views.creator_tab_partial(req, 'merge').content.decode()
+
+    def _option(self, html, title):
+        """The <option>...</option> markup for the feed whose title is ``title``."""
+        start = html.index(f'{title}', html.index('name="merge_podcast_id"'))
+        opt_start = html.rfind('<option', 0, start)
+        return html[opt_start:html.index('</option>', start)]
+
+    def test_counts_and_the_both_sides_marker(self):
+        for _ in range(2):
+            self._orphan(self.both, 'public')
+        self._orphan(self.both, 'private')
+        self._orphan(self.pub_only, 'public')
+        self._orphan(self.priv_only, 'private')
+        html = self._html()
+        both = self._option(html, 'Both')
+        self.assertIn('&#9679;', both)                                    # flagged: orphans on both sides
+        self.assertIn('2 public', both)
+        self.assertIn('1 premium', both)
+        for title, counts in (('PubOnly', '1 public &middot; 0 premium'), ('PrivOnly', '0 public &middot; 1 premium')):
+            opt = self._option(html, title)
+            self.assertNotIn('&#9679;', opt)                              # only one side: nothing to pair
+            self.assertIn(counts, opt)
+        neither = self._option(html, 'Neither')
+        self.assertNotIn('&#9679;', neither)
+        self.assertNotIn('public', neither)                               # no orphans: no clutter
+        self.assertIn('both public and premium orphans', html)           # the legend
+
+    def test_other_merge_views_keep_plain_titles(self):
+        self._orphan(self.both, 'public')
+        self._orphan(self.both, 'private')
+        for view in ('pairs', 'matched'):
+            with self.subTest(view=view):
+                opt = self._option(self._html(view), 'Both')
+                self.assertNotIn('&#9679;', opt)
+                self.assertNotIn('premium', opt)
+
+    def test_counts_follow_the_same_definitions_as_the_lists(self):
+        from pod_manager.services.guid_links import make_private_guid
+        self._orphan(self.both, 'private')
+        # A Vecto-published episode has a generated private GUID: complete as published,
+        # so it is NOT a public orphan unless the opt-in switch is on.
+        self._orphan(self.both, 'public', guid_private=make_private_guid(self.net))
+        self.assertNotIn('&#9679;', self._option(self._html(), 'Both'))
+        opted = self._option(self._html(merge_published='1'), 'Both')
+        self.assertIn('&#9679;', opted)
+        self.assertIn('1 public', opted)
+
+    def test_a_search_term_does_not_change_the_selector_counts(self):
+        self._orphan(self.both, 'public')
+        self._orphan(self.both, 'private')
+        html = self._html(merge_q='no-such-title-anywhere')
+        self.assertIn('&#9679;', self._option(html, 'Both'))               # network-wide, not the search box
+
+    def test_annotate_orphan_counts_directly(self):
+        from pod_manager.views.creator.data import annotate_orphan_counts
+        self._orphan(self.both, 'public')
+        self._orphan(self.both, 'private')
+        self._orphan(self.pub_only, 'public')
+        pods = annotate_orphan_counts(self.net, [self.both, self.pub_only, self.none], False)
+        self.assertEqual([(p.pub_orphans, p.priv_orphans, p.reconcilable) for p in pods],
+                         [(1, 1, True), (1, 0, False), (0, 0, False)])

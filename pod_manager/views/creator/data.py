@@ -281,17 +281,51 @@ def pending_match_suggestion_count(current_network):
 
 
 @diagnostic_timer("3. Gather Merge Desk")
+def _orphan_filters(include_published):
+    """(public_q, private_q): the two orphan definitions the Merge Orphans lists use.
+
+    A PUBLIC orphan has no private GUID (and public audio); a PREMIUM orphan has no
+    public GUID (and subscriber audio). A Vecto-published episode carries a generated
+    private GUID and is complete as published, so it only counts as a public orphan when
+    ``include_published`` opts it back in."""
+    public_q = Q(guid_private__isnull=True) | Q(guid_private__exact='')
+    if include_published:
+        public_q |= generated_guid_q()
+    public_q = public_q & ~(Q(audio_url_public__isnull=True) | Q(audio_url_public__exact=''))
+    private_q = (Q(guid_public__isnull=True) | Q(guid_public__exact='')) & \
+        ~(Q(audio_url_subscriber__isnull=True) | Q(audio_url_subscriber__exact=''))
+    return public_q, private_q
+
+
+def annotate_orphan_counts(current_network, podcasts, include_published):
+    """Set pub_orphans / priv_orphans / reconcilable on each podcast so the feed selector
+    can show which feeds have orphans on BOTH sides (candidates for pairing). Counts the
+    whole network — not the search box — with the same definitions as the lists."""
+    public_q, private_q = _orphan_filters(include_published)
+    base = Episode.objects.filter(podcast__network=current_network)
+
+    def counts(q):
+        return dict(base.filter(q).values_list('podcast_id').annotate(n=Count('id')))
+
+    pub, priv = counts(public_q), counts(private_q)
+    for pod in podcasts:
+        pod.pub_orphans = pub.get(pod.id, 0)
+        pod.priv_orphans = priv.get(pod.id, 0)
+        pod.reconcilable = bool(pod.pub_orphans and pod.priv_orphans)
+    return podcasts
+
+
 def gather_merge_desk(request, current_network, network_podcasts=None):
     # 'pairs' is the desk's default mode: Suggested Pairs is the actionable
     # review queue (badged on the left nav), so it greets first; the orphan
     # and matched tools sit behind their mode buttons.
     merge_view = request.GET.get('merge_view', 'pairs')
+    pods = network_podcasts if network_podcasts is not None else network_podcast_list(current_network)
     merge_podcast_id = request.GET.get('merge_podcast_id', '')
     if not merge_podcast_id:
         # The feed selector has no "all feeds" option, so it displays its first
         # entry; apply that same feed to the query or the desk shows one feed while
         # listing every feed's episodes until the user re-picks.
-        pods = network_podcasts if network_podcasts is not None else network_podcast_list(current_network)
         merge_podcast_id = str(pods[0].id) if pods else ''
     merge_q = request.GET.get('merge_q', '').strip()
     merge_reason = request.GET.get('merge_reason', '').strip()
@@ -311,23 +345,16 @@ def gather_merge_desk(request, current_network, network_podcasts=None):
     if merge_view == 'pairs':
         suggested_pairs = _gather_suggested_pairs(current_network, merge_podcast_id, merge_q, request)
     elif merge_view == 'orphans':
+        annotate_orphan_counts(current_network, pods, merge_published)
         # A Vecto-published episode carries a generated private GUID (link target)
         # and is complete as published, so by default it is not an orphan awaiting a
         # partner. merge_published opts them back in for the case where the public
         # feed is imported and the private side is published on Vecto instead.
-        pub_orphan_q = Q(guid_private__isnull=True) | Q(guid_private__exact='')
-        if merge_published:
-            pub_orphan_q |= generated_guid_q()
-        pub_qs = base_episodes.filter(pub_orphan_q).exclude(
-            Q(audio_url_public__isnull=True) | Q(audio_url_public__exact='')
-        ).order_by('-pub_date')
+        public_q, private_q = _orphan_filters(merge_published)
+        pub_qs = base_episodes.filter(public_q).order_by('-pub_date')
         public_orphans = Paginator(pub_qs, 20).get_page(request.GET.get('pub_page', 1))
 
-        priv_qs = base_episodes.filter(
-            Q(guid_public__isnull=True) | Q(guid_public__exact='')
-        ).exclude(
-            Q(audio_url_subscriber__isnull=True) | Q(audio_url_subscriber__exact='')
-        ).order_by('-pub_date')
+        priv_qs = base_episodes.filter(private_q).order_by('-pub_date')
         private_orphans = Paginator(priv_qs, 20).get_page(request.GET.get('priv_page', 1))
 
     elif merge_view == 'matched':

@@ -1,4 +1,4 @@
-{% load static %}
+{% load static vecto_format %}
     
     <div class="d-flex justify-content-between align-items-center mb-4 flex-wrap gap-3">
         <div>
@@ -7,7 +7,7 @@
         </div>
     </div>
 
-    <div class="card p-3 mb-4 shadow-sm" style="background-color: var(--vecto-surface-bg); border-color: var(--bs-border-color) !important;">
+    <div class="card p-2 mb-3" style="background-color: var(--vecto-surface-bg); border-color: var(--bs-border-color) !important;">
         {% comment %}
         Searching swaps just this pane (S2.4). Before, it inherited the pane's
         #boosted-region target, so a search re-rendered the whole settings shell
@@ -49,45 +49,35 @@
             <p class="text-surface-muted small mb-0">No edits found matching your criteria.</p>
         </div>
     {% else %}
-        <div class="accordion" id="auditAccordion">
+        <p class="text-surface-muted small mb-2">
+            Showing {{ audit_page_obj.start_index }}&ndash;{{ audit_page_obj.end_index }} of {{ audit_page_obj.paginator.count }}
+        </p>
+        {% comment %}
+        One container, hairline-divided rows (no cards, no gaps). Each row is a fixed-column
+        grid: status, show + episode on one line, user, trust impact, compact age. Only the
+        status dot and a non-zero impact carry colour, so the rare rejected / negative rows
+        stand out from the routine ones. #auditAccordion keeps its id: the diff script below
+        scopes itself to it.
+        {% endcomment %}
+        <div class="accordion audit-list" id="auditAccordion">
             {% for edit in audit_page_obj %}
-            
-            <div class="accordion-item mb-3 shadow-sm" style="background-color: var(--vecto-surface-bg); border: 1px solid var(--bs-border-color); border-radius: var(--bs-border-radius); overflow: hidden;">
+            <div class="accordion-item audit-item">
                 <h2 class="accordion-header" id="headingAudit{{ edit.id }}">
-                    <button class="accordion-button collapsed py-3" type="button" data-bs-toggle="collapse" data-bs-target="#collapseAudit{{ edit.id }}" style="background-color: transparent; color: var(--vecto-surface-text); box-shadow: none;">
-                        <div class="d-flex w-100 justify-content-between align-items-center me-3">
-                            <div>
-                                <strong>{{ edit.episode.podcast.title }}</strong>: {{ edit.episode.title }}
-                            </div>
-                            <div class="text-end">
-                                {% if edit.audit_points < 0 %}
-                                    <span class="badge bg-danger bg-opacity-25 text-danger border border-danger me-2" title="Net trust impact">{{ edit.audit_points }}</span>
-                                {% elif edit.audit_points > 0 %}
-                                    <span class="badge bg-success bg-opacity-25 text-success border border-success me-2" title="Net trust impact">+{{ edit.audit_points }}</span>
-                                {% else %}
-                                    <span class="badge me-2" style="border:1px solid var(--bs-border-color); background-color: rgba(128,128,128,0.1); color: var(--vecto-surface-muted);" title="Net trust impact">+0</span>
-                                {% endif %}
-                                {% if edit.status == 'approved' %}
-                                    <span class="badge bg-success bg-opacity-25 text-success border border-success me-2">Applied</span>
-                                {% elif edit.status == 'rejected' %}
-                                    <span class="badge bg-danger bg-opacity-25 text-danger border border-danger me-2">Rejected</span>
-                                {% else %}
-                                    <span class="badge bg-warning bg-opacity-25 text-warning border border-warning me-2">Rolled Back</span>
-                                {% endif %}
-                                
-                                {% comment %}
-                                Informational only — must NOT be a link. A boosted <a> here sits
-                                inside the accordion's expand <button>, so clicking a header to
-                                expand would fire a filter navigation (audit_user=<this user>) and
-                                re-render the tab. Filter by user via the "Filter by username" box
-                                above instead.
-                                {% endcomment %}
-                                <span class="badge me-2" style="border: 1px solid var(--bs-border-color); background-color: rgba(128,128,128,0.1); color: var(--vecto-surface-text);">
-                                    <i class="bi bi-person ms-0 me-1"></i>{{ edit.user.username }}
-                                </span>
-                                <span class="text-surface-muted small">{{ edit.resolved_at|timesince }} ago</span>
-                            </div>
-                        </div>
+                    <button class="accordion-button collapsed audit-row" type="button" data-bs-toggle="collapse" data-bs-target="#collapseAudit{{ edit.id }}" aria-expanded="false">
+                        <span class="audit-status audit-status-{{ edit.status }}">{% if edit.status == 'approved' %}Applied{% elif edit.status == 'rejected' %}Rejected{% else %}Rolled back{% endif %}</span>
+                        <span class="audit-what" title="{{ edit.episode.podcast.title }}: {{ edit.episode.title }}">
+                            <span class="audit-show">{{ edit.episode.podcast.title }}</span>
+                            <span class="audit-episode">{{ edit.episode.title }}</span>
+                        </span>
+                        {% comment %}
+                        Informational only — must NOT be a link. A boosted <a> here sits inside the
+                        accordion's expand <button>, so clicking a header to expand would fire a filter
+                        navigation (audit_user=<this user>) and re-render the tab. Filter by user via the
+                        "Filter by username" box above instead.
+                        {% endcomment %}
+                        <span class="audit-user" title="{{ edit.user.username }}"><i class="bi bi-person"></i>{{ edit.user.username|email_local }}</span>
+                        {% if edit.audit_points > 0 %}<span class="audit-impact audit-impact-up" title="Net trust impact">+{{ edit.audit_points }}</span>{% elif edit.audit_points < 0 %}<span class="audit-impact audit-impact-down" title="Net trust impact">{{ edit.audit_points }}</span>{% else %}<span class="audit-impact audit-impact-zero" title="No trust impact">+0</span>{% endif %}
+                        <time class="audit-age" datetime="{{ edit.resolved_at|date:'c' }}" title="{{ edit.resolved_at|date:'M j, Y g:i a' }}">{{ edit.resolved_at|short_timesince }}</time>
                     </button>
                 </h2>
                 <div id="collapseAudit{{ edit.id }}" class="accordion-collapse collapse" data-bs-parent="#auditAccordion">
@@ -103,13 +93,13 @@
                 The loader URL forwards this tab's GET params so the diff's
                 rollback forms round-trip the reviewer's page/filter state.
                 {% endcomment %}
-                <div class="accordion-body" id="auditBody{{ edit.id }}" style="background-color: var(--vecto-surface-bg); border-top: 1px solid var(--bs-border-color);"
+                <div class="accordion-body audit-body" id="auditBody{{ edit.id }}"
                      hx-target="#boosted-region" hx-select="#boosted-region" hx-swap="outerHTML show:window:top" hx-push-url="false">
                     <div hx-get="{% url 'creator_audit_edit' edit.id %}?network={{ current_network.slug }}&{{ request.GET.urlencode }}"
                          hx-trigger="shown.bs.collapse from:closest .accordion-collapse once"
                          hx-target="#auditBody{{ edit.id }}" hx-swap="innerHTML" hx-select="unset" hx-push-url="false" hx-disinherit="*">
                         <div class="text-center py-4" style="color: var(--vecto-surface-muted);">
-                            <span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span> Loading…
+                            <span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span> Loading&hellip;
                         </div>
                     </div>
                 </div>
@@ -142,6 +132,81 @@
     {% endif %}
 
 <style>
+    /* ── Audit list: one container, dense hairline-divided rows ── */
+    .audit-list {
+        background: var(--vecto-surface-bg);
+        border: 1px solid var(--bs-border-color);
+        border-radius: var(--vecto-radius-md);
+        overflow: hidden;
+    }
+    .audit-item {
+        background: transparent;
+        border: 0;
+        border-radius: 0;
+        border-bottom: 1px solid var(--bs-border-color);
+    }
+    .audit-item:last-child { border-bottom: 0; }
+    .audit-item:has(.accordion-collapse.show) { box-shadow: inset 3px 0 0 var(--vecto-primary); }
+
+    .audit-row.accordion-button {
+        display: grid;
+        grid-template-columns: 6rem minmax(0, 1fr) 8rem 1.75rem 2.5rem 1rem;
+        grid-template-areas: "status what user impact age chev";
+        align-items: center;
+        column-gap: 0.65rem;
+        padding: 0.4rem 0.85rem;
+        font-size: 0.875rem;
+        line-height: 1.35;
+        background: transparent;
+        color: var(--vecto-surface-text);
+        box-shadow: none;
+    }
+    .audit-row.accordion-button:hover,
+    .audit-row.accordion-button:not(.collapsed) {
+        background: color-mix(in srgb, var(--vecto-surface-text) 7%, transparent);
+        color: var(--vecto-surface-text);
+    }
+    .audit-row.accordion-button:focus-visible { outline: 1px solid var(--vecto-primary); outline-offset: -1px; }
+    .audit-row.accordion-button::after {
+        grid-area: chev;
+        margin-left: 0;
+        width: 1rem;
+        height: 1rem;
+        background-size: 1rem;
+    }
+
+    .audit-status { grid-area: status; display: inline-flex; align-items: center; gap: 0.45rem; font-size: 0.8rem; white-space: nowrap; }
+    .audit-status::before { content: ''; width: 0.5rem; height: 0.5rem; border-radius: 50%; background: var(--vecto-surface-muted); flex-shrink: 0; }
+    .audit-status-approved::before { background: var(--bs-success); }
+    .audit-status-rejected::before { background: var(--bs-danger); }
+    .audit-status-rolled_back::before { background: var(--bs-warning); }
+
+    .audit-what { grid-area: what; display: flex; align-items: baseline; gap: 0.6rem; min-width: 0; overflow: hidden; white-space: nowrap; }
+    .audit-show { color: var(--vecto-surface-muted); flex: 0 1 auto; max-width: 15rem; overflow: hidden; text-overflow: ellipsis; }
+    .audit-episode { font-weight: 600; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+    .audit-user { grid-area: user; color: var(--vecto-surface-muted); font-size: 0.8rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .audit-user .bi { margin-right: 0.3rem; }
+    .audit-impact { grid-area: impact; text-align: right; font-size: 0.8rem; font-variant-numeric: tabular-nums; }
+    .audit-impact-up { color: var(--bs-success); }
+    .audit-impact-down { color: var(--bs-danger); }
+    .audit-impact-zero { color: var(--vecto-surface-muted); opacity: 0.6; }
+    .audit-age { grid-area: age; text-align: right; color: var(--vecto-surface-muted); font-size: 0.8rem; white-space: nowrap; }
+
+    .audit-body {
+        background: color-mix(in srgb, var(--vecto-surface-text) 3%, transparent);
+        border-top: 1px solid var(--bs-border-color);
+        padding: 1rem;
+    }
+
+    @media (max-width: 768px) {
+        .audit-row.accordion-button {
+            grid-template-columns: auto minmax(0, 1fr) auto auto 1rem;
+            grid-template-areas: "what what what what chev" "status user impact age .";
+            row-gap: 0.15rem;
+        }
+        .audit-user { max-width: none; }
+    }
+
     /* Side-by-side diff grid: pairs of .diff-box items render in two columns.
        Tag pills and chapter row styles live in creator_settings.html. */
     .diff-grid {

@@ -15595,3 +15595,99 @@ class MergeDeskOrphanIndicatorTests(TestCase):
         pods = annotate_orphan_counts(self.net, [self.both, self.pub_only, self.none], False)
         self.assertEqual([(p.pub_orphans, p.priv_orphans, p.reconcilable) for p in pods],
                          [(1, 1, True), (1, 0, False), (0, 0, False)])
+
+
+class VectoFormatFilterTests(SimpleTestCase):
+    """The compact formatting filters the dense audit list uses."""
+
+    def test_short_timesince_picks_the_largest_unit(self):
+        from datetime import timedelta
+        from pod_manager.templatetags.vecto_format import short_timesince
+        now = timezone.now()
+        cases = [(timedelta(seconds=10), 'now'), (timedelta(minutes=5), '5m'), (timedelta(minutes=59), '59m'),
+                 (timedelta(hours=3), '3h'), (timedelta(hours=23), '23h'), (timedelta(days=12), '12d'),
+                 (timedelta(days=29), '29d'), (timedelta(days=75), '2mo'), (timedelta(days=364), '12mo'),
+                 (timedelta(days=800), '2y')]
+        with mock.patch('pod_manager.templatetags.vecto_format.timezone.now', return_value=now):
+            for delta, want in cases:
+                with self.subTest(delta=delta):
+                    self.assertEqual(short_timesince(now - delta), want)
+        self.assertEqual(short_timesince(None), '')
+
+    def test_email_local_only_trims_email_style_usernames(self):
+        from pod_manager.templatetags.vecto_format import email_local
+        self.assertEqual(email_local('josh@example.com'), 'josh')
+        self.assertEqual(email_local('plain_user'), 'plain_user')
+        self.assertEqual(email_local(''), '')
+        self.assertEqual(email_local(None), '')
+
+
+@override_settings(CACHES=TEST_CACHES)
+class AuditLogFaceliftTests(TestCase):
+    """The audit tab is one container of dense, hairline-divided rows (not a stack of
+    cards): fixed columns, compact age, quiet impact, status as the one coloured cue."""
+
+    def setUp(self):
+        cache.clear()
+        self.network = Network.objects.create(name='FaceNet', slug='facenet', custom_domain='facenet.example.test')
+        self.owner = User.objects.create_user(username='face-owner', password='pw')
+        self.network.owners.add(self.owner)
+        self.editor = User.objects.create_user(username='audit.person@example.com', password='pw')
+        NetworkMembership.objects.create(user=self.editor, network=self.network, trust_score=9)
+        pod = Podcast.objects.create(network=self.network, title='Face Show', slug='face-show')
+        ep = Episode.objects.create(podcast=pod, title='Face Episode', pub_date=timezone.now(),
+                                    raw_description='x', clean_description='x', audio_url_public='https://x/a.mp3')
+        mk = lambda status, points: EpisodeEditSuggestion.objects.create(
+            episode=ep, user=self.editor, status=status, points=points,
+            original_data={'title': 'a'}, suggested_data={'title': 'b'}, resolved_at=timezone.now())
+        self.edits = {s: mk(s, p) for s, p in ((EpisodeEditSuggestion.Status.APPROVED, 3),
+                                               (EpisodeEditSuggestion.Status.REJECTED, 0),
+                                               (EpisodeEditSuggestion.Status.ROLLED_BACK, 0))}
+        self.client.force_login(self.owner)
+
+    def _body(self, **params):
+        resp = self.client.get(reverse('creator_tab_partial', args=['audit']),
+                               {'network': self.network.slug, **params},
+                               HTTP_HOST='facenet.example.test', HTTP_HX_REQUEST='true')
+        self.assertEqual(resp.status_code, 200)
+        return resp.content.decode('utf-8')
+
+    def test_one_container_of_rows_not_a_stack_of_cards(self):
+        body = self._body()
+        self.assertIn('class="accordion audit-list" id="auditAccordion"', body)   # id kept: the diff script scopes to it
+        self.assertEqual(body.count('class="accordion-item audit-item"'), 3)
+        self.assertNotIn('shadow-sm" style="background-color: var(--vecto-surface-bg); border: 1px solid', body)
+        self.assertIn('Showing 1&ndash;3 of 3', body)
+
+    def test_each_row_carries_status_who_impact_and_age(self):
+        from pod_manager.views.creator.data import _audit_points
+        body = self._body()
+        for cls, label in (('approved', 'Applied'), ('rejected', 'Rejected'), ('rolled_back', 'Rolled back')):
+            self.assertIn(f'audit-status audit-status-{cls}">{label}</span>', body)
+        # email-style usernames show their local part, with the full value on hover
+        self.assertIn('title="audit.person@example.com"><i class="bi bi-person"></i>audit.person</span>', body)
+        # impact: coloured only when non-zero, a dim dash otherwise
+        for edit in self.edits.values():
+            pts = _audit_points(edit)
+            want = 'audit-impact-up' if pts > 0 else 'audit-impact-down' if pts < 0 else 'audit-impact-zero'
+            self.assertIn(want, body)
+        self.assertIn('class="audit-age"', body)
+        self.assertRegex(body, r'<time class="audit-age" datetime="[^"]+" title="[^"]+">now</time>')
+
+    def test_no_link_sits_inside_the_expand_button(self):
+        # A boosted <a> inside the accordion's <button> would fire a filter navigation
+        # whenever a header is clicked to expand it.
+        body = self._body()
+        for chunk in body.split('<button class="accordion-button')[1:]:
+            self.assertNotIn('<a ', chunk.split('</button>', 1)[0])
+
+    def test_the_lazy_diff_loader_is_unchanged(self):
+        body = self._body()
+        for edit in self.edits.values():
+            self.assertIn(reverse('creator_audit_edit', args=[edit.id]), body)
+        self.assertEqual(body.count('shown.bs.collapse from:closest .accordion-collapse once'), 3)
+        self.assertIn('hx-target="#boosted-region" hx-select="#boosted-region"', body)
+
+    def test_filters_still_narrow_the_list(self):
+        self.assertIn('Showing 1&ndash;1 of 1', self._body(audit_status='rejected'))
+        self.assertIn('No edits found', self._body(audit_q='no-such-episode'))

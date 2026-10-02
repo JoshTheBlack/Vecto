@@ -1,13 +1,23 @@
 """Take an encrypted database backup to the private R2 backup bucket right now.
 
-The nightly Celery task runs the same pipeline (services/db_backup). Use this for a backup
-before a risky change, or to prove the setup works after configuring it:
+The nightly Celery task (02:30) runs the same pipeline (services/db_backup). Use this for a
+backup before a risky change, or to prove the setup works after configuring it:
 
-    python manage.py backup_database                  # dump, verify, encrypt, upload, prune
+    python manage.py backup_database                  # dump, verify, encrypt, upload, thin out old ones
     python manage.py backup_database --list           # what is in the bucket
     python manage.py backup_database --generate-key   # a new DB_BACKUP_KEY (prints, saves nothing)
 
-Restoring: see restore_database_backup and docs/database-backups.md.
+What a run does: pg_dump straight to Postgres, checks the dump is readable and holds real data
+(a failed or empty dump uploads nothing), encrypts it with DB_BACKUP_KEY (AES-256-GCM), uploads
+it to DB_BACKUP_BUCKET, then applies retention: the newest backup of each of the last
+DB_BACKUP_KEEP_DAILY days (14), _WEEKLY weeks (13) and _MONTHLY months (12) is kept, the rest
+deleted.
+
+Needs PostgreSQL (not SQLite), DB_BACKUP_BUCKET (a PRIVATE R2 bucket) and DB_BACKUP_KEY. Keep a
+copy of the key and the rest of .env OUTSIDE the server: a backup cannot be opened without it.
+
+Restoring, including recovery onto a new server: restore_database_backup and
+docs/database-backups.md.
 """
 
 from django.core.management.base import BaseCommand, CommandError

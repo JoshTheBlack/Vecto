@@ -313,6 +313,7 @@ def _handle_publish_post(request, current_network, podcasts, networks):
     ep.episode_number     = episode_number
     ep.episode_type       = episode_type
     ep.explicit           = explicit
+    ep.explicit_locked    = explicit is not None
 
     def _sync_cross(saved_ep):
         targets = validate_cross_targets(saved_ep, request.POST.getlist('cross_publish_ids'), current_network)
@@ -429,7 +430,10 @@ def manage_episode(request, episode_id):
 
     elif action == 'update_explicit':
         ep.explicit = _parse_explicit(request.POST.get('explicit'))
-        ep.save(update_fields=['explicit'])
+        # A hand-set rating is locked against the feed; "inherit" releases the lock so the
+        # feed's value (or the show's) applies again.
+        ep.explicit_locked = ep.explicit is not None
+        ep.save(update_fields=['explicit', 'explicit_locked'])
         from django.core.cache import cache
         cache.delete(f"ep_frag_public_{ep.id}")
         cache.delete(f"ep_frag_private_{ep.id}")

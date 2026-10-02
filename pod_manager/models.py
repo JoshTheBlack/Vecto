@@ -558,6 +558,17 @@ class Podcast(models.Model):
                   "are unaffected.",
     )
 
+    # iTunes content rating of this feed (channel-level <itunes:explicit>), which its
+    # episodes inherit unless they set their own. `feed_explicit` is what the SOURCE
+    # feed says (set by ingestion whenever the feed states it); `explicit` is an
+    # optional creator override. Null override = follow the source feed.
+    feed_explicit = models.BooleanField(
+        null=True, blank=True, editable=False,
+        help_text="The rating the source feed declares (captured on ingest).")
+    explicit = models.BooleanField(
+        null=True, blank=True,
+        help_text="Override this feed's content rating. Blank = follow the source feed.")
+
     auto_crosspublish_targets = models.ManyToManyField(
         'self', symmetrical=False, blank=True,
         related_name='auto_crosspublish_sources',
@@ -576,6 +587,16 @@ class Podcast(models.Model):
     class Meta:
         unique_together = ('network', 'slug')
 
+
+    @property
+    def effective_explicit(self) -> bool:
+        """The channel-level rating this feed is published with: the creator's override,
+        else what the source feed declares, else explicit (the long-standing default)."""
+        if self.explicit is not None:
+            return self.explicit
+        if self.feed_explicit is not None:
+            return self.feed_explicit
+        return True
 
     def __str__(self):
         return self.title
@@ -638,6 +659,10 @@ class Episode(models.Model):
     # (feeds emit no item-level tag); True/False emit <itunes:explicit>true|false.
     # Ingested from the feed even when metadata is locked (see commit_episode).
     explicit       = models.BooleanField(null=True, blank=True)
+    # True once an owner has set `explicit` by hand: ingestion then leaves it alone
+    # instead of overwriting it with the feed's value on the next poll. Choosing
+    # "inherit" (explicit = None) clears the lock so the feed's value flows in again.
+    explicit_locked = models.BooleanField(default=False)
 
     # Publication status
     is_published = models.BooleanField(default=True, db_index=True,
@@ -663,6 +688,12 @@ class Episode(models.Model):
         ]
         ordering = ['-pub_date']
     
+    @property
+    def effective_explicit(self) -> bool:
+        """The rating this episode is published with: its own value if set, else its
+        show's effective rating."""
+        return self.explicit if self.explicit is not None else self.podcast.effective_explicit
+
     def __str__(self):
         # This will show "Podcast Title | Episode Title"
         # We truncate the title to 50 chars so the admin list stays clean

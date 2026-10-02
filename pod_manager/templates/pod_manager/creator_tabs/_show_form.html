@@ -156,6 +156,21 @@ would then have to wait for this form to land instead of a fixed timeout.
     </div>
 
     <h6 class="fw-semibold mb-2 mt-3 text-warning border-bottom border-secondary pb-1">
+        <i class="bi bi-shield-exclamation me-1"></i>Content Rating
+    </h6>
+    <div class="mb-3">
+        <select name="explicit" class="form-select form-select-sm bg-dark text-light border-secondary">
+            <option value="" {% if show.explicit is None %}selected{% endif %}>Follow source feed ({% if show.feed_explicit is None %}not stated &mdash; Explicit{% elif show.feed_explicit %}Explicit{% else %}Clean{% endif %})</option>
+            <option value="true" {% if show.explicit is True %}selected{% endif %}>Explicit</option>
+            <option value="false" {% if show.explicit is False %}selected{% endif %}>Clean</option>
+        </select>
+        <div class="form-text text-muted">
+            The channel-level <code>itunes:explicit</code> tag on this feed. Every episode inherits it unless it
+            sets its own rating.
+        </div>
+    </div>
+
+    <h6 class="fw-semibold mb-2 mt-3 text-warning border-bottom border-secondary pb-1">
         <i class="bi bi-eye-slash me-1"></i>Feed Visibility &amp; Cross-Publish
     </h6>
     <div class="form-check form-switch mb-3">

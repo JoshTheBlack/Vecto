@@ -91,7 +91,7 @@ def parse_duration(duration_str: str) -> timedelta | None:
 
 
 class RSSFeedBuilder:
-    def __init__(self, base_url, title, description, image_url, network, feed_type='private'):
+    def __init__(self, base_url, title, description, image_url, network, feed_type='private', explicit=True):
         # Strip trailing slashes to prevent double-slashing when concatenating URLs
         self.base_url = base_url.rstrip('/')
         self.feed_type = feed_type
@@ -104,7 +104,7 @@ class RSSFeedBuilder:
             name=title,
             description=safe_description,
             website=network.website_url or self.base_url,
-            explicit=True,
+            explicit=explicit,
             image=image_url or network.display_default_image or "https://example.com/logo.png",
             authors=[Person(name=network.name, email=network.contact_email or "hosts@example.com")],
             owner=Person(name=network.name, email=network.contact_email or "hosts@example.com"),
@@ -189,10 +189,9 @@ class RSSFeedBuilder:
                 etree.SubElement(item, f'{{{itunes_ns}}}episode').text = str(ep.episode_number)
             if ep.episode_type and ep.episode_type != 'full':
                 etree.SubElement(item, f'{{{itunes_ns}}}episodeType').text = ep.episode_type
-            # None inherits the channel-level rating (emit nothing); True/False
-            # override it per-episode.
-            if ep.explicit is not None:
-                etree.SubElement(item, f'{{{itunes_ns}}}explicit').text = 'true' if ep.explicit else 'false'
+            # Always the RESOLVED rating (the episode's own, else its show's): the item is
+            # correct wherever it is cross-published, whatever that channel declares.
+            etree.SubElement(item, f'{{{itunes_ns}}}explicit').text = 'true' if ep.effective_explicit else 'false'
 
             if ep.id in transcript_map and can_view_transcript(ep, ep_access):
                 # ?v=N so the on-platform URL (which 302s to the immutable cdn
@@ -233,7 +232,8 @@ def get_or_build_feed_shell(podcast, base_url, has_access):
     if shell: return shell
 
     title = f"{podcast.title} (Private)" if has_access else podcast.title
-    builder = RSSFeedBuilder(base_url, title, podcast.description or "", podcast.image_url, podcast.network, feed_type)
+    builder = RSSFeedBuilder(base_url, title, podcast.description or "", podcast.image_url, podcast.network, feed_type,
+                             explicit=podcast.effective_explicit)
     raw_xml = builder.render()
 
     # Guarantee the podcast namespace is on the root element regardless of

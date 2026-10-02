@@ -842,7 +842,7 @@
                             <label class="form-label text-light">Content Rating</label>
                             <div class="input-group">
                                 <select name="explicit" class="form-select bg-dark text-light border-secondary">
-                                    <option value="" {% if ep.explicit is None %}selected{% endif %}>Inherit from show</option>
+                                    <option value="" {% if ep.explicit is None %}selected{% endif %}>Inherit from show ({{ ep.podcast.effective_explicit|yesno:"Explicit,Clean" }})</option>
                                     <option value="true" {% if ep.explicit is True %}selected{% endif %}>Explicit</option>
                                     <option value="false" {% if ep.explicit is False %}selected{% endif %}>Clean</option>
                                 </select>
@@ -850,7 +850,11 @@
                                     <i class="bi bi-save me-1"></i>Save
                                 </button>
                             </div>
-                            <div class="form-text text-muted">Sets <code>itunes:explicit</code> on this episode.</div>
+                            <div class="form-text text-muted">
+                                Sets <code>itunes:explicit</code> on this episode. A rating you set here is kept when the
+                                source feed is re-imported; "Inherit" lets the show's (or the feed's) rating apply again.
+                                Currently published as <strong>{{ ep.effective_explicit|yesno:"Explicit,Clean" }}</strong>{% if ep.explicit_locked %} (set by hand){% endif %}.
+                            </div>
                         </form>
 
                         {% if network_podcasts %}

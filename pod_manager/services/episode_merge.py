@@ -122,6 +122,9 @@ def apply_field_choices(survivor, deleted, field_choices):
     if 'explicit' in choices:
         val = choices['explicit']
         survivor.explicit = None if val in (None, '') else bool(val)
+        # A rating either row had set by hand stays locked against the feed; "inherit" releases it.
+        survivor.explicit_locked = survivor.explicit is not None and bool(
+            survivor.explicit_locked or deleted.explicit_locked)
     if 'audio_url_public' in choices:
         survivor.audio_url_public = choices['audio_url_public'] or None
     for guid_field in ('guid_public', 'guid_private'):

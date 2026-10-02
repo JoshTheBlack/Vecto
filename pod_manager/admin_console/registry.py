@@ -161,6 +161,12 @@ REGISTRY = {
         # Rewrites only the .words recovery header of transcripts whose episode data
         # changed; never moves or deletes objects, so --apply alone executes.
     ),
+    "backfill_explicit": CommandSpec(
+        name="backfill_explicit",
+        category="Feeds",
+        # Sets show/episode content ratings from the source feeds; never touches episodes an
+        # owner rated by hand, so --apply alone executes (preview is the default).
+    ),
     "recover_transcripts": CommandSpec(
         name="recover_transcripts",
         category="R2 / Storage",

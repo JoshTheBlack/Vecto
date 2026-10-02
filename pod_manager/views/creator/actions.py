@@ -592,6 +592,11 @@ def handle_update_show(request, current_network):
         except (TypeError, ValueError):
             setattr(show, field, None)
 
+    # Content rating override: '' = follow the source feed (None), else true/false. Only
+    # applied when the field is posted, so other callers of this handler are unaffected.
+    if 'explicit' in request.POST:
+        show.explicit = {'true': True, 'false': False}.get(request.POST.get('explicit'))
+
     # Per-feed R2 serving override (checkbox — absent in POST means unchecked).
     show.force_r2_serve = bool(request.POST.get('force_r2_serve'))
 

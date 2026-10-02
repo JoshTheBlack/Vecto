@@ -3504,7 +3504,9 @@ class FinalizeXmlTests(TestCase):
         result = builder._finalize_xml(self._rss(guid='ep-1'), {'ep-1': ep}, None)
         self.assertNotIn('<category>', result)
 
-    def _explicit_ep(self, value):
+    def _explicit_ep(self, value, effective=None):
+        """A stand-in episode. ``value`` is its own rating; ``effective`` is what it resolves to
+        (its own, else its show's) and is what the feed publishes."""
         from unittest.mock import MagicMock
         ep = MagicMock()
         ep.tags = []
@@ -3515,6 +3517,7 @@ class FinalizeXmlTests(TestCase):
         ep.season_number = None
         ep.episode_number = None
         ep.explicit = value
+        ep.effective_explicit = value if value is not None else effective
         return ep
 
     def test_explicit_true_emitted(self):
@@ -3525,9 +3528,14 @@ class FinalizeXmlTests(TestCase):
         result = self._builder()._finalize_xml(self._rss(guid='ep-1'), {'ep-1': self._explicit_ep(False)}, None)
         self.assertIn('<itunes:explicit>false</itunes:explicit>', result)
 
-    def test_explicit_none_omits_item_tag(self):
-        result = self._builder()._finalize_xml(self._rss(guid='ep-1'), {'ep-1': self._explicit_ep(None)}, None)
-        self.assertNotIn('itunes:explicit', result)
+    def test_an_inheriting_episode_publishes_its_shows_resolved_rating(self):
+        # The item carries the RESOLVED rating (not nothing), so it stays right wherever it
+        # is cross-published, whatever that channel declares.
+        for show_rating, tag in ((True, 'true'), (False, 'false')):
+            with self.subTest(show_rating=show_rating):
+                ep = self._explicit_ep(None, effective=show_rating)
+                result = self._builder()._finalize_xml(self._rss(guid='ep-1'), {'ep-1': ep}, None)
+                self.assertIn(f'<itunes:explicit>{tag}</itunes:explicit>', result)
 
     def test_chapter_url_added_when_chapters_exist(self):
         from unittest.mock import MagicMock
@@ -8748,6 +8756,150 @@ class ExtractExplicitTests(SimpleTestCase):
         self.assertIsNone(extract_explicit(_FakeEntry()))
         self.assertIsNone(extract_explicit(_FakeEntry(itunes_explicit='')))
         self.assertIsNone(extract_explicit(_FakeEntry(itunes_explicit='maybe')))
+
+
+class AnnotateExplicitTests(SimpleTestCase):
+    """annotate_explicit(): feedparser drops 'true'/'false', so the raw XML is read instead."""
+
+    ITUNES = 'xmlns:itunes="http://www.itunes.com/dtds/podcast-1.0.dtd"'
+
+    def _parse(self, channel_tag, items):
+        import feedparser
+        from pod_manager.ingesters.default import annotate_explicit
+        body = ''.join(
+            f'<item><guid>{g}</guid><title>t</title>{tag}</item>' for g, tag in items)
+        xml = (f'<?xml version="1.0"?><rss version="2.0" {self.ITUNES}><channel><title>S</title>'
+               f'{channel_tag}{body}</channel></rss>').encode('utf-8')
+        return annotate_explicit(feedparser.parse(xml), xml), xml
+
+    def test_channel_true_with_mixed_items(self):
+        parsed, _ = self._parse(
+            '<itunes:explicit>true</itunes:explicit>',
+            [('a', '<itunes:explicit>false</itunes:explicit>'),
+             ('b', '<itunes:explicit>true</itunes:explicit>'),
+             ('c', '')])
+        self.assertIs(parsed.feed['vecto_explicit'], True)
+        self.assertEqual([e.get('vecto_explicit') for e in parsed.entries], [False, True, None])
+
+    def test_value_spellings_case_and_whitespace(self):
+        parsed, _ = self._parse(
+            '<itunes:explicit> YES </itunes:explicit>',
+            [('a', '<itunes:explicit>Clean</itunes:explicit>'),
+             ('b', '<itunes:explicit>FALSE</itunes:explicit>'),
+             ('c', '<itunes:explicit>maybe</itunes:explicit>')])
+        self.assertIs(parsed.feed['vecto_explicit'], True)
+        self.assertEqual([e.get('vecto_explicit') for e in parsed.entries], [False, False, None])
+
+    def test_silent_feed_is_none(self):
+        parsed, _ = self._parse('', [('a', '')])
+        self.assertIsNone(parsed.feed['vecto_explicit'])
+        self.assertIsNone(parsed.entries[0]['vecto_explicit'])
+
+    def test_extract_prefers_the_annotation_over_feedparsers_value(self):
+        from pod_manager.ingesters.default import extract_explicit
+        self.assertIs(extract_explicit(_FakeEntry(itunes_explicit=None, vecto_explicit=False)), False)
+
+    def test_positional_fallback_when_guids_do_not_match(self):
+        import feedparser
+        from pod_manager.ingesters.default import annotate_explicit
+        parsed, xml = self._parse('', [('a', '<itunes:explicit>true</itunes:explicit>'), ('b', '')])
+        for entry in parsed.entries:
+            entry.pop('vecto_explicit', None)
+            entry['id'] = 'renamed-' + entry['id']
+        annotate_explicit(parsed, xml)
+        self.assertEqual([e.get('vecto_explicit') for e in parsed.entries], [True, None])
+
+    def test_malformed_xml_never_raises(self):
+        import feedparser
+        from pod_manager.ingesters.default import annotate_explicit
+        parsed = feedparser.parse(b'<rss><channel><title>x')
+        self.assertIs(annotate_explicit(parsed, b'<rss><channel><title>x'), parsed)
+        annotate_explicit(parsed, b'\x00\x01 not xml')
+
+
+class ExplicitInheritanceTests(TestCase):
+    """Show rating -> episode rating resolution, ingestion capture and the backfill command."""
+
+    def setUp(self):
+        self.network = Network.objects.create(name='ExNet', slug='exnet')
+        self.podcast = Podcast.objects.create(network=self.network, title='Show', slug='exshow')
+        self.episode = Episode.objects.create(
+            podcast=self.podcast, title='Ep', pub_date=timezone.now(),
+            raw_description='x', clean_description='x', guid_public='g-1',
+        )
+
+    def test_show_rating_resolution_order(self):
+        self.assertIs(self.podcast.effective_explicit, True)          # nothing stated: legacy default
+        self.podcast.feed_explicit = False
+        self.assertIs(self.podcast.effective_explicit, False)         # source feed
+        self.podcast.explicit = True
+        self.assertIs(self.podcast.effective_explicit, True)          # creator override wins
+
+    def test_episode_inherits_unless_it_sets_its_own(self):
+        self.podcast.feed_explicit = False
+        self.assertIs(self.episode.effective_explicit, False)
+        self.episode.explicit = True
+        self.assertIs(self.episode.effective_explicit, True)
+
+    def _commit(self, **entry):
+        from pod_manager.ingesters.default import commit_episode
+        base = dict(id='g-1', title='Ep')
+        base.update(entry)
+        with mock.patch('pod_manager.ingesters.default.task_rebuild_episode_fragments'):
+            commit_episode(self.podcast, _FakeEntry(**base), None, 'Test', mock.Mock())
+        self.episode.refresh_from_db()
+
+    def test_ingest_sets_an_unlocked_episode(self):
+        self._commit(vecto_explicit=False)
+        self.assertIs(self.episode.explicit, False)
+
+    def test_ingest_leaves_a_silent_feed_alone(self):
+        self.episode.explicit = True
+        self.episode.save(update_fields=['explicit'])
+        self._commit(vecto_explicit=None)
+        self.assertIs(self.episode.explicit, True)
+
+    def test_ingest_never_overwrites_a_hand_set_rating(self):
+        self.episode.explicit = True
+        self.episode.explicit_locked = True
+        self.episode.save(update_fields=['explicit', 'explicit_locked'])
+        self._commit(vecto_explicit=False)
+        self.assertIs(self.episode.explicit, True)
+
+    def test_backfill_preview_changes_nothing_and_apply_sets_unlocked_only(self):
+        import feedparser
+        from io import StringIO
+        from django.core.management import call_command
+        from pod_manager.ingesters.default import annotate_explicit
+        locked = Episode.objects.create(
+            podcast=self.podcast, title='Locked', pub_date=timezone.now(), raw_description='x',
+            clean_description='x', guid_public='g-2', explicit=True, explicit_locked=True)
+        self.podcast.public_feed_url = 'https://example.com/feed.xml'
+        self.podcast.save()
+        xml = (
+            '<?xml version="1.0"?><rss version="2.0" xmlns:itunes="http://www.itunes.com/dtds/podcast-1.0.dtd">'
+            '<channel><title>S</title><itunes:explicit>false</itunes:explicit>'
+            '<item><guid>g-1</guid><title>a</title><itunes:explicit>true</itunes:explicit></item>'
+            '<item><guid>g-2</guid><title>b</title><itunes:explicit>false</itunes:explicit></item>'
+            '</channel></rss>').encode('utf-8')
+        parsed = annotate_explicit(feedparser.parse(xml), xml)
+        target = 'pod_manager.management.commands.backfill_explicit.get_feed'
+        with mock.patch(target, return_value=parsed):
+            call_command('backfill_explicit', podcast='exshow', stdout=StringIO())
+            self.episode.refresh_from_db()
+            self.podcast.refresh_from_db()
+            self.assertIsNone(self.episode.explicit)
+            self.assertIsNone(self.podcast.feed_explicit)
+
+            with mock.patch('pod_manager.tasks.task_rebuild_podcast_fragments') as rebuild:
+                call_command('backfill_explicit', podcast='exshow', apply=True, stdout=StringIO())
+            rebuild.delay.assert_called_once()
+        self.episode.refresh_from_db()
+        locked.refresh_from_db()
+        self.podcast.refresh_from_db()
+        self.assertIs(self.podcast.feed_explicit, False)
+        self.assertIs(self.episode.explicit, True)
+        self.assertIs(locked.explicit, True)          # the owner's rating survived the feed's 'false'
 
 
 class FeedTagExtractionTests(SimpleTestCase):

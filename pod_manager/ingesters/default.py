@@ -37,26 +37,87 @@ def extract_season_episode(entry):
         (_get('itunes_episodetype', '') or '').strip()[:50],
     )
 
-def extract_explicit(entry):
-    """Read itunes:explicit off a parsed feedparser entry. Returns True/False,
-    or None when the feed doesn't specify it (so callers can leave a manual
-    value untouched rather than clobbering it). Accepts the modern true/false
-    and the legacy yes/no/clean/explicit spellings; feedparser may also hand
-    back a real bool."""
-    def _get(key, default=None):
-        return entry.get(key, default) if hasattr(entry, 'get') else getattr(entry, key, default)
+_EXPLICIT_TRUE = {'yes', 'true', 'explicit'}
+_EXPLICIT_FALSE = {'no', 'false', 'clean'}
 
-    raw = _get('itunes_explicit')
+
+def normalize_explicit(raw):
+    """True/False for an itunes:explicit value, None when it states nothing usable.
+    Accepts the modern true/false and the legacy yes/no/clean/explicit spellings, in any
+    case, with stray whitespace; a real bool passes through."""
     if isinstance(raw, bool):
         return raw
     if raw is None:
         return None
     val = str(raw).strip().lower()
-    if val in ('yes', 'true', 'explicit'):
+    if val in _EXPLICIT_TRUE:
         return True
-    if val in ('no', 'false', 'clean'):
+    if val in _EXPLICIT_FALSE:
         return False
     return None
+
+
+def extract_explicit(entry):
+    """The explicit rating a parsed feed entry declares: True/False, or None when the feed
+    doesn't specify it (so callers can leave a manual value untouched rather than
+    clobbering it).
+
+    feedparser can NOT be relied on for this: it only understands 'yes' (True) and 'clean'
+    (False) and turns every other value, including the modern 'true' and 'false' that real
+    feeds use, into None. annotate_explicit() reads the raw XML and stores the answer on
+    the entry as `vecto_explicit`; that wins, with feedparser's value as the fallback for a
+    feed that wasn't annotated."""
+    def _get(key, default=None):
+        return entry.get(key, default) if hasattr(entry, 'get') else getattr(entry, key, default)
+
+    annotated = _get('vecto_explicit')
+    if annotated is not None:
+        return annotated
+    return normalize_explicit(_get('itunes_explicit'))
+
+
+def _explicit_el(node):
+    """The itunes:explicit child of ``node`` (any itunes namespace spelling), or None."""
+    found = node.xpath('./*[local-name()="explicit" and contains(namespace-uri(), "itunes")]')
+    return found[0] if found else None
+
+
+def annotate_explicit(parsed, raw_xml):
+    """Attach the itunes:explicit ratings feedparser throws away.
+
+    Reads ``raw_xml`` and sets ``parsed.feed['vecto_explicit']`` (the channel rating) and
+    ``entry['vecto_explicit']`` on every entry: True/False, or None where the feed is
+    silent (the entry then inherits). Items are matched to entries by guid, falling back to
+    document order when the counts agree. Never raises: an unreadable document just leaves
+    everything None and ingestion falls back to feedparser's own (limited) value."""
+    try:
+        from lxml import etree
+        parser = etree.XMLParser(recover=True, resolve_entities=False, no_network=True, huge_tree=False)
+        root = etree.fromstring(raw_xml if isinstance(raw_xml, bytes) else raw_xml.encode('utf-8'), parser)
+        channel = root.find('channel') if root is not None else None
+        if channel is None:
+            return parsed
+        el = _explicit_el(channel)
+        parsed.feed['vecto_explicit'] = normalize_explicit(el.text if el is not None else None)
+
+        items = []
+        for item in channel.findall('item'):
+            guid_el = item.find('guid')
+            guid = (guid_el.text or '').strip() if guid_el is not None else ''
+            el = _explicit_el(item)
+            items.append((guid, normalize_explicit(el.text if el is not None else None)))
+        by_guid = {g: v for g, v in items if g}
+        entries = list(parsed.entries)
+        by_position = len(entries) == len(items)
+        for index, entry in enumerate(entries):
+            key = (entry.get('id') or '').strip() if hasattr(entry, 'get') else ''
+            if key and key in by_guid:
+                entry['vecto_explicit'] = by_guid[key]
+            elif by_position:
+                entry['vecto_explicit'] = items[index][1]
+    except Exception:
+        logger.warning("could not read itunes:explicit from the raw feed", exc_info=True)
+    return parsed
 
 
 def extract_feed_tags(entry):
@@ -276,7 +337,7 @@ def get_feed(url, feed_type, podcast_id, stdout, force_fetch=False):
         if response.headers.get('Last-Modified'):
             cache.set(mod_key, response.headers.get('Last-Modified'), timeout=604800)
 
-        return feedparser.parse(response.content)
+        return annotate_explicit(feedparser.parse(response.content), response.content)
         
     except requests.exceptions.RequestException as e:
         logger.error(f"HTTP Error fetching {feed_type} feed from {clean_url}: {e}", exc_info=True)
@@ -433,8 +494,13 @@ def commit_episode(podcast, pub_entry, sub_entry, match_reason, stdout, enhancer
         # itunes:explicit is a content-rating fact, not curated metadata — it applies
         # even on a locked episode. Only overwrite when the feed actually states it,
         # so an unset feed value can't wipe a manually-set rating.
-        new_explicit = extract_explicit(pub_entry if pub_entry else sub_entry)
-        if new_explicit is not None:
+        new_explicit = None
+        for candidate in (pub_entry, sub_entry):
+            new_explicit = extract_explicit(candidate) if candidate else None
+            if new_explicit is not None:
+                break
+        # An owner's manual rating (explicit_locked) outranks the feed.
+        if new_explicit is not None and not episode.explicit_locked:
             episode.explicit = new_explicit
 
         if not episode.is_metadata_locked:
@@ -569,6 +635,22 @@ def run_ingest(podcast, stdout, enhancer=None, force=False):
             feed_description = source_data.feed.get('summary', '')
 
     needs_save = False
+    explicit_changed = False
+
+    # The channel-level rating the source feed declares (public feed preferred, private as
+    # the fallback). Only recorded when the feed states one, so a silent feed can't erase it.
+    declared_explicit = None
+    for feed_data in (public_data, sub_data):
+        if feed_data and hasattr(feed_data, 'feed'):
+            declared_explicit = feed_data.feed.get('vecto_explicit')
+            if declared_explicit is not None:
+                break
+    if declared_explicit is not None and podcast.feed_explicit != declared_explicit:
+        logger.info(f"Updating {podcast.title} source rating: explicit={declared_explicit}")
+        podcast.feed_explicit = declared_explicit
+        stdout.write(f"  [Content Rating Captured]: {'explicit' if declared_explicit else 'clean'}")
+        needs_save = True
+        explicit_changed = True
 
     # Process and Update Title
     if feed_title:
@@ -609,6 +691,10 @@ def run_ingest(podcast, stdout, enhancer=None, force=False):
     if needs_save:
         podcast.save()
         task_rebuild_podcast_shell.delay(podcast.id, _network_base_url(podcast.network))
+        if explicit_changed:
+            # Episodes inheriting the show's rating changed what they publish: rebuild them.
+            from pod_manager.tasks import task_rebuild_podcast_fragments
+            task_rebuild_podcast_fragments.delay(podcast.id, _network_base_url(podcast.network))
 
     private_pool = {}
     unmatched_private_audios = set()

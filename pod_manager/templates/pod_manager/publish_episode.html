@@ -385,7 +385,7 @@ the region, once below from here).
                 <div class="col-sm-6">
                     <label class="form-label text-light">Content Rating</label>
                     <select name="explicit" class="form-select bg-dark text-light border-secondary">
-                        <option value="" {% if not edit_ep or edit_ep.explicit is None %}selected{% endif %}>Inherit from show</option>
+                        <option value="" {% if not edit_ep or edit_ep.explicit is None %}selected{% endif %}>Inherit from show{% if edit_ep %} ({{ edit_ep.podcast.effective_explicit|yesno:"Explicit,Clean" }}){% endif %}</option>
                         <option value="true" {% if edit_ep and edit_ep.explicit is True %}selected{% endif %}>Explicit</option>
                         <option value="false" {% if edit_ep and edit_ep.explicit is False %}selected{% endif %}>Clean</option>
                     </select>

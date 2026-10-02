@@ -525,3 +525,7 @@ CELERY_BEAT_SCHEDULE = {
 
 # Django Celery Beat for Scheduled Tasks
 INSTALLED_APPS += ['django_celery_beat']
+# Tests create hundreds of users; the production PBKDF2 hasher costs ~0.1-0.5s per
+# create_user/check_password. A fast hasher under `manage.py test` only.
+if IS_TEST:
+    PASSWORD_HASHERS = ['django.contrib.auth.hashers.MD5PasswordHasher']

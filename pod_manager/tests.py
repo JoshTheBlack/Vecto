@@ -15702,14 +15702,18 @@ class MergeDeskOrphanIndicatorTests(TestCase):
         html = self._html()
         both = self._option(html, 'Both')
         self.assertIn('&#9679;', both)                                    # flagged: orphans on both sides
+        self.assertIn('orphan-reconcilable', both)                        # and the row is highlighted
+        self.assertIn('background-color: var(--vecto-primary)', both)
         self.assertIn('2 public', both)
         self.assertIn('1 premium', both)
         for title, counts in (('PubOnly', '1 public &middot; 0 premium'), ('PrivOnly', '0 public &middot; 1 premium')):
             opt = self._option(html, title)
             self.assertNotIn('&#9679;', opt)                              # only one side: nothing to pair
+            self.assertNotIn('orphan-reconcilable', opt)
             self.assertIn(counts, opt)
         neither = self._option(html, 'Neither')
         self.assertNotIn('&#9679;', neither)
+        self.assertNotIn('orphan-reconcilable', neither)
         self.assertNotIn('public', neither)                               # no orphans: no clutter
         self.assertIn('both public and premium orphans', html)           # the legend
 
@@ -15720,6 +15724,7 @@ class MergeDeskOrphanIndicatorTests(TestCase):
             with self.subTest(view=view):
                 opt = self._option(self._html(view), 'Both')
                 self.assertNotIn('&#9679;', opt)
+                self.assertNotIn('orphan-reconcilable', opt)
                 self.assertNotIn('premium', opt)
 
     def test_counts_follow_the_same_definitions_as_the_lists(self):

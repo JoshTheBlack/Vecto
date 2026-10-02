@@ -425,6 +425,12 @@
         background: var(--vecto-surface-muted); color: var(--vecto-surface-bg);
         font-size: .7rem; font-weight: 800; line-height: 1;
     }
+    /* Merge Orphans feed selector: a native select shows only its selected option when closed,
+       so tint the select itself when that feed has orphans on both sides (option rows get the
+       same colour inline for the open list). */
+    select[name="merge_podcast_id"]:has(option.orphan-reconcilable:checked) {
+        background-color: var(--vecto-primary) !important; color: var(--vecto-primary-text) !important;
+    }
     /* Plyr instance backing the bar is hidden — the bar is the UI. */
     #floatingPlayer .plyr { display: none !important; }
     /* --fp-height is the player's measured height, set by showBar() so the

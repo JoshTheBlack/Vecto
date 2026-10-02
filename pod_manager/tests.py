@@ -15843,3 +15843,21 @@ class AuditLogFaceliftTests(TestCase):
     def test_filters_still_narrow_the_list(self):
         self.assertIn('Showing 1&ndash;1 of 1', self._body(audit_status='rejected'))
         self.assertIn('No edits found', self._body(audit_q='no-such-episode'))
+
+
+class JavaScriptUnitTests(SimpleTestCase):
+    """Runs the Node unit tests in tests_js/ (Node's built-in runner, no npm packages) as part
+    of the normal suite. Skipped where Node isn't installed."""
+
+    def test_node_unit_tests_pass(self):
+        import shutil
+        import subprocess
+        from pathlib import Path
+        node = shutil.which('node')
+        if not node:
+            self.skipTest('node is not installed')
+        root = Path(__file__).resolve().parent.parent
+        tests = sorted(str(p) for p in (root / 'tests_js').glob('*.test.js'))
+        self.assertTrue(tests, 'no JS tests found')
+        result = subprocess.run([node, '--test', *tests], cwd=root, capture_output=True, text=True, timeout=120)
+        self.assertEqual(result.returncode, 0, result.stdout[-4000:] + result.stderr[-2000:])

@@ -45,7 +45,7 @@ app() {
         -e REDIS_URL=redis://redis:6379/0 \
         -e R2_ENDPOINT=http://minio:9000 -e R2_ACCESS_KEY_ID=minioadmin -e R2_SECRET_ACCESS_KEY=minioadmin123 \
         -e R2_MIRROR_ENABLED=False -e R2_MEDIA_ENABLED=False \
-        -e DB_BACKUP_BUCKET=vecto-backups -e DB_BACKUP_KEY="$KEY" -e DB_BACKUP_KEEP=1 \
+        -e DB_BACKUP_BUCKET=vecto-backups -e DB_BACKUP_KEY="$KEY" -e DB_BACKUP_KEEP_DAILY=1 -e DB_BACKUP_KEEP_WEEKLY=0 -e DB_BACKUP_KEEP_MONTHLY=0 \
         "$@"
 }
 count() { docker exec "$NET-db" psql -U vecto_user -d "$1" -At -c "$2" 2>/dev/null; }

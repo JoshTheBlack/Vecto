@@ -1,8 +1,8 @@
 """Encrypted PostgreSQL backups to a private R2 bucket, and the way back.
 
-    task_backup_database (weekly)
+    task_backup_database (daily)
         pg_dump -Fc  ->  verified readable (pg_restore -l)  ->  AES-256-GCM encrypted
-        ->  uploaded to DB_BACKUP_BUCKET  ->  old backups pruned to DB_BACKUP_KEEP
+        ->  uploaded to DB_BACKUP_BUCKET  ->  thinned by the DB_BACKUP_KEEP_* tiers
 
 A dump holds user emails and integration credentials, so it is ALWAYS encrypted before it
 leaves the server, and the bucket must be a private one (never one fronted by a public
@@ -20,6 +20,7 @@ import base64
 import binascii
 import logging
 import os
+import re
 import shutil
 import struct
 import subprocess
@@ -222,19 +223,62 @@ def list_backups():
         page = client.list_objects_v2(**kwargs)
         for obj in page.get("Contents", []):
             if obj["Key"].endswith(SUFFIX):
-                out.append({"key": obj["Key"], "size": obj["Size"], "modified": obj["LastModified"]})
+                out.append({"key": obj["Key"], "size": obj["Size"], "modified": obj["LastModified"],
+                            "when": _backup_time(obj["Key"], obj["LastModified"])})
         if not page.get("IsTruncated"):
             break
         token = page.get("NextContinuationToken")
     return sorted(out, key=lambda b: b["key"], reverse=True)
 
 
-def prune_backups(keep=None) -> list:
-    """Delete all but the newest ``keep`` backups. Returns the deleted keys."""
-    keep = settings.DB_BACKUP_KEEP if keep is None else keep
-    if keep < 1:
-        raise BackupError("DB_BACKUP_KEEP must be at least 1.")
-    stale = list_backups()[keep:]
+_KEY_TIME = re.compile(r"vecto-(\d{4})-(\d{2})-(\d{2})-(\d{2})(\d{2})(\d{2})")
+
+
+def _backup_time(key, fallback):
+    """The UTC time a backup was taken, from its key (vecto-YYYY-MM-DD-HHMMSS...); the
+    object's modified time if the key doesn't carry one."""
+    m = _KEY_TIME.search(key)
+    if m:
+        try:
+            return datetime(*(int(g) for g in m.groups()), tzinfo=dt_timezone.utc)
+        except ValueError:
+            pass
+    return fallback
+
+
+def backups_to_keep(backups, daily, weekly, monthly) -> set:
+    """Keys to retain under the grandfather-father-son policy: the newest backup of each
+    of the last ``daily`` days, ``weekly`` ISO weeks and ``monthly`` months that HAVE a
+    backup (a gap never shortens the history), plus the newest backup always."""
+    ordered = sorted(backups, key=lambda b: b["when"], reverse=True)
+    keep = set()
+    if ordered:
+        keep.add(ordered[0]["key"])
+    tiers = ((daily, lambda d: d.date()), (weekly, lambda d: tuple(d.isocalendar()[:2])),
+             (monthly, lambda d: (d.year, d.month)))
+    for count, bucket_of in tiers:
+        seen = set()
+        for b in ordered:                      # newest first, so the first hit per bucket is its newest
+            bucket = bucket_of(b["when"])
+            if bucket in seen:
+                continue
+            if len(seen) >= count:
+                break
+            seen.add(bucket)
+            keep.add(b["key"])
+    return keep
+
+
+def prune_backups(daily=None, weekly=None, monthly=None) -> list:
+    """Delete every backup the retention tiers no longer need. Returns the deleted keys."""
+    daily = settings.DB_BACKUP_KEEP_DAILY if daily is None else daily
+    weekly = settings.DB_BACKUP_KEEP_WEEKLY if weekly is None else weekly
+    monthly = settings.DB_BACKUP_KEEP_MONTHLY if monthly is None else monthly
+    if min(daily, weekly, monthly) < 0:
+        raise BackupError("DB_BACKUP_KEEP_* values cannot be negative.")
+    backups = list_backups()
+    keep = backups_to_keep(backups, daily, weekly, monthly)
+    stale = [b for b in backups if b["key"] not in keep]
     client = _client()
     for b in stale:
         client.delete_object(Bucket=settings.DB_BACKUP_BUCKET, Key=b["key"])

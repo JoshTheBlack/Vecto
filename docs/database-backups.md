@@ -1,10 +1,10 @@
 # Database backups
 
-A weekly Celery task takes an encrypted `pg_dump` and uploads it to a **private** R2
+A daily Celery task takes an encrypted `pg_dump` and uploads it to a **private** R2
 bucket. Code: `pod_manager/services/db_backup.py`. Commands: `backup_database`,
 `restore_database_backup`.
 
-## What happens each Sunday 02:30 (`db-backup-weekly`)
+## What happens each night at 02:30 (`db-backup-daily`)
 
 1. `pg_dump -Fc` straight to Postgres (`POSTGRES_HOST_DIRECT`, not PgBouncer).
 2. The dump is **verified** with `pg_restore -l` (it must be readable and hold Django table
@@ -14,9 +14,24 @@ bucket. Code: `pod_manager/services/db_backup.py`. Commands: `backup_database`,
    a wrong key, a damaged byte, a truncated or reordered file all fail to open rather than
    yielding a bad dump.
 4. Uploaded to `DB_BACKUP_BUCKET` as `db-backups/vecto-<UTC timestamp>.dump.enc`.
-5. Older backups beyond `DB_BACKUP_KEEP` (default 8, about two months) are deleted.
+5. Old backups are thinned by retention (below).
 
 If `DB_BACKUP_BUCKET` or `DB_BACKUP_KEY` is unset the task logs a warning and does nothing.
+
+## Retention
+
+Grandfather-father-son: after each upload, the newest backup of each of the last N days, ISO
+weeks and months **that have one** is kept, and everything else is deleted. Defaults:
+
+| Setting | Default | Keeps |
+|---|---|---|
+| `DB_BACKUP_KEEP_DAILY` | 14 | every night for two weeks |
+| `DB_BACKUP_KEEP_WEEKLY` | 13 | one per week for about three months |
+| `DB_BACKUP_KEEP_MONTHLY` | 12 | one per month for a year |
+
+That is roughly 35 backups at steady state. The newest backup is always kept, and a gap in
+the schedule never shortens the history (it counts days/weeks/months that have a backup, not
+calendar windows). Set a tier to `0` to switch it off.
 
 ## One-time setup
 
@@ -61,7 +76,7 @@ A decrypted `.dump` is a normal PostgreSQL custom-format file, so you can also u
 ## Lost the key?
 
 The encrypted backups cannot be recovered. Generate a new key, set it, and take a fresh
-backup; the old ones are unreadable and will age out under `DB_BACKUP_KEEP`.
+backup; the old ones are unreadable and will age out under the retention tiers.
 
 ## Not covered
 
@@ -79,5 +94,5 @@ database with matching row counts, refusal to restore over the live database, an
     docker build -t vecto-e2e .
     bash scripts/test_db_backup_e2e.sh vecto-e2e
 
-SQLite (the IDE setup) is not supported by the backup and the weekly task skips itself there:
+SQLite (the IDE setup) is not supported by the backup and the scheduled task skips itself there:
 `pg_dump` is PostgreSQL-specific, and a separate SQLite path would not test the real one.

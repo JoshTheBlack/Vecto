@@ -124,7 +124,11 @@ CLOUDFLARE_PURGE_TOKEN   = os.getenv("CLOUDFLARE_PURGE_TOKEN", "")
 DB_BACKUP_BUCKET         = os.getenv("DB_BACKUP_BUCKET", "")
 DB_BACKUP_KEY            = os.getenv("DB_BACKUP_KEY", "")
 DB_BACKUP_PREFIX         = os.getenv("DB_BACKUP_PREFIX", "db-backups/")
-DB_BACKUP_KEEP           = int(os.getenv("DB_BACKUP_KEEP", "8"))
+# Retention (grandfather-father-son): keep the newest backup of each of the last N days /
+# ISO weeks / months that have one, delete the rest. The newest backup is always kept.
+DB_BACKUP_KEEP_DAILY     = int(os.getenv("DB_BACKUP_KEEP_DAILY", "14"))
+DB_BACKUP_KEEP_WEEKLY    = int(os.getenv("DB_BACKUP_KEEP_WEEKLY", "13"))
+DB_BACKUP_KEEP_MONTHLY   = int(os.getenv("DB_BACKUP_KEEP_MONTHLY", "12"))
 
 # Django's internal DEBUG needs to be a boolean, so it's True if 'True' OR 'IDE'
 DEBUG = (RAW_DEBUG in ['True', 'IDE']) and os.getenv('DEBUG_PAGES', '1') != '0'
@@ -531,11 +535,12 @@ CELERY_BEAT_SCHEDULE = {
         'task': 'pod_manager.tasks.task_refresh_transcript_headers',
         'schedule': crontab(hour=3, minute=0),
     },
-    # Encrypted pg_dump to the private backup bucket (see DB_BACKUP_* above). Sunday 02:30,
-    # after the 02:00 Patreon sync and clear of the 03:00-04:00 R2 jobs.
-    'db-backup-weekly': {
+    # Encrypted pg_dump to the private backup bucket (see DB_BACKUP_* above). Daily 02:30,
+    # after the 02:00 Patreon sync and clear of the 03:00-04:00 R2 jobs; retention thins
+    # the dailies to weeklies and monthlies.
+    'db-backup-daily': {
         'task': 'pod_manager.tasks.task_backup_database',
-        'schedule': crontab(day_of_week=0, hour=2, minute=30),
+        'schedule': crontab(hour=2, minute=30),
     },
 }
 

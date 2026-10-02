@@ -1022,7 +1022,7 @@ def task_refresh_transcript_headers(limit=500):
 @shared_task
 def task_backup_database():
     """Weekly: pg_dump, verify, encrypt and upload to the private backup bucket, then prune
-    to the newest DB_BACKUP_KEEP (see services/db_backup). Any failure raises, so it shows
+    to the DB_BACKUP_KEEP_* retention tiers (see services/db_backup). Any failure raises, so it shows
     as a failed task in the worker log instead of quietly leaving a stale backup."""
     from pod_manager.services.db_backup import run_backup
     return run_backup()

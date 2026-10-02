@@ -15717,6 +15717,23 @@ class MergeDeskOrphanIndicatorTests(TestCase):
         self.assertNotIn('public', neither)                               # no orphans: no clutter
         self.assertIn('both public and premium orphans', html)           # the legend
 
+    def test_reconcilable_feeds_get_their_own_group_at_the_top(self):
+        self._orphan(self.both, 'public')
+        self._orphan(self.both, 'private')
+        self._orphan(self.pub_only, 'public')
+        html = self._html()
+        select = html[html.index('name="merge_podcast_id"'):html.index('</select>', html.index('name="merge_podcast_id"'))]
+        self.assertEqual(select.count('<optgroup'), 2)
+        top, rest = select.split('<optgroup label="Other feeds">')
+        self.assertIn('Both', top)
+        self.assertNotIn('PubOnly', top)
+        self.assertIn('PubOnly', rest)
+        self.assertNotIn('Both', rest)
+
+    def test_no_groups_when_nothing_can_pair(self):
+        self._orphan(self.pub_only, 'public')
+        self.assertNotIn('<optgroup', self._html())
+
     def test_other_merge_views_keep_plain_titles(self):
         self._orphan(self.both, 'public')
         self._orphan(self.both, 'private')
@@ -16093,7 +16110,8 @@ class DbBackupPipelineTests(SimpleTestCase):
             DATABASES={'default': {'ENGINE': 'django.db.backends.postgresql', 'NAME': 'vecto',
                                    'USER': 'u', 'PASSWORD': 'p'}},
             DB_BACKUP_BUCKET='private-backups', DB_BACKUP_KEY=db_backup.generate_key(),
-            DB_BACKUP_PREFIX='db-backups/', DB_BACKUP_KEEP=2)
+            DB_BACKUP_PREFIX='db-backups/', DB_BACKUP_KEEP_DAILY=2, DB_BACKUP_KEEP_WEEKLY=0,
+            DB_BACKUP_KEEP_MONTHLY=0)
         patcher = mock.patch.object(db_backup, 'settings', self.cfg)
         patcher.start()
         self.addCleanup(patcher.stop)
@@ -16245,3 +16263,72 @@ class DbBackupCommandTests(SimpleTestCase):
             call_command('restore_database_backup', latest=True, into='scratch', stdout=out)
         download.assert_not_called()
         self.assertIn('Would download', out.getvalue())
+
+
+class DbBackupRetentionTests(SimpleTestCase):
+    """Grandfather-father-son: dailies, then weeklies, then monthlies, never fewer than asked."""
+
+    def _backups(self, start, days, hours=(2,)):
+        from pod_manager.services import db_backup
+        out = []
+        for d in range(days):
+            for h in hours:
+                when = (start + datetime.timedelta(days=d)).replace(hour=h, minute=30, second=0,
+                                                                     microsecond=0, tzinfo=datetime.timezone.utc)
+                out.append({'key': f'db-backups/vecto-{when:%Y-%m-%d-%H%M%S}.dump.enc', 'when': when})
+        return out
+
+    def _keep(self, backups, daily, weekly, monthly):
+        from pod_manager.services import db_backup
+        return db_backup.backups_to_keep(backups, daily, weekly, monthly)
+
+    def test_a_year_of_daily_backups_thins_to_the_three_tiers(self):
+        backups = self._backups(datetime.datetime(2025, 10, 1), 366)       # through 2026-10-01
+        keep = self._keep(backups, 14, 13, 12)
+        kept = [b for b in backups if b['key'] in keep]
+        newest = max(b['when'] for b in backups)
+        last_two_weeks = [b for b in kept if (newest - b['when']).days < 14]
+        self.assertEqual(len(last_two_weeks), 14)                          # every one of the last 14 days
+        self.assertLessEqual(len(kept), 14 + 13 + 12)                      # tiers overlap, never exceed the sum
+        self.assertGreaterEqual(len(kept), 14 + 12)
+        months = {(b['when'].year, b['when'].month) for b in kept}
+        self.assertGreaterEqual(len(months), 12)                           # a backup from each of 12 months
+        self.assertLess(len(kept), len(backups) / 5)                       # and it really thins out
+
+    def test_one_per_week_and_month_beyond_the_daily_window(self):
+        backups = self._backups(datetime.datetime(2026, 1, 1), 120)
+        keep = self._keep(backups, 0, 4, 0)
+        weeks = {tuple(b['when'].isocalendar()[:2]) for b in backups if b['key'] in keep}
+        self.assertEqual(len(weeks), 4)
+        self.assertEqual(len(keep), 4)       # the always-kept newest IS the newest week's pick
+        # the pick for a week is its NEWEST backup, not the oldest
+        newest_week = max(weeks)
+        pick = max(b['when'] for b in backups if b['key'] in keep and tuple(b['when'].isocalendar()[:2]) == newest_week)
+        self.assertEqual(pick, max(b['when'] for b in backups))
+
+    def test_the_newest_backup_always_survives_even_with_every_tier_at_zero(self):
+        backups = self._backups(datetime.datetime(2026, 10, 1), 5)
+        self.assertEqual(self._keep(backups, 0, 0, 0), {backups[-1]['key']})
+
+    def test_two_backups_on_one_day_keep_the_later_one(self):
+        backups = self._backups(datetime.datetime(2026, 10, 1), 3, hours=(2, 14))
+        keep = self._keep(backups, 2, 0, 0)
+        self.assertEqual(len(keep), 2)
+        self.assertTrue(all('143000' in k for k in keep))
+
+    def test_gaps_do_not_shorten_the_history(self):
+        # backups only on three widely spaced days: asking for 3 weeks keeps all three
+        backups = []
+        for day in (datetime.datetime(2026, 3, 1), datetime.datetime(2026, 6, 1), datetime.datetime(2026, 9, 1)):
+            backups += self._backups(day, 1)
+        self.assertEqual(len(self._keep(backups, 0, 3, 0)), 3)
+
+    def test_nothing_to_keep_in_an_empty_bucket(self):
+        self.assertEqual(self._keep([], 14, 13, 12), set())
+
+    def test_the_backup_time_comes_from_the_key(self):
+        from pod_manager.services import db_backup
+        fallback = datetime.datetime(2000, 1, 1, tzinfo=datetime.timezone.utc)
+        self.assertEqual(db_backup._backup_time('db-backups/vecto-2026-10-04-023015.dump.enc', fallback),
+                         datetime.datetime(2026, 10, 4, 2, 30, 15, tzinfo=datetime.timezone.utc))
+        self.assertEqual(db_backup._backup_time('db-backups/odd-name.dump.enc', fallback), fallback)

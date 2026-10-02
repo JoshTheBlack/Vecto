@@ -390,6 +390,7 @@ def gather_merge_desk(request, current_network, network_podcasts=None):
         # Rendered on the mode button in ALL three views (cheap COUNT), from the
         # same helper the left-nav pill uses so the numbers can't diverge (§3.3/§3.4).
         'pairs_count': pending_match_suggestion_count(current_network),
+        'has_reconcilable_pods': merge_view == 'orphans' and any(getattr(p, 'reconcilable', False) for p in pods),
     }
 
 

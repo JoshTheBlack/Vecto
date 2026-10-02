@@ -34,15 +34,28 @@
 
                             <div class="col-md-{% if merge_view == 'matched' %}3{% else %}4{% endif %} mb-2">
                                 <select name="merge_podcast_id" class="form-select bg-black text-warning fw-bold border-secondary" onchange="this.form.requestSubmit()">
-                                    {% for pod in network_podcasts %}
-                                        <option value="{{ pod.id }}" {% if merge_podcast_id == pod.id|stringformat:"s" %}selected{% endif %}{% if merge_view == 'orphans' and pod.reconcilable %} class="orphan-reconcilable" style="background-color: var(--vecto-primary); color: var(--vecto-primary-text);"{% endif %}>
-                                            {% if merge_view == 'orphans' %}{% if pod.reconcilable %}&#9679; {% endif %}{{ pod.title }}{% if pod.pub_orphans or pod.priv_orphans %} &mdash; {{ pod.pub_orphans }} public &middot; {{ pod.priv_orphans }} premium{% endif %}{% else %}{{ pod.title }}{% endif %}
-                                        </option>
-                                    {% endfor %}
+                                    {% if merge_view == 'orphans' %}
+                                        {% if has_reconcilable_pods %}
+                                        <optgroup label="&#9679; Public + premium orphans &mdash; may pair up">
+                                            {% for pod in network_podcasts %}{% if pod.reconcilable %}
+                                            <option value="{{ pod.id }}" {% if merge_podcast_id == pod.id|stringformat:"s" %}selected{% endif %} class="orphan-reconcilable" style="background-color: var(--vecto-primary); color: var(--vecto-primary-text);">&#9679; {{ pod.title }} &mdash; {{ pod.pub_orphans }} public &middot; {{ pod.priv_orphans }} premium</option>
+                                            {% endif %}{% endfor %}
+                                        </optgroup>
+                                        <optgroup label="Other feeds">
+                                        {% endif %}
+                                        {% for pod in network_podcasts %}{% if not pod.reconcilable %}
+                                        <option value="{{ pod.id }}" {% if merge_podcast_id == pod.id|stringformat:"s" %}selected{% endif %}>{{ pod.title }}{% if pod.pub_orphans or pod.priv_orphans %} &mdash; {{ pod.pub_orphans }} public &middot; {{ pod.priv_orphans }} premium{% endif %}</option>
+                                        {% endif %}{% endfor %}
+                                        {% if has_reconcilable_pods %}</optgroup>{% endif %}
+                                    {% else %}
+                                        {% for pod in network_podcasts %}
+                                        <option value="{{ pod.id }}" {% if merge_podcast_id == pod.id|stringformat:"s" %}selected{% endif %}>{{ pod.title }}</option>
+                                        {% endfor %}
+                                    {% endif %}
                                 </select>
                                 {% if merge_view == 'orphans' %}
                                 <div class="form-text small" style="color:var(--vecto-surface-muted);">
-                                    <span class="px-1 rounded-1" style="background-color: var(--vecto-primary); color: var(--vecto-primary-text);">&#9679;</span> highlighted feeds have both public and premium orphans &mdash; they may pair up
+                                    <span class="px-1 rounded-1" style="background-color: var(--vecto-primary); color: var(--vecto-primary-text);">&#9679;</span> feeds in the top group have both public and premium orphans &mdash; they may pair up
                                 </div>
                                 {% endif %}
                             </div>

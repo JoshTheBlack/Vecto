@@ -16214,11 +16214,28 @@ class DbBackupPipelineTests(SimpleTestCase):
                         '1; 0 1 TABLE DATA public django_migrations u\n2; 0 2 TABLE DATA public auth_user u')):
                     self.assertEqual(self.db.verify_dump(path), 2)
 
-    def test_restore_refuses_the_live_database(self):
-        with mock.patch.object(self.db, '_run') as run:
-            with self.assertRaises(self.db.BackupError):
+    def test_restore_refuses_a_live_database_that_has_tables(self):
+        with mock.patch.object(self.db, '_public_table_count', return_value=41), \
+             mock.patch.object(self.db, '_run') as run:
+            with self.assertRaises(self.db.BackupError) as ctx:
                 self.db.restore_into('x.dump', 'vecto')
-        run.assert_not_called()
+        self.assertIn('41 tables', str(ctx.exception))
+        run.assert_not_called()                      # neither createdb nor pg_restore ran
+
+    def test_restore_fills_an_empty_live_database_in_place(self):
+        # A freshly provisioned server: the configured database exists but is empty.
+        calls = []
+
+        def fake_run(cmd, **kw):
+            calls.append(cmd)
+            return mock.Mock(returncode=0, stderr='')
+        with mock.patch.object(self.db, '_public_table_count', return_value=0), \
+             mock.patch.object(self.db, '_require_tool', side_effect=lambda n: n), \
+             mock.patch.object(self.db, '_run', side_effect=fake_run):
+            outcome = self.db.restore_into('x.dump', 'vecto')
+        self.assertEqual(outcome, 'loaded-empty-live')
+        self.assertEqual([c[0] for c in calls], ['pg_restore'])       # no createdb: it already exists
+        self.assertIn('vecto', calls[0])
 
     def test_restore_creates_a_new_database_then_loads_it(self):
         calls = []

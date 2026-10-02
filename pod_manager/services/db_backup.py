@@ -323,19 +323,43 @@ def download_backup(object_key: str, dest) -> Path:
     return dest
 
 
-def restore_into(dump_path, target_db: str) -> None:
-    """Create ``target_db`` and load the dump into it. Never the live database: restoring
-    over production would be an outage, so that is a hard refusal."""
+def _public_table_count(conn, env, db_name) -> int:
+    """How many tables ``db_name`` has in the public schema (0 for a brand-new database)."""
+    result = _run([_require_tool("psql"), "-h", conn["host"], "-p", str(conn["port"]), "-U", conn["user"],
+                   "-d", db_name, "-At", "-c",
+                   "select count(*) from information_schema.tables where table_schema = 'public'"],
+                  env=env, timeout=120)
+    if result.returncode != 0:
+        raise BackupError(f"Could not inspect database '{db_name}': {result.stderr.strip()[:300]}")
+    return int(result.stdout.strip() or 0)
+
+
+def restore_into(dump_path, target_db: str) -> str:
+    """Load the dump into ``target_db``. Returns "created" (a new database was made) or
+    "loaded-empty-live" (the configured database was empty and was filled in place).
+
+    A NEW name is created and restored into. The live database's own name is accepted only
+    when that database has no tables, which is exactly the state of a freshly provisioned
+    server (the empty database the compose file creates). One with any tables is refused:
+    restoring over production data is an outage you should choose deliberately."""
     conn = _pg_conn()
-    if target_db == conn["name"]:
-        raise BackupError(f"Refusing to restore over the live database '{conn['name']}'. Restore into a new name, "
-                          "check it, then swap deliberately.")
     env = {**os.environ, "PGPASSWORD": conn["password"]}
     base = ["-h", conn["host"], "-p", str(conn["port"]), "-U", conn["user"]]
-    created = _run([_require_tool("createdb"), *base, target_db], env=env, timeout=120)
-    if created.returncode != 0:
-        raise BackupError(f"createdb failed (the user needs CREATEDB): {created.stderr.strip()[:300]}")
+    if target_db == conn["name"]:
+        tables = _public_table_count(conn, env, target_db)
+        if tables:
+            raise BackupError(
+                f"Refusing to restore over the live database '{conn['name']}': it already has {tables} tables. "
+                "Restore into a new name, check it, then swap deliberately. (A freshly provisioned, empty "
+                "database is accepted.)")
+        outcome = "loaded-empty-live"
+    else:
+        created = _run([_require_tool("createdb"), *base, target_db], env=env, timeout=120)
+        if created.returncode != 0:
+            raise BackupError(f"createdb failed (the user needs CREATEDB): {created.stderr.strip()[:300]}")
+        outcome = "created"
     restored = _run([_require_tool("pg_restore"), *base, "-d", target_db, "--no-owner", "--exit-on-error",
                      str(dump_path)], env=env, timeout=3600)
     if restored.returncode != 0:
         raise BackupError(f"pg_restore failed: {restored.stderr.strip()[:500]}")
+    return outcome

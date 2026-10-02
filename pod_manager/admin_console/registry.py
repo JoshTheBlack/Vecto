@@ -180,7 +180,8 @@ REGISTRY = {
     "restore_database_backup": CommandSpec(
         name="restore_database_backup",
         category="Maintenance",
-        # --into restores into a NEW database (the live one is refused), and only with --apply.
+        # --into restores into a NEW database, or the configured one only while it is empty (a fresh
+        # server); a populated database is refused. Only with --apply.
     ),
     "r2_smoke_test": CommandSpec(
         name="r2_smoke_test",

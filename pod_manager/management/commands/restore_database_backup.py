@@ -6,9 +6,10 @@
     python manage.py restore_database_backup --latest --into vecto_check --apply    # restore
     python manage.py restore_database_backup --key db-backups/vecto-2026-10-04-023000.dump.enc ...
 
---into restores into a NEW database and is refused for the live one: restoring over production
-is an outage you should choose deliberately. Restore to a scratch name, check the row counts,
-then swap by hand (docs/database-backups.md). --into needs a database user with CREATEDB.
+--into restores into a NEW database (needs CREATEDB). The configured database's own name is
+accepted only while that database is EMPTY: that is a freshly provisioned server, and is how you
+recover onto one. A database that already has tables is refused: restoring over production is an
+outage you should choose deliberately. See docs/database-backups.md for the full recovery steps.
 """
 
 import tempfile
@@ -71,10 +72,12 @@ class Command(BaseCommand):
 
             if options["into"] and options["apply"]:
                 self.stdout.write(f"Restoring into new database '{options['into']}'...")
-                db_backup.restore_into(dump, options["into"])
+                outcome = db_backup.restore_into(dump, options["into"])
                 self.stdout.write(self.style.SUCCESS(
-                    f"Restored into '{options['into']}'. Compare its row counts with production before "
-                    "relying on it."))
+                    f"Restored into '{options['into']}'. "
+                    + ("Run `manage.py migrate` to apply any migrations newer than this backup, then start the app."
+                       if outcome == "loaded-empty-live" else
+                       "Compare its row counts with production before relying on it.")))
             if tmp is not None:
                 tmp.cleanup()
         except db_backup.BackupError as exc:

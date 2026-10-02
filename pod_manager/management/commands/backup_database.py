@@ -1,6 +1,6 @@
 """Take an encrypted database backup to the private R2 backup bucket right now.
 
-The weekly Celery task runs the same pipeline (services/db_backup). Use this for a backup
+The nightly Celery task runs the same pipeline (services/db_backup). Use this for a backup
 before a risky change, or to prove the setup works after configuring it:
 
     python manage.py backup_database                  # dump, verify, encrypt, upload, prune
@@ -17,7 +17,7 @@ from pod_manager.services import db_backup
 
 
 class Command(BaseCommand):
-    help = "Encrypted pg_dump to the private R2 backup bucket (also runs weekly via Celery)."
+    help = "Encrypted pg_dump to the private R2 backup bucket (also runs nightly via Celery)."
 
     def add_arguments(self, parser):
         parser.add_argument("--list", action="store_true", help="List existing backups and exit.")

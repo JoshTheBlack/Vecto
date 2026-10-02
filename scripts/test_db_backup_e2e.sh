@@ -119,6 +119,26 @@ WRONG=$(docker run --rm --network "$NET" -e DEBUG=False -e DJANGO_SECRET_KEY=x -
     python manage.py restore_database_backup --latest --out /tmp/x.dump 2>&1)
 check "a wrong key cannot open the backup" 'echo "$WRONG" | grep -q "Decryption failed"'
 
+echo "== disaster recovery: a brand-new server (empty configured database) comes back from the latest backup"
+docker exec "$NET-db" createdb -U vecto_user vecto_fresh
+fresh() {     # the app container as a new server would see it: POSTGRES_DB points at the EMPTY database
+    docker run --rm --network "$NET" -e DEBUG=False -e DJANGO_SECRET_KEY=e2e-not-a-secret -e ALLOWED_HOSTS='*' \
+        -e POSTGRES_DB=vecto_fresh -e POSTGRES_USER=vecto_user -e POSTGRES_PASSWORD=pw \
+        -e POSTGRES_HOST=db -e POSTGRES_PORT=5432 -e POSTGRES_HOST_DIRECT=db -e REDIS_URL=redis://redis:6379/0 \
+        -e R2_ENDPOINT=http://minio:9000 -e R2_ACCESS_KEY_ID=minioadmin -e R2_SECRET_ACCESS_KEY=minioadmin123 \
+        -e R2_MIRROR_ENABLED=False -e R2_MEDIA_ENABLED=False \
+        -e DB_BACKUP_BUCKET=vecto-backups -e DB_BACKUP_KEY="$KEY" "$IMAGE" "$@"
+}
+DR=$(fresh python manage.py restore_database_backup --latest --into vecto_fresh --apply 2>&1); echo "$DR" | tail -2
+check "restores into the empty configured database" 'echo "$DR" | grep -q "Restored into .vecto_fresh"'
+check "tells the operator to run migrate" 'echo "$DR" | grep -q "manage.py migrate"'
+F_USERS=$(count vecto_fresh "select count(*) from auth_user")
+check "the recovered database has the users ($F_USERS = $USERS)" '[ "$F_USERS" = "$USERS" ]'
+check "migrate --check is clean: the app sees a fully migrated database" 'fresh python manage.py migrate --check >/dev/null 2>&1'
+check "the app can read the recovered data" '[ "$(fresh python manage.py shell -c "from django.contrib.auth.models import User; print(User.objects.count())" 2>/dev/null | tail -1)" = "$USERS" ]'
+AGAIN=$(fresh python manage.py restore_database_backup --latest --into vecto_fresh --apply 2>&1)
+check "a second recovery is refused now that it has data" 'echo "$AGAIN" | grep -q "Refusing to restore over the live database"'
+
 echo
 echo "$pass passed, $fail failed"
 [ "$fail" -eq 0 ]

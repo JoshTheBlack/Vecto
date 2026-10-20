@@ -271,6 +271,10 @@ REGISTRY = {
         name="list_recurly_plans",
         category="Reports",
     ),
+    "premium_episode_links": CommandSpec(
+        name="premium_episode_links",
+        category="Reports",
+    ),
     # --- Archive / Vestigial ----------------------------------------------
     "crawl_by_id": CommandSpec(
         name="crawl_by_id",

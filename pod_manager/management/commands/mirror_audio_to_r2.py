@@ -85,9 +85,7 @@ class Command(BaseCommand):
         reject HEAD (some return 403/405) fall back to a single-byte ranged GET
         so we still learn the real status without pulling the file.
         """
-        import requests
-
-        from pod_manager.utils import validate_public_url
+        from pod_manager.services.url_probe import probe_url
 
         targets = self._select(options)
         self.stdout.write(f"Checking {len(targets)} subscriber URL(s)...")
@@ -95,32 +93,18 @@ class Command(BaseCommand):
         dead_ids = []
         for ep in targets:
             url = ep.audio_url_subscriber
-            ok, reason = validate_public_url(url)
-            if not ok:
-                errored += 1
-                self.stdout.write(self.style.WARNING(
-                    f"  ep {ep.id} [{ep.audio_origin()}] UNSAFE: {reason}"))
-                continue
-            try:
-                resp = requests.head(url, timeout=30, allow_redirects=True)
-                code = resp.status_code
-                if code in (403, 405, 501):  # HEAD refused — confirm with a 1-byte GET
-                    resp = requests.get(url, timeout=30, stream=True,
-                                        headers={"Range": "bytes=0-0"}, allow_redirects=True)
-                    code = resp.status_code
-                    resp.close()
-            except requests.RequestException as exc:
+            result = probe_url(url)
+            if result.error:
                 errored += 1
                 self.stdout.write(self.style.ERROR(
-                    f"  ep {ep.id} [{ep.audio_origin()}] ERROR: {exc}"))
-                continue
-            if 200 <= code < 400:
+                    f"  ep {ep.id} [{ep.audio_origin()}] ERROR: {result.error}"))
+            elif result.reachable:
                 reachable += 1
             else:
                 dead += 1
                 dead_ids.append(ep.id)
                 self.stdout.write(self.style.ERROR(
-                    f"  ep {ep.id} [{ep.audio_origin()}] HTTP {code}  {ep.title[:50]}  {url}"))
+                    f"  ep {ep.id} [{ep.audio_origin()}] HTTP {result.status}  {ep.title[:50]}  {url}"))
         self.stdout.write(self.style.SUCCESS(
             f"\nChecked {len(targets)}: {reachable} reachable, {dead} dead (4xx/5xx), "
             f"{errored} unsafe/error."))

@@ -7515,6 +7515,157 @@ class ChapterExtractionTests(TestCase):
         self.assertIsNone(extract_chapters_from_html("One lonely marker (00:01:00)"))
 
 
+class UrlProbeTests(SimpleTestCase):
+    """services.url_probe: HEAD with a 1-byte GET fallback, and the HTML guard."""
+
+    def _probe(self, head_status, content_type='audio/mpeg', get_status=None):
+        from pod_manager.services import url_probe
+        head = mock.Mock(status_code=head_status, headers={'Content-Type': content_type})
+        get = mock.Mock(status_code=get_status, headers={'Content-Type': content_type})
+        with mock.patch.object(url_probe, 'validate_public_url', return_value=(True, '')), \
+                mock.patch.object(url_probe.requests, 'head', return_value=head), \
+                mock.patch.object(url_probe.requests, 'get', return_value=get) as m_get:
+            return url_probe.probe_url('https://audio.test/a.mp3'), m_get
+
+    def test_ok_audio_serves_audio(self):
+        result, m_get = self._probe(200)
+        self.assertTrue(result.serves_audio)
+        m_get.assert_not_called()
+
+    def test_html_200_is_reachable_but_not_audio(self):
+        result, _ = self._probe(200, content_type='text/html; charset=utf-8')
+        self.assertTrue(result.reachable)
+        self.assertFalse(result.serves_audio)
+
+    def test_refused_head_falls_back_to_ranged_get(self):
+        result, m_get = self._probe(405, get_status=206)
+        self.assertEqual(result.status, 206)
+        self.assertTrue(result.serves_audio)
+        self.assertEqual(m_get.call_args.kwargs['headers'], {'Range': 'bytes=0-0'})
+
+    def test_404_is_dead(self):
+        result, _ = self._probe(404)
+        self.assertFalse(result.reachable)
+
+    def test_unsafe_url_is_an_error_without_a_request(self):
+        from pod_manager.services import url_probe
+        with mock.patch.object(url_probe, 'validate_public_url', return_value=(False, 'private')), \
+                mock.patch.object(url_probe.requests, 'head') as m_head:
+            result = url_probe.probe_url('http://10.0.0.1/a.mp3')
+        self.assertIn('unsafe URL', result.error)
+        self.assertFalse(result.serves_audio)
+        m_head.assert_not_called()
+
+    def test_network_error_is_an_error(self):
+        import requests
+        from pod_manager.services import url_probe
+        with mock.patch.object(url_probe, 'validate_public_url', return_value=(True, '')), \
+                mock.patch.object(url_probe.requests, 'head',
+                                  side_effect=requests.ConnectionError('boom')):
+            result = url_probe.probe_url('https://audio.test/a.mp3')
+        self.assertEqual(result.error, 'boom')
+        self.assertIsNone(result.status)
+
+
+class PremiumEpisodeLinksCommandTests(TestCase):
+    """manage.py premium_episode_links: premium selection, R2 > private > public
+    fallback, label formatting, and Discord message chunking. probe_url is patched
+    so no request leaves the test; ALIVE lists the URLs that "serve audio"."""
+
+    R2 = 'https://audio.test/r2.mp3'
+    PRIVATE = 'https://traffic.libsyn.com/p.mp3'
+    PUBLIC = 'https://x.megaphone.fm/pub.mp3'
+
+    def setUp(self):
+        network = Network.objects.create(name='Net', slug='net')
+        self.podcast = Podcast.objects.create(network=network, title='Show', slug='show')
+        self.alive = set()
+
+    def _episode(self, title='Ep', days_ago=1, **fields):
+        fields.setdefault('audio_url_subscriber', self.PRIVATE)
+        return Episode.objects.create(
+            podcast=self.podcast, title=title,
+            pub_date=timezone.now() - timedelta(days=days_ago),
+            raw_description='x', clean_description='x', **fields,
+        )
+
+    def _run(self, *args):
+        from pod_manager.services.url_probe import ProbeResult
+
+        def fake_probe(url, timeout):
+            return ProbeResult(status=200 if url in self.alive else 404,
+                               content_type='audio/mpeg')
+
+        out = StringIO()
+        with mock.patch('pod_manager.management.commands.premium_episode_links.probe_url',
+                        side_effect=fake_probe):
+            call_command('premium_episode_links', '--podcast=show', *args,
+                         stdout=out, stderr=StringIO())
+        return out.getvalue()
+
+    def test_prefers_r2_with_a_plain_link(self):
+        self._episode(title='Pilot', r2_url=self.R2, season_number=1, episode_number=3,
+                      episode_type='full')
+        self.alive = {self.R2, self.PRIVATE}
+        self.assertIn(f'- [S01E03 full - Pilot]({self.R2})\n', self._run())
+
+    def test_falls_back_to_private_then_public_and_flags_it(self):
+        self._episode(title='A', r2_url=self.R2, audio_url_public=self.PUBLIC,
+                      episode_type='full')
+        self.alive = {self.PRIVATE}
+        out = self._run()
+        self.assertIn(f'- ⚠️ [full - A]({self.PRIVATE}) (private)', out)
+
+        self.alive = {self.PUBLIC}
+        self.assertIn(f'- ⚠️ [full - A]({self.PUBLIC}) (public)', self._run())
+
+    def test_no_working_url_renders_a_dead_entry(self):
+        self._episode(title='Gone', r2_url=self.R2, episode_type='')
+        out = self._run()
+        self.assertIn('- ❌ ~~Gone~~', out)
+        self.assertIn('"dead": 1', out)
+
+    def test_skips_non_premium_and_unpublished_unless_asked(self):
+        self._episode(title='Free', audio_url_public=self.PRIVATE)   # subscriber == public
+        self._episode(title='Draft', is_published=False)
+        self.alive = {self.PRIVATE}
+        out = self._run()
+        self.assertNotIn('Free', out)
+        self.assertNotIn('Draft', out)
+        self.assertIn('Draft', self._run('--include-unpublished'))
+
+    def test_lists_oldest_first(self):
+        self._episode(title='Newer', days_ago=1)
+        self._episode(title='Older', days_ago=5)
+        out = self._run()
+        self.assertLess(out.index('Older'), out.index('Newer'))
+
+    def test_unknown_podcast_errors(self):
+        with self.assertRaises(CommandError):
+            call_command('premium_episode_links', '--podcast=nope', stdout=StringIO())
+
+    def test_label_omits_unset_tag_and_type(self):
+        from pod_manager.management.commands.premium_episode_links import episode_label
+        ep = Episode(title='T', season_number=2, episode_number=None, episode_type='bonus')
+        self.assertEqual(episode_label(ep), 'bonus - T')
+        self.assertEqual(episode_label(Episode(title='T', episode_type='')), 'T')
+        ep = Episode(title='T', season_number=1, episode_number=12, episode_type='')
+        self.assertEqual(episode_label(ep), 'S01E12 - T')
+
+    def test_link_text_and_url_are_escaped(self):
+        from pod_manager.management.commands.premium_episode_links import render_line
+        line = render_line('A [B] C', ('r2', 'https://a.test/x (1).mp3'))
+        self.assertEqual(line, r'- [A \[B\] C](https://a.test/x%20%281%29.mp3)')
+
+    def test_chunks_never_exceed_the_limit_or_split_lines(self):
+        from pod_manager.management.commands.premium_episode_links import chunk_lines
+        lines = [f'line {i} ' + 'x' * 90 for i in range(60)]
+        chunks = chunk_lines(lines, limit=2000)
+        self.assertGreater(len(chunks), 1)
+        self.assertTrue(all(len(c) <= 2000 for c in chunks))
+        self.assertEqual('\n'.join(chunks).split('\n'), lines)
+
+
 class ExtractDescriptionChaptersCommandTests(TestCase):
     """manage.py extract_description_chapters: scope, preview/apply, leave-alone."""
 

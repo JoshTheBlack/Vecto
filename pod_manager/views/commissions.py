@@ -73,13 +73,18 @@ def commission_queue(request):
                                            .order_by('-requested_at')
         for c in your_requests:
             c.expires = lifecycle.expires_at(c, settings)
+    queue = list(network.commissions.filter(status__in=Commission.ACTIVE_STATUSES)
+                 .select_related('calendar_entry__episode'))
+    estimates = lifecycle.public_estimates(queue, settings)
+    for c in queue:
+        c.estimate = estimates.get(c.id)
     return render(request, 'pod_manager/commission_queue.html', {
         'current_network': network,
         'settings': settings,
         'is_owner': owner,
         'prices': pricing.price_table(settings, versions, n),
         'next_increase': pricing.next_increase(settings, n) if settings.show_price_hint else None,
-        'queue': network.commissions.filter(status__in=Commission.ACTIVE_STATUSES),
+        'queue': queue,
         'released_count': network.commissions.filter(status=Commission.Status.RELEASED).count(),
         'your_requests': your_requests,
         'awaiting_approval': network.commissions.filter(status=Commission.Status.PENDING).count() if owner else 0,

@@ -27,6 +27,7 @@ urlpatterns = [
     path('creator/match/from-orphans/', views.creator_orphan_merge_editor, name='creator_orphan_merge_editor'),
     path('creator/tab/<str:tab>/', views.creator_tab_partial, name='creator_tab_partial'),
     path('creator/commissions/price-preview/', views.creator_commission_price_preview, name='creator_commission_price_preview'),
+    path('creator/commissions/episode-options/', views.creator_commission_episode_options, name='creator_commission_episode_options'),
 
     # Public per-network release calendar (Feature 4, A14)
     path('calendar/', views.calendar_page, name='calendar'),

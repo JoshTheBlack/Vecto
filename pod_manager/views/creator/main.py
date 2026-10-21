@@ -8,7 +8,8 @@ import logging
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required
 from django.db.models import Q
-from django.http import HttpResponseForbidden
+from django.http import HttpResponse, HttpResponseForbidden
+from django.utils.html import format_html_join
 from django.views.decorators.http import require_POST
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
@@ -110,6 +111,30 @@ def creator_commission_price_preview(request):
         'preview_error': error,
         **commission_price_preview_context(current_network, settings),
     })
+
+
+@login_required(login_url='/login/')
+def creator_commission_episode_options(request):
+    """<option>s for a commission row's "Linked episode" datalist, re-fetched
+    as the owner types: this network's episodes matching ?q= (title, or an id),
+    newest first, minus ones another commission already claims."""
+    current_network, forbidden = _resolve_creator_network(request)
+    if forbidden:
+        return forbidden
+    q = (request.GET.get('episode_id') or request.GET.get('q') or '').strip()
+    episodes = Episode.objects.filter(podcast__network=current_network, commission__isnull=True) \
+                              .select_related('podcast')
+    if q.isdigit():
+        episodes = episodes.filter(pk=int(q))
+    elif len(q) >= 2:
+        episodes = episodes.filter(title__icontains=q)
+    else:
+        episodes = episodes.none()
+    return HttpResponse(format_html_join(
+        '\n', '<option value="{} {}">{} &middot; {}</option>',
+        ((ep.id, ep.title[:80], ep.podcast.title,
+          'Published' if ep.is_published else ('Scheduled' if ep.scheduled_at else 'Draft'))
+         for ep in episodes.order_by('-pub_date')[:20])))
 
 
 @login_required(login_url='/login/')

@@ -16,7 +16,7 @@ from django.http import HttpResponse, HttpResponseBadRequest
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
 
-from ...models import Commission, CommissionSettings, CommissionVersion
+from ...models import Commission, CommissionSettings, CommissionVersion, Episode
 from ...services import commission_pricing as pricing
 from ...services import commissions as lifecycle
 from ...services.ordering import apply_order, parse_id_list
@@ -338,6 +338,82 @@ def handle_sort_commissions_by_date(request, current_network):
     messages.success(request, "Queue sorted by request date.")
 
 
+def _commission(request, current_network):
+    return get_object_or_404(Commission, id=request.POST.get('commission_id'), network=current_network)
+
+
+def handle_set_commission_watch_date(request, current_network):
+    """Book or clear the watch date. Owner-only, and it does nothing else: no
+    email, and the date is never shown publicly."""
+    commission = _commission(request, current_network)
+    raw = (request.POST.get('watch_date') or '').strip()
+    try:
+        watch_date = datetime.date.fromisoformat(raw) if raw else None
+    except ValueError:
+        messages.error(request, "Watch date must be a date.")
+        return
+    try:
+        lifecycle.set_watch_date(commission, watch_date)
+    except ValueError as e:
+        messages.error(request, str(e))
+        return
+    messages.success(request, f"Watch date {'booked' if watch_date else 'cleared'} for '{commission.pick}'.")
+
+
+def handle_plan_commission_release(request, current_network):
+    """Put the planned release on the calendar (and maybe make a draft)."""
+    # Late import: views.calendar imports the creator package, which imports this module.
+    from ..calendar import _scheduled_from_request
+    commission = _commission(request, current_network)
+    when = _scheduled_from_request(request)
+    if when is None:
+        messages.error(request, "Pick a release date and time.")
+        return
+    podcast_id = request.POST.get('podcast_id') or ''
+    podcast = current_network.podcasts.filter(id=podcast_id).first() if podcast_id.isdigit() else None
+    try:
+        lifecycle.plan_release(
+            commission, when=when, podcast=podcast,
+            create_draft=request.POST.get('create_draft') == 'on',
+            visibility=request.POST.get('prepublish_visibility', ''), user=request.user)
+    except ValueError as e:
+        messages.error(request, str(e))
+        return
+    messages.success(request, f"Release of '{commission.pick}' planned. It's on the calendar"
+                              f"{' with a draft episode to finish in Publish' if commission.episode_id else ''}.")
+
+
+def handle_clear_commission_release(request, current_network):
+    commission = _commission(request, current_network)
+    lifecycle.clear_planned_release(commission)
+    messages.success(request, f"Planned release of '{commission.pick}' cleared.")
+
+
+def handle_link_commission_episode(request, current_network):
+    """Link (or, with a blank id, unlink) the commission's episode. Linking one
+    that's already published releases the commission."""
+    commission = _commission(request, current_network)
+    raw = (request.POST.get('episode_id') or '').strip().split(' ', 1)[0]
+    episode = None
+    if raw:
+        episode = (Episode.objects.filter(id=raw, podcast__network=current_network).first()
+                   if raw.isdigit() else None)
+        if episode is None:
+            messages.error(request, "Pick an episode from this network's list.")
+            return
+    try:
+        lifecycle.link_episode(commission, episode)
+    except ValueError as e:
+        messages.error(request, str(e))
+        return
+    if episode is None:
+        messages.success(request, f"Episode unlinked from '{commission.pick}'.")
+    else:
+        commission.refresh_from_db(fields=['status'])
+        released = " It's live, so the commission is now Released." if commission.status == Commission.Status.RELEASED else ''
+        messages.success(request, f"Linked '{episode.title}'.{released}")
+
+
 def _reorder(request, queryset):
     """Drag-to-reorder endpoint (sortable_list.js): 204, or 400 when the posted
     order doesn't name exactly the rows in `queryset`."""
@@ -363,4 +439,8 @@ COMMISSION_ACTION_HANDLERS = {
     'delete_commission':            handle_delete_commission,
     'reorder_commissions':          handle_reorder_commissions,
     'sort_commissions_by_date':     handle_sort_commissions_by_date,
+    'set_commission_watch_date':    handle_set_commission_watch_date,
+    'plan_commission_release':      handle_plan_commission_release,
+    'clear_commission_release':     handle_clear_commission_release,
+    'link_commission_episode':      handle_link_commission_episode,
 }

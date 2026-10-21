@@ -1,0 +1,143 @@
+{% comment %}
+A queued commission's "Plan" panel: book the watch date, then plan the release
+(a calendar entry, optionally with a draft episode), and link the episode.
+None of it emails anyone; the watch date is never public.
+Params: c (with c.release_local set by gather_commissions_context).
+Context: current_network, commission_settings, network_podcasts, tz_choices.
+{% endcomment %}
+<div class="card-body border-top border-secondary d-flex flex-column gap-3">
+
+    {# 1. Watch date #}
+    <form method="POST" action="{% url 'creator_settings' %}?network={{ current_network.slug }}&tab=commissions" class="row g-2 align-items-end">
+        {% csrf_token %}
+        <input type="hidden" name="action" value="set_commission_watch_date">
+        <input type="hidden" name="commission_id" value="{{ c.id }}">
+        <div class="col-sm-5 col-lg-4">
+            <label class="form-label text-muted small fw-bold" for="cm-watch-{{ c.id }}">Watch date <span class="fw-normal">(owners only)</span></label>
+            <input type="date" id="cm-watch-{{ c.id }}" name="watch_date" value="{{ c.watch_date|date:'Y-m-d' }}"
+                   class="form-control form-control-sm bg-black text-light border-secondary">
+        </div>
+        <div class="col-auto">
+            <button type="submit" class="btn btn-sm btn-warning">Save</button>
+            {% if c.watch_date %}
+            <button type="submit" form="cm-clear-watch-{{ c.id }}" class="btn btn-sm btn-subtle">Clear</button>
+            {% endif %}
+        </div>
+        <div class="col-12 form-text text-muted mt-0">Booking a date moves it to Scheduled; clearing it moves it back to Queued.</div>
+    </form>
+
+    {# 2. Planned release (needs a watch date) #}
+    {% if c.watch_date %}
+    <form method="POST" action="{% url 'creator_settings' %}?network={{ current_network.slug }}&tab=commissions" class="row g-2 align-items-end border-top border-secondary pt-3">
+        {% csrf_token %}
+        <input type="hidden" name="action" value="plan_commission_release">
+        <input type="hidden" name="commission_id" value="{{ c.id }}">
+        <div class="col-12 small fw-bold text-warning">Planned release</div>
+        <div class="col-sm-4 col-lg-3">
+            <label class="form-label text-muted small" for="cm-rel-date-{{ c.id }}">Date</label>
+            <input type="date" id="cm-rel-date-{{ c.id }}" name="date" value="{{ c.release_local|date:'Y-m-d' }}" required
+                   class="form-control form-control-sm bg-black text-light border-secondary">
+        </div>
+        <div class="col-sm-3 col-lg-2">
+            <label class="form-label text-muted small" for="cm-rel-time-{{ c.id }}">Time</label>
+            <input type="time" id="cm-rel-time-{{ c.id }}" name="time" value="{{ c.release_local|date:'H:i'|default:'09:00' }}" required
+                   class="form-control form-control-sm bg-black text-light border-secondary">
+        </div>
+        <div class="col-sm-5 col-lg-3">
+            <label class="form-label text-muted small" for="cm-rel-tz-{{ c.id }}">Time zone</label>
+            <select id="cm-rel-tz-{{ c.id }}" name="tz" class="form-select form-select-sm bg-black text-light border-secondary">
+                {% for value, label in tz_choices %}<option value="{{ value }}">{{ label }}</option>{% endfor %}
+            </select>
+        </div>
+        <div class="col-sm-6 col-lg-4">
+            <label class="form-label text-muted small" for="cm-rel-pod-{{ c.id }}">Feed</label>
+            <select id="cm-rel-pod-{{ c.id }}" name="podcast_id" class="form-select form-select-sm bg-black text-light border-secondary"
+                    {% if c.calendar_entry.episode_id %}disabled title="The linked episode decides the feed."{% endif %}>
+                <option value="">No feed (calendar only)</option>
+                {% for p in network_podcasts %}
+                <option value="{{ p.id }}" {% if c.calendar_entry %}{% if c.calendar_entry.podcast_id == p.id %}selected{% endif %}{% elif commission_settings.default_podcast_id == p.id %}selected{% endif %}>{{ p.title }}</option>
+                {% endfor %}
+            </select>
+        </div>
+        <div class="col-sm-6 col-lg-4">
+            <label class="form-label text-muted small" for="cm-rel-vis-{{ c.id }}">Before it's out, the calendar shows</label>
+            <select id="cm-rel-vis-{{ c.id }}" name="prepublish_visibility" class="form-select form-select-sm bg-black text-light border-secondary">
+                <option value="actual" {% if c.calendar_entry.prepublish_visibility == 'actual' or not c.calendar_entry %}selected{% endif %}>The pick</option>
+                <option value="teaser" {% if c.calendar_entry.prepublish_visibility == 'teaser' %}selected{% endif %}>A teaser (edit it on the calendar)</option>
+                <option value="hidden" {% if c.calendar_entry.prepublish_visibility == 'hidden' %}selected{% endif %}>Nothing (hidden)</option>
+            </select>
+        </div>
+        <div class="col-sm-6 col-lg-4">
+            {% if not c.episode_id %}
+            <div class="form-check">
+                <input class="form-check-input" type="checkbox" name="create_draft" id="cm-rel-draft-{{ c.id }}" checked>
+                <label class="form-check-label small" for="cm-rel-draft-{{ c.id }}">Also create a draft episode to finish in Publish</label>
+            </div>
+            {% else %}
+            <div class="small text-muted">Episode: {{ c.episode.title }}</div>
+            {% endif %}
+        </div>
+        <div class="col-12 d-flex gap-2">
+            <button type="submit" class="btn btn-sm btn-warning">{% if c.calendar_entry %}Update release{% else %}Plan release{% endif %}</button>
+            {% if c.calendar_entry %}
+            <button type="submit" form="cm-clear-rel-{{ c.id }}" class="btn btn-sm btn-subtle"
+                    data-confirm-slide="Takes it off the calendar. An untouched draft is deleted; anything you've worked on is kept.">Clear</button>
+            {% endif %}
+        </div>
+        <div class="col-12 form-text text-muted mt-0">The draft is never scheduled for you: schedule it in Publish once the audio is in.</div>
+    </form>
+    {% if c.calendar_entry %}
+    <form method="POST" action="{% url 'creator_settings' %}?network={{ current_network.slug }}&tab=commissions" id="cm-clear-rel-{{ c.id }}" class="d-none">
+        {% csrf_token %}
+        <input type="hidden" name="action" value="clear_commission_release">
+        <input type="hidden" name="commission_id" value="{{ c.id }}">
+    </form>
+    {% endif %}
+    {% endif %}
+
+    {# 3. Linked episode #}
+    <form method="POST" action="{% url 'creator_settings' %}?network={{ current_network.slug }}&tab=commissions" class="row g-2 align-items-end border-top border-secondary pt-3">
+        {% csrf_token %}
+        <input type="hidden" name="action" value="link_commission_episode">
+        <input type="hidden" name="commission_id" value="{{ c.id }}">
+        <div class="col-sm-8 col-lg-6">
+            <label class="form-label text-muted small fw-bold" for="cm-ep-{{ c.id }}">Linked episode <span class="fw-normal">(released automatically when it publishes)</span></label>
+            {% comment %}
+            Typing re-fetches the datalist's options. Explicit target/swap/select/
+            push-url: the lazy pane hands its children #boosted-region for all four.
+            {% endcomment %}
+            <input type="text" id="cm-ep-{{ c.id }}" name="episode_id" list="cm-eps-{{ c.id }}" autocomplete="off"
+                   value="{% if c.episode_id %}{{ c.episode_id }} {{ c.episode.title }}{% endif %}"
+                   placeholder="Search this network's episodes"
+                   class="form-control form-control-sm bg-black text-light border-secondary"
+                   hx-get="{% url 'creator_commission_episode_options' %}?network={{ current_network.slug }}"
+                   hx-trigger="input changed delay:300ms" hx-target="#cm-eps-{{ c.id }}"
+                   hx-swap="innerHTML" hx-select="unset" hx-push-url="false">
+            <datalist id="cm-eps-{{ c.id }}"></datalist>
+        </div>
+        <div class="col-auto">
+            <button type="submit" class="btn btn-sm btn-warning">Link</button>
+            {% if c.episode_id %}
+            <button type="submit" form="cm-unlink-ep-{{ c.id }}" class="btn btn-sm btn-subtle">Unlink</button>
+            {% endif %}
+        </div>
+    </form>
+
+    {# The Clear / Unlink buttons above submit these (form="..."), so a blank value never competes with the filled-in field of the same name. #}
+    {% if c.watch_date %}
+    <form method="POST" action="{% url 'creator_settings' %}?network={{ current_network.slug }}&tab=commissions" id="cm-clear-watch-{{ c.id }}" class="d-none">
+        {% csrf_token %}
+        <input type="hidden" name="action" value="set_commission_watch_date">
+        <input type="hidden" name="commission_id" value="{{ c.id }}">
+        <input type="hidden" name="watch_date" value="">
+    </form>
+    {% endif %}
+    {% if c.episode_id %}
+    <form method="POST" action="{% url 'creator_settings' %}?network={{ current_network.slug }}&tab=commissions" id="cm-unlink-ep-{{ c.id }}" class="d-none">
+        {% csrf_token %}
+        <input type="hidden" name="action" value="link_commission_episode">
+        <input type="hidden" name="commission_id" value="{{ c.id }}">
+        <input type="hidden" name="episode_id" value="">
+    </form>
+    {% endif %}
+</div>

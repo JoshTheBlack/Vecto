@@ -576,16 +576,23 @@ def gather_notfound_context(current_network):
 
 
 def gather_commissions_context(current_network):
+    # Late import: views.calendar imports the creator package, which imports this module.
+    from ..calendar import EASTERN, TZ_CHOICES
     settings = commission_settings_for(current_network)
-    commissions = current_network.commissions.select_related('requester')
+    commissions = current_network.commissions.select_related('requester', 'calendar_entry', 'episode__podcast')
     pending = list(commissions.filter(status=Commission.Status.PENDING).order_by('requested_at'))
     for c in pending:
         c.expires = expires_at(c, settings)
+    active = list(commissions.filter(status__in=Commission.ACTIVE_STATUSES))
+    for c in active:
+        # The release form edits in Eastern wall-clock time, like /calendar.
+        c.release_local = c.calendar_entry.scheduled_at.astimezone(EASTERN) if c.calendar_entry else None
     return {
+        'tz_choices': TZ_CHOICES,
         'commission_settings': settings,
         'commission_versions': current_network.commission_versions.all(),
         'approved_statuses': [(s.value, s.label) for s in Commission.PUBLIC_STATUSES],
-        'active_commissions': commissions.filter(status__in=Commission.ACTIVE_STATUSES),
+        'active_commissions': active,
         'released_commissions': commissions.filter(status=Commission.Status.RELEASED)
                                            .order_by('-released_at', '-requested_at'),
         'pending_commissions': pending,

@@ -17,6 +17,9 @@ Params: c, number (queue position to show; omit for released), sortable
                 {% if c.version_name %}&middot; {{ c.version_name }}{% endif %}
                 {% if c.quoted_price is not None %}&middot; {{ c.quoted_price|money:commission_settings.currency }}{% endif %}
                 &middot; <span title="PayPal invoice reference">{{ c.reference }}</span>
+                {% if c.watch_date %}&middot; <span class="text-warning" title="Owners only"><i class="bi bi-eye"></i> watch {{ c.watch_date|date:"M j" }}</span>{% endif %}
+                {% if c.calendar_entry %}&middot; <span class="text-warning"><i class="bi bi-calendar-event"></i> releases {{ c.calendar_entry.scheduled_at|date:"M j" }}</span>{% endif %}
+                {% if c.episode %}&middot; <i class="bi bi-mic"></i> {{ c.episode.title }}{% if not c.episode.is_published %} ({% if c.episode.scheduled_at %}scheduled{% else %}draft{% endif %}){% endif %}{% endif %}
             </div>
         </div>
         <form method="POST" action="{% url 'creator_settings' %}?network={{ current_network.slug }}&tab=commissions" class="flex-shrink-0">
@@ -30,6 +33,11 @@ Params: c, number (queue position to show; omit for released), sortable
                 {% endfor %}
             </select>
         </form>
+        {% if c.status != 'released' %}
+        <button type="button" class="btn btn-sm btn-subtle flex-shrink-0" data-bs-toggle="collapse" data-bs-target="#cm-plan-{{ c.id }}" title="Watch date, release and episode">
+            <i class="bi bi-calendar-event"></i> Plan
+        </button>
+        {% endif %}
         <button type="button" class="btn btn-sm btn-subtle flex-shrink-0" data-bs-toggle="collapse" data-bs-target="#cm-edit-{{ c.id }}">
             <i class="bi bi-pencil"></i> Edit
         </button>
@@ -37,6 +45,11 @@ Params: c, number (queue position to show; omit for released), sortable
             <i class="bi bi-x-lg"></i>
         </button>
     </div>
+    {% if c.status != 'released' %}
+    <div class="collapse" id="cm-plan-{{ c.id }}">
+        {% include 'pod_manager/creator_tabs/_commission_plan_panel.html' %}
+    </div>
+    {% endif %}
     <div class="collapse" id="cm-edit-{{ c.id }}">
         {% include 'pod_manager/creator_tabs/_commission_form.html' with commission=c uid=c.id form_class='card-body border-top border-secondary' %}
     </div>

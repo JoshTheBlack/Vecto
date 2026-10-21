@@ -676,7 +676,17 @@ class Episode(models.Model):
             ),
         ]
         ordering = ['-pub_date']
-    
+
+    @classmethod
+    def from_db(cls, db, field_names, values):
+        # Remember is_published as loaded, so post_save can tell "just went
+        # live" from "re-saved while live" without querying the old row on
+        # every episode save (ingest saves thousands).
+        instance = super().from_db(db, field_names, values)
+        if 'is_published' in field_names:
+            instance._loaded_is_published = instance.is_published
+        return instance
+
     @property
     def effective_explicit(self) -> bool:
         """The rating this episode is published with: its own value if set, else its
@@ -1863,6 +1873,22 @@ def queue_transcription_on_episode_save(sender, instance, created=False, **kwarg
     )
     from pod_manager.services.transcription import dispatch_transcription
     dispatch_transcription(instance.id)
+
+
+@receiver(post_save, sender=Episode)
+def release_commission_on_publish(sender, instance, created=False, **kwargs):
+    """When a saved episode flips from unpublished to published, release the
+    commission linked to it. The one choke point for every publish path: the
+    publish view, the scheduled-publish task and feed ingest all save the
+    episode. A brand-new episode can't have a commission linked to it yet, so
+    creation is skipped (no query per ingested episode); linking an episode
+    that's already live releases at link time instead (services.commissions)."""
+    was_published = getattr(instance, '_loaded_is_published', None)
+    instance._loaded_is_published = instance.is_published
+    if created or not instance.is_published or was_published is not False:
+        return
+    from pod_manager.services.commissions import release_for_episode
+    release_for_episode(instance)
 
 
 @receiver(post_save, sender=Episode)

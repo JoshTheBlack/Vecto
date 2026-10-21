@@ -17758,3 +17758,247 @@ class AttachGuestRequestsTests(TestCase):
                 req = self._login_request(f'/login/?next={nxt}')
                 _remember_next(req)
                 self.assertEqual(req.session.get('login_next'), nxt if kept else None)
+
+
+class CommissionReleasePlanningTests(TestCase):
+    """Phase 4: watch dates, the planned release (calendar entry + draft),
+    linking episodes, and automatic release when the episode publishes."""
+
+    def setUp(self):
+        from pod_manager.models import CommissionSettings
+        self.factory = RequestFactory()
+        self.owner = User.objects.create_user(username='rowner', email='rowner@example.com')
+        self.network = Network.objects.create(name='RelNet', slug='relnet', custom_domain='rel.example.test')
+        self.network.owners.add(self.owner)
+        self.podcast = Podcast.objects.create(network=self.network, title='Commissions', slug='rel-coms')
+        CommissionSettings.objects.create(network=self.network, enabled=True, default_podcast=self.podcast)
+        self.c = _commission(self.network, pick='Heat (1995)', credit_name='Sam',
+                             requester_email='fan@example.com')
+
+    def _post(self, data):
+        req = _make_tenant_request(self.factory, self.network, method='post',
+                                   path=f'/creator/?network={self.network.slug}&tab=commissions',
+                                   data={'commission_id': self.c.id, **data}, user=self.owner)
+        with self.captureOnCommitCallbacks(execute=True):
+            resp = views.creator_settings(req)
+        self.c.refresh_from_db()
+        return resp
+
+    def _plan(self, **overrides):
+        data = {'action': 'plan_commission_release', 'date': '2026-11-03', 'time': '09:00',
+                'tz': 'America/New_York', 'podcast_id': self.podcast.id, 'create_draft': 'on',
+                'prepublish_visibility': 'actual'}
+        data.update(overrides)
+        return self._post(data)
+
+    def _ep(self, **fields):
+        values = {'podcast': self.podcast, 'title': 'An episode', 'pub_date': timezone.now(),
+                  'raw_description': 'x', 'clean_description': 'x'}
+        values.update(fields)
+        return Episode.objects.create(**values)
+
+    def test_watch_date_moves_scheduled_and_back_without_email(self):
+        from django.core import mail
+        self._post({'action': 'set_commission_watch_date', 'watch_date': '2026-10-30'})
+        self.assertEqual((self.c.status, str(self.c.watch_date)), ('scheduled', '2026-10-30'))
+        self._post({'action': 'set_commission_watch_date', 'watch_date': ''})
+        self.assertEqual((self.c.status, self.c.watch_date), ('queued', None))
+        # A watched commission keeps its status when the date changes.
+        self.c.status = 'watched'
+        self.c.save()
+        self._post({'action': 'set_commission_watch_date', 'watch_date': '2026-10-31'})
+        self.assertEqual(self.c.status, 'watched')
+        self.assertEqual(mail.outbox, [])
+
+    def test_release_needs_a_watch_date(self):
+        self._plan()
+        self.assertIsNone(self.c.calendar_entry)
+
+    def test_plan_creates_calendar_entry_and_a_safe_draft(self):
+        from pod_manager.tasks import task_publish_scheduled_episodes
+        self._post({'action': 'set_commission_watch_date', 'watch_date': '2026-10-30'})
+        self._plan()
+        entry, draft = self.c.calendar_entry, self.c.episode
+        self.assertEqual((entry.title, entry.podcast, entry.created_by, entry.created_from_episode),
+                         ('Heat (1995)', self.podcast, self.owner, False))
+        self.assertEqual(entry.scheduled_at.isoformat(), '2026-11-03T14:00:00+00:00')   # 9:00 Eastern
+        self.assertEqual(entry.episode, draft)
+        self.assertEqual((draft.title, draft.is_published, draft.scheduled_at), ('Heat (1995)', False, None))
+        self.assertIn('Commissioned by Sam', draft.raw_description)
+        self.assertTrue(draft.guid_private)
+        # The scheduled-publish task must never put the empty draft live.
+        task_publish_scheduled_episodes()
+        draft.refresh_from_db()
+        self.assertFalse(draft.is_published)
+
+    def test_planning_again_moves_the_same_entry(self):
+        from pod_manager.models import CalendarEntry
+        self._post({'action': 'set_commission_watch_date', 'watch_date': '2026-10-30'})
+        self._plan()
+        entry_id, draft_id = self.c.calendar_entry_id, self.c.episode_id
+        self._plan(date='2026-11-10', prepublish_visibility='hidden')
+        self.assertEqual((self.c.calendar_entry_id, self.c.episode_id), (entry_id, draft_id))
+        self.assertEqual(CalendarEntry.objects.filter(network=self.network).count(), 1)
+        self.assertEqual(self.c.calendar_entry.scheduled_at.date().isoformat(), '2026-11-10')
+        self.assertEqual(self.c.calendar_entry.prepublish_visibility, 'hidden')
+        self.assertEqual(self.c.episode.pub_date.date().isoformat(), '2026-11-10')
+
+    def test_scheduling_the_draft_in_publish_reuses_its_entry(self):
+        from pod_manager.models import CalendarEntry
+        from pod_manager.services.release_calendar import ensure_calendar_entry_for_episode
+        self._post({'action': 'set_commission_watch_date', 'watch_date': '2026-10-30'})
+        self._plan()
+        draft = self.c.episode
+        when = timezone.now() + timedelta(days=20)
+        draft.scheduled_at = when
+        draft.save()
+        entry = ensure_calendar_entry_for_episode(draft)
+        self.assertEqual(entry.id, self.c.calendar_entry_id)
+        self.assertEqual(entry.scheduled_at, when)
+        self.assertEqual(CalendarEntry.objects.filter(network=self.network).count(), 1)
+
+    def test_clearing_deletes_an_untouched_draft_but_keeps_worked_on_ones(self):
+        from pod_manager.models import CalendarEntry
+        self._post({'action': 'set_commission_watch_date', 'watch_date': '2026-10-30'})
+        self._plan()
+        draft_id = self.c.episode_id
+        self._post({'action': 'clear_commission_release'})
+        self.assertIsNone(self.c.calendar_entry)
+        self.assertIsNone(self.c.episode)
+        self.assertFalse(Episode.objects.filter(pk=draft_id).exists())
+        self.assertFalse(CalendarEntry.objects.filter(network=self.network).exists())
+
+        self._plan()
+        draft = self.c.episode
+        draft.audio_url_public = 'https://cdn.example.test/heat.mp3'
+        draft.save()
+        entry_id = self.c.calendar_entry_id
+        self._post({'action': 'clear_commission_release'})
+        self.assertIsNone(self.c.calendar_entry)
+        self.assertEqual(self.c.episode, draft)
+        self.assertTrue(CalendarEntry.objects.filter(pk=entry_id, episode=draft).exists())
+
+    def test_draft_publishing_releases_the_commission(self):
+        from django.core import mail
+        from pod_manager.tasks import task_publish_scheduled_episodes
+        self._post({'action': 'set_commission_watch_date', 'watch_date': '2026-10-30'})
+        self._plan()
+        draft = self.c.episode
+        draft.scheduled_at = timezone.now() - timedelta(minutes=1)
+        draft.save()
+        with self.captureOnCommitCallbacks(execute=True):
+            task_publish_scheduled_episodes()
+        self.c.refresh_from_db()
+        self.assertEqual(self.c.status, 'released')
+        self.assertIsNotNone(self.c.released_at)
+        self.assertEqual([m.to for m in mail.outbox], [['fan@example.com']])
+
+    def test_resaving_a_live_episode_does_not_release_again(self):
+        ep = self._ep(is_published=True)
+        self._post({'action': 'link_commission_episode', 'episode_id': ep.id})
+        self.assertEqual(self.c.status, 'released')
+        self._post({'action': 'set_commission_status', 'status': 'watched'})
+        ep = Episode.objects.get(pk=ep.pk)
+        ep.title = 'Renamed'
+        ep.save()
+        self.c.refresh_from_db()
+        self.assertEqual(self.c.status, 'watched')
+
+    def test_linking(self):
+        draft = self._ep(title='Unpublished', is_published=False)
+        self._post({'action': 'link_commission_episode', 'episode_id': f'{draft.id} Unpublished'})
+        self.assertEqual((self.c.episode, self.c.status), (draft, 'queued'))
+        other = _commission(self.network, pick='Other')
+        other_ep = self._ep()
+        other.episode = other_ep
+        other.save()
+        self._post({'action': 'link_commission_episode', 'episode_id': other_ep.id})
+        self.assertEqual(self.c.episode, draft)               # already claimed
+        foreign_net = Network.objects.create(name='F', slug='relforeign')
+        foreign_ep = Episode.objects.create(
+            podcast=Podcast.objects.create(network=foreign_net, title='F', slug='rel-f'),
+            title='F', pub_date=timezone.now(), raw_description='x', clean_description='x')
+        self._post({'action': 'link_commission_episode', 'episode_id': foreign_ep.id})
+        self.assertEqual(self.c.episode, draft)
+        self._post({'action': 'link_commission_episode', 'episode_id': ''})
+        self.assertIsNone(self.c.episode)
+
+    def test_episode_options_search(self):
+        self._ep(title='Heat review')
+        claimed = self._ep(title='Heat again')
+        _commission(self.network, pick='Other', episode=claimed)
+        req = _make_tenant_request(self.factory, self.network, path='/creator/commissions/episode-options/',
+                                   data={'network': self.network.slug, 'episode_id': 'heat'}, user=self.owner)
+        body = views.creator_commission_episode_options(req).content.decode()
+        self.assertIn('Heat review', body)
+        self.assertNotIn('Heat again', body)
+        stranger = User.objects.create_user(username='stranger-eps')
+        req.user = stranger
+        self.assertEqual(views.creator_commission_episode_options(req).status_code, 403)
+
+
+class CommissionEstimateTests(TestCase):
+    """Public estimates: a planned release the calendar shows, else a cadence
+    guess for queued entries. Watch dates are never public."""
+
+    def setUp(self):
+        from pod_manager.models import CommissionSettings
+        self.network = Network.objects.create(name='Est', slug='est')
+        self.settings = CommissionSettings.objects.create(network=self.network, enabled=True, cadence_days=7)
+        self.today = datetime.date(2026, 10, 21)       # a Wednesday
+
+    def _estimates(self):
+        from pod_manager.models import Commission
+        from pod_manager.services.commissions import public_estimates
+        queue = list(self.network.commissions.filter(status__in=Commission.ACTIVE_STATUSES)
+                     .select_related('calendar_entry'))
+        return public_estimates(queue, self.settings, today=self.today)
+
+    def test_cadence_from_the_latest_booked_watch_date(self):
+        booked = _commission(self.network, pick='Booked', status='scheduled', position=0,
+                             watch_date=datetime.date(2026, 10, 24))
+        a = _commission(self.network, pick='A', position=1)
+        b = _commission(self.network, pick='B', position=2)
+        est = self._estimates()
+        self.assertNotIn(booked.id, est)
+        self.assertEqual(est[a.id], ('week_of', datetime.date(2026, 10, 26)))   # Oct 31 -> week of Mon 26
+        self.assertEqual(est[b.id], ('week_of', datetime.date(2026, 11, 2)))    # Nov 7
+
+    def test_past_watch_dates_and_none_anchor_on_today(self):
+        _commission(self.network, pick='Old', status='watched', position=0,
+                    watch_date=datetime.date(2026, 9, 1))
+        a = _commission(self.network, pick='A', position=1)
+        self.assertEqual(self._estimates()[a.id], ('week_of', datetime.date(2026, 10, 26)))   # Oct 28
+
+    def test_no_cadence_no_guess(self):
+        self.settings.cadence_days = None
+        a = _commission(self.network, pick='A')
+        self.assertNotIn(a.id, self._estimates())
+
+    def test_planned_release_shows_unless_hidden(self):
+        from pod_manager.models import CalendarEntry
+        when = timezone.make_aware(datetime.datetime(2026, 11, 3, 14, 0))
+        entry = CalendarEntry.objects.create(network=self.network, title='A', scheduled_at=when)
+        a = _commission(self.network, pick='A', status='scheduled', watch_date=datetime.date(2026, 10, 30),
+                        calendar_entry=entry)
+        self.assertEqual(self._estimates()[a.id][0], 'releasing')
+        entry.prepublish_visibility = 'hidden'
+        entry.save()
+        self.assertNotIn(a.id, self._estimates())
+
+    @override_settings(ALLOWED_HOSTS=['*'])
+    def test_queue_page_shows_estimates_never_watch_dates(self):
+        from pod_manager.models import CalendarEntry
+        cache.clear()
+        self.network.custom_domain = 'est.example.test'
+        self.network.save()
+        entry = CalendarEntry.objects.create(network=self.network, title='A',
+                                             scheduled_at=timezone.now() + timedelta(days=12))
+        _commission(self.network, pick='Planned', status='scheduled', position=0,
+                    watch_date=datetime.date(2026, 12, 25), calendar_entry=entry)
+        _commission(self.network, pick='Waiting', position=1)
+        body = self.client.get('/support/commissions/', HTTP_HOST='est.example.test').content.decode()
+        self.assertIn('Releasing', body)
+        self.assertIn('~ week of', body)
+        self.assertNotIn('Dec 25', body)
+        self.assertNotIn('2026-12-25', body)

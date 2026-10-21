@@ -78,7 +78,11 @@
             <span class="cq-num">{{ forloop.counter }}</span>
             <div class="cq-main">
                 <div class="cq-pick">{{ c.pick }}</div>
-                <div class="cq-meta">Commissioned by {{ c.credit_display }} &middot; {{ c.requested_at|date:"M j, Y" }}</div>
+                <div class="cq-meta">
+                    Commissioned by {{ c.credit_display }} &middot; {{ c.requested_at|date:"M j, Y" }}
+                    {% if c.estimate.0 == 'releasing' %}&middot; <strong class="cq-estimate">Releasing {{ c.estimate.1|date:"M j" }}</strong>
+                    {% elif c.estimate.0 == 'week_of' %}&middot; <span class="cq-estimate" title="A rough guess from the usual pace, not a promise">~ week of {{ c.estimate.1|date:"M j" }}</span>{% endif %}
+                </div>
             </div>
             <span class="cq-status cq-status-{{ c.status }}">{{ c.get_status_display }}</span>
         </li>

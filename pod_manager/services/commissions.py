@@ -2,6 +2,7 @@
 every caller (the request form, Creator Settings, PayPal's IPN, the expiry
 task, login) goes through, so the rules and the emails live in one place."""
 import datetime
+import uuid
 
 from django.db import transaction
 from django.db.models import Max
@@ -197,3 +198,158 @@ def attach_guest_requests(user):
     return (Commission.objects
             .filter(requester__isnull=True, access_token__isnull=False, requester_email__iexact=user.email)
             .update(requester=user))
+
+
+# --- Watching and release (owner-only; none of it emails or shows publicly) ---
+
+def set_watch_date(commission, watch_date):
+    """Book (or clear) when the hosts will watch it. Booking moves a queued
+    commission to Scheduled; clearing moves a scheduled one back to Queued.
+    Nothing else happens: no email, and the date itself is never public."""
+    if commission.status not in Commission.ACTIVE_STATUSES:
+        raise ValueError("Only a commission in the queue can have a watch date.")
+    commission.watch_date = watch_date
+    if watch_date and commission.status == Status.QUEUED:
+        commission.status = Status.SCHEDULED
+    elif not watch_date and commission.status == Status.SCHEDULED:
+        commission.status = Status.QUEUED
+    commission.save(update_fields=['watch_date', 'status', 'updated_at'])
+
+
+def release_for_episode(episode):
+    """The linked episode just went live: release its commission (if it's
+    still in the queue) and tell the requester. Called from Episode post_save."""
+    commission = Commission.objects.filter(episode=episode, status__in=Commission.ACTIVE_STATUSES).first()
+    if commission is None:
+        return None
+    set_status(commission, Status.RELEASED)
+    commission.save(update_fields=['status', 'released_at', 'updated_at'])
+    announce_release(commission)
+    return commission
+
+
+def link_episode(commission, episode):
+    """Point a commission at its episode (None unlinks). An episode that's
+    already live releases the commission straight away. Callers network-scope
+    `episode` (its id arrives from the form)."""
+    if episode is not None and Commission.objects.filter(episode=episode).exclude(pk=commission.pk).exists():
+        raise ValueError("That episode belongs to another commission.")
+    commission.episode = episode
+    commission.save(update_fields=['episode', 'updated_at'])
+    if episode is not None and episode.is_published:
+        release_for_episode(episode)
+
+
+def _draft_description(commission):
+    return f"<p>Commissioned by {commission.credit_display}.</p>"
+
+
+def is_untouched_draft(commission, episode):
+    """True for a draft plan_release made that nobody has worked on since: still
+    unpublished and unscheduled, no audio, and its generated title and
+    description unchanged. Only such a draft is safe to delete."""
+    return (not episode.is_published and episode.scheduled_at is None
+            and not (episode.audio_url_public or episode.audio_url_subscriber or episode.r2_url)
+            and episode.title == commission.pick
+            and episode.raw_description == _draft_description(commission))
+
+
+def _create_draft_episode(commission, podcast, when):
+    from ..models import Episode
+    from .guid_links import make_private_guid, save_with_generated_guid
+    description = _draft_description(commission)
+    # scheduled_at stays None on purpose: task_publish_scheduled_episodes
+    # publishes any unpublished episode whose scheduled_at has passed, audio or
+    # not. The planned date lives on the calendar entry until the owner
+    # schedules the finished episode in Publish.
+    episode = Episode(podcast=podcast, title=commission.pick, raw_description=description,
+                      clean_description=description, is_published=False, scheduled_at=None,
+                      pub_date=when, guid_public=str(uuid.uuid4()),
+                      guid_private=make_private_guid(podcast.network))
+    save_with_generated_guid(episode, podcast.network)
+    return episode
+
+
+def plan_release(commission, *, when, podcast, create_draft, visibility, user):
+    """Put the commission's planned release on the network's calendar, creating
+    or moving its CalendarEntry, and optionally a pre-filled draft episode to
+    finish in Publish. Only for a commission with a watch date."""
+    from ..models import CalendarEntry
+    from .release_calendar import set_prepublish_visibility
+    if commission.status not in Commission.ACTIVE_STATUSES or not commission.watch_date:
+        raise ValueError("Book a watch date before planning the release.")
+    if podcast is not None and podcast.network_id != commission.network_id:
+        raise ValueError("That feed belongs to another network.")
+
+    with transaction.atomic():
+        entry = commission.calendar_entry or CalendarEntry(
+            network=commission.network, created_by=user, created_from_episode=False)
+        if entry.episode_id is None:
+            # Once an episode is linked, it owns the entry's title and feed.
+            entry.title = commission.pick
+            entry.podcast = podcast
+        entry.scheduled_at = when
+        set_prepublish_visibility(entry, visibility, entry.placeholder_title, entry.placeholder_notes)
+        entry.save()
+
+        episode = commission.episode
+        if episode is None and create_draft and podcast is not None:
+            episode = _create_draft_episode(commission, podcast, when)
+            commission.episode = episode
+        elif episode is not None and is_untouched_draft(commission, episode):
+            episode.pub_date = when
+            episode.save(update_fields=['pub_date'])
+        if episode is not None and entry.episode_id is None \
+                and getattr(episode, 'calendar_entry', None) is None:
+            entry.episode = episode
+            entry.save(update_fields=['episode', 'updated_at'])
+
+        commission.calendar_entry = entry
+        commission.save(update_fields=['calendar_entry', 'episode', 'updated_at'])
+    return entry
+
+
+def clear_planned_release(commission):
+    """Take the planned release off the calendar. The entry is deleted, along
+    with its draft episode if that's still untouched. Anything someone has
+    worked on (an edited draft, a scheduled or published episode) is kept,
+    entry and all: only the commission lets go of the calendar entry."""
+    entry = commission.calendar_entry
+    if entry is None:
+        return
+    with transaction.atomic():
+        episode = entry.episode
+        commission.calendar_entry = None
+        if episode is None:
+            entry.delete()
+        elif commission.episode_id == episode.id and is_untouched_draft(commission, episode):
+            commission.episode = None
+            entry.delete()
+            episode.delete()
+        commission.save(update_fields=['calendar_entry', 'episode', 'updated_at'])
+
+
+def public_estimates(queue, settings, today=None):
+    """{commission id: (kind, date)} for the public queue, where kind is
+    'releasing' (a planned release the calendar shows publicly) or 'week_of'
+    (a cadence guess for a queued entry: the Monday of the week it lands in).
+    Watch dates themselves never leave this function. `queue` is the active
+    queue in order.
+
+    The guess: start from the latest booked watch date (today if none, or if
+    it's past), then one cadence step per queued entry, counting this one."""
+    today = today or timezone.localdate()
+    estimates = {}
+    booked = [c.watch_date for c in queue if c.watch_date and c.status != Status.QUEUED]
+    anchor = max([today] + booked)
+    queued_so_far = 0
+    for c in queue:
+        if c.status == Status.QUEUED:
+            queued_so_far += 1
+        entry = c.calendar_entry
+        if entry is not None and not entry.public_hidden():
+            estimates[c.id] = ('releasing', timezone.localtime(entry.scheduled_at).date())
+        elif c.status == Status.QUEUED and settings.cadence_days:
+            day = anchor + datetime.timedelta(days=settings.cadence_days * queued_so_far)
+            estimates[c.id] = ('week_of', day - datetime.timedelta(days=day.weekday()))
+    return estimates

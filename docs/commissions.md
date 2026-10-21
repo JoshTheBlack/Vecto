@@ -63,6 +63,25 @@ Pending, removed, withdrawn and expired commissions are never public and never c
 
 ---
 
+## Watching and release
+
+Each queued commission has a **Plan** panel in the Commissions tab. Nothing in it emails anyone, and the watch date is never shown publicly.
+
+1. **Watch date.** Booking one moves the commission to Scheduled, and clearing it moves it back to Queued.
+2. **Planned release** (once there's a watch date): date, time and time zone (as on /calendar), the feed it publishes to (the network's default preselected), what the calendar shows before it's out (the pick, a teaser, or nothing), and **Also create a draft episode**.
+   - It creates or moves one `CalendarEntry` (`created_from_episode=False`), linked as `Commission.calendar_entry`.
+   - The draft is unpublished with **no `scheduled_at`**. `task_publish_scheduled_episodes` publishes any unpublished episode whose time has passed, audio or not, so the planned date stays on the calendar entry. The owner finishes the draft in Publish and schedules it there, and `ensure_calendar_entry_for_episode` reuses its entry and moves the date.
+   - **Clear** deletes the entry, plus the draft if nobody has touched it. Anything worked on (edited, audio added, scheduled, published) is kept, and the commission just lets go of the entry.
+3. **Linked episode.** Type to search the network's episodes. Linking one that's already live releases the commission at once.
+
+**Automatic release:** `release_commission_on_publish` (Episode `post_save`) releases the linked commission when an episode flips from unpublished to published, through the publish view, the scheduled-publish task or ingest, and emails the requester. `Episode.from_db` remembers `is_published` as loaded, so this costs no extra query per save. Re-saving a live episode never releases again.
+
+**Public estimates** (`public_estimates`):
+- **Releasing Mon D:** a planned release whose calendar entry isn't hidden.
+- **~ week of Mon D:** queued entries when cadence is set. Start from the latest booked watch date (today if none, or if it's past), then add one cadence step per queued entry, counting this one. Shown as the Monday of that week, never as a promise.
+
+---
+
 ## Payment (PayPal)
 
 No API keys: the network sets only its PayPal email.

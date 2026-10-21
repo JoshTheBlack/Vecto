@@ -1,0 +1,282 @@
+{% load vecto_format %}
+<div id="commissions-tab">
+    {# ---------------- Queue ---------------- #}
+    <div class="card bg-dark border-secondary shadow-sm mb-4">
+        <div class="card-header border-secondary bg-black d-flex flex-wrap gap-2 justify-content-between align-items-center">
+            <h5 class="mb-0 text-warning"><i class="bi bi-list-ol me-2"></i> Commission Queue</h5>
+            <div class="d-flex gap-2">
+                {% if current_network.custom_domain %}
+                <a href="https://{{ current_network.custom_domain }}{% url 'commission_queue' %}" target="_blank" rel="noopener" class="btn btn-sm btn-subtle">
+                    <i class="bi bi-box-arrow-up-right me-1"></i> View page
+                </a>
+                {% endif %}
+                <button type="button" class="btn btn-sm btn-warning fw-bold" data-bs-toggle="collapse" data-bs-target="#cm-add">
+                    <i class="bi bi-plus-lg"></i> Add entry
+                </button>
+            </div>
+        </div>
+        <div class="card-body">
+            {% if not commission_settings.enabled %}
+            <div class="alert border-warning small mb-3">
+                <i class="bi bi-eye-slash text-warning me-1"></i>
+                Commissions are switched off, so the queue page is only visible to owners. Turn them on under <strong>Settings</strong> below.
+            </div>
+            {% endif %}
+
+            <div class="collapse{% if not active_commissions and not released_commissions %} show{% endif %}" id="cm-add">
+                <p class="text-muted small mb-2">Add a commission by hand, e.g. one paid for outside Vecto or an existing queue you're bringing over. It goes straight into the queue, with no approval step.</p>
+                {% include 'pod_manager/creator_tabs/_commission_form.html' with uid='new' form_class='mb-4 pb-4 border-bottom border-secondary' %}
+            </div>
+
+            <div class="d-flex justify-content-between align-items-center mb-2">
+                <span class="text-muted small">
+                    {% if active_commissions %}Drag <i class="bi bi-grip-vertical"></i> to reorder. The public page shows this order.{% else %}Nothing in the queue.{% endif %}
+                </span>
+                {% if active_commissions|length > 1 %}
+                <form method="POST" action="{% url 'creator_settings' %}?network={{ current_network.slug }}&tab=commissions">
+                    {% csrf_token %}
+                    <input type="hidden" name="action" value="sort_commissions_by_date">
+                    <button type="submit" class="btn btn-sm btn-subtle" data-confirm-slide="Replaces your manual order with request-date order.">
+                        <i class="bi bi-sort-down-alt me-1"></i> Sort by request date
+                    </button>
+                </form>
+                {% endif %}
+            </div>
+            <div class="d-flex flex-column gap-2" data-sortable-list
+                 data-reorder-url="{% url 'creator_settings' %}?network={{ current_network.slug }}"
+                 data-reorder-action="reorder_commissions">
+                {% for c in active_commissions %}
+                {% include 'pod_manager/creator_tabs/_commission_owner_row.html' with number=forloop.counter sortable=True %}
+                {% endfor %}
+            </div>
+
+            {% if released_commissions %}
+            <button class="btn btn-sm btn-subtle w-100 mt-4 text-start" type="button" data-bs-toggle="collapse" data-bs-target="#cm-released">
+                <i class="bi bi-chevron-down me-1"></i> Released ({{ released_commissions|length }})
+            </button>
+            <div class="collapse" id="cm-released">
+                <div class="d-flex flex-column gap-2 mt-2">
+                    {% for c in released_commissions %}
+                    {% include 'pod_manager/creator_tabs/_commission_owner_row.html' %}
+                    {% endfor %}
+                </div>
+            </div>
+            {% endif %}
+
+            {% if closed_commissions %}
+            <button class="btn btn-sm btn-subtle w-100 mt-2 text-start" type="button" data-bs-toggle="collapse" data-bs-target="#cm-closed">
+                <i class="bi bi-chevron-down me-1"></i> Removed ({{ closed_commissions|length }})
+            </button>
+            <div class="collapse" id="cm-closed">
+                <div class="d-flex flex-column gap-2 mt-2">
+                    {% for c in closed_commissions %}
+                    <div class="card bg-black border-secondary">
+                        <div class="card-body py-2 d-flex flex-wrap align-items-center gap-2">
+                            <div class="flex-grow-1 min-w-0">
+                                <div class="fw-bold text-truncate">{{ c.pick }} <span class="badge border border-secondary text-muted fw-normal">{{ c.get_status_display }}</span></div>
+                                <div class="small text-muted">
+                                    {{ c.credit_name|default:'No name' }} &middot; {{ c.requested_at|date:"M j, Y" }}
+                                    {% if c.quoted_price is not None %}&middot; {{ c.quoted_price|money:commission_settings.currency }}{% endif %}
+                                    &middot; {{ c.reference }}
+                                </div>
+                                {% if c.removal_reason %}<div class="small text-muted fst-italic">{{ c.removal_reason }}</div>{% endif %}
+                            </div>
+                            {% if c.status == 'removed' %}
+                            <form method="POST" action="{% url 'creator_settings' %}?network={{ current_network.slug }}&tab=commissions">
+                                {% csrf_token %}
+                                <input type="hidden" name="action" value="restore_commission">
+                                <input type="hidden" name="commission_id" value="{{ c.id }}">
+                                <button type="submit" class="btn btn-sm btn-subtle"><i class="bi bi-arrow-counterclockwise"></i> Put back in queue</button>
+                            </form>
+                            {% endif %}
+                            <form method="POST" action="{% url 'creator_settings' %}?network={{ current_network.slug }}&tab=commissions">
+                                {% csrf_token %}
+                                <input type="hidden" name="action" value="delete_commission">
+                                <input type="hidden" name="commission_id" value="{{ c.id }}">
+                                <button type="submit" class="btn btn-sm btn-outline-danger" data-confirm-slide="Deletes it permanently, reference and all." title="Delete permanently"><i class="bi bi-trash"></i></button>
+                            </form>
+                        </div>
+                    </div>
+                    {% endfor %}
+                </div>
+            </div>
+            {% endif %}
+        </div>
+    </div>
+
+    {# ---------------- Versions ---------------- #}
+    <div class="card bg-dark border-secondary shadow-sm mb-4">
+        <div class="card-header border-secondary bg-black">
+            <h5 class="mb-0"><i class="bi bi-tags me-2"></i> Versions</h5>
+        </div>
+        <div class="card-body">
+            <p class="text-muted small">What people can buy, e.g. "No Ads" and "With Ads". Each version's price is the formula's price plus its adjustment (negative for a discount). Untick <em>Offered</em> to retire one: existing commissions keep its name. With no versions, the page shows a single price.</p>
+            <div class="d-flex flex-column gap-2 mb-3" data-sortable-list
+                 data-reorder-url="{% url 'creator_settings' %}?network={{ current_network.slug }}"
+                 data-reorder-action="reorder_commission_versions">
+                {% for v in commission_versions %}
+                <div class="card bg-black border-secondary" data-id="{{ v.id }}">
+                    <div class="card-body py-2 d-flex align-items-start gap-2">
+                        <i class="bi bi-grip-vertical fs-5 text-muted mt-1" data-sortable-handle style="cursor: grab;" title="Drag to reorder"></i>
+                        <form method="POST" action="{% url 'creator_settings' %}?network={{ current_network.slug }}&tab=commissions" class="row g-2 flex-grow-1 align-items-center">
+                            {% csrf_token %}
+                            <input type="hidden" name="action" value="edit_commission_version">
+                            <input type="hidden" name="version_id" value="{{ v.id }}">
+                            {% include 'pod_manager/creator_tabs/_commission_version_fields.html' with version=v %}
+                            <div class="col-auto">
+                                <button type="submit" class="btn btn-sm btn-warning" title="Save"><i class="bi bi-check-lg"></i></button>
+                            </div>
+                        </form>
+                        <form method="POST" action="{% url 'creator_settings' %}?network={{ current_network.slug }}&tab=commissions">
+                            {% csrf_token %}
+                            <input type="hidden" name="action" value="delete_commission_version">
+                            <input type="hidden" name="version_id" value="{{ v.id }}">
+                            <button type="submit" class="btn btn-sm btn-outline-danger" title="Delete" data-confirm-slide="Deletes this version. Commissions keep its name."><i class="bi bi-trash"></i></button>
+                        </form>
+                    </div>
+                </div>
+                {% endfor %}
+            </div>
+            <form method="POST" action="{% url 'creator_settings' %}?network={{ current_network.slug }}&tab=commissions" class="row g-2 align-items-center border-top border-secondary pt-3">
+                {% csrf_token %}
+                <input type="hidden" name="action" value="add_commission_version">
+                {% include 'pod_manager/creator_tabs/_commission_version_fields.html' %}
+                <div class="col-auto">
+                    <button type="submit" class="btn btn-sm btn-warning fw-bold"><i class="bi bi-plus-lg"></i> Add</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    {# ---------------- Settings ---------------- #}
+    <div class="card bg-dark border-secondary shadow-sm mb-4">
+        <div class="card-header border-secondary bg-black">
+            <h5 class="mb-0"><i class="bi bi-sliders me-2"></i> Settings</h5>
+        </div>
+        <div class="card-body">
+            <form method="POST" action="{% url 'creator_settings' %}?network={{ current_network.slug }}&tab=commissions" id="commission-settings-form">
+                {% csrf_token %}
+                <input type="hidden" name="action" value="update_commission_settings">
+
+                <div class="form-check form-switch mb-3">
+                    <input class="form-check-input" type="checkbox" role="switch" name="enabled" id="cs-enabled" {% if commission_settings.enabled %}checked{% endif %}>
+                    <label class="form-check-label fw-bold" for="cs-enabled">Commissions are open (publishes the queue page)</label>
+                </div>
+
+                <h6 class="text-warning mt-4">Pricing</h6>
+                <p class="text-muted small">Price = base + step &times; (commissions in the queue &divide; every), rounded down, then held between the minimum and maximum. "In the queue" means approved and not yet released. An override replaces all of that with one fixed price.</p>
+                <div class="row g-3">
+                    <div class="col-lg-8">
+                        <div class="row g-3">
+                            <div class="col-sm-4">
+                                <label class="form-label text-muted small fw-bold" for="cs-base">Base price</label>
+                                <input type="text" inputmode="decimal" id="cs-base" name="base_price" value="{{ commission_settings.base_price }}" required data-price-input
+                                       class="form-control bg-black text-light border-secondary">
+                            </div>
+                            <div class="col-sm-4">
+                                <label class="form-label text-muted small fw-bold" for="cs-step">Add</label>
+                                <input type="text" inputmode="decimal" id="cs-step" name="step_amount" value="{{ commission_settings.step_amount }}" data-price-input
+                                       class="form-control bg-black text-light border-secondary">
+                            </div>
+                            <div class="col-sm-4">
+                                <label class="form-label text-muted small fw-bold" for="cs-every">for every … in the queue</label>
+                                <input type="number" min="1" id="cs-every" name="step_every" value="{{ commission_settings.step_every }}" data-price-input
+                                       class="form-control bg-black text-light border-secondary">
+                            </div>
+                            <div class="col-sm-4">
+                                <label class="form-label text-muted small fw-bold" for="cs-min">Minimum</label>
+                                <input type="text" inputmode="decimal" id="cs-min" name="min_price" value="{{ commission_settings.min_price|default_if_none:'' }}" placeholder="None" data-price-input
+                                       class="form-control bg-black text-light border-secondary">
+                            </div>
+                            <div class="col-sm-4">
+                                <label class="form-label text-muted small fw-bold" for="cs-max">Maximum</label>
+                                <input type="text" inputmode="decimal" id="cs-max" name="max_price" value="{{ commission_settings.max_price|default_if_none:'' }}" placeholder="None" data-price-input
+                                       class="form-control bg-black text-light border-secondary">
+                            </div>
+                            <div class="col-sm-4">
+                                <label class="form-label text-muted small fw-bold" for="cs-override">Override</label>
+                                <input type="text" inputmode="decimal" id="cs-override" name="override_price" value="{{ commission_settings.override_price|default_if_none:'' }}" placeholder="None" data-price-input
+                                       class="form-control bg-black text-light border-secondary">
+                            </div>
+                            <div class="col-sm-4">
+                                <label class="form-label text-muted small fw-bold" for="cs-currency">Currency</label>
+                                <input type="text" id="cs-currency" name="currency" value="{{ commission_settings.currency }}" maxlength="3"
+                                       class="form-control bg-black text-light border-secondary text-uppercase">
+                            </div>
+                            <div class="col-sm-8 d-flex align-items-end">
+                                <div class="form-check form-switch">
+                                    <input class="form-check-input" type="checkbox" role="switch" name="show_price_hint" id="cs-hint" {% if commission_settings.show_price_hint %}checked{% endif %}>
+                                    <label class="form-check-label small" for="cs-hint">Show "the price goes up after N more" on the page</label>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="col-lg-4">
+                        {% comment %}
+                        Re-rendered from the unsaved pricing fields as the owner types.
+                        Explicit target/swap/select/push-url: the lazy pane hands its
+                        children #boosted-region for all four.
+                        {% endcomment %}
+                        <div class="border border-secondary p-3 h-100" style="border-radius: var(--vecto-radius-md);"
+                             hx-get="{% url 'creator_commission_price_preview' %}?network={{ current_network.slug }}"
+                             hx-include="#commission-settings-form [data-price-input]"
+                             hx-trigger="input delay:400ms from:#commission-settings-form"
+                             hx-target="this" hx-swap="innerHTML" hx-select="unset" hx-push-url="false">
+                            {% include 'pod_manager/creator_tabs/_commission_price_preview.html' %}
+                        </div>
+                    </div>
+                </div>
+
+                <h6 class="text-warning mt-4">Queue</h6>
+                <div class="row g-3">
+                    <div class="col-md-4">
+                        <label class="form-label text-muted small fw-bold" for="cs-cadence">About one commission every … days</label>
+                        <input type="number" min="1" id="cs-cadence" name="cadence_days" value="{{ commission_settings.cadence_days|default_if_none:'' }}" placeholder="Blank hides estimates"
+                               class="form-control bg-black text-light border-secondary">
+                    </div>
+                    <div class="col-md-4">
+                        <label class="form-label text-muted small fw-bold" for="cs-expiry">Unpaid requests expire after … days</label>
+                        <input type="number" min="1" id="cs-expiry" name="pending_expiry_days" value="{{ commission_settings.pending_expiry_days }}"
+                               class="form-control bg-black text-light border-secondary">
+                    </div>
+                    <div class="col-md-4">
+                        <label class="form-label text-muted small fw-bold" for="cs-podcast">Commissions publish to</label>
+                        <select id="cs-podcast" name="default_podcast" class="form-select bg-black text-light border-secondary">
+                            <option value="">Choose a feed…</option>
+                            {% for p in network_podcasts %}
+                            <option value="{{ p.id }}" {% if commission_settings.default_podcast_id == p.id %}selected{% endif %}>{{ p.title }}</option>
+                            {% endfor %}
+                        </select>
+                    </div>
+                    <div class="col-md-6">
+                        <label class="form-label text-muted small fw-bold" for="cs-paypal">PayPal email</label>
+                        <input type="email" id="cs-paypal" name="paypal_email" value="{{ commission_settings.paypal_email }}"
+                               class="form-control bg-black text-light border-secondary" placeholder="Where online requests will pay">
+                    </div>
+                </div>
+                <div class="form-text text-muted">Estimates, expiry and PayPal take effect once online requests are built; save them now if you like.</div>
+
+                <h6 class="text-warning mt-4">Page copy</h6>
+                <div class="mb-3">
+                    <label class="form-label text-muted small fw-bold" for="cs-title">Page title</label>
+                    <input type="text" id="cs-title" name="page_title" value="{{ commission_settings.page_title }}" maxlength="100"
+                           class="form-control bg-black text-light border-secondary">
+                </div>
+                <div class="mb-3 quill-dark">
+                    <label class="form-label text-muted small fw-bold">Intro <span class="fw-normal">(under the title)</span></label>
+                    {% include 'pod_manager/snippets/_quill_editor.html' with quill_content=commission_settings.intro quill_input_name='intro' quill_class='bg-black text-light' %}
+                </div>
+                <div class="mb-3 quill-dark">
+                    <label class="form-label text-muted small fw-bold">How it works <span class="fw-normal">(under the queue: process, refunds, FAQ)</span></label>
+                    {% include 'pod_manager/snippets/_quill_editor.html' with quill_content=commission_settings.details quill_input_name='details' quill_class='bg-black text-light' %}
+                </div>
+                <div class="mb-3 quill-dark">
+                    <label class="form-label text-muted small fw-bold">Request terms <span class="fw-normal">(requesters will have to accept these once online requests open)</span></label>
+                    {% include 'pod_manager/snippets/_quill_editor.html' with quill_content=commission_settings.request_terms quill_input_name='request_terms' quill_class='bg-black text-light' %}
+                </div>
+
+                <button type="submit" class="btn btn-warning fw-bold"><i class="bi bi-check-lg"></i> Save settings</button>
+            </form>
+        </div>
+    </div>
+</div>

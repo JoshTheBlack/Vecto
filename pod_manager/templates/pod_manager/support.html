@@ -1,4 +1,5 @@
 {% extends base_template|default:'pod_manager/base.html' %}
+{% load vecto_format %}
 
 {% block content %}
 <style>
@@ -48,6 +49,7 @@
     .support-card-body { display: flex; flex-direction: column; flex-grow: 1; padding: 1.25rem; }
     .support-card-body h2 { font-size: 1.25rem; font-weight: 700; margin-bottom: 0.5rem; }
     .support-card-body p { color: var(--vecto-surface-muted); flex-grow: 1; margin-bottom: 1.25rem; }
+    .support-card-price { color: var(--vecto-primary); font-weight: 700; margin: -0.25rem 0 0.5rem; }
     .support-card-cta { align-self: flex-start; font-weight: 700; }
     .support-card-cta .bi { transition: transform 0.15s ease; }
     .support-card:hover .support-card-cta .bi { transform: translateX(3px); }
@@ -70,7 +72,8 @@
 <div class="row g-4 justify-content-center pb-5">
     {% for link in links %}
     <div class="col-12 col-xl-10 d-flex">
-        <a class="card support-card w-100" href="{{ link.url }}" target="_blank" rel="noopener">
+        {# The commission card is an internal page, so it stays in the tab (and in the boosted region). #}
+        <a class="card support-card w-100" href="{{ link.target_url }}"{% if not link.is_commission %} target="_blank" rel="noopener"{% endif %}>
             <div class="support-card-media">
                 {% if link.display_image %}
                 <img src="{{ link.display_image }}" alt="" loading="lazy">
@@ -80,7 +83,11 @@
             </div>
             <div class="support-card-body">
                 <h2>{{ link.title }}</h2>
+                {% if link.from_price is not None %}<div class="support-card-price">from {{ link.from_price|money:link.currency }}</div>{% endif %}
                 <p>{{ link.description }}</p>
+                {% if link.is_commission and not link.commissions_open %}
+                <div class="small text-warning mb-3"><i class="bi bi-eye-slash me-1"></i>Commissions are switched off, so only owners see this card.</div>
+                {% endif %}
                 <span class="btn btn-warning support-card-cta">{{ link.button_text }} <i class="bi bi-arrow-right ms-1"></i></span>
             </div>
         </a>

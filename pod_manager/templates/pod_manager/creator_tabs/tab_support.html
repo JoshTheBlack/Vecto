@@ -41,13 +41,29 @@
     <div class="card bg-dark border-secondary shadow-sm mb-4">
         <div class="card-header border-secondary bg-black d-flex justify-content-between align-items-center">
             <h5 class="mb-0"><i class="bi bi-grid-3x2-gap me-2"></i> Cards</h5>
-            <button type="button" class="btn btn-sm btn-warning fw-bold" data-bs-toggle="collapse" data-bs-target="#support-add-card">
-                <i class="bi bi-plus-lg"></i> Add card
-            </button>
+            <div class="d-flex gap-2">
+                {% if not has_commission_card %}
+                <button type="button" class="btn btn-sm btn-subtle" data-bs-toggle="collapse" data-bs-target="#support-add-commission-card">
+                    <i class="bi bi-list-ol"></i> Commission card
+                </button>
+                {% endif %}
+                <button type="button" class="btn btn-sm btn-warning fw-bold" data-bs-toggle="collapse" data-bs-target="#support-add-card">
+                    <i class="bi bi-plus-lg"></i> Add card
+                </button>
+            </div>
         </div>
         <div class="card-body">
-            <div class="collapse{% if not support_links %} show{% endif %}" id="support-add-card">
-                {% include 'pod_manager/creator_tabs/_support_link_form.html' with uid='new' form_class='mb-4 pb-4 border-bottom border-secondary' %}
+            {# data-bs-parent makes the two add forms take turns instead of stacking. #}
+            <div id="support-add-forms">
+                <div class="collapse{% if not support_links %} show{% endif %}" id="support-add-card" data-bs-parent="#support-add-forms">
+                    {% include 'pod_manager/creator_tabs/_support_link_form.html' with uid='new' form_class='mb-4 pb-4 border-bottom border-secondary' %}
+                </div>
+                {% if not has_commission_card %}
+                <div class="collapse" id="support-add-commission-card" data-bs-parent="#support-add-forms">
+                    <p class="text-muted small mb-2">A card that links to your commission queue and shows its current starting price. It only appears while commissions are switched on (Creator Settings &gt; Commissions).</p>
+                    {% include 'pod_manager/creator_tabs/_support_link_form.html' with uid='new-commission' kind='commission' form_class='mb-4 pb-4 border-bottom border-secondary' %}
+                </div>
+                {% endif %}
             </div>
 
             {% if support_links %}
@@ -71,7 +87,7 @@
                         {% endif %}
                         <div class="flex-grow-1 min-w-0">
                             <div class="fw-bold text-truncate">{{ link.title }}</div>
-                            <div class="small text-muted text-truncate">{{ link.url }}</div>
+                            <div class="small text-muted text-truncate">{% if link.is_commission %}<i class="bi bi-list-ol me-1"></i>Commission queue{% else %}{{ link.url }}{% endif %}</div>
                         </div>
                         {% if not link.is_visible %}<span class="badge border border-secondary text-muted">Hidden</span>{% endif %}
                         <button type="button" class="btn btn-sm btn-subtle" data-bs-toggle="collapse" data-bs-target="#support-edit-{{ link.id }}">

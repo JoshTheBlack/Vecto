@@ -1,0 +1,57 @@
+{% load vecto_format %}
+{% comment %}
+One approved commission in the owner's queue (active or released list).
+Params: c, number (queue position to show; omit for released), sortable
+(adds the drag handle and data-id for sortable_list.js).
+{% endcomment %}
+<div class="card bg-black border-secondary"{% if sortable %} data-id="{{ c.id }}"{% endif %}>
+    <div class="card-body py-2 d-flex flex-wrap align-items-center gap-2 gap-md-3">
+        {% if sortable %}<i class="bi bi-grip-vertical fs-5 text-muted" data-sortable-handle style="cursor: grab;" title="Drag to reorder"></i>{% endif %}
+        {% if number %}<span class="badge bg-warning">{{ number }}</span>{% endif %}
+        <div class="flex-grow-1 min-w-0">
+            <div class="fw-bold text-truncate">{{ c.pick }}</div>
+            <div class="small text-muted">
+                {{ c.credit_display }}{% if not c.credit_public and c.credit_name %} ({{ c.credit_name }}){% endif %}
+                &middot; {{ c.requested_at|date:"M j, Y" }}
+                {% if c.version_name %}&middot; {{ c.version_name }}{% endif %}
+                {% if c.quoted_price is not None %}&middot; {{ c.quoted_price|money:commission_settings.currency }}{% endif %}
+                &middot; <span title="PayPal invoice reference">{{ c.reference }}</span>
+            </div>
+        </div>
+        <form method="POST" action="{% url 'creator_settings' %}?network={{ current_network.slug }}&tab=commissions">
+            {% csrf_token %}
+            <input type="hidden" name="action" value="set_commission_status">
+            <input type="hidden" name="commission_id" value="{{ c.id }}">
+            <select name="status" class="form-select form-select-sm bg-black text-light border-secondary" aria-label="Status"
+                    onchange="this.form.requestSubmit()">
+                {% for value, label in approved_statuses %}
+                <option value="{{ value }}" {% if c.status == value %}selected{% endif %}>{{ label }}</option>
+                {% endfor %}
+            </select>
+        </form>
+        <button type="button" class="btn btn-sm btn-subtle" data-bs-toggle="collapse" data-bs-target="#cm-edit-{{ c.id }}">
+            <i class="bi bi-pencil"></i> Edit
+        </button>
+        <button type="button" class="btn btn-sm btn-outline-danger" data-bs-toggle="collapse" data-bs-target="#cm-remove-{{ c.id }}" title="Remove">
+            <i class="bi bi-x-lg"></i>
+        </button>
+    </div>
+    <div class="collapse" id="cm-edit-{{ c.id }}">
+        {% include 'pod_manager/creator_tabs/_commission_form.html' with commission=c uid=c.id form_class='card-body border-top border-secondary' %}
+    </div>
+    <div class="collapse" id="cm-remove-{{ c.id }}">
+        <form method="POST" action="{% url 'creator_settings' %}?network={{ current_network.slug }}&tab=commissions"
+              class="card-body border-top border-secondary">
+            {% csrf_token %}
+            <input type="hidden" name="action" value="remove_commission">
+            <input type="hidden" name="commission_id" value="{{ c.id }}">
+            <label class="form-label text-muted small fw-bold" for="cm-reason-{{ c.id }}">Why is it being removed? <span class="fw-normal">(owners only)</span></label>
+            <textarea id="cm-reason-{{ c.id }}" name="removal_reason" rows="2" class="form-control bg-black text-light border-secondary"
+                      placeholder="e.g., Refunded 10/21 at their request"></textarea>
+            <button type="submit" class="btn btn-sm btn-outline-danger mt-2"
+                    data-confirm-slide="Takes it off the public queue. Vecto sends nothing: refund it in PayPal and email them yourself.">
+                <i class="bi bi-x-lg"></i> Remove from queue
+            </button>
+        </form>
+    </div>
+</div>

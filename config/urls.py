@@ -26,6 +26,7 @@ urlpatterns = [
     path('creator/match/<int:suggestion_id>/editor/', views.creator_match_editor, name='creator_match_editor'),
     path('creator/match/from-orphans/', views.creator_orphan_merge_editor, name='creator_orphan_merge_editor'),
     path('creator/tab/<str:tab>/', views.creator_tab_partial, name='creator_tab_partial'),
+    path('creator/commissions/price-preview/', views.creator_commission_price_preview, name='creator_commission_price_preview'),
 
     # Public per-network release calendar (Feature 4, A14)
     path('calendar/', views.calendar_page, name='calendar'),
@@ -35,6 +36,8 @@ urlpatterns = [
 
     # Public per-network Support Us page
     path('support/', views.support_page, name='support_page'),
+    path('support/commissions/', views.commission_queue, name='commission_queue'),
+    path('support/commissions/released/', views.commission_released, name='commission_released'),
     
     # Auth & API Routes
     path('admin/', admin.site.urls),

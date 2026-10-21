@@ -1281,6 +1281,13 @@ def support_link_image_path(instance, filename):
 
 class SupportLink(ProcessedImageMixin, models.Model):
     """One card on a network's Support Us page (Patreon, merch, donate, ...)."""
+
+    class Kind(models.TextChoices):
+        LINK = 'link', 'Link'
+        # Links to the network's commission queue and shows its starting price;
+        # `url` is unused. At most one per network.
+        COMMISSION = 'commission', 'Commission queue'
+
     PROCESSED_IMAGES = (
         # Card art is shown letterboxed, so keep the whole frame.
         ProcessedImage('image_upload', 'image_version', 800, crop_square=False,
@@ -1289,10 +1296,11 @@ class SupportLink(ProcessedImageMixin, models.Model):
 
     network = models.ForeignKey(Network, on_delete=models.CASCADE, related_name='support_links')
     unique_id = models.UUIDField(default=uuid.uuid4, editable=False, unique=True)
+    kind = models.CharField(max_length=20, choices=Kind.choices, default=Kind.LINK)
     title = models.CharField(max_length=100)
     description = models.CharField(max_length=500, blank=True)
     button_text = models.CharField(max_length=50, default='Learn more')
-    url = models.URLField(max_length=2000)
+    url = models.URLField(max_length=2000, blank=True)
     # A Bootstrap Icons name (e.g. "cup-hot"), shown when there is no image.
     icon = models.CharField(max_length=50, blank=True)
     image_upload = models.ImageField(upload_to=support_link_image_path, storage=select_media_storage, blank=True, null=True)
@@ -1302,6 +1310,11 @@ class SupportLink(ProcessedImageMixin, models.Model):
 
     class Meta:
         ordering = ['position', 'id']
+        constraints = [
+            models.UniqueConstraint(
+                fields=['network'], condition=models.Q(kind='commission'),
+                name='one_commission_support_link_per_network'),
+        ]
 
     def __str__(self):
         return f"{self.network.name} support - {self.title}"
@@ -1309,6 +1322,134 @@ class SupportLink(ProcessedImageMixin, models.Model):
     @property
     def display_image(self):
         return self.versioned_image_url('image_upload')
+
+    @property
+    def is_commission(self):
+        return self.kind == self.Kind.COMMISSION
+
+
+class CommissionSettings(models.Model):
+    """A network's commission queue: whether it's open, the pricing formula and
+    the owner-written copy on the public queue page. See
+    services/commission_pricing.py for how the price fields combine."""
+    network = models.OneToOneField(Network, on_delete=models.CASCADE, related_name='commission_settings')
+    enabled = models.BooleanField(default=False)
+    paypal_email = models.EmailField(blank=True)
+    currency = models.CharField(max_length=3, default='USD')
+
+    base_price = models.DecimalField(max_digits=10, decimal_places=2, default=Decimal('0.00'))
+    step_amount = models.DecimalField(max_digits=10, decimal_places=2, default=Decimal('0.00'))
+    step_every = models.PositiveIntegerField(default=1)
+    min_price = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
+    max_price = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
+    override_price = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
+
+    # "About one every N days" — drives public estimates; null hides them.
+    cadence_days = models.PositiveIntegerField(null=True, blank=True)
+    pending_expiry_days = models.PositiveIntegerField(default=7)
+    default_podcast = models.ForeignKey('Podcast', on_delete=models.SET_NULL, null=True, blank=True, related_name='+')
+
+    page_title = models.CharField(max_length=100, default='Commission a Podcast')
+    # Rich text (Quill), sanitised with sanitize_user_html on save.
+    intro = models.TextField(blank=True)
+    details = models.TextField(blank=True)
+    request_terms = models.TextField(blank=True)
+    show_price_hint = models.BooleanField(default=True)
+
+    def __str__(self):
+        return f"{self.network.name} commissions"
+
+
+class CommissionVersion(models.Model):
+    """A purchasable variant of a commission (e.g. "No Ads"), priced as the
+    formula's result plus a signed adjustment. Retired versions stay for history."""
+    network = models.ForeignKey(Network, on_delete=models.CASCADE, related_name='commission_versions')
+    name = models.CharField(max_length=100)
+    description = models.CharField(max_length=255, blank=True)
+    price_adjustment = models.DecimalField(max_digits=10, decimal_places=2, default=Decimal('0.00'))
+    position = models.PositiveIntegerField(default=0)
+    is_active = models.BooleanField(default=True)
+
+    class Meta:
+        ordering = ['position', 'id']
+
+    def __str__(self):
+        return f"{self.network.name} commission version - {self.name}"
+
+
+# No 0/O or 1/I, so a reference read off a PayPal receipt can't be mistyped.
+_REFERENCE_ALPHABET = '23456789ABCDEFGHJKLMNPQRSTUVWXYZ'
+
+
+def new_commission_reference():
+    return 'C-' + ''.join(secrets.choice(_REFERENCE_ALPHABET) for _ in range(6))
+
+
+class Commission(models.Model):
+    """One paid request for the hosts to watch and podcast about something."""
+
+    class Status(models.TextChoices):
+        PENDING = 'pending', 'Awaiting approval'
+        QUEUED = 'queued', 'Queued'
+        SCHEDULED = 'scheduled', 'Scheduled'
+        WATCHED = 'watched', 'Watched'
+        RELEASED = 'released', 'Released'
+        REMOVED = 'removed', 'Removed'
+        WITHDRAWN = 'withdrawn', 'Withdrawn'
+        EXPIRED = 'expired', 'Expired'
+
+    # Approved and still to be made: shown in the queue and counted for pricing.
+    ACTIVE_STATUSES = (Status.QUEUED, Status.SCHEDULED, Status.WATCHED)
+    # Everything the public may see.
+    PUBLIC_STATUSES = ACTIVE_STATUSES + (Status.RELEASED,)
+    # Never public: kept for the owner (and requester) only.
+    CLOSED_STATUSES = (Status.REMOVED, Status.WITHDRAWN, Status.EXPIRED)
+
+    network = models.ForeignKey(Network, on_delete=models.CASCADE, related_name='commissions')
+    # Sent to PayPal as `invoice` so the owner can match the payment.
+    reference = models.CharField(max_length=12, unique=True, default=new_commission_reference, editable=False)
+    # Null for entries the owner added by hand.
+    requester = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='commissions')
+    pick = models.CharField(max_length=200)
+    requester_notes = models.TextField(blank=True)
+    version = models.ForeignKey(CommissionVersion, on_delete=models.SET_NULL, null=True, blank=True, related_name='commissions')
+    # Snapshot, so renaming or deleting a version never rewrites history.
+    version_name = models.CharField(max_length=100, blank=True)
+    # Locked at request time; null for a backfilled entry with no known price.
+    quoted_price = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
+    credit_name = models.CharField(max_length=100, blank=True)
+    credit_public = models.BooleanField(default=True)
+
+    status = models.CharField(max_length=20, choices=Status.choices, default=Status.PENDING)
+    position = models.PositiveIntegerField(default=0)
+    requested_at = models.DateTimeField(default=timezone.now)
+    approved_at = models.DateTimeField(null=True, blank=True)
+    released_at = models.DateTimeField(null=True, blank=True)
+    paid_marked_at = models.DateTimeField(null=True, blank=True)
+
+    # Owner-only: when the hosts plan to watch it.
+    watch_date = models.DateField(null=True, blank=True)
+    calendar_entry = models.OneToOneField('CalendarEntry', on_delete=models.SET_NULL, null=True, blank=True, related_name='commission')
+    episode = models.OneToOneField('Episode', on_delete=models.SET_NULL, null=True, blank=True, related_name='commission')
+
+    owner_notes = models.TextField(blank=True)
+    removal_reason = models.TextField(blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['position', 'requested_at', 'id']
+        indexes = [
+            models.Index(fields=['network', 'status', 'position']),
+            models.Index(fields=['requester', 'status']),
+        ]
+
+    def __str__(self):
+        return f"{self.reference} {self.pick} ({self.status})"
+
+    @property
+    def credit_display(self):
+        return self.credit_name if self.credit_public and self.credit_name else 'Anonymous'
 
 
 class EpisodeEditSuggestion(models.Model):

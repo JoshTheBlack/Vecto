@@ -32,16 +32,18 @@ def _icon_name(raw):
 
 
 def _apply_link_fields(request, link):
-    """Copy the card form onto `link`. Returns an error message, or None."""
+    """Copy the card form onto `link`. Returns an error message, or None.
+    A commission card links to the queue page, so it has no URL of its own."""
     title = request.POST.get('title', '').strip()
-    url = request.POST.get('url', '').strip()
+    url = '' if link.is_commission else request.POST.get('url', '').strip()
     icon = _icon_name(request.POST.get('icon'))
     if not title:
         return "A card needs a title."
-    try:
-        _validate_http_url(url)
-    except ValidationError:
-        return "The button link must be a full http(s):// URL."
+    if not link.is_commission:
+        try:
+            _validate_http_url(url)
+        except ValidationError:
+            return "The button link must be a full http(s):// URL."
     if icon is None:
         return "Icon must be a Bootstrap Icons name, e.g. cup-hot."
 
@@ -77,7 +79,14 @@ def handle_update_support_page(request, current_network):
 
 
 def handle_add_support_link(request, current_network):
-    link = SupportLink(network=current_network)
+    kind = request.POST.get('kind') or SupportLink.Kind.LINK
+    if kind not in SupportLink.Kind.values:
+        messages.error(request, "Unknown card type.")
+        return
+    if kind == SupportLink.Kind.COMMISSION and current_network.support_links.filter(kind=kind).exists():
+        messages.error(request, "There's already a commission card. Edit that one instead.")
+        return
+    link = SupportLink(network=current_network, kind=kind)
     error = _apply_link_fields(request, link)
     if error:
         messages.error(request, error)

@@ -1,0 +1,24 @@
+{% comment %}
+One page of the queue page's "Released" list (views.support.commission_released).
+It replaces the loader or "Load more" item that requested it, so the list grows
+in place; the next page's button, when there is one, comes last.
+{% endcomment %}
+{% for c in page %}
+<li class="cq-row">
+    <div class="cq-main">
+        <div class="cq-pick">{{ c.pick }}</div>
+        <div class="cq-meta">
+            Commissioned by {{ c.credit_display }} &middot; {{ c.requested_at|date:"M j, Y" }}
+            {% if c.episode and c.episode.is_published %}&middot; <a href="{% url 'episode_detail' c.episode.id %}">Listen</a>{% endif %}
+        </div>
+    </div>
+    <span class="cq-status cq-status-released">{% if c.released_at %}{{ c.released_at|date:"M j, Y" }}{% else %}Released{% endif %}</span>
+</li>
+{% endfor %}
+{% if page.has_next %}
+<li class="text-center my-2" hx-target="this" hx-swap="outerHTML" hx-push-url="false">
+    <button type="button" class="btn btn-sm btn-subtle" hx-get="{% url 'commission_released' %}?page={{ page.next_page_number }}" hx-target="closest li">
+        Load more
+    </button>
+</li>
+{% endif %}

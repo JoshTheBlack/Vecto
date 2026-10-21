@@ -28,6 +28,13 @@ def short_timesince(value):
 
 
 @register.filter
+def money(value, currency='USD'):
+    """{{ amount|money:settings.currency }} -> '$600', '$612.50'."""
+    from ..services.commission_pricing import format_money
+    return format_money(value, currency)
+
+
+@register.filter
 def email_local(value):
     """The part of an email-style username before the '@' (usernames here are often
     email addresses, which truncate badly in a narrow column). Anything else is returned

@@ -1,0 +1,167 @@
+{% extends base_template|default:'pod_manager/base.html' %}
+{% load vecto_format %}
+
+{% block content %}
+<style>
+    .cq-wrap { max-width: 60rem; margin: 0 auto; padding-bottom: 3rem; }
+
+    /* One surface panel behind the whole body, so text never sits on the raw
+       page background. Inside it: surface tokens only, never --vecto-bg-*.
+       Chips, rows and the toggle use an inset shade nudged toward the surface
+       text colour, which reads on dark and light themes alike. */
+    .cq-panel {
+        --cq-inset: color-mix(in srgb, var(--vecto-surface-text) 6%, var(--vecto-surface-bg));
+        padding: 1.5rem 1.25rem 2rem;
+        background: var(--vecto-surface-bg); color: var(--vecto-surface-text);
+        border: 1px solid var(--bs-border-color); border-radius: var(--bs-border-radius);
+    }
+    @media (min-width: 768px) { .cq-panel { padding: 2rem 2.5rem 2.5rem; } }
+
+    .cq-hero { padding-bottom: 0.5rem; text-align: center; }
+    .cq-hero h1 { color: var(--vecto-surface-text); letter-spacing: -0.02em; }
+    .cq-hero .cq-intro { color: var(--vecto-surface-muted); max-width: 44rem; margin: 0 auto; }
+    .cq-hero .cq-intro a { color: var(--vecto-primary); }
+
+    .cq-prices { display: flex; flex-wrap: wrap; justify-content: center; gap: 0.75rem; margin-top: 1.5rem; }
+    .cq-price {
+        min-width: 11rem; padding: 0.85rem 1.25rem; text-align: center;
+        background: var(--cq-inset);
+        border: 1px solid var(--bs-border-color); border-top: 3px solid var(--vecto-primary);
+        border-radius: var(--vecto-radius-md);
+    }
+    .cq-price-name { font-size: 0.75rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; color: var(--vecto-surface-muted); }
+    .cq-price-amount { font-size: 1.75rem; font-weight: 800; line-height: 1.2; color: var(--vecto-primary); }
+    .cq-price-desc { font-size: 0.8rem; color: var(--vecto-surface-muted); }
+    .cq-hint { margin-top: 0.85rem; font-size: 0.875rem; color: var(--vecto-surface-muted); }
+
+    .cq-section-title { display: flex; align-items: baseline; gap: 0.5rem; margin: 2rem 0 0.75rem; }
+    .cq-section-title h2 { font-size: 1.35rem; font-weight: 700; margin: 0; }
+    .cq-count { color: var(--vecto-surface-muted); font-size: 0.9rem; }
+
+    .cq-list { list-style: none; padding: 0; margin: 0; }
+    .cq-row {
+        display: flex; align-items: center; gap: 1rem;
+        padding: 0.85rem 1rem; margin-bottom: 0.5rem;
+        background: var(--cq-inset);
+        border: 1px solid var(--bs-border-color); border-radius: var(--vecto-radius-md);
+    }
+    .cq-num {
+        flex: 0 0 2.25rem; height: 2.25rem; display: flex; align-items: center; justify-content: center;
+        font-weight: 800; color: var(--vecto-primary-text); background: var(--vecto-primary);
+        border-radius: var(--vecto-radius-sm);
+    }
+    .cq-main { flex-grow: 1; min-width: 0; }
+    .cq-pick { font-weight: 700; overflow-wrap: anywhere; }
+    .cq-meta { font-size: 0.8rem; color: var(--vecto-surface-muted); }
+    .cq-meta a { color: var(--vecto-primary); }
+    .cq-status {
+        flex-shrink: 0; font-size: 0.72rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em;
+        padding: 0.3em 0.65em; border-radius: var(--vecto-radius-sm); border: 1px solid var(--bs-border-color);
+        color: var(--vecto-surface-muted);
+    }
+    .cq-status-scheduled { color: var(--vecto-primary); border-color: var(--vecto-primary); }
+    .cq-status-watched { color: var(--vecto-success-text); background: var(--vecto-success); border-color: var(--vecto-success); }
+    .cq-empty { padding: 2rem 1rem; text-align: center; color: var(--vecto-surface-muted); }
+
+    .cq-released-toggle {
+        width: 100%; display: flex; align-items: center; justify-content: space-between;
+        padding: 0.85rem 1rem; font-weight: 700;
+        background: var(--cq-inset); color: var(--vecto-surface-text);
+        border: 1px solid var(--bs-border-color); border-radius: var(--vecto-radius-md);
+    }
+    .cq-released-toggle:hover { border-color: var(--vecto-primary); }
+    .cq-released-toggle .bi { transition: transform 0.2s ease; }
+    .cq-released-toggle[aria-expanded="true"] .bi { transform: rotate(180deg); }
+    .cq-released .cq-row { padding: 0.65rem 1rem; }
+
+    .cq-details { margin-top: 2.5rem; padding-top: 2rem; border-top: 1px solid var(--bs-border-color); }
+    .cq-details h2, .cq-details h3 { font-weight: 700; margin-top: 1.25rem; }
+    .cq-details > :first-child { margin-top: 0; }
+    .cq-details > :last-child { margin-bottom: 0; }
+    .cq-details a { color: var(--vecto-primary); }
+</style>
+
+<div class="cq-wrap">
+    {% if not settings.enabled %}
+    <div class="alert border-warning d-flex align-items-center gap-2" role="status">
+        <i class="bi bi-eye-slash text-warning"></i>
+        <span>Preview: commissions are switched off, so only network owners can see this page. Switch them on in
+            <a href="{% url 'creator_settings' %}?network={{ current_network.slug }}&tab=commissions" class="text-warning">Creator Settings</a>.</span>
+    </div>
+    {% endif %}
+
+    <div class="cq-panel">
+    <section class="cq-hero">
+        <h1 class="display-6 fw-bold mb-3 mt-1">{{ settings.page_title }}</h1>
+        {% if settings.intro %}<div class="cq-intro">{{ settings.intro|safe }}</div>{% endif %}
+
+        <div class="cq-prices">
+            {% for version, price in prices %}
+            <div class="cq-price">
+                {% if version %}<div class="cq-price-name">{{ version.name }}</div>{% endif %}
+                <div class="cq-price-amount">{{ price|money:settings.currency }}</div>
+                {% if version.description %}<div class="cq-price-desc">{{ version.description }}</div>{% endif %}
+            </div>
+            {% endfor %}
+        </div>
+        {% if next_increase %}
+        <div class="cq-hint">
+            <i class="bi bi-graph-up-arrow me-1"></i>
+            The price goes up after {{ next_increase.0 }} more commission{{ next_increase.0|pluralize }}.
+        </div>
+        {% endif %}
+        {% if is_owner %}
+        <a href="{% url 'creator_settings' %}?network={{ current_network.slug }}&tab=commissions" class="btn btn-sm btn-subtle mt-3">
+            <i class="bi bi-gear me-1"></i> Manage queue
+        </a>
+        {% endif %}
+    </section>
+
+    <div class="cq-section-title">
+        <h2>The queue</h2>
+        <span class="cq-count">{{ queue|length }} commission{{ queue|length|pluralize }}</span>
+    </div>
+    {% if queue %}
+    <ol class="cq-list">
+        {% for c in queue %}
+        <li class="cq-row">
+            <span class="cq-num">{{ forloop.counter }}</span>
+            <div class="cq-main">
+                <div class="cq-pick">{{ c.pick }}</div>
+                <div class="cq-meta">Commissioned by {{ c.credit_display }} &middot; {{ c.requested_at|date:"M j, Y" }}</div>
+            </div>
+            <span class="cq-status cq-status-{{ c.status }}">{{ c.get_status_display }}</span>
+        </li>
+        {% endfor %}
+    </ol>
+    {% else %}
+    <div class="cq-empty">The queue is empty. Yours could be next.</div>
+    {% endif %}
+
+    {% if released_count %}
+    <button class="cq-released-toggle mt-4" type="button" data-bs-toggle="collapse" data-bs-target="#cq-released" aria-expanded="false" aria-controls="cq-released">
+        <span>Released <span class="cq-count fw-normal">({{ released_count }})</span></span>
+        <i class="bi bi-chevron-down"></i>
+    </button>
+    <div class="collapse cq-released" id="cq-released">
+        <ol class="cq-list mt-2">
+            {% comment %}
+            Fetched the first time the section is opened: "intersect" can't fire
+            while the collapse hides it. Explicit target/swap/push-url, because
+            the app-wide boost wrapper would otherwise hand this request
+            #boosted-region as its target.
+            {% endcomment %}
+            <li hx-get="{% url 'commission_released' %}?page=1" hx-trigger="intersect once"
+                hx-target="this" hx-swap="outerHTML" hx-push-url="false" class="cq-empty">
+                <span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span> Loading…
+            </li>
+        </ol>
+    </div>
+    {% endif %}
+
+    {% if settings.details %}
+    <section class="cq-details">{{ settings.details|safe }}</section>
+    {% endif %}
+    </div>
+</div>
+{% endblock %}

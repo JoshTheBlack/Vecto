@@ -23,6 +23,12 @@ from ...services.edits import (
 from ...tasks import task_rebuild_episode_fragments
 from ...utils import diagnostic_page, sanitize_user_html
 from .actions import ACTION_HANDLERS
+from .commissions import (
+    FormError as CommissionFormError,
+    apply_pricing as apply_commission_pricing,
+    price_preview_context as commission_price_preview_context,
+    settings_for as commission_settings_for,
+)
 from .data import (
     annotate_audit_edit,
     network_podcast_list,
@@ -82,6 +88,27 @@ def _resolve_creator_network(request):
         return None, HttpResponseForbidden("No creator access.")
     current_network = allowed_networks.filter(slug=request.GET.get('network')).first() or allowed_networks.first()
     return current_network, None
+
+
+@login_required(login_url='/login/')
+@diagnostic_page("Commission price preview (partial)")
+def creator_commission_price_preview(request):
+    """The Commissions tab's live price preview, re-rendered as the owner types
+    into the pricing fields. Reads the unsaved form values; saves nothing."""
+    current_network, forbidden = _resolve_creator_network(request)
+    if forbidden:
+        return forbidden
+    settings = commission_settings_for(current_network)
+    error = None
+    try:
+        apply_commission_pricing(request.GET, settings)
+    except CommissionFormError as e:
+        error = str(e)
+    return render(request, 'pod_manager/creator_tabs/_commission_price_preview.html', {
+        'current_network': current_network,
+        'preview_error': error,
+        **commission_price_preview_context(current_network, settings),
+    })
 
 
 @login_required(login_url='/login/')

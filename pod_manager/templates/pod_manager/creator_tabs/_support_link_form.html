@@ -1,7 +1,8 @@
 {% comment %}
 The Support Us card form, shared by "Add card" and each card's edit panel.
 Params: link (omit to add a card), uid (unique per form, for label ids),
-form_class (extra classes on the <form>).
+form_class (extra classes on the <form>), kind ('commission' to add the
+commission-queue card, which links to the queue page instead of a URL).
 Multipart + hx-encoding because it hosts snippets/_image_upload.html.
 {% endcomment %}
 <form method="POST" action="{% url 'creator_settings' %}?network={{ current_network.slug }}&tab=support"
@@ -12,6 +13,7 @@ Multipart + hx-encoding because it hosts snippets/_image_upload.html.
 <input type="hidden" name="link_id" value="{{ link.id }}">
 {% else %}
 <input type="hidden" name="action" value="add_support_link">
+<input type="hidden" name="kind" value="{{ kind|default:'link' }}">
 {% endif %}
 <div class="row g-3">
     <div class="col-md-6">
@@ -30,9 +32,14 @@ Multipart + hx-encoding because it hosts snippets/_image_upload.html.
                   class="form-control bg-black text-light border-secondary">{{ link.description }}</textarea>
     </div>
     <div class="col-md-8">
+        {% if link.is_commission or kind == 'commission' %}
+        <label class="form-label text-muted small fw-bold">Button link</label>
+        <div class="form-control-plaintext small text-muted"><i class="bi bi-list-ol me-1"></i> Your commission queue page. The card also shows the current starting price.</div>
+        {% else %}
         <label class="form-label text-muted small fw-bold" for="sl-url-{{ uid }}">Button link</label>
         <input type="url" id="sl-url-{{ uid }}" name="url" value="{{ link.url }}" maxlength="2000" required
                class="form-control bg-black text-light border-secondary" placeholder="https://">
+        {% endif %}
     </div>
     <div class="col-md-4">
         <label class="form-label text-muted small fw-bold" for="sl-icon-{{ uid }}">Icon</label>

@@ -9,6 +9,10 @@ Params (all optional):
   quill_class         classes for the editor div (default: bg-dark text-light)
   quill_placeholder   placeholder text
   quill_toolbar       JSON array literal overriding the default toolbar
+  quill_input_name    render a hidden input with this name and keep it in sync
+                      with the editor on every change, so a plain form submit
+                      carries the HTML with no submit-time JS. The server must
+                      still sanitise it (sanitize_user_html).
 
 Reading the value back out: the initialised Quill instance is exposed as a
 `_quill` expando on both the mount and the editor div. Resolve it from a scoped
@@ -38,6 +42,7 @@ Pinned by HtmxSettleClassStrippingTests.
 {% endcomment %}
 <div data-quill-mount>
     {{ quill_content|default:''|json_script }}
+    {% if quill_input_name %}<input type="hidden" name="{{ quill_input_name }}" value="{{ quill_content|default:'' }}" data-quill-input>{% endif %}
     <div data-quill-editor class="{{ quill_class|default:'bg-dark text-light' }}"
          {% if quill_placeholder %}data-quill-placeholder="{{ quill_placeholder }}"{% endif %}
          {% if quill_toolbar %}data-quill-toolbar="{{ quill_toolbar }}"{% endif %}></div>
@@ -94,6 +99,13 @@ Pinned by HtmxSettleClassStrippingTests.
        not clobber each other. */
     mount._quill = quill;
     editor._quill = quill;
+
+    const input = mount.querySelector(':scope > [data-quill-input]');
+    if (input) {
+        quill.on('text-change', () => {
+            input.value = quill.getText().trim() ? quill.root.innerHTML : '';
+        });
+    }
 })();
 </script>
 </div>

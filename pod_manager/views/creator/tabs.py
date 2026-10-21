@@ -75,6 +75,10 @@ def _support(request, net):
     return _data.gather_support_context(net)
 
 
+def _commissions(request, net):
+    return _data.gather_commissions_context(net)
+
+
 # name -> (builder(request, current_network) -> context dict, template).
 TAB_CONTENT = {
     'shows':       (_shows,                   'pod_manager/creator_tabs/tab_podcasts.html'),
@@ -88,6 +92,7 @@ TAB_CONTENT = {
     'transcripts': (_transcripts,             'pod_manager/creator_tabs/tab_transcripts.html'),
     'notfound':    (_notfound,                'pod_manager/creator_tabs/tab_notfound.html'),
     'support':     (_support,                 'pod_manager/creator_tabs/tab_support.html'),
+    'commissions': (_commissions,             'pod_manager/creator_tabs/tab_commissions.html'),
 }
 
 

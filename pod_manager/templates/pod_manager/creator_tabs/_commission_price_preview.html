@@ -1,0 +1,31 @@
+{% load vecto_format %}
+{% comment %}
+The pricing card's live preview: the tab renders it once, and
+creator_commission_price_preview re-renders it from the unsaved form as the
+owner types. Context: preview_settings, preview_queue_length, preview_prices,
+preview_steps [(until, at_length, base)], preview_error.
+{% endcomment %}
+<div class="small text-muted mb-2">Preview: unsaved changes are included.</div>
+{% if preview_error %}
+<div class="text-danger small"><i class="bi bi-exclamation-triangle me-1"></i>{{ preview_error }}</div>
+{% else %}
+<div class="mb-2">With <strong>{{ preview_queue_length }}</strong> in the queue right now:</div>
+<ul class="list-unstyled mb-3">
+    {% for version, price in preview_prices %}
+    <li class="d-flex justify-content-between border-bottom border-secondary py-1">
+        <span>{% if version %}{{ version.name }}{% else %}Price{% endif %}</span>
+        <strong class="text-warning">{{ price|money:preview_settings.currency }}</strong>
+    </li>
+    {% endfor %}
+</ul>
+{% if preview_steps %}
+<div class="small fw-bold text-muted mb-1">Next changes to the base price</div>
+<ul class="list-unstyled small mb-0">
+    {% for until, at_length, base in preview_steps %}
+    <li>{{ at_length }} in the queue ({{ until }} more): <strong>{{ base|money:preview_settings.currency }}</strong></li>
+    {% endfor %}
+</ul>
+{% else %}
+<div class="small text-muted">The price stays flat as the queue grows.</div>
+{% endif %}
+{% endif %}

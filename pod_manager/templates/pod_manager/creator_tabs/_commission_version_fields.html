@@ -1,0 +1,25 @@
+{% comment %}
+A commission version's fields as columns of a .row, shared by the add row and
+each version's edit row. Params: version (omit to add one).
+{% endcomment %}
+{% with uid=version.id|default:'new' %}
+<div class="col-md-3">
+    <input type="text" name="name" value="{{ version.name }}" maxlength="100" required aria-label="Version name"
+           class="form-control form-control-sm bg-black text-light border-secondary" placeholder="Name, e.g. No Ads">
+</div>
+<div class="col-md-4">
+    <input type="text" name="description" value="{{ version.description }}" maxlength="255" aria-label="Description"
+           class="form-control form-control-sm bg-black text-light border-secondary" placeholder="Description (optional)">
+</div>
+<div class="col-md-2">
+    <input type="text" inputmode="decimal" name="price_adjustment" value="{{ version.price_adjustment|default:'0.00' }}" aria-label="Price adjustment"
+           class="form-control form-control-sm bg-black text-light border-secondary" title="Added to the price; negative for a discount">
+</div>
+<div class="col-auto">
+    <div class="form-check form-switch mb-0">
+        <input class="form-check-input" type="checkbox" role="switch" name="is_active" id="cv-active-{{ uid }}"
+               {% if not version or version.is_active %}checked{% endif %}>
+        <label class="form-check-label small" for="cv-active-{{ uid }}">Offered</label>
+    </div>
+</div>
+{% endwith %}

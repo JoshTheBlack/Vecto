@@ -74,6 +74,9 @@
             <a class="list-group-item list-group-item-action border-secondary {% if request.GET.tab == 'support' %}active{% endif %}" id="list-support-list" data-bs-toggle="list" href="#list-support" role="tab">
                 <i class="bi bi-heart me-2"></i> Support Page
             </a>
+            <a class="list-group-item list-group-item-action border-secondary {% if request.GET.tab == 'commissions' %}active{% endif %}" id="list-commissions-list" data-bs-toggle="list" href="#list-commissions" role="tab">
+                <i class="bi bi-list-ol me-2"></i> Commissions
+            </a>
         </div>
     </div>
 
@@ -106,6 +109,8 @@
 
             {% include 'pod_manager/creator_tabs/_lazy_pane.html' with tab_name='support' pane_id='list-support' link_id='list-support-list' active_tab=request.GET.tab %}
 
+            {% include 'pod_manager/creator_tabs/_lazy_pane.html' with tab_name='commissions' pane_id='list-commissions' link_id='list-commissions-list' active_tab=request.GET.tab %}
+
         </div>
     </div>
 </div>
@@ -119,7 +124,7 @@ Manifest variant), so this query param is the only cache-bust: without the bump 
 returning browser runs the v=5 copy against these templates and every one of
 those fixes silently reverts for that user.
 {% endcomment %}
-<script src="{% static 'pod_manager/js/creator_tabs.js' %}?v=8"></script>
+<script src="{% static 'pod_manager/js/creator_tabs.js' %}?v=9"></script>
 {# v=3: rewind confirm moved from window.confirm() to data-confirm-slide. #}
 <script src="{% static 'pod_manager/js/gdrive_recovery.js' %}?v=3"></script>
 {# chapter_editor.js is loaded in the shell (base.html); the inbox diff-grid and merge editor partials rely on the global window.ChapterEditor. #}
@@ -161,10 +166,10 @@ those fixes silently reverts for that user.
     }
     .tag-input-wrapper .tag-remove:hover { opacity: 1; }
 
-    /* Quill in the merge editor's Edit cells: dark chrome (ported from the
+    /* Quill in the merge editor's Edit cells (and any .quill-dark wrapper): dark chrome (ported from the
        publish page's rules) + a compact single-row toolbar that scrolls
        horizontally instead of wrapping to three lines in the narrow column. */
-    .me-edit-cell .ql-toolbar.ql-snow {
+    :is(.me-edit-cell, .quill-dark) .ql-toolbar.ql-snow {
         border-color: var(--bs-border-color, #495057) !important;
         background: var(--vecto-surface-bg, #1e1e1e);
         border-radius: var(--vecto-radius-sm) var(--vecto-radius-sm) 0 0;
@@ -172,13 +177,13 @@ those fixes silently reverts for that user.
         overflow-x: auto; scrollbar-width: thin;
         padding: 3px 4px;
     }
-    .me-edit-cell .ql-toolbar.ql-snow .ql-formats {
+    :is(.me-edit-cell, .quill-dark) .ql-toolbar.ql-snow .ql-formats {
         display: inline-flex; flex-shrink: 0; margin-right: 8px;
     }
-    .me-edit-cell .ql-toolbar.ql-snow button {
+    :is(.me-edit-cell, .quill-dark) .ql-toolbar.ql-snow button {
         width: 22px; height: 22px; padding: 2px;
     }
-    .me-edit-cell .ql-container.ql-snow {
+    :is(.me-edit-cell, .quill-dark) .ql-container.ql-snow {
         border-color: var(--bs-border-color, #495057) !important;
         background: var(--vecto-surface-bg, #1e1e1e);
         border-radius: 0 0 var(--vecto-radius-sm) var(--vecto-radius-sm);
@@ -186,18 +191,18 @@ those fixes silently reverts for that user.
         font-size: 0.875rem;
         color: var(--vecto-surface-text, #f8f9fa);
     }
-    .me-edit-cell .ql-snow .ql-stroke { stroke: var(--vecto-surface-text, #f8f9fa); }
-    .me-edit-cell .ql-snow .ql-fill,
-    .me-edit-cell .ql-snow .ql-stroke.ql-fill { fill: var(--vecto-surface-text, #f8f9fa); }
-    .me-edit-cell .ql-snow .ql-picker { color: var(--vecto-surface-text, #f8f9fa); }
-    .me-edit-cell .ql-snow .ql-picker-options { background: var(--vecto-surface-bg, #212529); border-color: var(--bs-border-color, #495057); }
-    .me-edit-cell .ql-snow .ql-tooltip {
+    :is(.me-edit-cell, .quill-dark) .ql-snow .ql-stroke { stroke: var(--vecto-surface-text, #f8f9fa); }
+    :is(.me-edit-cell, .quill-dark) .ql-snow .ql-fill,
+    :is(.me-edit-cell, .quill-dark) .ql-snow .ql-stroke.ql-fill { fill: var(--vecto-surface-text, #f8f9fa); }
+    :is(.me-edit-cell, .quill-dark) .ql-snow .ql-picker { color: var(--vecto-surface-text, #f8f9fa); }
+    :is(.me-edit-cell, .quill-dark) .ql-snow .ql-picker-options { background: var(--vecto-surface-bg, #212529); border-color: var(--bs-border-color, #495057); }
+    :is(.me-edit-cell, .quill-dark) .ql-snow .ql-tooltip {
         background: var(--vecto-surface-bg, #212529); border-color: var(--bs-border-color, #495057);
         color: var(--vecto-surface-text, #f8f9fa);
         box-shadow: 0 2px 8px rgba(0,0,0,0.5); border-radius: var(--vecto-radius-sm);
     }
-    .me-edit-cell .ql-snow .ql-tooltip input[type=text] { background: var(--vecto-surface-bg, #2b3035); border-color: var(--bs-border-color, #495057); color: var(--vecto-surface-text, #f8f9fa); }
-    .me-edit-cell .ql-snow .ql-tooltip a { color: var(--vecto-primary, #ffc107); }
+    :is(.me-edit-cell, .quill-dark) .ql-snow .ql-tooltip input[type=text] { background: var(--vecto-surface-bg, #2b3035); border-color: var(--bs-border-color, #495057); color: var(--vecto-surface-text, #f8f9fa); }
+    :is(.me-edit-cell, .quill-dark) .ql-snow .ql-tooltip a { color: var(--vecto-primary, #ffc107); }
 
     /* Shared styles for Community Edits (inbox) and Audit Log tabs. */
 

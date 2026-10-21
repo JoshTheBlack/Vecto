@@ -12,10 +12,11 @@ from django.core.paginator import Paginator
 from django.db.models import Q, Case, When, CharField, IntegerField, Max, Count, F
 from django.db.models.functions import Substr, Lower
 
-from ...models import EpisodeEditSuggestion, EpisodeMatchSuggestion, NetworkMembership, Episode, SupportPage
+from ...models import EpisodeEditSuggestion, EpisodeMatchSuggestion, NetworkMembership, Episode, SupportPage, Commission
 from ...services.guid_links import generated_guid_q
 from ...services.edits import chapter_items, score_contribution, scoring_config, FIRST_RESPONDER_BONUS, REJECT_PENALTY
 from ...utils import diagnostic_timer
+from .commissions import price_preview_context, settings_for as commission_settings_for
 
 logger = logging.getLogger(__name__)
 
@@ -573,10 +574,31 @@ def gather_notfound_context(current_network):
     return {'notfound_entries': current_network.notfound_entries.order_by('-created_at')}
 
 
+def gather_commissions_context(current_network):
+    settings = commission_settings_for(current_network)
+    commissions = current_network.commissions.select_related('requester')
+    return {
+        'commission_settings': settings,
+        'commission_versions': current_network.commission_versions.all(),
+        'approved_statuses': [(s.value, s.label) for s in Commission.PUBLIC_STATUSES],
+        'active_commissions': commissions.filter(status__in=Commission.ACTIVE_STATUSES),
+        'released_commissions': commissions.filter(status=Commission.Status.RELEASED)
+                                           .order_by('-released_at', '-requested_at'),
+        'closed_commissions': commissions.filter(status__in=Commission.CLOSED_STATUSES).order_by('-updated_at'),
+        'network_podcasts': network_podcast_list(current_network),
+        **price_preview_context(current_network, settings),
+    }
+
+
 def gather_support_context(current_network):
     # Unsaved defaults until the owner first saves the page settings.
     page = SupportPage.objects.filter(network=current_network).first() or SupportPage(network=current_network)
-    return {'support_page': page, 'support_links': current_network.support_links.all()}
+    links = list(current_network.support_links.all())
+    return {
+        'support_page': page,
+        'support_links': links,
+        'has_commission_card': any(link.is_commission for link in links),
+    }
 
 
 @diagnostic_timer("6. Gather S3 Reports")

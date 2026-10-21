@@ -16815,3 +16815,411 @@ class SupportPagePublicTests(TestCase):
         NetworkMiddleware(lambda r: None)(request)
         with self.assertNumQueries(0):
             self.assertTrue(request.network.support_page.enabled)
+
+
+def _commission(network, pick='Pick', status='queued', position=0, **extra):
+    from pod_manager.models import Commission
+    return Commission.objects.create(network=network, pick=pick, status=status, position=position, **extra)
+
+
+class CommissionPricingTests(TestCase):
+    """services.commission_pricing: the formula, clamps, override, versions."""
+
+    def _settings(self, **overrides):
+        from decimal import Decimal
+        from pod_manager.models import CommissionSettings
+        values = {'base_price': Decimal('500'), 'step_amount': Decimal('50'), 'step_every': 2}
+        values.update(overrides)
+        return CommissionSettings(**values)
+
+    def test_formula_steps_every_n(self):
+        from decimal import Decimal
+        from pod_manager.services.commission_pricing import base_price
+        s = self._settings()
+        self.assertEqual([base_price(s, n) for n in (0, 1, 2, 3, 5)],
+                         [Decimal(x) for x in ('500', '500', '550', '550', '600')])
+
+    def test_clamps_and_override(self):
+        from decimal import Decimal
+        from pod_manager.services.commission_pricing import base_price, next_increase
+        s = self._settings(min_price=Decimal('520'), max_price=Decimal('575'))
+        self.assertEqual(base_price(s, 0), Decimal('520'))
+        self.assertEqual(base_price(s, 20), Decimal('575'))
+        self.assertIsNone(next_increase(s, 20))
+
+        s = self._settings(override_price=Decimal('400'))
+        self.assertEqual(base_price(s, 20), Decimal('400'))
+        self.assertIsNone(next_increase(s, 0))
+
+    def test_version_adjustment_and_floor_at_zero(self):
+        from decimal import Decimal
+        from pod_manager.models import CommissionVersion
+        from pod_manager.services.commission_pricing import price_for, price_table
+        s = self._settings()
+        with_ads = CommissionVersion(name='With Ads', price_adjustment=Decimal('-100'))
+        free = CommissionVersion(name='Free', price_adjustment=Decimal('-9999'))
+        self.assertEqual(price_for(s, with_ads, 0), Decimal('400'))
+        self.assertEqual(price_for(s, free, 0), Decimal('0.00'))
+        self.assertEqual(price_table(s, [], 0), [(None, Decimal('500'))])
+
+    def test_price_steps(self):
+        from decimal import Decimal
+        from pod_manager.services.commission_pricing import next_increase, price_steps
+        s = self._settings()
+        self.assertEqual(price_steps(s, 1, 3), [(1, Decimal('550')), (3, Decimal('600')), (5, Decimal('650'))])
+        self.assertEqual(price_steps(self._settings(step_amount=Decimal('0')), 0, 3), [])
+        # A minimum holds the price flat until the formula catches up with it.
+        s = self._settings(base_price=Decimal('0'), step_amount=Decimal('100'), step_every=1,
+                           min_price=Decimal('500'))
+        self.assertEqual(next_increase(s, 0), (6, Decimal('600')))
+
+    def test_format_money(self):
+        from decimal import Decimal
+        from pod_manager.services.commission_pricing import format_money
+        self.assertEqual(format_money(Decimal('600.00')), '$600')
+        self.assertEqual(format_money(Decimal('1612.5')), '$1,612.50')
+        self.assertEqual(format_money(Decimal('40'), 'EUR'), '€40')
+        self.assertEqual(format_money(Decimal('40'), 'SEK'), '40 SEK')
+        self.assertEqual(format_money(None), '')
+
+    def test_queue_length_counts_only_active(self):
+        from pod_manager.services.commission_pricing import queue_length
+        network = Network.objects.create(name='Q', slug='qlen')
+        for status in ('pending', 'queued', 'scheduled', 'watched', 'released', 'removed', 'withdrawn', 'expired'):
+            _commission(network, status=status)
+        self.assertEqual(queue_length(network), 3)
+
+
+class CommissionCreatorTests(TestCase):
+    """Creator Settings > Commissions handlers: settings, versions, the queue."""
+
+    def setUp(self):
+        self.factory = RequestFactory()
+        self.owner = User.objects.create_user(username='cowner', email='cowner@example.com')
+        self.network = Network.objects.create(name='Net', slug='comnet')
+        self.network.owners.add(self.owner)
+
+    def _post(self, data, user=None):
+        req = _make_tenant_request(self.factory, self.network, method='post',
+                                   path=f'/creator/?network={self.network.slug}&tab=commissions',
+                                   data=data, user=user or self.owner)
+        return views.creator_settings(req)
+
+    def _settings_post(self, **overrides):
+        data = {'action': 'update_commission_settings', 'enabled': 'on', 'currency': 'usd',
+                'base_price': '500', 'step_amount': '50', 'step_every': '2', 'min_price': '',
+                'max_price': '', 'override_price': '', 'pending_expiry_days': '7',
+                'page_title': 'Commission Us', 'intro': '<p>Hi</p><script>x()</script>',
+                'details': '', 'request_terms': '', 'show_price_hint': 'on'}
+        data.update(overrides)
+        return self._post(data)
+
+    def _active_picks(self):
+        from pod_manager.models import Commission
+        return [c.pick for c in self.network.commissions.filter(status__in=Commission.ACTIVE_STATUSES)]
+
+    def test_settings_save_and_sanitise(self):
+        from decimal import Decimal
+        from pod_manager.models import CommissionSettings
+        self._settings_post()
+        s = CommissionSettings.objects.get(network=self.network)
+        self.assertTrue(s.enabled)
+        self.assertEqual((s.base_price, s.step_amount, s.step_every, s.currency),
+                         (Decimal('500.00'), Decimal('50.00'), 2, 'USD'))
+        self.assertIsNone(s.max_price)
+        self.assertEqual(s.page_title, 'Commission Us')
+        self.assertIn('<p>Hi</p>', s.intro)
+        self.assertNotIn('script', s.intro)
+
+    def test_settings_reject_bad_input_without_saving(self):
+        from pod_manager.models import CommissionSettings
+        for bad in ({'min_price': '600', 'max_price': '500'}, {'currency': 'dollars'},
+                    {'base_price': 'lots'}, {'base_price': '-5'}, {'step_every': '0'},
+                    {'paypal_email': 'not-an-email'}):
+            with self.subTest(bad=bad):
+                self._settings_post(**bad)
+                self.assertFalse(CommissionSettings.objects.filter(network=self.network).exists())
+
+    def test_versions_add_edit_reorder_delete(self):
+        from decimal import Decimal
+        self._post({'action': 'add_commission_version', 'name': 'No Ads', 'price_adjustment': '0', 'is_active': 'on'})
+        self._post({'action': 'add_commission_version', 'name': 'With Ads', 'price_adjustment': '-100', 'is_active': 'on'})
+        no_ads, with_ads = self.network.commission_versions.all()
+        self.assertEqual(with_ads.price_adjustment, Decimal('-100.00'))
+
+        self._post({'action': 'edit_commission_version', 'version_id': with_ads.id, 'name': 'Ads',
+                    'price_adjustment': '-90'})
+        with_ads.refresh_from_db()
+        self.assertEqual((with_ads.name, with_ads.is_active), ('Ads', False))
+
+        resp = self._post({'action': 'reorder_commission_versions', 'order': f'{with_ads.id},{no_ads.id}'})
+        self.assertEqual(resp.status_code, 204)
+        self.assertEqual([v.name for v in self.network.commission_versions.all()], ['Ads', 'No Ads'])
+
+        self._post({'action': 'delete_commission_version', 'version_id': with_ads.id})
+        self.assertEqual(self.network.commission_versions.count(), 1)
+
+    def test_manual_entry_joins_the_queue_approved(self):
+        from pod_manager.models import CommissionVersion
+        version = CommissionVersion.objects.create(network=self.network, name='No Ads')
+        _commission(self.network, pick='Earlier', position=0)
+        self._post({'action': 'add_commission', 'pick': 'Dune', 'requested_at': '2025-09-15',
+                    'version': version.id, 'quoted_price': '600', 'credit_name': 'Sam',
+                    'credit_public': 'on', 'status': 'queued'})
+        c = self.network.commissions.get(pick='Dune')
+        self.assertEqual(c.status, 'queued')
+        self.assertIsNotNone(c.approved_at)
+        self.assertEqual(c.position, 1)
+        self.assertEqual(c.requested_at.date().isoformat(), '2025-09-15')
+        self.assertEqual(c.version_name, 'No Ads')
+        self.assertTrue(c.reference.startswith('C-'))
+
+        version.name = 'Renamed'
+        version.save()
+        version.delete()
+        c.refresh_from_db()
+        self.assertEqual(c.version_name, 'No Ads')
+
+    def test_manual_entry_can_backfill_as_released(self):
+        self._post({'action': 'add_commission', 'pick': 'Old one', 'status': 'released'})
+        c = self.network.commissions.get()
+        self.assertEqual(c.status, 'released')
+        self.assertIsNotNone(c.released_at)
+
+    def test_manual_entry_rejects_unknown_requester_and_bad_status(self):
+        self._post({'action': 'add_commission', 'pick': 'X', 'requester_email': 'nobody@example.com'})
+        self._post({'action': 'add_commission', 'pick': 'Y', 'status': 'pending'})
+        self.assertFalse(self.network.commissions.exists())
+
+    def test_manual_entry_links_requester_by_email(self):
+        fan = User.objects.create_user(username='fan', email='Fan@Example.com')
+        self._post({'action': 'add_commission', 'pick': 'X', 'requester_email': 'fan@example.com'})
+        self.assertEqual(self.network.commissions.get().requester, fan)
+
+    def test_status_changes(self):
+        a = _commission(self.network, pick='A', position=0)
+        _commission(self.network, pick='B', position=1)
+        self._post({'action': 'set_commission_status', 'commission_id': a.id, 'status': 'released'})
+        a.refresh_from_db()
+        self.assertIsNotNone(a.released_at)
+        self.assertEqual(self._active_picks(), ['B'])
+
+        # Back into the queue: it rejoins at the end.
+        self._post({'action': 'set_commission_status', 'commission_id': a.id, 'status': 'queued'})
+        a.refresh_from_db()
+        self.assertIsNone(a.released_at)
+        self.assertEqual(self._active_picks(), ['B', 'A'])
+
+        self._post({'action': 'set_commission_status', 'commission_id': a.id, 'status': 'removed'})
+        a.refresh_from_db()
+        self.assertEqual(a.status, 'queued')
+
+    def test_remove_restore_and_delete(self):
+        from pod_manager.services.commission_pricing import queue_length
+        a = _commission(self.network, pick='A')
+        self._post({'action': 'remove_commission', 'commission_id': a.id, 'removal_reason': 'Refunded'})
+        a.refresh_from_db()
+        self.assertEqual((a.status, a.removal_reason), ('removed', 'Refunded'))
+        self.assertEqual(queue_length(self.network), 0)
+
+        # Only a closed commission can be hard-deleted.
+        b = _commission(self.network, pick='B')
+        with self.assertRaises(Http404):
+            self._post({'action': 'delete_commission', 'commission_id': b.id})
+
+        self._post({'action': 'restore_commission', 'commission_id': a.id})
+        a.refresh_from_db()
+        self.assertEqual((a.status, a.removal_reason), ('queued', ''))
+        self.assertEqual(self._active_picks(), ['B', 'A'])
+
+        self._post({'action': 'remove_commission', 'commission_id': a.id})
+        self._post({'action': 'delete_commission', 'commission_id': a.id})
+        self.assertFalse(self.network.commissions.filter(pk=a.pk).exists())
+
+    def test_remove_sends_no_email(self):
+        from django.core import mail
+        fan = User.objects.create_user(username='fan2', email='fan2@example.com')
+        a = _commission(self.network, requester=fan)
+        self._post({'action': 'remove_commission', 'commission_id': a.id})
+        self.assertEqual(mail.outbox, [])
+
+    def test_reorder_only_takes_the_active_queue(self):
+        a = _commission(self.network, pick='A', position=0)
+        b = _commission(self.network, pick='B', position=1)
+        done = _commission(self.network, pick='Done', status='released')
+        self.assertEqual(self._post({'action': 'reorder_commissions', 'order': f'{b.id},{a.id}'}).status_code, 204)
+        self.assertEqual(self._active_picks(), ['B', 'A'])
+        resp = self._post({'action': 'reorder_commissions', 'order': f'{b.id},{a.id},{done.id}'})
+        self.assertEqual(resp.status_code, 400)
+
+    def test_sort_by_request_date(self):
+        now = timezone.now()
+        _commission(self.network, pick='New', position=0, requested_at=now)
+        _commission(self.network, pick='Old', position=1, requested_at=now - timedelta(days=30))
+        self._post({'action': 'sort_commissions_by_date'})
+        self.assertEqual(self._active_picks(), ['Old', 'New'])
+
+    def test_other_networks_rows_are_out_of_reach(self):
+        other = Network.objects.create(name='Other', slug='comother')
+        foreign = _commission(other, pick='Theirs')
+        for action in ('edit_commission', 'set_commission_status', 'remove_commission'):
+            with self.subTest(action=action), self.assertRaises(Http404):
+                self._post({'action': action, 'commission_id': foreign.id, 'pick': 'Mine', 'status': 'released'})
+        foreign.refresh_from_db()
+        self.assertEqual((foreign.pick, foreign.status), ('Theirs', 'queued'))
+
+    def test_non_owner_cannot_post(self):
+        stranger = User.objects.create_user(username='stranger-com')
+        self.assertEqual(self._post({'action': 'add_commission', 'pick': 'X'}, user=stranger).status_code, 403)
+        self.assertFalse(self.network.commissions.exists())
+
+    def _preview(self, user=None, **params):
+        req = _make_tenant_request(self.factory, self.network, path='/creator/commissions/price-preview/',
+                                   data={'network': self.network.slug, **params}, user=user or self.owner)
+        return views.creator_commission_price_preview(req)
+
+    def test_price_preview_reads_unsaved_values(self):
+        from pod_manager.models import CommissionSettings
+        _commission(self.network)
+        _commission(self.network)
+        body = self._preview(base_price='500', step_amount='50', step_every='2').content.decode()
+        self.assertIn('$550', body)
+        self.assertIn('4 in the queue (2 more)', body)
+        self.assertFalse(CommissionSettings.objects.filter(network=self.network).exists())
+
+        body = self._preview(base_price='500', min_price='9', max_price='1').content.decode()
+        self.assertIn("can&#x27;t be below the minimum", body)
+
+        stranger = User.objects.create_user(username='stranger-prev')
+        self.assertEqual(self._preview(user=stranger, base_price='1').status_code, 403)
+
+    def test_tab_renders_rows_versions_and_settings(self):
+        from pod_manager.models import CommissionVersion
+        CommissionVersion.objects.create(network=self.network, name='No Ads')
+        _commission(self.network, pick='Active one')
+        _commission(self.network, pick='Released one', status='released')
+        _commission(self.network, pick='Removed one', status='removed', removal_reason='Refund')
+        req = _make_tenant_request(self.factory, self.network, path='/creator/tab/commissions/',
+                                   data={'network': self.network.slug}, user=self.owner)
+        req.META['HTTP_HX_REQUEST'] = 'true'
+        body = views.creator_tab_partial(req, 'commissions').content.decode()
+        for text in ('Active one', 'Released one', 'Removed one', 'Refund', 'No Ads',
+                     'value="update_commission_settings"', 'name="intro"'):
+            self.assertIn(text, body)
+
+
+@override_settings(ALLOWED_HOSTS=['*'])
+class CommissionPublicTests(TestCase):
+    """The public queue page, its Released list, and the Support page's
+    commission card, through NetworkMiddleware."""
+
+    def setUp(self):
+        from decimal import Decimal
+        from pod_manager.models import CommissionSettings, CommissionVersion
+        cache.clear()
+        self.host = 'commissions.example.test'
+        self.network = Network.objects.create(name='ComNet', slug='compub', custom_domain=self.host)
+        self.owner = User.objects.create_user('comowner', password='x')
+        self.network.owners.add(self.owner)
+        self.settings = CommissionSettings.objects.create(
+            network=self.network, enabled=True, base_price=Decimal('500'), step_amount=Decimal('50'),
+            step_every=2, intro='<p>Pick something</p>', details='<p>How it works</p>')
+        CommissionVersion.objects.create(network=self.network, name='No Ads', position=0)
+        CommissionVersion.objects.create(network=self.network, name='With Ads', position=1,
+                                         price_adjustment=Decimal('-100'))
+
+    def _get(self, path='/support/commissions/'):
+        return self.client.get(path, HTTP_HOST=self.host)
+
+    def test_page_shows_prices_queue_and_copy(self):
+        _commission(self.network, pick='Second', position=1, credit_name='Sam')
+        _commission(self.network, pick='First', position=0, credit_name='Hidden Name', credit_public=False,
+                    owner_notes='SECRET NOTE')
+        _commission(self.network, pick='Pending pick', status='pending')
+        _commission(self.network, pick='Removed pick', status='removed', removal_reason='SECRET REASON')
+        _commission(self.network, pick='Released pick', status='released')
+        body = self._get().content.decode()
+        self.assertIn('$550', body)          # No Ads with 2 in the queue
+        self.assertIn('$450', body)          # With Ads
+        self.assertIn('Pick something', body)
+        self.assertIn('How it works', body)
+        self.assertLess(body.index('First'), body.index('Second'))
+        self.assertIn('Commissioned by Anonymous', body)
+        self.assertIn('Commissioned by Sam', body)
+        for hidden in ('Hidden Name', 'SECRET NOTE', 'SECRET REASON', 'Pending pick', 'Removed pick', 'Released pick'):
+            self.assertNotIn(hidden, body)
+        self.assertIn('Released <span', body)
+        self.assertIn('price goes up after 2 more', body)
+
+    def test_price_hint_can_be_switched_off(self):
+        self.settings.show_price_hint = False
+        self.settings.save()
+        self.assertNotContains(self._get(), 'price goes up')
+
+    def test_disabled_queue_404s_for_listeners_but_owner_can_preview(self):
+        self.settings.enabled = False
+        self.settings.save()
+        self.assertEqual(self._get().status_code, 404)
+        self.assertEqual(self._get('/support/commissions/released/').status_code, 404)
+        self.client.force_login(self.owner)
+        self.assertContains(self._get(), 'Preview:')
+
+    def test_network_without_settings_404s(self):
+        self.settings.delete()
+        self.assertEqual(self._get().status_code, 404)
+
+    def test_released_list_pages_ten_at_a_time(self):
+        now = timezone.now()
+        for i in range(12):
+            _commission(self.network, pick=f'Done {i:02d}', status='released',
+                        released_at=now - timedelta(days=i))
+        first = self._get('/support/commissions/released/?page=1').content.decode()
+        self.assertEqual(first.count('class="cq-row"'), 10)
+        self.assertIn('Done 00', first)
+        self.assertIn('page=2', first)
+        second = self._get('/support/commissions/released/?page=2').content.decode()
+        self.assertEqual(second.count('class="cq-row"'), 2)
+        self.assertIn('Done 11', second)
+        self.assertNotIn('Load more', second)
+
+    def test_support_page_commission_card(self):
+        from pod_manager.models import SupportLink, SupportPage
+        SupportPage.objects.create(network=self.network, enabled=True)
+        SupportLink.objects.create(network=self.network, kind='commission', title='Commission an episode')
+        _commission(self.network)
+        body = self._get('/support/').content.decode()
+        self.assertIn('href="/support/commissions/"', body)
+        self.assertIn('from $400', body)      # With Ads, the cheapest, at 1 in the queue
+
+        self.settings.enabled = False
+        self.settings.save()
+        self.assertNotContains(self._get('/support/'), 'Commission an episode')
+        self.client.force_login(self.owner)
+        self.assertContains(self._get('/support/'), 'Commissions are switched off')
+
+
+class SupportCommissionCardCreatorTests(TestCase):
+    """Adding the commission-queue card in Creator Settings > Support Page."""
+
+    def setUp(self):
+        self.factory = RequestFactory()
+        self.owner = User.objects.create_user(username='ccowner', email='ccowner@example.com')
+        self.network = Network.objects.create(name='Net', slug='ccnet')
+        self.network.owners.add(self.owner)
+
+    def _add(self, **data):
+        req = _make_tenant_request(self.factory, self.network, method='post', path='/creator/',
+                                   data={'action': 'add_support_link', 'kind': 'commission',
+                                         'title': 'Commission us', **data}, user=self.owner)
+        return views.creator_settings(req)
+
+    def test_commission_card_needs_no_url_and_is_one_per_network(self):
+        self._add()
+        self._add(title='A second one')
+        card = self.network.support_links.get()
+        self.assertTrue(card.is_commission)
+        self.assertEqual(card.url, '')
+
+    def test_unknown_kind_rejected(self):
+        self._add(kind='bogus')
+        self.assertFalse(self.network.support_links.exists())

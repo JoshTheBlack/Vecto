@@ -39,6 +39,7 @@ from ...tasks import (task_rebuild_episode_fragments,
                       task_apply_feed_auto_cross_publish,
                       task_teardown_feed_auto_cross_publish)
 from ...utils import sanitize_user_html
+from .commissions import COMMISSION_ACTION_HANDLERS
 from .support import SUPPORT_ACTION_HANDLERS
 
 logger = logging.getLogger(__name__)
@@ -1049,4 +1050,5 @@ ACTION_HANDLERS = {
     'delete_notfound_entry': handle_delete_notfound_entry,
     'generate_s3_report':   handle_generate_s3_report,
     **SUPPORT_ACTION_HANDLERS,
+    **COMMISSION_ACTION_HANDLERS,
 }

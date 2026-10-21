@@ -132,6 +132,10 @@ REGISTRY = {
         category="R2 / Storage",
         danger_fields=frozenset({"prune"}),
     ),
+    "verify_r2_media": CommandSpec(
+        name="verify_r2_media",
+        category="R2 / Storage",
+    ),
     "rename_source_audio_to_r2": CommandSpec(
         name="rename_source_audio_to_r2",
         category="R2 / Storage",

@@ -286,13 +286,16 @@ def read_transcript_bytes(episode_id: int, ext: str, version: int, token: str | 
                           *, stem: str | None = None, local_path: Path | None = None) -> bytes:
     """Read one transcript format's bytes.
 
-    Reads from R2 when the transcript is R2-backed (version >= 1 and R2 enabled),
-    else from the legacy local file (version 0 / R2 disabled). Raises on miss.
+    Reads from R2 when R2 media is enabled, else from the local file (dev and
+    tests). With R2 enabled a version-0 row has nothing to read — its bytes were
+    never uploaded — so it raises rather than looking on local disk. Raises on miss.
     ``stem`` (the row's stored r2_key_stem) names the R2 object — without it the
     legacy id+token derivation is used. ``local_path`` pins the local file.
     Prefer read_transcript(transcript, ext), which supplies both.
     """
-    if settings.R2_MEDIA_ENABLED and (version or 0) >= 1:
+    if settings.R2_MEDIA_ENABLED:
+        if (version or 0) < 1:
+            raise FileNotFoundError(f"transcript {episode_id}.{ext} has no R2 copy (version 0)")
         from django.core.cache import cache
         from pod_manager.services.r2_storage import get_media_object
         key = f"{stem}.{ext}" if stem else transcript_r2_key(episode_id, ext, token)

@@ -39,24 +39,13 @@ class CrossPublishAccessMode(models.TextChoices):
     INHERIT = 'inherit', "Keep episode's own gating (parent podcast tier)"
     TARGET = 'target', "Use the target podcast's tier"
 
-# Legacy local-storage key prefixes from before the R2 (vecto-cdn) cutover. Rows
-# still holding one of these names are served straight from /media until the
-# backfill re-keys them to the stable webp key — this keeps the cutover window at
-# zero. DELETE this branch (and the constant) once every row is migrated.
-_LEGACY_IMAGE_PREFIXES = ('custom_avatars/', 'mix_covers/')
-
 
 def _versioned_image_url(fieldfile, version):
     """Public URL for an R2-backed image field, cache-busted with ?v=version.
 
-    New stable webp keys resolve through the field's storage (the cdn, or local
-    /media when R2 is disabled) plus the version query string. Legacy pre-cutover
-    rows are served from /media unchanged so they keep working until the backfill
-    re-keys them.
+    The stable webp key resolves through the field's storage (the cdn, or local
+    /media when R2 is disabled) plus the version query string.
     """
-    name = fieldfile.name or ''
-    if name.startswith(_LEGACY_IMAGE_PREFIXES):
-        return f"{settings.MEDIA_URL}{name}"
     url = fieldfile.url
     return f"{url}?v={version}" if version else url
 

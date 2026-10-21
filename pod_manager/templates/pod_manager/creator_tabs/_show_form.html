@@ -4,14 +4,29 @@ via the creator_show_form endpoint, so the Manage Podcasts tab ships a window of
 lightweight headers instead of a full form per show. Context: show,
 current_network, network_podcasts.
 
-The Data Ingestion panel (import button + terminal) still renders inline in
-_show_rows.html, but the reason it had to is gone: it sat outside this lazy form
-only so "Import All" could reach every show without expanding it, and that button
-was removed. Moving it in here would shed ~0.9 KB per unexpanded row; the catch
-is the auto_import flow (actions.py redirects with ?auto_import=<id> after Add
-New Show, and creator_tabs.js calls startLiveImport on a 500ms timer), which
-would then have to wait for this form to land instead of a fixed timeout.
+The Data Ingestion panel (import button + terminal) arrives with this form, so it
+only exists once the row has been expanded. The auto_import flow (Add New Show
+redirects with ?auto_import=<id>) accounts for that: creator_tabs.js expands the
+row and waits for #btn-import-<id> to land before starting the import.
 {% endcomment %}
+<div class="mb-4 border-bottom border-secondary pb-3">
+    <div class="d-flex justify-content-between align-items-center mb-2">
+        <span class="text-muted small fw-bold text-uppercase">Data Ingestion</span>
+        <button type="button" class="btn btn-sm btn-success text-dark fw-bold" id="btn-import-{{ show.id }}" onclick="startLiveImport({{ show.id }})">
+            <i class="bi bi-cloud-arrow-down-fill"></i> Run Live Import
+        </button>
+    </div>
+
+    <div id="terminal-container-{{ show.id }}" class="d-none mt-3">
+        <div class="text-end mb-1">
+            <button type="button" class="btn btn-sm text-muted text-hover-warning p-0" onclick="document.getElementById('terminal-container-{{ show.id }}').classList.add('d-none')">
+                <i class="bi bi-x-circle"></i> Close Log
+            </button>
+        </div>
+        <pre id="terminal-{{ show.id }}" class="bg-black text-light p-3 rounded border border-secondary font-monospace" style="height: 250px; overflow-y: auto; font-size: 0.85rem; white-space: pre-wrap;"></pre>
+    </div>
+</div>
+
 <form method="POST" action="{% url 'creator_settings' %}?network={{ current_network.slug }}&tab=shows">
     {% csrf_token %}
     <input type="hidden" name="action" value="update_show">

@@ -5469,6 +5469,21 @@ class ServeTranscriptTests(TestCase):
         self.assertIn('real-episode-title.vtt', disposition)
         self.assertNotIn('uc.vtt', disposition)
 
+    @override_settings(R2_MEDIA_ENABLED=True)
+    def test_r2_enabled_never_falls_back_to_local_disk(self):
+        # With R2 on, a version-0 row was never uploaded: it 404s even though a
+        # local file sits at its path (a pre-cutover copy is never served).
+        self.assertEqual(self._get().status_code, 404)
+        self.assertEqual(self._get(data={'download': '1'}).status_code, 404)
+
+    @override_settings(R2_MEDIA_ENABLED=True)
+    def test_r2_enabled_read_of_version_0_raises_without_touching_disk(self):
+        from pod_manager.services.transcription import read_transcript
+        with mock.patch('pathlib.Path.read_bytes') as read_bytes:
+            with self.assertRaises(FileNotFoundError):
+                read_transcript(self.transcript, 'vtt')
+        read_bytes.assert_not_called()
+
 
 # ── 10. backfill_transcripts_api ─────────────────────────────────────────────
 
@@ -12300,6 +12315,40 @@ class ShowsAccordionPaginationTests(TestCase):
         first = Podcast.objects.filter(network=self.network).order_by('title').first()
         self.assertIn('hx-target="#show-form-%d"' % first.id, body)
 
+    def test_import_panel_ships_with_the_show_form_not_the_row(self):
+        show = Podcast.objects.get(slug='showpage-0')
+        rows = self._get().content.decode('utf-8')
+        self.assertNotIn('id="btn-import-%d"' % show.id, rows)
+        form = self.client.get(
+            reverse('creator_show_form', args=[show.id]), {'network': self.network.slug},
+            HTTP_HOST=self.host, HTTP_HX_REQUEST='true').content.decode('utf-8')
+        self.assertIn('id="btn-import-%d"' % show.id, form)
+        self.assertIn('id="terminal-%d"' % show.id, form)
+
+    def test_auto_import_pins_the_new_show_to_the_first_window(self):
+        # 'Show 029' sorts into the second window; after Add New Show the page
+        # auto-expands it, which needs its row in the first one.
+        new = Podcast.objects.get(slug='showpage-29')
+        body = self._get(auto_import=new.id).content.decode('utf-8')
+        rows = re.findall(r'id="heading-(\d+)"', body)
+        self.assertEqual(rows[0], str(new.id))
+        self.assertEqual(len(rows), SHOW_PAGE_SIZE)
+        self.assertIn('auto_import=%d' % new.id, body)
+
+    def test_auto_import_pin_pages_without_repeating_or_dropping_rows(self):
+        new = Podcast.objects.get(slug='showpage-29')
+        seen = []
+        for page in (1, 2):
+            body = self._get(auto_import=new.id, show_page=page).content.decode('utf-8')
+            seen += re.findall(r'id="heading-(\d+)"', body)
+        self.assertEqual(len(seen), self.total)
+        self.assertEqual(len(set(seen)), self.total)
+
+    def test_non_numeric_auto_import_is_ignored(self):
+        body = self._get(auto_import='abc').content.decode('utf-8')
+        self.assertEqual(self._row_count(body), SHOW_PAGE_SIZE)
+        self.assertNotIn('auto_import=', body)
+
 
 @override_settings(ALLOWED_HOSTS=['*'])
 class AuditLogSummaryTests(TestCase):
@@ -15070,6 +15119,59 @@ class TranscriptStoredStemTests(TestCase):
         text = out.getvalue()
         self.assertIn('Verify: 4 files present across 2 episodes (2.0 files per episode), '
                       '0 files missing, 0 episodes not yet migrated.', text)
+
+
+class VerifyR2MediaCommandTests(TestCase):
+    """manage.py verify_r2_media: HEADs every media-storage file field, including
+    the ones no backfill command covers. Storage existence is patched; in tests
+    the fields resolve to the local OverwriteStorage, so no R2 call is made."""
+
+    def setUp(self):
+        self.network = Network.objects.create(name='VerifyNet', slug='verifynet')
+        # .update() sets the stored names without running the image processing save().
+        Network.objects.filter(pk=self.network.pk).update(
+            logo_upload='network-logos/logo.webp',
+            default_image_upload='network-defaults/fallback.webp')
+
+    def _run(self, present):
+        from pod_manager.models import mix_storage
+        out = StringIO()
+        with mock.patch.object(type(mix_storage), 'exists', autospec=True,
+                               side_effect=lambda storage, name: name in present):
+            call_command('verify_r2_media', stdout=out)
+        return out.getvalue()
+
+    def test_discovers_every_media_storage_field(self):
+        from pod_manager.management.commands.verify_r2_media import media_file_fields
+        fields = {(model.__name__, name) for model, name in media_file_fields()}
+        self.assertEqual(fields, {
+            ('Network', 'custom_font_upload'), ('Network', 'default_image_upload'),
+            ('Network', 'logo_upload'), ('NetworkMembership', 'custom_image_upload'),
+            ('NetworkMix', 'image_upload'), ('NotFoundEntry', 'image_upload'),
+            ('UserMix', 'image_upload'),
+        })
+
+    @override_settings(R2_MEDIA_ENABLED=True)
+    def test_all_present_passes(self):
+        out = self._run({'network-logos/logo.webp', 'network-defaults/fallback.webp'})
+        self.assertIn('Verify: 2 present, 0 missing.', out)
+        self.assertIn('"missing": 0', out)
+
+    @override_settings(R2_MEDIA_ENABLED=True)
+    def test_missing_file_is_listed_and_fails(self):
+        from pod_manager.models import mix_storage
+        out = StringIO()
+        with mock.patch.object(type(mix_storage), 'exists', autospec=True,
+                               side_effect=lambda storage, name: name != 'network-logos/logo.webp'):
+            with self.assertRaises(CommandError):
+                call_command('verify_r2_media', stdout=out)
+        self.assertIn('MISSING in R2:', out.getvalue())
+        self.assertIn('(network-logos/logo.webp)', out.getvalue())
+        self.assertIn('Verify: 1 present, 1 missing.', out.getvalue())
+
+    def test_refuses_when_r2_media_is_disabled(self):
+        with self.assertRaises(CommandError):
+            call_command('verify_r2_media', stdout=StringIO())
 
 
 class _FakeMediaBucket:

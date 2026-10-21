@@ -221,7 +221,7 @@ Each link was always a *different* URL, so download-rename and edge-offload don'
 
 ### Caching model (changed by design)
 
-The old local-disk view sent `Cache-Control: public, no-cache` + a content ETag so a re-transcribe revalidated immediately (an earlier `immutable` attempt caused stale-until-hard-refresh bugs). The R2 design **supersedes** that: objects carry `immutable`, and `?v=N` busts on re-transcribe. Legacy local-only transcripts (`version 0`) are still served the old way (ETag + `no-cache`) until backfilled.
+The old local-disk view sent `Cache-Control: public, no-cache` + a content ETag so a re-transcribe revalidated immediately (an earlier `immutable` attempt caused stale-until-hard-refresh bugs). The R2 design **supersedes** that: objects carry `immutable`, and `?v=N` busts on re-transcribe. With R2 media enabled there is no local-disk fallback: a `version 0` row has no uploaded bytes, so it 404s and `read_transcript_bytes` raises. The local-disk path (ETag + `no-cache`) serves only when R2 media is off — dev and the test suite.
 
 ### Backfill — `backfill_transcripts_to_r2`
 
@@ -477,7 +477,7 @@ When deploying to PROD for the first time:
 - [ ] Set `WHISPER_ENABLED=True` in `.env`
 - [ ] `WHISPER_URL` defaults to `http://whisper:9000` — no override needed once the stack is running
 - [ ] `docker compose up -d` — the `whisper` and `celery-transcription` services start automatically
-- [ ] Mount `media/source_audio` as a bind mount to persistent array storage (not a Docker named volume) on Unraid. With `R2_MEDIA_ENABLED`, new transcripts go to R2, so the `media/transcriptions` bind mount is only needed for **legacy** (`version 0`) transcripts until they're backfilled + pruned.
+- [ ] Mount `media/source_audio` as a bind mount to persistent array storage (not a Docker named volume) on Unraid. With `R2_MEDIA_ENABLED`, transcripts live only in R2, so no `media/transcriptions` mount is needed.
 - [ ] Run a test transcription via the Django admin → Episodes → select one episode → **Queue transcription** to confirm end-to-end connectivity
 - [ ] **R2 transcript cutover** (after the [image CDN setup](images.md)): with `R2_MEDIA_ENABLED=True`, run `backfill_transcripts_to_r2 --all` then `--all --verify`; only after verify passes, prune the local `media/transcriptions` files.
 

@@ -96,7 +96,7 @@ class Command(BaseCommand):
             total = min(total, limit)
         self.stdout.write(
             f"{total} transcript(s) selected (mode={'preview' if dry_run else 'apply'}, force={force}).")
-        totals = {'migrated': 0, 'skipped': 0, 'failed': 0}
+        totals = {'migrated': 0, 'skipped': 0, 'no_files': 0, 'failed': 0}
         count = 0
         for t in qs.iterator():
             if limit is not None and count >= limit:
@@ -110,7 +110,8 @@ class Command(BaseCommand):
                     f"{totals['skipped']} skipped, {totals['failed']} failed)")
 
         self.stdout.write(self.style.SUCCESS(
-            f"\nDone: {totals['migrated']} migrated, {totals['skipped']} skipped, "
+            f"\nDone: {totals['migrated']} migrated, {totals['skipped']} skipped (already in R2), "
+            f"{totals['no_files']} with no transcript files, "
             f"{totals['failed']} failed{' (dry-run)' if dry_run else ''}."
         ))
         from pod_manager.admin_console.summary import emit_summary
@@ -119,6 +120,7 @@ class Command(BaseCommand):
             "applied": apply,
             "migrated": totals['migrated'],
             "skipped": totals['skipped'],
+            "no_files": totals['no_files'],
             "failed": totals['failed'],
         })
 
@@ -131,7 +133,7 @@ class Command(BaseCommand):
         exts = [e for e in _FORMATS if getattr(t, _MARKER[e], None)]
         if not exts:
             self.stdout.write(self.style.WARNING(f"  ep {t.episode_id}: no format markers — skipping"))
-            return 'skipped'
+            return 'no_files'
 
         # Already in R2 -> skip (presence-checked, not just version, so a row
         # written locally during a flag flip still gets pushed).

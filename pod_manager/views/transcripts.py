@@ -89,9 +89,9 @@ def serve_transcript(request, episode_id, ext: str):
                                                 ``<a download>`` rename works (a
                                                 cross-origin 302 would drop it).
 
-    R2-backed transcripts (``version >= 1`` and R2 enabled) 302/stream from the
-    cdn. Legacy local transcripts (version 0 / R2 disabled) are served from disk
-    with the existing ETag-revalidate behavior.
+    With R2 media enabled, transcripts 302/stream from the cdn; a version-0 row
+    has no uploaded bytes and 404s. With R2 disabled (dev, tests) they are served
+    from local disk with ETag revalidation.
     """
     from pod_manager.models import Episode
     from pod_manager.services.access import can_view_transcript
@@ -127,7 +127,7 @@ def serve_transcript(request, episode_id, ext: str):
     # Access gate — closes both exposure layers: this Django endpoint AND (via the
     # keyed CDN object) the bytes. 404 (not 403) matches the file's existing pattern
     # and hides existence from probers. Applies uniformly to all five exts (words
-    # carries the full text too) and to the ?download=1 branch and legacy local path
+    # carries the full text too) and to the ?download=1 branch and local-disk path
     # below, since it runs before either.
     if not can_view_transcript(episode, _resolve_transcript_access(request, episode)):
         logger.info(
@@ -140,7 +140,9 @@ def serve_transcript(request, episode_id, ext: str):
     download = request.GET.get('download')
 
     # --- R2-backed: 302 to the cdn (default) or stream with attachment (download) ---
-    if settings.R2_MEDIA_ENABLED and version >= 1:
+    if settings.R2_MEDIA_ENABLED:
+        if version < 1:
+            raise Http404
         from botocore.exceptions import ClientError
         from pod_manager.services.r2_storage import (get_media_object,
                                                      media_public_url)
@@ -161,7 +163,7 @@ def serve_transcript(request, episode_id, ext: str):
         resp['Access-Control-Allow-Origin'] = '*'
         return resp
 
-    # --- Legacy local: serve from disk, ETag so the browser revalidates ---
+    # --- R2 disabled (dev, tests): serve from disk, ETag so the browser revalidates ---
     try:
         path = local_transcript_path(transcript, ext)
     except (ValueError, TypeError):

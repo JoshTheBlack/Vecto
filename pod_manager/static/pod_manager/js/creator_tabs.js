@@ -235,20 +235,35 @@ function stripForeignTabParams(params, tabParam) {
         });
     });
 
-    // 4. Trigger auto-import if flagged in URL
+    // 4. Start an import for a just-added show (?auto_import=<id>). Its row
+    //    arrives with the lazily-loaded Shows tab and its Import button with the
+    //    show's lazily-loaded form, so wait for each to land rather than guess.
     const autoImportId = urlParams.get('auto_import');
     if (autoImportId) {
-        setTimeout(() => {
-            const collapseElement = document.getElementById(`collapse-${autoImportId}`);
-            if (collapseElement) {
-                const bsCollapse = new bootstrap.Collapse(collapseElement, {toggle: false});
-                bsCollapse.show();
+        whenLoaded(`collapse-${autoImportId}`, (collapseEl) => {
+            whenLoaded(`btn-import-${autoImportId}`, () => {
                 startLiveImport(autoImportId);
                 window.history.replaceState({}, document.title, window.location.pathname + "?network=" + urlParams.get('network'));
-            }
-        }, 500);
+            });
+            bootstrap.Collapse.getOrCreateInstance(collapseEl, { toggle: false }).show();
+        });
     }
 })();
+
+// Call fn(el) once the element with this id exists: right away if it is already
+// in the page, otherwise the first time an htmx swap brings it in.
+function whenLoaded(id, fn) {
+    const existing = document.getElementById(id);
+    if (existing) { fn(existing); return; }
+    if (!window.VectoPage) return;
+    let done = false;
+    window.VectoPage.on(document.body, 'htmx:load', () => {
+        const el = done ? null : document.getElementById(id);
+        if (!el) return;
+        done = true;
+        fn(el);
+    });
+}
 
 // ==========================================
 // FEED VISIBILITY & CROSS-PUBLISH (hidden-but-not-cross-published warning)

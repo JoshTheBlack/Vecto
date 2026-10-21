@@ -9,7 +9,7 @@ import os
 
 from django.conf import settings
 from django.core.paginator import Paginator
-from django.db.models import Q, Case, When, CharField, Max, Count, F
+from django.db.models import Q, Case, When, CharField, IntegerField, Max, Count, F
 from django.db.models.functions import Substr, Lower
 
 from ...models import EpisodeEditSuggestion, EpisodeMatchSuggestion, NetworkMembership, Episode
@@ -140,13 +140,24 @@ def gather_manage_podcasts(request, current_network):
     # episode_count tie freely across 88 shows, and an unstable order makes a
     # paginated window drop or repeat rows between pages.
     if show_sort == 'recent':
-        manage_podcasts = manage_podcasts.order_by(F('latest_episode_date').desc(nulls_last=True), 'id')
+        ordering = [F('latest_episode_date').desc(nulls_last=True), 'id']
     elif show_sort == 'oldest':
-        manage_podcasts = manage_podcasts.order_by(F('latest_episode_date').asc(nulls_last=True), 'id')
+        ordering = [F('latest_episode_date').asc(nulls_last=True), 'id']
     elif show_sort == 'count_desc':
-        manage_podcasts = manage_podcasts.order_by('-episode_count', 'id')
+        ordering = ['-episode_count', 'id']
     else:
-        manage_podcasts = manage_podcasts.order_by(Lower('clean_title'), 'id')
+        ordering = [Lower('clean_title'), 'id']
+
+    # A just-added show (?auto_import=<id>, from Add New Show) sorts first so its
+    # row is in the first window: the page auto-expands it and starts its import,
+    # which can't happen if it is paged out. Load-more carries the pin forward so
+    # later windows keep the same order and the row never repeats.
+    auto_import = request.GET.get('auto_import', '')
+    pinned_show_id = int(auto_import) if auto_import.isdigit() else None
+    if pinned_show_id is not None:
+        ordering.insert(0, Case(When(id=pinned_show_id, then=0), default=1,
+                                output_field=IntegerField()))
+    manage_podcasts = manage_podcasts.order_by(*ordering)
 
     # Only the collapsed accordion headers render here — title, tier, counts.
     # Each show's full form (and its cross-publish selection) is fetched lazily
@@ -167,6 +178,7 @@ def gather_manage_podcasts(request, current_network):
         'show_q': show_q,
         'show_sort': show_sort,
         'show_mix': show_mix,
+        'pinned_show_id': pinned_show_id,
     }
     if not show_append:
         # The lazily-loaded forms' cross-publish pickers clone their options from

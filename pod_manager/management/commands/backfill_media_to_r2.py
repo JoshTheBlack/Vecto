@@ -54,8 +54,8 @@ _ASSET_SPECS = {
     'covers_network': (NetworkMix, 'image_upload', 500, 'covers/', 'network-mix cover'),
 }
 
-# Stable-key prefix -> the legacy LOCAL-key prefix it replaced (mirrors
-# models._LEGACY_IMAGE_PREFIXES). The re-key drops the old name from the DB, so
+# Stable-key prefix -> the legacy LOCAL-key prefix it replaced (the pre-cutover
+# custom_avatars/ and mix_covers/ dirs). The re-key drops the old name from the DB, so
 # prune can't read it off the row; it reconstructs the legacy path from the
 # stable key's stem (the same UUID / id-pair) under this directory.
 _LEGACY_DIR_FOR = {
@@ -117,7 +117,7 @@ class Command(BaseCommand):
                 totals[res] = totals.get(res, 0) + 1
 
         self.stdout.write(self.style.SUCCESS(
-            f"\nDone: {totals['migrated']} migrated, {totals['skipped']} skipped, "
+            f"\nDone: {totals['migrated']} migrated, {totals['skipped']} skipped (already in storage), "
             f"{totals['failed']} failed{' (dry-run)' if dry_run else ''}."
         ))
         from pod_manager.admin_console.summary import emit_summary

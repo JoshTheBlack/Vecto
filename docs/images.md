@@ -130,8 +130,9 @@ It is attached **per field** (`storage=select_media_storage`). The global `defau
 
 `models.py::_versioned_image_url(fieldfile, version)` is the single place that builds a cache-busted URL:
 
-- New stable webp keys → `fieldfile.url` + `?v=<version>` (cdn, or local `/media` when R2 is off).
-- **Legacy** pre-cutover keys (`custom_avatars/`, `mix_covers/`) → served from `/media` unchanged, so un-migrated rows keep working until the backfill re-keys them. **Delete this branch once every row is migrated.**
+- The stable webp key → `fieldfile.url` + `?v=<version>` (cdn, or local `/media` when R2 is off).
+
+There is no `/media` fallback for pre-cutover keys any more: every row was re-keyed and pruned, and that branch was removed.
 
 Consumers:
 
@@ -184,7 +185,9 @@ For each row with a local file it reads the bytes, processes to WebP, writes onc
 
 **MIGRATE → VERIFY → PRUNE:** run the backfill, `--verify` (HEADs every expected object) confirms presence, then `--prune` deletes the local copies. The verify/HEAD gate — not a time delay — is what makes the prune safe.
 
-> **`--prune` re-confirms R2 presence per file before deleting**, so it can never remove something not safely mirrored. It only touches **stable-key** rows; **legacy-keyed** rows are skipped (they're still served from `/media` via the transition branch until that's removed). It previews unless `--apply`; the irreversible delete needs `--apply --yes`. In prod, images were written straight to R2, so there's often nothing local to prune — the leftover legacy directories (`media/custom_avatars/`, `media/mix_covers/`) are removed when the transition branch is deleted.
+> **`--prune` re-confirms R2 presence per file before deleting**, so it can never remove something not safely mirrored. It only touches **stable-key** rows. It previews unless `--apply`; the irreversible delete needs `--apply --yes`. In prod, images were written straight to R2, so there's often nothing local to prune; the leftover legacy directories (`media/custom_avatars/`, `media/mix_covers/`) can be deleted by hand.
+
+**Checking every R2-backed file:** the backfill's `--verify` only covers avatars and mix covers. `manage.py verify_r2_media` HEADs every file field on the R2 media storage — those two plus network logos, fallback images, fonts and 404 images, and any field added later — and fails if any are missing. A missing one is usually a file uploaded while R2 media was off; re-upload it in the UI.
 
 ---
 

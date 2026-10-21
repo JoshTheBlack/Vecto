@@ -29,25 +29,6 @@ hx-select="#boosted-region" from trying to find a region in a rows-only response
     </h2>
     <div id="collapse-{{ show.id }}" class="accordion-collapse collapse" data-bs-parent="#showsAccordion">
         <div class="accordion-body">
-
-            <div class="mb-4 border-bottom border-secondary pb-3">
-                <div class="d-flex justify-content-between align-items-center mb-2">
-                    <span class="text-muted small fw-bold text-uppercase">Data Ingestion</span>
-                    <button type="button" class="btn btn-sm btn-success text-dark fw-bold" id="btn-import-{{ show.id }}" onclick="startLiveImport({{ show.id }})">
-                        <i class="bi bi-cloud-arrow-down-fill"></i> Run Live Import
-                    </button>
-                </div>
-
-                <div id="terminal-container-{{ show.id }}" class="d-none mt-3">
-                    <div class="text-end mb-1">
-                        <button type="button" class="btn btn-sm text-muted text-hover-warning p-0" onclick="document.getElementById('terminal-container-{{ show.id }}').classList.add('d-none')">
-                            <i class="bi bi-x-circle"></i> Close Log
-                        </button>
-                    </div>
-                    <pre id="terminal-{{ show.id }}" class="bg-black text-light p-3 rounded border border-secondary font-monospace" style="height: 250px; overflow-y: auto; font-size: 0.85rem; white-space: pre-wrap;"></pre>
-                </div>
-            </div>
-
             {% comment %}
             Divergence C's outer/inner split: the OUTER div hands #boosted-region
             to the loaded form (so saving a show swaps the region and leaves the
@@ -85,7 +66,7 @@ so the swap leaves nothing behind and the rows land as direct children of
 #showsAccordion, exactly like the first window's.
 {% endcomment %}
 <button type="button" class="btn btn-outline-light btn-sm d-block mx-auto my-3"
-        hx-get="{% url 'creator_tab_partial' 'shows' %}?network={{ current_network.slug }}&show_page={{ show_page_obj.next_page_number }}&show_q={{ show_q|urlencode }}&show_sort={{ show_sort|urlencode }}&show_mix={{ show_mix|urlencode }}"
+        hx-get="{% url 'creator_tab_partial' 'shows' %}?network={{ current_network.slug }}&show_page={{ show_page_obj.next_page_number }}&show_q={{ show_q|urlencode }}&show_sort={{ show_sort|urlencode }}&show_mix={{ show_mix|urlencode }}{% if pinned_show_id %}&auto_import={{ pinned_show_id }}{% endif %}"
         hx-trigger="click" hx-target="this" hx-swap="outerHTML"
         hx-select="unset" hx-push-url="false" hx-indicator="this">
     <span class="spinner-border spinner-border-sm htmx-indicator" role="status" aria-hidden="true"></span>

@@ -76,6 +76,9 @@
             </a>
             <a class="list-group-item list-group-item-action border-secondary {% if request.GET.tab == 'commissions' %}active{% endif %}" id="list-commissions-list" data-bs-toggle="list" href="#list-commissions" role="tab">
                 <i class="bi bi-list-ol me-2"></i> Commissions
+                {% if pending_commissions_count %}
+                <span class="badge rounded-pill ms-2" style="background-color: var(--vecto-primary); color: var(--vecto-surface-text);">{{ pending_commissions_count }}</span>
+                {% endif %}
             </a>
         </div>
     </div>

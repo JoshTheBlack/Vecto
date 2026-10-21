@@ -455,6 +455,27 @@ def task_send_otp_email(email, otp_code, network_name="Vecto", theme_config=None
     )
 
 @shared_task
+def task_send_commission_email(commission_id, kind):
+    from pod_manager.models import Commission
+    from pod_manager.services.commission_emails import send_commission_email
+    commission = Commission.objects.select_related('network', 'episode').filter(id=commission_id).first()
+    if commission is None:
+        return
+    send_commission_email(commission, kind)
+
+
+@shared_task
+def task_expire_commission_requests():
+    """Daily: unpaid pending commission requests past their network's window
+    become Expired (and the requester is told)."""
+    from pod_manager.services.commissions import expire_stale_requests
+    expired = expire_stale_requests()
+    if expired:
+        logger.info(f"[Commissions] Expired {len(expired)} unpaid request(s).")
+    return len(expired)
+
+
+@shared_task
 def task_generate_s3_reports():
     """Runs the S3 Report generation script in the background."""
     logger.info("\n\n=======================================================")

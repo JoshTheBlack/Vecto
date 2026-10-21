@@ -16,6 +16,7 @@ from ...models import EpisodeEditSuggestion, EpisodeMatchSuggestion, NetworkMemb
 from ...services.guid_links import generated_guid_q
 from ...services.edits import chapter_items, score_contribution, scoring_config, FIRST_RESPONDER_BONUS, REJECT_PENALTY
 from ...utils import diagnostic_timer
+from ...services.commissions import expires_at
 from .commissions import price_preview_context, settings_for as commission_settings_for
 
 logger = logging.getLogger(__name__)
@@ -577,6 +578,9 @@ def gather_notfound_context(current_network):
 def gather_commissions_context(current_network):
     settings = commission_settings_for(current_network)
     commissions = current_network.commissions.select_related('requester')
+    pending = list(commissions.filter(status=Commission.Status.PENDING).order_by('requested_at'))
+    for c in pending:
+        c.expires = expires_at(c, settings)
     return {
         'commission_settings': settings,
         'commission_versions': current_network.commission_versions.all(),
@@ -584,6 +588,7 @@ def gather_commissions_context(current_network):
         'active_commissions': commissions.filter(status__in=Commission.ACTIVE_STATUSES),
         'released_commissions': commissions.filter(status=Commission.Status.RELEASED)
                                            .order_by('-released_at', '-requested_at'),
+        'pending_commissions': pending,
         'closed_commissions': commissions.filter(status__in=Commission.CLOSED_STATUSES).order_by('-updated_at'),
         'network_podcasts': network_podcast_list(current_network),
         **price_preview_context(current_network, settings),

@@ -2,84 +2,7 @@
 {% load vecto_format %}
 
 {% block content %}
-<style>
-    .cq-wrap { max-width: 60rem; margin: 0 auto; padding-bottom: 3rem; }
-
-    /* One surface panel behind the whole body, so text never sits on the raw
-       page background. Inside it: surface tokens only, never --vecto-bg-*.
-       Chips, rows and the toggle use an inset shade nudged toward the surface
-       text colour, which reads on dark and light themes alike. */
-    .cq-panel {
-        --cq-inset: color-mix(in srgb, var(--vecto-surface-text) 6%, var(--vecto-surface-bg));
-        padding: 1.5rem 1.25rem 2rem;
-        background: var(--vecto-surface-bg); color: var(--vecto-surface-text);
-        border: 1px solid var(--bs-border-color); border-radius: var(--bs-border-radius);
-    }
-    @media (min-width: 768px) { .cq-panel { padding: 2rem 2.5rem 2.5rem; } }
-
-    .cq-hero { padding-bottom: 0.5rem; text-align: center; }
-    .cq-hero h1 { color: var(--vecto-surface-text); letter-spacing: -0.02em; }
-    .cq-hero .cq-intro { color: var(--vecto-surface-muted); max-width: 44rem; margin: 0 auto; }
-    .cq-hero .cq-intro a { color: var(--vecto-primary); }
-
-    .cq-prices { display: flex; flex-wrap: wrap; justify-content: center; gap: 0.75rem; margin-top: 1.5rem; }
-    .cq-price {
-        min-width: 11rem; padding: 0.85rem 1.25rem; text-align: center;
-        background: var(--cq-inset);
-        border: 1px solid var(--bs-border-color); border-top: 3px solid var(--vecto-primary);
-        border-radius: var(--vecto-radius-md);
-    }
-    .cq-price-name { font-size: 0.75rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; color: var(--vecto-surface-muted); }
-    .cq-price-amount { font-size: 1.75rem; font-weight: 800; line-height: 1.2; color: var(--vecto-primary); }
-    .cq-price-desc { font-size: 0.8rem; color: var(--vecto-surface-muted); }
-    .cq-hint { margin-top: 0.85rem; font-size: 0.875rem; color: var(--vecto-surface-muted); }
-
-    .cq-section-title { display: flex; align-items: baseline; gap: 0.5rem; margin: 2rem 0 0.75rem; }
-    .cq-section-title h2 { font-size: 1.35rem; font-weight: 700; margin: 0; }
-    .cq-count { color: var(--vecto-surface-muted); font-size: 0.9rem; }
-
-    .cq-list { list-style: none; padding: 0; margin: 0; }
-    .cq-row {
-        display: flex; align-items: center; gap: 1rem;
-        padding: 0.85rem 1rem; margin-bottom: 0.5rem;
-        background: var(--cq-inset);
-        border: 1px solid var(--bs-border-color); border-radius: var(--vecto-radius-md);
-    }
-    .cq-num {
-        flex: 0 0 2.25rem; height: 2.25rem; display: flex; align-items: center; justify-content: center;
-        font-weight: 800; color: var(--vecto-primary-text); background: var(--vecto-primary);
-        border-radius: var(--vecto-radius-sm);
-    }
-    .cq-main { flex-grow: 1; min-width: 0; }
-    .cq-pick { font-weight: 700; overflow-wrap: anywhere; }
-    .cq-meta { font-size: 0.8rem; color: var(--vecto-surface-muted); }
-    .cq-meta a { color: var(--vecto-primary); }
-    .cq-status {
-        flex-shrink: 0; font-size: 0.72rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em;
-        padding: 0.3em 0.65em; border-radius: var(--vecto-radius-sm); border: 1px solid var(--bs-border-color);
-        color: var(--vecto-surface-muted);
-    }
-    .cq-status-scheduled { color: var(--vecto-primary); border-color: var(--vecto-primary); }
-    .cq-status-watched { color: var(--vecto-success-text); background: var(--vecto-success); border-color: var(--vecto-success); }
-    .cq-empty { padding: 2rem 1rem; text-align: center; color: var(--vecto-surface-muted); }
-
-    .cq-released-toggle {
-        width: 100%; display: flex; align-items: center; justify-content: space-between;
-        padding: 0.85rem 1rem; font-weight: 700;
-        background: var(--cq-inset); color: var(--vecto-surface-text);
-        border: 1px solid var(--bs-border-color); border-radius: var(--vecto-radius-md);
-    }
-    .cq-released-toggle:hover { border-color: var(--vecto-primary); }
-    .cq-released-toggle .bi { transition: transform 0.2s ease; }
-    .cq-released-toggle[aria-expanded="true"] .bi { transform: rotate(180deg); }
-    .cq-released .cq-row { padding: 0.65rem 1rem; }
-
-    .cq-details { margin-top: 2.5rem; padding-top: 2rem; border-top: 1px solid var(--bs-border-color); }
-    .cq-details h2, .cq-details h3 { font-weight: 700; margin-top: 1.25rem; }
-    .cq-details > :first-child { margin-top: 0; }
-    .cq-details > :last-child { margin-bottom: 0; }
-    .cq-details a { color: var(--vecto-primary); }
-</style>
+{% include 'pod_manager/snippets/_commission_styles.html' %}
 
 <div class="cq-wrap">
     {% if not settings.enabled %}
@@ -110,12 +33,39 @@
             The price goes up after {{ next_increase.0 }} more commission{{ next_increase.0|pluralize }}.
         </div>
         {% endif %}
-        {% if is_owner %}
-        <a href="{% url 'creator_settings' %}?network={{ current_network.slug }}&tab=commissions" class="btn btn-sm btn-subtle mt-3">
-            <i class="bi bi-gear me-1"></i> Manage queue
-        </a>
-        {% endif %}
+        <div class="d-flex flex-wrap justify-content-center gap-2 mt-4">
+            <a href="{% url 'commission_request' %}" class="btn btn-warning btn-lg fw-bold px-4">
+                <i class="bi bi-plus-lg me-1"></i> Commission a podcast
+            </a>
+            {% if is_owner %}
+            <a href="{% url 'creator_settings' %}?network={{ current_network.slug }}&tab=commissions" class="btn btn-subtle align-self-center">
+                <i class="bi bi-gear me-1"></i> Manage queue{% if awaiting_approval %} <span class="badge bg-warning ms-1">{{ awaiting_approval }} awaiting approval</span>{% endif %}
+            </a>
+            {% endif %}
+        </div>
     </section>
+
+    {% if your_requests %}
+    <div class="cq-section-title">
+        <h2>Your requests</h2>
+        <span class="cq-count">only you can see these</span>
+    </div>
+    <ul class="cq-list">
+        {% for c in your_requests %}
+        <li class="cq-row">
+            <div class="cq-main">
+                <a class="cq-pick text-reset" href="{% url 'commission_detail' c.reference %}">{{ c.pick }}</a>
+                <div class="cq-meta">
+                    {{ c.reference }} &middot; requested {{ c.requested_at|date:"M j, Y" }}
+                    {% if c.status == 'pending' %}&middot; {% if c.is_paid %}paid{% elif c.expires %}pay by {{ c.expires|date:"M j" }}{% endif %}{% endif %}
+                </div>
+            </div>
+            <span class="cq-status cq-status-{{ c.status }}">{{ c.get_status_display }}</span>
+            {% if c.status == 'pending' %}<a href="{% url 'commission_detail' c.reference %}" class="btn btn-sm btn-subtle">{% if c.is_paid %}View{% else %}Pay / view{% endif %}</a>{% endif %}
+        </li>
+        {% endfor %}
+    </ul>
+    {% endif %}
 
     <div class="cq-section-title">
         <h2>The queue</h2>

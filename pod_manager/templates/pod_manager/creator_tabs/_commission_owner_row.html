@@ -5,11 +5,12 @@ Params: c, number (queue position to show; omit for released), sortable
 (adds the drag handle and data-id for sortable_list.js).
 {% endcomment %}
 <div class="card bg-black border-secondary"{% if sortable %} data-id="{{ c.id }}"{% endif %}>
-    <div class="card-body py-2 d-flex flex-wrap align-items-center gap-2 gap-md-3">
-        {% if sortable %}<i class="bi bi-grip-vertical fs-5 text-muted" data-sortable-handle style="cursor: grab;" title="Drag to reorder"></i>{% endif %}
-        {% if number %}<span class="badge bg-warning">{{ number }}</span>{% endif %}
-        <div class="flex-grow-1 min-w-0">
-            <div class="fw-bold text-truncate">{{ c.pick }}</div>
+    {# One line, always: a long pick scrolls inside .cm-row-text instead of pushing the controls to a second row. #}
+    <div class="card-body py-2 d-flex align-items-center gap-2 gap-md-3">
+        {% if sortable %}<i class="bi bi-grip-vertical fs-5 text-muted flex-shrink-0" data-sortable-handle style="cursor: grab;" title="Drag to reorder"></i>{% endif %}
+        {% if number %}<span class="badge bg-warning flex-shrink-0">{{ number }}</span>{% endif %}
+        <div class="cm-row-text flex-grow-1" title="{{ c.pick }}">
+            <div class="fw-bold">{{ c.pick }}</div>
             <div class="small text-muted">
                 {{ c.credit_display }}{% if not c.credit_public and c.credit_name %} ({{ c.credit_name }}){% endif %}
                 &middot; {{ c.requested_at|date:"M j, Y" }}
@@ -18,7 +19,7 @@ Params: c, number (queue position to show; omit for released), sortable
                 &middot; <span title="PayPal invoice reference">{{ c.reference }}</span>
             </div>
         </div>
-        <form method="POST" action="{% url 'creator_settings' %}?network={{ current_network.slug }}&tab=commissions">
+        <form method="POST" action="{% url 'creator_settings' %}?network={{ current_network.slug }}&tab=commissions" class="flex-shrink-0">
             {% csrf_token %}
             <input type="hidden" name="action" value="set_commission_status">
             <input type="hidden" name="commission_id" value="{{ c.id }}">
@@ -29,10 +30,10 @@ Params: c, number (queue position to show; omit for released), sortable
                 {% endfor %}
             </select>
         </form>
-        <button type="button" class="btn btn-sm btn-subtle" data-bs-toggle="collapse" data-bs-target="#cm-edit-{{ c.id }}">
+        <button type="button" class="btn btn-sm btn-subtle flex-shrink-0" data-bs-toggle="collapse" data-bs-target="#cm-edit-{{ c.id }}">
             <i class="bi bi-pencil"></i> Edit
         </button>
-        <button type="button" class="btn btn-sm btn-outline-danger" data-bs-toggle="collapse" data-bs-target="#cm-remove-{{ c.id }}" title="Remove">
+        <button type="button" class="btn btn-sm btn-outline-danger flex-shrink-0" data-bs-toggle="collapse" data-bs-target="#cm-remove-{{ c.id }}" title="Remove">
             <i class="bi bi-x-lg"></i>
         </button>
     </div>

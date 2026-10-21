@@ -38,6 +38,10 @@ urlpatterns = [
     path('support/', views.support_page, name='support_page'),
     path('support/commissions/', views.commission_queue, name='commission_queue'),
     path('support/commissions/released/', views.commission_released, name='commission_released'),
+    path('support/commissions/request/', views.commission_request, name='commission_request'),
+    path('support/commissions/paypal-ipn/', views.commission_paypal_ipn, name='commission_paypal_ipn'),
+    path('support/commissions/<str:reference>/', views.commission_detail, name='commission_detail'),
+    path('support/commissions/<str:reference>/withdraw/', views.commission_withdraw, name='commission_withdraw'),
     
     # Auth & API Routes
     path('admin/', admin.site.urls),

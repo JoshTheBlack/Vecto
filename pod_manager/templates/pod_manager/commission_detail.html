@@ -1,0 +1,90 @@
+{% extends base_template|default:'pod_manager/base.html' %}
+{% load vecto_format %}
+
+{% block content %}
+{% include 'pod_manager/snippets/_commission_styles.html' %}
+
+<div class="cq-wrap">
+    <div class="cq-panel">
+        <a href="{% url 'commission_queue' %}" class="small text-muted text-decoration-none"><i class="bi bi-arrow-left"></i> Back to the queue</a>
+        <div class="d-flex flex-wrap align-items-center gap-2 mt-2 mb-4">
+            <h1 class="h2 fw-bold mb-0 me-auto">Your commission request</h1>
+            <span class="cq-status cq-status-{{ c.status }}">{{ c.get_status_display }}</span>
+        </div>
+
+        {% if just_paid and not c.is_paid %}
+        <div class="cq-notice cq-notice-ok"><i class="bi bi-check-circle me-1 text-success"></i>
+            Thanks! PayPal is confirming your payment; this page will show it as paid once it arrives (usually within a minute).</div>
+        {% elif just_cancelled and c.status == 'pending' %}
+        <div class="cq-notice"><i class="bi bi-info-circle me-1"></i>Payment cancelled. Your request is saved; you can pay whenever you're ready.</div>
+        {% endif %}
+
+        {% if c.status == 'pending' %}
+            {% if c.is_paid %}
+            <div class="cq-notice cq-notice-ok"><i class="bi bi-check-circle me-1 text-success"></i>
+                Paid. The hosts will review your pick and add it to the queue; we'll email {{ c.requester_email|default:'you' }} when they do.</div>
+            {% elif can_pay %}
+            <div class="cq-notice">
+                <p class="mb-2">Your request is saved. Pay to hold your spot, then the hosts will review your pick and add it to the queue.</p>
+                {% if expires %}<p class="small text-muted mb-3">Unpaid requests expire on <strong>{{ expires|date:"M j" }}</strong>.</p>{% endif %}
+                {# Leaves the site for PayPal, so htmx must not boost it (see ALLOWED_FORM_OPT_OUTS). #}
+                <form method="POST" action="{{ paypal_url }}" hx-boost="false">
+                    {% for name, value in paypal_fields.items %}<input type="hidden" name="{{ name }}" value="{{ value }}">{% endfor %}
+                    <button type="submit" class="btn btn-warning btn-lg fw-bold">
+                        <i class="bi bi-paypal me-1"></i> Pay {{ c.quoted_price|money:settings.currency }} with PayPal
+                    </button>
+                </form>
+                {% if settings.paypal_sandbox %}<div class="small text-warning mt-2">Sandbox mode: no real money changes hands.</div>{% endif %}
+            </div>
+            {% else %}
+            <div class="cq-notice">Your request is saved and waiting for the hosts. They'll be in touch about payment.</div>
+            {% if is_owner %}
+            <div class="cq-notice border-danger"><i class="bi bi-exclamation-triangle text-danger me-1"></i>
+                <strong>Owners only:</strong> there's no PayPal button because
+                {% if not settings.active_paypal_email %}no {% if settings.paypal_sandbox %}sandbox {% endif %}PayPal email is set. Add one in
+                <a href="{% url 'creator_settings' %}?network={{ current_network.slug }}&tab=commissions" class="text-warning">Creator Settings &gt; Commissions</a>.
+                {% else %}this request has no price to pay.{% endif %}
+            </div>
+            {% endif %}
+            {% endif %}
+        {% elif c.status == 'withdrawn' %}
+        <div class="cq-notice">You withdrew this request. If you'd already paid, reply to your confirmation email and we'll sort out a refund.</div>
+        {% elif c.status == 'expired' %}
+        <div class="cq-notice">This request expired unpaid. If you did pay, reply to your confirmation email and we'll sort it out.</div>
+        {% elif c.status == 'removed' %}
+        <div class="cq-notice">This request is no longer in the queue. The hosts will have emailed you about it.</div>
+        {% else %}
+        <div class="cq-notice cq-notice-ok"><i class="bi bi-check-circle me-1 text-success"></i>
+            Approved and in the queue. <a href="{% url 'commission_queue' %}" class="text-warning">See where it is</a>.</div>
+        {% endif %}
+
+        <table class="cq-summary mb-4">
+            <tr><th>Pick</th><td><strong>{{ c.pick }}</strong></td></tr>
+            {% if c.version_name %}<tr><th>Version</th><td>{{ c.version_name }}</td></tr>{% endif %}
+            {% if c.quoted_price is not None %}<tr><th>Price</th><td>{{ c.quoted_price|money:settings.currency }}</td></tr>{% endif %}
+            <tr><th>Credit</th><td>{{ c.credit_display }}</td></tr>
+            <tr><th>Requested</th><td>{{ c.requested_at|date:"M j, Y" }}</td></tr>
+            <tr><th>Reference</th><td>{{ c.reference }}</td></tr>
+            {% if c.requester_notes %}<tr><th>Your notes</th><td>{{ c.requester_notes|linebreaksbr }}</td></tr>{% endif %}
+        </table>
+
+        {% if c.status == 'pending' %}
+        <form method="POST" action="{% url 'commission_withdraw' c.reference %}">
+            {% csrf_token %}
+            {% if token %}<input type="hidden" name="t" value="{{ token }}">{% endif %}
+            <button type="submit" class="btn btn-sm btn-outline-danger"
+                    data-confirm-slide="{% if c.is_paid %}Cancels it. Reply to your confirmation email for a refund.{% else %}Cancels the request.{% endif %}">
+                Withdraw request
+            </button>
+        </form>
+        {% endif %}
+
+        {% if is_guest_link and not request.user.is_authenticated %}
+        <p class="small text-muted mt-4 mb-0"><i class="bi bi-key me-1"></i>
+            This page's link is private: it's how you get back here, so keep your confirmation email.
+            <a href="{% url 'recurly_login' %}?next={% url 'commission_queue' %}" class="text-warning">Sign in</a> with {{ c.requester_email }}
+            and this request will be linked to your account.</p>
+        {% endif %}
+    </div>
+</div>
+{% endblock %}

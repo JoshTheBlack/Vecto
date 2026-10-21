@@ -1,0 +1,78 @@
+{% load vecto_format %}
+{% comment %}
+One request awaiting approval in the owner's Commissions tab: who asked,
+what PayPal reported, when it expires, and Approve / Mark paid / Remove.
+Param: c (with c.expires set by gather_commissions_context).
+{% endcomment %}
+<div class="card bg-black border-warning">
+    <div class="card-body py-3">
+        <div class="d-flex flex-wrap align-items-start gap-2">
+            <div class="flex-grow-1 min-w-0">
+                <div class="fw-bold">{{ c.pick }}</div>
+                <div class="small text-muted">
+                    {{ c.requester_name|default:'(no name)' }}
+                    {% if c.requester_email %}&lt;<a href="mailto:{{ c.requester_email }}" class="text-warning">{{ c.requester_email }}</a>&gt;{% endif %}
+                    {% if c.requester_id %}<span class="badge border border-secondary text-muted fw-normal">account</span>{% else %}<span class="badge border border-secondary text-muted fw-normal">guest</span>{% endif %}
+                    &middot; {{ c.requested_at|date:"M j, Y g:i A" }}
+                </div>
+                <div class="small text-muted">
+                    {% if c.version_name %}{{ c.version_name }} &middot; {% endif %}
+                    quoted <strong class="text-light">{{ c.quoted_price|money:commission_settings.currency }}</strong>
+                    &middot; ref <strong class="text-light">{{ c.reference }}</strong>
+                    &middot; credit: {{ c.credit_display }}{% if not c.credit_public and c.credit_name %} ({{ c.credit_name }}){% endif %}
+                </div>
+            </div>
+            <div class="text-end small">
+                {% if c.payment_flag == 'amount_mismatch' %}
+                <span class="badge bg-danger">Paid {{ c.paid_amount|money:c.paid_currency }}, quoted {{ c.quoted_price|money:commission_settings.currency }}</span>
+                {% elif c.payment_flag == 'refunded' %}
+                <span class="badge bg-danger">Refunded in PayPal</span>
+                {% elif c.paypal_txn_id %}
+                <span class="badge bg-success">Paid {{ c.paid_amount|money:c.paid_currency }} via PayPal</span>
+                {% elif c.is_paid %}
+                <span class="badge bg-success">Marked paid</span>
+                {% else %}
+                <span class="badge border border-warning text-warning">Not paid yet</span>
+                {% endif %}
+                {% if c.expires %}<div class="text-muted mt-1">expires {{ c.expires|date:"M j" }} ({{ c.expires|timeuntil }})</div>{% endif %}
+            </div>
+        </div>
+        {% if c.requester_notes %}<div class="small mt-2 p-2 border border-secondary" style="border-radius: var(--vecto-radius-sm);"><i class="bi bi-chat-left-text me-1 text-muted"></i>{{ c.requester_notes|linebreaksbr }}</div>{% endif %}
+
+        <div class="d-flex flex-wrap gap-2 mt-3">
+            <form method="POST" action="{% url 'creator_settings' %}?network={{ current_network.slug }}&tab=commissions">
+                {% csrf_token %}
+                <input type="hidden" name="action" value="approve_commission">
+                <input type="hidden" name="commission_id" value="{{ c.id }}">
+                <button type="submit" class="btn btn-sm btn-warning fw-bold"
+                        {% if not c.is_paid %}data-confirm-slide="Not marked paid. Approve anyway?"{% endif %}>
+                    <i class="bi bi-check-lg"></i> Approve
+                </button>
+            </form>
+            {% if not c.is_paid %}
+            <form method="POST" action="{% url 'creator_settings' %}?network={{ current_network.slug }}&tab=commissions">
+                {% csrf_token %}
+                <input type="hidden" name="action" value="mark_commission_paid">
+                <input type="hidden" name="commission_id" value="{{ c.id }}">
+                <button type="submit" class="btn btn-sm btn-subtle" title="For a payment that arrived some other way. Stops it expiring.">
+                    <i class="bi bi-cash-coin"></i> Mark paid
+                </button>
+            </form>
+            {% endif %}
+            <button type="button" class="btn btn-sm btn-outline-danger" data-bs-toggle="collapse" data-bs-target="#cm-remove-{{ c.id }}">
+                <i class="bi bi-x-lg"></i> Decline
+            </button>
+        </div>
+        <div class="collapse" id="cm-remove-{{ c.id }}">
+            <form method="POST" action="{% url 'creator_settings' %}?network={{ current_network.slug }}&tab=commissions" class="mt-2">
+                {% csrf_token %}
+                <input type="hidden" name="action" value="remove_commission">
+                <input type="hidden" name="commission_id" value="{{ c.id }}">
+                <textarea name="removal_reason" rows="2" class="form-control form-control-sm bg-black text-light border-secondary"
+                          placeholder="Why? (owners only)"></textarea>
+                <button type="submit" class="btn btn-sm btn-outline-danger mt-2"
+                        data-confirm-slide="Vecto sends nothing: refund it in PayPal and email them yourself.">Decline request</button>
+            </form>
+        </div>
+    </div>
+</div>

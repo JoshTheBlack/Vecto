@@ -64,6 +64,16 @@ def _whole(data, name, label, *, minimum=0, required=False):
     return int(raw)
 
 
+def _email(data, name, label):
+    value = (data.get(name) or '').strip()
+    if value:
+        try:
+            validate_email(value)
+        except ValidationError:
+            raise FormError(f"{label} isn't a valid address.")
+    return value
+
+
 def _date(data, name, label):
     raw = (data.get(name) or '').strip()
     if not raw:
@@ -98,12 +108,8 @@ def handle_update_commission_settings(request, current_network):
         currency = (data.get('currency') or 'USD').strip().upper()
         if not _CURRENCY.match(currency):
             raise FormError("Currency must be a 3-letter code, e.g. USD.")
-        paypal_email = (data.get('paypal_email') or '').strip()
-        if paypal_email:
-            try:
-                validate_email(paypal_email)
-            except ValidationError:
-                raise FormError("The PayPal email isn't a valid address.")
+        paypal_email = _email(data, 'paypal_email', 'The PayPal email')
+        paypal_sandbox_email = _email(data, 'paypal_sandbox_email', 'The sandbox PayPal email')
         settings.cadence_days = _whole(data, 'cadence_days', 'Cadence', minimum=1)
         settings.pending_expiry_days = _whole(data, 'pending_expiry_days', 'Expiry', minimum=1) or 7
     except FormError as e:
@@ -116,11 +122,13 @@ def handle_update_commission_settings(request, current_network):
     settings.enabled = data.get('enabled') == 'on'
     settings.currency = currency
     settings.paypal_email = paypal_email
+    settings.paypal_sandbox_email = paypal_sandbox_email
     settings.page_title = data.get('page_title', '').strip()[:100] or 'Commission a Podcast'
     settings.intro = sanitize_user_html(data.get('intro', ''))
     settings.details = sanitize_user_html(data.get('details', ''))
     settings.request_terms = sanitize_user_html(data.get('request_terms', ''))
     settings.show_price_hint = data.get('show_price_hint') == 'on'
+    settings.paypal_sandbox = data.get('paypal_sandbox') == 'on'
     settings.save()
     messages.success(request, "Commission settings saved.")
 
@@ -230,6 +238,7 @@ def handle_add_commission(request, current_network):
                             position=lifecycle.next_position(current_network))
     try:
         _apply_commission_fields(request.POST, commission, current_network)
+        # A backfill can start in any approved status; it emails nobody.
         lifecycle.set_status(commission, _approved_status(request.POST))
     except (FormError, ValueError) as e:
         messages.error(request, str(e))
@@ -240,14 +249,17 @@ def handle_add_commission(request, current_network):
 
 def handle_edit_commission(request, current_network):
     commission = get_object_or_404(Commission, id=request.POST.get('commission_id'), network=current_network)
+    released = False
     try:
         _apply_commission_fields(request.POST, commission, current_network)
         if commission.status in Commission.PUBLIC_STATUSES:
-            lifecycle.set_status(commission, _approved_status(request.POST))
+            released = lifecycle.set_status(commission, _approved_status(request.POST))
     except (FormError, ValueError) as e:
         messages.error(request, str(e))
         return
     commission.save()
+    if released:
+        lifecycle.announce_release(commission)
     messages.success(request, f"'{commission.pick}' saved.")
 
 
@@ -255,11 +267,13 @@ def handle_set_commission_status(request, current_network):
     """The status select on each queue row (no other fields)."""
     commission = get_object_or_404(Commission, id=request.POST.get('commission_id'), network=current_network)
     try:
-        lifecycle.set_status(commission, _approved_status(request.POST))
+        released = lifecycle.set_status(commission, _approved_status(request.POST))
     except (FormError, ValueError) as e:
         messages.error(request, str(e))
         return
     commission.save()
+    if released:
+        lifecycle.announce_release(commission)
     messages.success(request, f"'{commission.pick}' is now {commission.get_status_display()}.")
 
 
@@ -281,7 +295,30 @@ def handle_restore_commission(request, current_network):
     except ValueError as e:
         messages.error(request, str(e))
         return
-    messages.success(request, f"'{commission.pick}' is back at the end of the queue.")
+    if commission.status == Commission.Status.PENDING:
+        messages.success(request, f"'{commission.pick}' is awaiting approval again; its expiry clock restarted.")
+    else:
+        messages.success(request, f"'{commission.pick}' is back at the end of the queue.")
+
+
+def handle_approve_commission(request, current_network):
+    commission = get_object_or_404(Commission, id=request.POST.get('commission_id'), network=current_network)
+    try:
+        lifecycle.approve(commission)
+    except ValueError as e:
+        messages.error(request, str(e))
+        return
+    messages.success(request, f"'{commission.pick}' approved and added to the end of the queue.")
+
+
+def handle_mark_commission_paid(request, current_network):
+    commission = get_object_or_404(Commission, id=request.POST.get('commission_id'), network=current_network)
+    try:
+        lifecycle.mark_paid(commission)
+    except ValueError as e:
+        messages.error(request, str(e))
+        return
+    messages.success(request, f"'{commission.pick}' marked paid. It won't expire.")
 
 
 def handle_delete_commission(request, current_network):
@@ -321,6 +358,8 @@ COMMISSION_ACTION_HANDLERS = {
     'set_commission_status':        handle_set_commission_status,
     'remove_commission':            handle_remove_commission,
     'restore_commission':           handle_restore_commission,
+    'approve_commission':           handle_approve_commission,
+    'mark_commission_paid':         handle_mark_commission_paid,
     'delete_commission':            handle_delete_commission,
     'reorder_commissions':          handle_reorder_commissions,
     'sort_commissions_by_date':     handle_sort_commissions_by_date,

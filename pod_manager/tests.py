@@ -482,6 +482,13 @@ class PendingApprovalsContextProcessorTests(TestCase):
         req = _make_tenant_request(self.factory, None, user=user)
         return pending_approvals(req)
 
+    COUNT_KEYS = ('pending_approval_count', 'pending_edit_count', 'pending_pair_count',
+                  'pending_commission_count')
+
+    def _counts(self, user):
+        ctx = self._ctx(user)
+        return {k: ctx[k] for k in self.COUNT_KEYS} if ctx else ctx
+
     def test_anonymous_gets_no_key(self):
         from django.contrib.auth.models import AnonymousUser
         self.assertEqual(self._ctx(AnonymousUser()), {})
@@ -489,10 +496,11 @@ class PendingApprovalsContextProcessorTests(TestCase):
     def test_owner_count_aggregates_across_owned_networks_only(self):
         # 2 pending edits across network_a + network_b; the 4th (other_network)
         # must NOT be counted even though request.network is None here.
-        self.assertEqual(self._ctx(self.owner), {
+        self.assertEqual(self._counts(self.owner), {
             'pending_approval_count': 2,
             'pending_edit_count': 2,
             'pending_pair_count': 0,
+            'pending_commission_count': 0,
         })
 
     def test_owner_with_no_networks_gets_no_key(self):
@@ -500,17 +508,19 @@ class PendingApprovalsContextProcessorTests(TestCase):
         self.assertEqual(self._ctx(bystander), {})
 
     def test_superuser_counts_every_network(self):
-        self.assertEqual(self._ctx(self.superuser), {
+        self.assertEqual(self._counts(self.superuser), {
             'pending_approval_count': 3,
             'pending_edit_count': 3,
             'pending_pair_count': 0,
+            'pending_commission_count': 0,
         })
 
     def test_other_owner_only_sees_their_own_network(self):
-        self.assertEqual(self._ctx(self.other_owner), {
+        self.assertEqual(self._counts(self.other_owner), {
             'pending_approval_count': 1,
             'pending_edit_count': 1,
             'pending_pair_count': 0,
+            'pending_commission_count': 0,
         })
 
     def test_pending_pairs_add_into_the_total(self):
@@ -522,17 +532,42 @@ class PendingApprovalsContextProcessorTests(TestCase):
             network=self.other_network, title='O2 Show', slug='o2-show')
         self._pair(self.other_network, other_podcast, 3)
 
-        self.assertEqual(self._ctx(self.owner), {
+        self.assertEqual(self._counts(self.owner), {
             'pending_approval_count': 3,
             'pending_edit_count': 2,
             'pending_pair_count': 1,
+            'pending_commission_count': 0,
         })
         # Superuser sees every network: 3 edits + 2 pending pairs.
-        self.assertEqual(self._ctx(self.superuser), {
+        self.assertEqual(self._counts(self.superuser), {
             'pending_approval_count': 5,
             'pending_edit_count': 3,
             'pending_pair_count': 2,
+            'pending_commission_count': 0,
         })
+
+    def test_pending_commissions_add_into_the_total_and_set_the_link(self):
+        from pod_manager.models import Commission
+        EpisodeEditSuggestion.objects.filter(status=EpisodeEditSuggestion.Status.PENDING).delete()
+        Commission.objects.create(network=self.network_b, pick='Mine', status='pending')
+        Commission.objects.create(network=self.network_b, pick='Queued', status='queued')
+        Commission.objects.create(network=self.other_network, pick='Theirs', status='pending')
+        ctx = self._ctx(self.owner)
+        self.assertEqual({k: ctx[k] for k in self.COUNT_KEYS}, {
+            'pending_approval_count': 1, 'pending_edit_count': 0,
+            'pending_pair_count': 0, 'pending_commission_count': 1,
+        })
+        self.assertEqual(ctx['pending_approval_url'], '/creator/?network=b&tab=commissions')
+        self.assertEqual(ctx['pending_approval_summary'], '1 item awaiting review: 1 commission request')
+
+    def test_summary_lists_every_queue_and_edits_take_the_link(self):
+        from pod_manager.models import Commission
+        self._pair(self.network_a, self.podcast_a, 1)
+        Commission.objects.create(network=self.network_a, pick='Mine', status='pending')
+        ctx = self._ctx(self.owner)
+        self.assertEqual(ctx['pending_approval_url'], '/creator/?tab=inbox')
+        self.assertEqual(ctx['pending_approval_summary'],
+                         '4 items awaiting review: 2 edits, 1 suggested pair, 1 commission request')
 
 
 @override_settings(CACHES=TEST_CACHES)
@@ -12532,6 +12567,8 @@ class BaseTemplateContractTests(SimpleTestCase):
             arg = m.group(1).strip()
             if arg.startswith('"admin/') or arg.startswith("'admin/"):
                 continue                      # Django admin, boost-opted-out
+            if path.parent.name == 'email':
+                continue                      # emails extend their own layout; never served
             if not re.match(r"""base_template\|default:['"]pod_manager/base\.html['"]""", arg):
                 bad.append(f'{path.relative_to(self.TEMPLATE_ROOT)}: {arg}')
         self.assertEqual(bad, [], msg='Unexpected {% extends %} target(s):\n  ' + '\n  '.join(bad))
@@ -12778,7 +12815,13 @@ class BoostOptOutContractTests(SimpleTestCase):
     # a progress bar is not a reason (that is what the widget is). A form whose
     # OWN JS truly must own the submit may be listed here with the reason, and
     # must still finish with a region swap rather than a navigation.
-    ALLOWED_FORM_OPT_OUTS = {}
+    #
+    # The one exception is a form whose whole job is to LEAVE the site: htmx
+    # can't boost a cross-origin POST at all, and the browser navigating away
+    # is the intended result.
+    ALLOWED_FORM_OPT_OUTS = {
+        'commission_detail.html': "Pay with PayPal: POSTs to PayPal's checkout (cmd=_xclick) by design.",
+    }
 
     @property
     def TEMPLATE_ROOT(self):
@@ -17223,3 +17266,495 @@ class SupportCommissionCardCreatorTests(TestCase):
     def test_unknown_kind_rejected(self):
         self._add(kind='bogus')
         self.assertFalse(self.network.support_links.exists())
+
+
+@override_settings(ALLOWED_HOSTS=['*'])
+class CommissionRequestFlowTests(TestCase):
+    """Phase 3, public side: the request form (guests and accounts), the
+    requester's page and its PayPal link, withdraw, and "Your requests"."""
+
+    def setUp(self):
+        from decimal import Decimal
+        from pod_manager.models import CommissionSettings, CommissionVersion
+        cache.clear()
+        self.host = 'requests.example.test'
+        self.network = Network.objects.create(name='ReqNet', slug='reqnet', custom_domain=self.host)
+        self.owner = User.objects.create_user('reqowner', email='owner@reqnet.test', password='x')
+        self.network.owners.add(self.owner)
+        self.fan = User.objects.create_user('fan@example.com', email='fan@example.com', password='x',
+                                            first_name='Fan', last_name='Person')
+        self.settings = CommissionSettings.objects.create(
+            network=self.network, enabled=True, base_price=Decimal('500'), step_amount=Decimal('50'),
+            step_every=1, paypal_email='pay@reqnet.test')
+        self.no_ads = CommissionVersion.objects.create(network=self.network, name='No Ads', position=0)
+        self.with_ads = CommissionVersion.objects.create(network=self.network, name='With Ads', position=1,
+                                                         price_adjustment=Decimal('-100'))
+
+    def _get(self, path, **params):
+        return self.client.get(path, params, HTTP_HOST=self.host)
+
+    def _post(self, path, data):
+        return self.client.post(path, data, HTTP_HOST=self.host)
+
+    def _request(self, **overrides):
+        data = {'name': 'Guest Gal', 'email': 'guest@example.com', 'pick': 'Heat (1995)',
+                'version': self.no_ads.id, 'credit_name': 'GG', 'credit_public': 'on', 'notes': 'Birthday!'}
+        data.update(overrides)
+        with self.captureOnCommitCallbacks(execute=True):
+            return self._post('/support/commissions/request/', data)
+
+    def test_guest_form_encourages_sign_in(self):
+        body = self._get('/support/commissions/request/').content.decode()
+        self.assertIn('Sign in first?', body)
+        self.assertIn('next=/support/commissions/request/', body.replace('%2F', '/'))
+        self.client.force_login(self.fan)
+        body = self._get('/support/commissions/request/').content.decode()
+        self.assertNotIn('Sign in first?', body)
+        self.assertIn('Requesting as', body)
+
+    def test_guest_request_is_pending_priced_and_emailed(self):
+        from django.core import mail
+        from decimal import Decimal
+        _commission(self.network, status='queued')      # one in the queue: base steps to 550
+        resp = self._request()
+        c = self.network.commissions.get(pick='Heat (1995)')
+        self.assertEqual(c.status, 'pending')
+        self.assertIsNone(c.requester)
+        self.assertEqual((c.requester_name, c.requester_email), ('Guest Gal', 'guest@example.com'))
+        self.assertEqual(c.quoted_price, Decimal('550.00'))
+        self.assertEqual(c.version_name, 'No Ads')
+        self.assertTrue(c.access_token)
+        self.assertIsNotNone(c.pending_since)
+        self.assertEqual(resp.status_code, 302)
+        self.assertIn(f'/support/commissions/{c.reference}/?t={c.access_token}', resp['Location'])
+
+        recipients = sorted(m.to[0] for m in mail.outbox)
+        self.assertEqual(recipients, ['guest@example.com', 'owner@reqnet.test'])
+        receipt = next(m for m in mail.outbox if m.to == ['guest@example.com'])
+        self.assertIn(c.access_token, receipt.alternatives[0][0])
+
+    def test_price_stays_locked_when_the_queue_grows(self):
+        from decimal import Decimal
+        self._request()
+        for _ in range(3):
+            _commission(self.network, status='queued')
+        self.assertEqual(self.network.commissions.get(status='pending').quoted_price, Decimal('500.00'))
+
+    def test_guest_needs_name_email_pick_version_and_terms(self):
+        self.settings.request_terms = '<p>No refunds after watching.</p>'
+        self.settings.save()
+        for bad in ({'name': ''}, {'email': 'nope'}, {'pick': ''}, {'version': ''},
+                    {'version': 999999}):
+            with self.subTest(bad=bad):
+                resp = self._request(accept_terms='on', **bad)
+                self.assertEqual(resp.status_code, 200)
+        resp = self._request()                      # terms not accepted
+        self.assertContains(resp, 'Please accept the terms.')
+        self.assertFalse(self.network.commissions.exists())
+        self._request(accept_terms='on')
+        self.assertTrue(self.network.commissions.exists())
+
+    def test_retired_version_cannot_be_requested(self):
+        self.with_ads.is_active = False
+        self.with_ads.save()
+        self._request(version=self.with_ads.id)
+        self.assertFalse(self.network.commissions.exists())
+
+    def test_signed_in_request_uses_the_account(self):
+        self.client.force_login(self.fan)
+        self._request(name='', email='')
+        c = self.network.commissions.get()
+        self.assertEqual(c.requester, self.fan)
+        self.assertEqual((c.requester_name, c.requester_email), ('Fan Person', 'fan@example.com'))
+        self.assertIsNone(c.access_token)
+
+    def test_ten_pending_per_requester(self):
+        for i in range(10):
+            _commission(self.network, pick=f'Old {i}', status='pending', requester_email='GUEST@example.com')
+        resp = self._request()
+        self.assertContains(resp, 'already have 10 requests waiting')
+        self.assertFalse(self.network.commissions.filter(pick='Heat (1995)').exists())
+        self._request(email='someone-else@example.com')
+        self.assertTrue(self.network.commissions.filter(pick='Heat (1995)').exists())
+
+    def test_guest_ip_throttle(self):
+        for i in range(10):
+            self._request(email=f'g{i}@example.com')
+        resp = self._request(email='g10@example.com')
+        self.assertContains(resp, 'Too many requests from here')
+        self.assertEqual(self.network.commissions.count(), 10)
+        self.client.force_login(self.fan)               # accounts aren't IP-throttled
+        self._request()
+        self.assertEqual(self.network.commissions.count(), 11)
+
+    def test_closed_queue_takes_no_requests(self):
+        self.settings.enabled = False
+        self.settings.save()
+        self.assertEqual(self._get('/support/commissions/request/').status_code, 404)
+        self.assertEqual(self._request().status_code, 404)
+
+    def test_request_page_access(self):
+        self._request()
+        c = self.network.commissions.get()
+        path = f'/support/commissions/{c.reference}/'
+        self.assertEqual(self._get(path, t=c.access_token).status_code, 200)
+        self.assertEqual(self._get(path).status_code, 404)
+        self.assertEqual(self._get(path, t='wrong').status_code, 404)
+        self.client.force_login(self.fan)
+        self.assertEqual(self._get(path).status_code, 404)
+        self.client.force_login(self.owner)
+        self.assertEqual(self._get(path).status_code, 200)
+
+    def _paypal_form(self, resp):
+        """(action, {field: value}) of the Pay with PayPal form, or None."""
+        body = resp.content.decode()
+        form = re.search(r'<form method="POST" action="(https://www(?:\.sandbox)?\.paypal\.com/cgi-bin/webscr)"[^>]*>(.*?)</form>',
+                         body, re.S)
+        if not form:
+            return None
+        fields = dict(re.findall(r'<input type="hidden" name="([^"]+)" value="([^"]*)">', form.group(2)))
+        return form.group(1), {k: v.replace('&amp;', '&') for k, v in fields.items()}
+
+    def test_paypal_form_carries_the_locked_price_and_reference(self):
+        self._request()
+        c = self.network.commissions.get()
+        action, params = self._paypal_form(self._get(f'/support/commissions/{c.reference}/', t=c.access_token))
+        self.assertEqual(action, 'https://www.paypal.com/cgi-bin/webscr')
+        self.assertEqual(params['cmd'], '_xclick')
+        self.assertEqual(params['business'], 'pay@reqnet.test')
+        self.assertEqual(params['amount'], '500.00')
+        self.assertEqual(params['invoice'], c.reference)
+        self.assertEqual(params['notify_url'], f'http://{self.host}/support/commissions/paypal-ipn/')
+        self.assertIn(f't={c.access_token}', params['return'])
+        self.assertIn('paid=1', params['return'])
+
+    def test_sandbox_pays_the_sandbox_account(self):
+        self._request()
+        c = self.network.commissions.get()
+        path = f'/support/commissions/{c.reference}/'
+        self.settings.paypal_sandbox = True
+        self.settings.save()
+        # Sandbox on with no sandbox account: no button (a real account can't take sandbox payments).
+        self.assertIsNone(self._paypal_form(self._get(path, t=c.access_token)))
+        self.settings.paypal_sandbox_email = 'sb-biz@business.example.com'
+        self.settings.save()
+        action, params = self._paypal_form(self._get(path, t=c.access_token))
+        self.assertEqual(action, 'https://www.sandbox.paypal.com/cgi-bin/webscr')
+        self.assertEqual(params['business'], 'sb-biz@business.example.com')
+
+    def test_paypal_form_hidden_once_paid_or_without_an_account(self):
+        self._request()
+        c = self.network.commissions.get()
+        path = f'/support/commissions/{c.reference}/'
+        c.paid_marked_at = timezone.now()
+        c.save()
+        self.assertIsNone(self._paypal_form(self._get(path, t=c.access_token)))
+        c.paid_marked_at = None
+        c.save()
+        self.settings.paypal_email = ''
+        self.settings.save()
+        self.assertIsNone(self._paypal_form(self._get(path, t=c.access_token)))
+
+    def test_missing_paypal_email_is_explained_to_owners_only(self):
+        self.settings.paypal_email = ''
+        self.settings.save()
+        self._request()
+        c = self.network.commissions.get()
+        path = f'/support/commissions/{c.reference}/'
+        guest_view = self._get(path, t=c.access_token)
+        self.assertContains(guest_view, "be in touch about payment")
+        self.assertNotContains(guest_view, 'no PayPal email is set')
+        self.client.force_login(self.owner)
+        self.assertContains(self._get(path), 'no PayPal email is set')
+
+    def test_guest_withdraws_with_the_token_only(self):
+        from django.core import mail
+        self._request()
+        c = self.network.commissions.get()
+        path = f'/support/commissions/{c.reference}/withdraw/'
+        self.assertEqual(self._post(path, {}).status_code, 404)
+        mail.outbox.clear()
+        with self.captureOnCommitCallbacks(execute=True):
+            self._post(path, {'t': c.access_token})
+        c.refresh_from_db()
+        self.assertEqual(c.status, 'withdrawn')
+        self.assertEqual([m.to for m in mail.outbox], [['guest@example.com']])
+
+    def test_approved_request_cannot_be_withdrawn(self):
+        self._request()
+        c = self.network.commissions.get()
+        c.status = 'queued'
+        c.save()
+        self._post(f'/support/commissions/{c.reference}/withdraw/', {'t': c.access_token})
+        c.refresh_from_db()
+        self.assertEqual(c.status, 'queued')
+
+    def test_your_requests_and_owner_count_on_the_queue_page(self):
+        self.client.force_login(self.fan)
+        self._request(pick='My pick')
+        _commission(self.network, pick='Someone else', status='pending', requester_email='x@example.com')
+        body = self._get('/support/commissions/').content.decode()
+        self.assertIn('Your requests', body)
+        self.assertIn('My pick', body)
+        self.assertNotIn('Someone else', body)
+        self.client.force_login(self.owner)
+        self.assertContains(self._get('/support/commissions/'), '2 awaiting approval')
+
+
+class CommissionOwnerActionTests(TestCase):
+    """Phase 3, owner side: approve, mark paid, decline, restore an expired
+    request, the release email, and expiry."""
+
+    def setUp(self):
+        from pod_manager.models import CommissionSettings
+        self.factory = RequestFactory()
+        self.owner = User.objects.create_user(username='aowner', email='aowner@example.com')
+        self.network = Network.objects.create(name='Net', slug='actnet', custom_domain='act.example.test')
+        self.network.owners.add(self.owner)
+        self.settings = CommissionSettings.objects.create(network=self.network, enabled=True, pending_expiry_days=7)
+
+    def _post(self, data):
+        req = _make_tenant_request(self.factory, self.network, method='post',
+                                   path=f'/creator/?network={self.network.slug}&tab=commissions',
+                                   data=data, user=self.owner)
+        with self.captureOnCommitCallbacks(execute=True):
+            return views.creator_settings(req)
+
+    def _pending(self, **extra):
+        return _commission(self.network, status='pending', requester_email='guest@example.com',
+                           pending_since=timezone.now(), **extra)
+
+    def test_approve_queues_at_the_end_and_emails(self):
+        from django.core import mail
+        _commission(self.network, pick='Already queued', position=5)
+        c = self._pending()
+        self._post({'action': 'approve_commission', 'commission_id': c.id})
+        c.refresh_from_db()
+        self.assertEqual(c.status, 'queued')
+        self.assertIsNotNone(c.approved_at)
+        self.assertEqual(c.position, 6)
+        self.assertEqual([m.to for m in mail.outbox], [['guest@example.com']])
+        self.assertIn('in the queue', mail.outbox[0].subject)
+
+    def test_mark_paid_and_decline_without_email(self):
+        from django.core import mail
+        c = self._pending()
+        self._post({'action': 'mark_commission_paid', 'commission_id': c.id})
+        c.refresh_from_db()
+        self.assertTrue(c.is_paid)
+        self._post({'action': 'remove_commission', 'commission_id': c.id, 'removal_reason': 'Not our thing'})
+        c.refresh_from_db()
+        self.assertEqual(c.status, 'removed')
+        self.assertEqual(mail.outbox, [])
+
+    def test_only_pending_can_be_approved(self):
+        c = _commission(self.network, status='withdrawn')
+        self._post({'action': 'approve_commission', 'commission_id': c.id})
+        c.refresh_from_db()
+        self.assertEqual(c.status, 'withdrawn')
+
+    def test_restoring_an_expired_request_restarts_its_clock(self):
+        old = timezone.now() - timedelta(days=30)
+        c = _commission(self.network, status='expired', pending_since=old)
+        self._post({'action': 'restore_commission', 'commission_id': c.id})
+        c.refresh_from_db()
+        self.assertEqual(c.status, 'pending')
+        self.assertGreater(c.pending_since, old)
+
+    def test_release_emails_the_requester_but_backfill_does_not(self):
+        from django.core import mail
+        c = _commission(self.network, requester_email='fan@example.com')
+        self._post({'action': 'set_commission_status', 'commission_id': c.id, 'status': 'released'})
+        self.assertEqual([m.to for m in mail.outbox], [['fan@example.com']])
+        mail.outbox.clear()
+        self._post({'action': 'set_commission_status', 'commission_id': c.id, 'status': 'scheduled'})
+        self._post({'action': 'add_commission', 'pick': 'Old one', 'status': 'released'})
+        self.assertEqual(mail.outbox, [])
+
+    def test_expiry(self):
+        from django.core import mail
+        from pod_manager.services.commissions import expire_stale_requests
+        stale = self._pending(pick='Stale')
+        stale.pending_since = timezone.now() - timedelta(days=8)
+        stale.save()
+        paid = self._pending(pick='Paid', paid_marked_at=timezone.now())
+        paid.pending_since = timezone.now() - timedelta(days=8)
+        paid.save()
+        fresh = self._pending(pick='Fresh')
+        approved = _commission(self.network, pick='Queued', status='queued',
+                               pending_since=timezone.now() - timedelta(days=30))
+        with self.captureOnCommitCallbacks(execute=True):
+            expired = expire_stale_requests()
+        self.assertEqual([c.pick for c in expired], ['Stale'])
+        for c, status in ((stale, 'expired'), (paid, 'pending'), (fresh, 'pending'), (approved, 'queued')):
+            c.refresh_from_db()
+            self.assertEqual(c.status, status, c.pick)
+        self.assertEqual(len(mail.outbox), 1)
+        self.assertIn('expired', mail.outbox[0].subject)
+
+    def test_expiry_task_is_scheduled(self):
+        from django.conf import settings as dj_settings
+        tasks = {e['task'] for e in dj_settings.CELERY_BEAT_SCHEDULE.values()}
+        self.assertIn('pod_manager.tasks.task_expire_commission_requests', tasks)
+
+    def test_tab_shows_pending_requests(self):
+        self._pending(pick='Please watch this', requester_notes='For my birthday')
+        req = _make_tenant_request(self.factory, self.network, path='/creator/tab/commissions/',
+                                   data={'network': self.network.slug}, user=self.owner)
+        req.META['HTTP_HX_REQUEST'] = 'true'
+        body = views.creator_tab_partial(req, 'commissions').content.decode()
+        for text in ('Awaiting approval (1)', 'Please watch this', 'For my birthday',
+                     'value="approve_commission"', 'Not paid yet'):
+            self.assertIn(text, body)
+
+
+@override_settings(ALLOWED_HOSTS=['*'])
+class PayPalIpnTests(TestCase):
+    """PayPal's IPN endpoint. PayPal's verification postback is mocked."""
+
+    def setUp(self):
+        from decimal import Decimal
+        from pod_manager.models import CommissionSettings
+        cache.clear()
+        self.host = 'ipn.example.test'
+        self.network = Network.objects.create(name='IpnNet', slug='ipnnet', custom_domain=self.host)
+        self.settings = CommissionSettings.objects.create(network=self.network, enabled=True,
+                                                          paypal_email='Pay@IpnNet.test')
+        self.c = _commission(self.network, status='pending', quoted_price=Decimal('500.00'),
+                             pending_since=timezone.now())
+        self.client = Client(enforce_csrf_checks=True)
+
+    def _ipn(self, verified=True, **overrides):
+        data = {'txn_id': 'TXN1', 'payment_status': 'Completed', 'invoice': self.c.reference,
+                'receiver_email': 'pay@ipnnet.test', 'mc_gross': '500.00', 'mc_currency': 'USD'}
+        data.update(overrides)
+        with mock.patch('pod_manager.services.paypal_ipn.verify_with_paypal', return_value=verified) as v:
+            resp = self.client.post('/support/commissions/paypal-ipn/', data, HTTP_HOST=self.host)
+        self.assertEqual(resp.status_code, 200)
+        self.c.refresh_from_db()
+        return v
+
+    def test_verified_payment_marks_paid_but_never_approves(self):
+        from decimal import Decimal
+        self._ipn()
+        self.assertTrue(self.c.is_paid)
+        self.assertEqual((self.c.paypal_txn_id, self.c.paid_amount, self.c.paid_currency),
+                         ('TXN1', Decimal('500.00'), 'USD'))
+        self.assertEqual(self.c.status, 'pending')
+
+    def test_unverified_or_foreign_messages_change_nothing(self):
+        for kwargs in ({'verified': False}, {'receiver_email': 'thief@example.com'},
+                       {'invoice': 'C-NOPE00'}, {'test_ipn': '1'}):
+            with self.subTest(**kwargs):
+                self._ipn(**kwargs)
+                self.assertFalse(self.c.is_paid)
+                self.assertIsNone(self.c.paypal_txn_id)
+
+    def test_sandbox_setting_only_takes_sandbox_messages(self):
+        self.settings.paypal_sandbox = True
+        self.settings.paypal_sandbox_email = 'sb-biz@business.example.com'
+        self.settings.save()
+        self._ipn(test_ipn='1')                         # paid to the live account: not ours
+        self.assertFalse(self.c.is_paid)
+        self._ipn(receiver_email='sb-biz@business.example.com')
+        self.assertFalse(self.c.is_paid)               # a live message in sandbox mode
+        self._ipn(test_ipn='1', receiver_email='sb-biz@business.example.com')
+        self.assertTrue(self.c.is_paid)
+
+    def test_duplicate_txn_is_a_no_op(self):
+        self._ipn()
+        paid_at = self.c.paid_marked_at
+        self._ipn(mc_gross='1.00')
+        self.assertEqual(self.c.paid_marked_at, paid_at)
+        self.assertEqual(self.c.payment_flag, '')
+
+    def test_edited_amount_is_flagged_not_paid(self):
+        self._ipn(mc_gross='5.00')
+        self.assertFalse(self.c.is_paid)
+        self.assertEqual(self.c.payment_flag, 'amount_mismatch')
+
+    def test_refund_flags_but_never_removes(self):
+        self._ipn()
+        self._ipn(txn_id='TXN2', payment_status='Refunded', invoice='', parent_txn_id='TXN1', mc_gross='-500.00')
+        self.assertEqual(self.c.payment_flag, 'refunded')
+        self.assertEqual(self.c.status, 'pending')
+
+    def test_pending_echeck_is_not_paid_yet(self):
+        self._ipn(payment_status='Pending')
+        self.assertFalse(self.c.is_paid)
+
+
+class AttachGuestRequestsTests(TestCase):
+    """Guest requests attach to an account at a login that proves the email."""
+
+    def setUp(self):
+        self.network = Network.objects.create(name='Att', slug='att')
+        self.user = User.objects.create_user('fan@example.com', email='fan@example.com')
+        self.guest = _commission(self.network, pick='Mine', status='pending',
+                                 requester_email='FAN@Example.com', access_token='tok-1')
+        self.other = _commission(self.network, pick='Theirs', status='pending',
+                                 requester_email='other@example.com', access_token='tok-2')
+        self.manual = _commission(self.network, pick='Owner typed', requester_email='fan@example.com')
+
+    def test_attaches_matching_guest_requests_only(self):
+        from pod_manager.services.commissions import attach_guest_requests
+        self.assertEqual(attach_guest_requests(self.user), 1)
+        self.assertEqual(attach_guest_requests(self.user), 0)
+        for c, owner in ((self.guest, self.user), (self.other, None), (self.manual, None)):
+            c.refresh_from_db()
+            self.assertEqual(c.requester, owner, c.pick)
+
+    def _login_request(self, path):
+        req = RequestFactory().get(path)
+        req.network = self.network
+        from django.contrib.sessions.backends.cache import SessionStore
+        req.session = SessionStore()
+        req.session.create()
+        from django.contrib.messages.storage.fallback import FallbackStorage
+        setattr(req, '_messages', FallbackStorage(req))
+        from django.contrib.auth.models import AnonymousUser
+        req.user = AnonymousUser()
+        return req
+
+    def _patreon_login(self, verified):
+        identity = {'data': {'id': '1', 'attributes': {
+            'email': 'fan@example.com', 'first_name': 'F', 'last_name': 'P',
+            'is_email_verified': verified}}, 'included': []}
+        req = self._login_request('/oauth/patreon/callback')
+        req.GET = req.GET.copy()
+        req.GET.update({'code': 'c', 'state': views._sign_oauth_state('login:x')})
+        req.session['login_next'] = '/support/commissions/'
+        with mock.patch('pod_manager.views.auth._exchange_patreon_token',
+                        return_value=({'access_token': 'a', 'refresh_token': 'r'}, None)), \
+             mock.patch('pod_manager.views.auth._fetch_patreon_identity', return_value=(identity, None)), \
+             mock.patch('pod_manager.views.auth._sync_patron_profile', return_value=None):
+            return views.patreon_callback(req)
+
+    def test_verified_patreon_login_attaches_and_returns_to_next(self):
+        resp = self._patreon_login(verified=True)
+        self.assertEqual(resp['Location'], '/support/commissions/')
+        self.guest.refresh_from_db()
+        self.assertEqual(self.guest.requester, self.user)
+
+    def test_unverified_patreon_email_attaches_nothing(self):
+        self._patreon_login(verified=False)
+        self.guest.refresh_from_db()
+        self.assertIsNone(self.guest.requester)
+
+    def test_recurly_login_attaches(self):
+        from pod_manager.views.auth import RecurlyLoginView
+        req = self._login_request('/login/legacy/')
+        with mock.patch('pod_manager.views.auth.sync_recurly_plans_for_profile', return_value=True):
+            resp = RecurlyLoginView()._complete_login(req, 'fan@example.com', 'acct-1', 'ok')
+        self.assertEqual(resp['Location'], reverse('user_feeds'))
+        self.guest.refresh_from_db()
+        self.assertEqual(self.guest.requester, self.user)
+
+    def test_next_must_be_same_site(self):
+        from pod_manager.views.auth import _remember_next
+        for nxt, kept in (('/support/commissions/request/', True), ('https://evil.example/', False),
+                          ('//evil.example/', False)):
+            with self.subTest(nxt=nxt):
+                req = self._login_request(f'/login/?next={nxt}')
+                _remember_next(req)
+                self.assertEqual(req.session.get('login_next'), nxt if kept else None)

@@ -542,6 +542,11 @@ CELERY_BEAT_SCHEDULE = {
         'task': 'pod_manager.tasks.task_backup_database',
         'schedule': crontab(hour=2, minute=30),
     },
+    # Unpaid pending commission requests past their network's expiry window.
+    'expire-commission-requests-daily': {
+        'task': 'pod_manager.tasks.task_expire_commission_requests',
+        'schedule': crontab(hour=5, minute=0),
+    },
 }
 
 # Django Celery Beat for Scheduled Tasks

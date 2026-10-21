@@ -14,7 +14,7 @@ from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
 from django.utils import timezone
 
-from ...models import Episode, Network, NetworkMembership, EpisodeEditSuggestion, EpisodeMatchSuggestion
+from ...models import Commission, Episode, Network, NetworkMembership, EpisodeEditSuggestion, EpisodeMatchSuggestion
 from ...services.cross_publish import validate_cross_targets
 from ...services.edits import (
     apply_approved_edit, chapter_items, parse_chapter_payload, snapshot_episode,
@@ -74,6 +74,7 @@ def creator_settings(request):
             episode__podcast__network=current_network, status=EpisodeEditSuggestion.Status.PENDING
         ).count(),
         'pending_pairs_count': pending_match_suggestion_count(current_network),
+        'pending_commissions_count': current_network.commissions.filter(status=Commission.Status.PENDING).count(),
     }
 
     return render(request, 'pod_manager/creator_settings.html', context)

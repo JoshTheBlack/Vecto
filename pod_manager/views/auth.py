@@ -26,11 +26,13 @@ from django.core.cache import cache
 from django.http import HttpResponse, HttpResponseForbidden
 from django.shortcuts import redirect, get_object_or_404, render
 from django.utils import timezone
+from django.utils.http import url_has_allowed_host_and_scheme
 from django.views import View
 
 from django_otp.plugins.otp_totp.models import TOTPDevice
 
 from ..models import PatronProfile, NetworkMembership, Network, PatreonTier
+from ..services.commissions import attach_guest_requests
 from ..services.recurly import sync_recurly_plans_for_profile
 from ..security import (
     _sign_oauth_state, _unsign_oauth_state,
@@ -51,6 +53,32 @@ def _secure_login(request, user):
     """
     request.session.pop('impersonated_user_id', None)
     login(request, user)
+
+
+_NEXT_SESSION_KEY = 'login_next'
+
+
+def _remember_next(request):
+    """Hold a same-site ?next= in the session for after login: it can't ride
+    the URL through Patreon's OAuth round trip or the multi-step OTP form."""
+    nxt = request.GET.get('next', '')
+    if nxt and url_has_allowed_host_and_scheme(nxt, allowed_hosts={request.get_host()},
+                                               require_https=request.is_secure()):
+        request.session[_NEXT_SESSION_KEY] = nxt
+
+
+def _login_redirect(request, default):
+    """Where to go once logged in: the remembered ?next=, else `default`."""
+    return redirect(request.session.pop(_NEXT_SESSION_KEY, None) or default)
+
+
+def _attach_guest_commissions(request, user):
+    """Link commission requests made as a guest with this email to the account.
+    Call only after a login that proved the email is theirs."""
+    attached = attach_guest_requests(user)
+    if attached:
+        messages.info(request, f"{attached} earlier commission request{'s' if attached != 1 else ''} "
+                               f"{'are' if attached != 1 else 'is'} now linked to your account.")
 
 
 def _exchange_patreon_token(code, redirect_uri):
@@ -154,7 +182,7 @@ def _fetch_patreon_identity(access_token):
     identity_url = (
         "https://www.patreon.com/api/oauth2/v2/identity"
         "?include=memberships.campaign"
-        "&fields[user]=email,first_name,last_name,image_url,social_connections"
+        "&fields[user]=email,is_email_verified,first_name,last_name,image_url,social_connections"
         "&fields[member]=patron_status,currently_entitled_amount_cents,pledge_relationship_start"
     )
     res = requests.get(identity_url, headers=headers, timeout=10)
@@ -186,6 +214,7 @@ def patreon_login(request):
     if network_id:
         params["state"] = _sign_oauth_state(f"link:{request.user.id}:{network_id}")
     else:
+        _remember_next(request)
         # Sign a nonce even on the listener flow so we can later detect/replay-protect.
         params["state"] = _sign_oauth_state(f"login:{secrets.token_urlsafe(16)}")
     return redirect(f"https://www.patreon.com/oauth2/authorize?{urllib.parse.urlencode(params)}")
@@ -248,7 +277,11 @@ def patreon_callback(request):
                 task_sync_discord_avatar.delay(profile.discord_id, membership.id)
 
         _secure_login(request, user)
-        return redirect('home')
+        # Patreon accounts can carry an unconfirmed email; only a verified one
+        # proves these guest requests are theirs.
+        if user_data.get('attributes', {}).get('is_email_verified'):
+            _attach_guest_commissions(request, user)
+        return _login_redirect(request, 'home')
 
     except Exception as e:
         logger.error(f"Critical error during Patreon callback: {str(e)}", exc_info=True)
@@ -290,6 +323,7 @@ class RecurlyLoginView(View):
     def get(self, request):
         if request.GET.get('reset'):
             return self._reset(request)
+        _remember_next(request)
         payload = request.session.get(_LOGIN_SESSION_KEY, {})
         state = payload.get('state')
         return render(request, 'pod_manager/login_request.html', {
@@ -494,7 +528,10 @@ class RecurlyLoginView(View):
             messages.warning(request, "Logged in, but could not sync latest subscription data.")
         _secure_login(request, user)
         messages.success(request, success_msg)
-        return redirect('user_feeds')
+        # Both routes here prove the email: an emailed code, or an authenticator
+        # set up on the account that email was verified for.
+        _attach_guest_commissions(request, user)
+        return _login_redirect(request, 'user_feeds')
 
 
 # Expose as a function so existing imports, URL configs, and tests keep working.

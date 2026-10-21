@@ -1,0 +1,118 @@
+{% extends base_template|default:'pod_manager/base.html' %}
+{% load vecto_format %}
+
+{% block content %}
+{% include 'pod_manager/snippets/_commission_styles.html' %}
+
+<div class="cq-wrap">
+    <div class="cq-panel">
+        <a href="{% url 'commission_queue' %}" class="small text-muted text-decoration-none"><i class="bi bi-arrow-left"></i> Back to the queue</a>
+        <h1 class="h2 fw-bold mt-2 mb-4">Commission a podcast</h1>
+
+        {% if not request.user.is_authenticated %}
+        <div class="cq-signin">
+            <div class="flex-grow-1">
+                <div class="fw-bold"><i class="bi bi-person-check me-1 text-warning"></i> Sign in first? It's optional, but handy:</div>
+                <ul>
+                    <li>see and track your request on the queue page, from any device</li>
+                    <li>pay later without hunting for the link in your email</li>
+                    <li>skip typing your name and email</li>
+                </ul>
+            </div>
+            <div class="d-flex flex-wrap gap-2">
+                <a href="{% url 'patreon_login' %}?next={{ login_next|urlencode }}" class="btn btn-warning fw-bold">Sign in with Patreon</a>
+                <a href="{% url 'recurly_login' %}?next={{ login_next|urlencode }}" class="btn btn-subtle">Sign in with email</a>
+            </div>
+            <div class="w-100 small text-muted">Or just fill in the form below as a guest.</div>
+        </div>
+        {% endif %}
+
+        {% if errors %}
+        <div class="alert alert-danger" role="alert">
+            {% for e in errors %}<div><i class="bi bi-exclamation-triangle me-1"></i>{{ e }}</div>{% endfor %}
+        </div>
+        {% endif %}
+
+        <form method="POST" action="{% url 'commission_request' %}">
+            {% csrf_token %}
+            {% if not request.user.is_authenticated %}
+            <div class="row g-3 mb-3">
+                <div class="col-md-6">
+                    <label class="form-label" for="cr-name">Your name</label>
+                    <input type="text" id="cr-name" name="name" value="{{ form.name }}" maxlength="100" required class="form-control" autocomplete="name">
+                </div>
+                <div class="col-md-6">
+                    <label class="form-label" for="cr-email">Your email</label>
+                    <input type="email" id="cr-email" name="email" value="{{ form.email }}" required class="form-control" autocomplete="email">
+                    <div class="form-text">We'll email you a private link to your request.</div>
+                </div>
+            </div>
+            {% else %}
+            <p class="text-muted small mb-3">Requesting as <strong>{{ request.user.email }}</strong>.</p>
+            {% endif %}
+
+            <div class="mb-3">
+                <label class="form-label" for="cr-pick">What should we watch?</label>
+                <input type="text" id="cr-pick" name="pick" value="{{ form.pick }}" maxlength="200" required class="form-control"
+                       placeholder="A movie, a season, a special: about two hours of something">
+            </div>
+
+            {% if prices.0.0 %}
+            <div class="mb-3">
+                <span class="form-label d-block">Version</span>
+                <div class="row g-2">
+                    {% for version, price in prices %}
+                    <div class="col-sm-6">
+                        <input type="radio" class="btn-check" name="version" id="cr-v{{ version.id }}" value="{{ version.id }}" required
+                               {% if form.version.id == version.id or not form.version and forloop.first %}checked{% endif %}>
+                        <label class="cq-version" for="cr-v{{ version.id }}">
+                            <span class="cq-price-name d-block">{{ version.name }}</span>
+                            <span class="cq-price-amount d-block">{{ price|money:settings.currency }}</span>
+                            {% if version.description %}<span class="cq-price-desc d-block">{{ version.description }}</span>{% endif %}
+                        </label>
+                    </div>
+                    {% endfor %}
+                </div>
+            </div>
+            {% else %}
+            <p class="mb-3">Price: <strong class="text-warning">{{ prices.0.1|money:settings.currency }}</strong></p>
+            {% endif %}
+            <p class="form-text mt-n2 mb-3">The price is locked in when you submit.</p>
+
+            <div class="row g-3 mb-3">
+                <div class="col-md-6">
+                    <label class="form-label" for="cr-credit">Credit on air as</label>
+                    <input type="text" id="cr-credit" name="credit_name" value="{{ form.credit_name }}" maxlength="100" class="form-control"
+                           placeholder="{% if request.user.is_authenticated %}{{ request.user.get_full_name|default:'Your name' }}{% else %}Your name{% endif %}">
+                </div>
+                <div class="col-md-6 d-flex align-items-end">
+                    <div class="form-check">
+                        <input class="form-check-input" type="checkbox" name="credit_public" id="cr-public" {% if form.credit_public %}checked{% endif %}>
+                        <label class="form-check-label" for="cr-public">Show my name on the public queue (otherwise "Anonymous")</label>
+                    </div>
+                </div>
+            </div>
+
+            <div class="mb-3">
+                <label class="form-label" for="cr-notes">Anything the hosts should know? <span class="fw-normal text-muted">(optional, only they see it)</span></label>
+                <textarea id="cr-notes" name="notes" rows="3" maxlength="2000" class="form-control"
+                          placeholder="A deadline like a birthday, which cut to watch, why you love it...">{{ form.notes }}</textarea>
+            </div>
+
+            {% if settings.request_terms %}
+            <div class="mb-3">
+                <span class="form-label d-block">Terms</span>
+                <div class="cq-terms mb-2">{{ settings.request_terms|safe }}</div>
+                <div class="form-check">
+                    <input class="form-check-input" type="checkbox" name="accept_terms" id="cr-terms" required>
+                    <label class="form-check-label" for="cr-terms">I accept these terms</label>
+                </div>
+            </div>
+            {% endif %}
+
+            <button type="submit" class="btn btn-warning btn-lg fw-bold mt-2">Continue to payment <i class="bi bi-arrow-right ms-1"></i></button>
+            <div class="form-text mt-2">Next you'll see a summary and a PayPal button. Your request then waits for the hosts to approve it.</div>
+        </form>
+    </div>
+</div>
+{% endblock %}

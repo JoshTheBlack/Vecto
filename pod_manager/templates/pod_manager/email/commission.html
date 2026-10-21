@@ -1,0 +1,58 @@
+{% extends 'pod_manager/email/_layout.html' %}
+{% load vecto_format %}
+{% comment %}
+Every commission email (services/commission_emails.py). Context: kind,
+commission (c), network_name, theme, request_url (the requester's page,
+with the private token for guests), queue_url, manage_url (owners),
+episode_url (released, when published), currency, expiry_days.
+{% endcomment %}
+
+{% block heading %}{% if kind == 'new_request' %}New commission request{% else %}Your commission{% endif %}{% endblock %}
+
+{% block body %}
+{% if kind == 'new_request' %}
+    <p>Someone has requested a commission. It's waiting for you to approve it.</p>
+{% else %}
+    <p>Hi {{ c.requester_name|default:'there' }},</p>
+    {% if kind == 'received' %}
+    <p>Thanks! We've got your commission request. If you haven't paid yet, you can do that from your request page. We'll review it and let you know once it's in the queue.</p>
+    {% if expiry_days %}<p class="muted">Requests that aren't paid within {{ expiry_days }} day{{ expiry_days|pluralize }} expire.</p>{% endif %}
+    {% elif kind == 'approved' %}
+    <p>Good news: your commission is approved and in the queue. You can follow its progress on the queue page.</p>
+    {% elif kind == 'released' %}
+    <p>Your commission is out! Thank you for supporting {{ network_name }}.</p>
+    {% elif kind == 'withdrawn' %}
+    <p>You've withdrawn your commission request. If you'd already paid, reply to this email and we'll sort out a refund.</p>
+    {% elif kind == 'expired' %}
+    <p>Your commission request expired because we didn't see a payment for it in time. If you already paid, reply to this email and we'll sort it out.</p>
+    {% endif %}
+{% endif %}
+
+<div class="summary">
+    <table>
+        <tr><td class="label">Pick</td><td><strong>{{ c.pick }}</strong></td></tr>
+        {% if c.version_name %}<tr><td class="label">Version</td><td>{{ c.version_name }}</td></tr>{% endif %}
+        {% if c.quoted_price is not None %}<tr><td class="label">Price</td><td>{{ c.quoted_price|money:currency }}</td></tr>{% endif %}
+        <tr><td class="label">Reference</td><td>{{ c.reference }}</td></tr>
+        {% if kind == 'new_request' %}
+        <tr><td class="label">From</td><td>{{ c.requester_name|default:'(no name)' }} &lt;{{ c.requester_email }}&gt;{% if not c.requester_id %} (guest){% endif %}</td></tr>
+        <tr><td class="label">Credit</td><td>{{ c.credit_display }}</td></tr>
+        {% if c.requester_notes %}<tr><td class="label">Notes</td><td>{{ c.requester_notes|linebreaksbr }}</td></tr>{% endif %}
+        {% endif %}
+    </table>
+</div>
+
+{% if kind == 'new_request' %}
+    <a class="button" href="{{ manage_url }}">Review requests</a>
+{% elif kind == 'released' and episode_url %}
+    <a class="button" href="{{ episode_url }}">Listen now</a>
+{% elif kind == 'received' or kind == 'approved' %}
+    <a class="button" href="{{ request_url }}">View your request</a>
+{% else %}
+    <a class="button" href="{{ queue_url }}">See the queue</a>
+{% endif %}
+
+{% if kind != 'new_request' and not c.requester_id %}
+<p class="muted">This is your private link to the request, so keep this email. Sign in to {{ network_name }} with this email address and the request will be linked to your account.</p>
+{% endif %}
+{% endblock %}

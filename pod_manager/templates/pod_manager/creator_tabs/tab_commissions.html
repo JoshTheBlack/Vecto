@@ -22,8 +22,33 @@
                 Commissions are switched off, so the queue page is only visible to owners. Turn them on under <strong>Settings</strong> below.
             </div>
             {% endif %}
+            {% if not commission_settings.active_paypal_email %}
+            <div class="alert border-danger small mb-3">
+                <i class="bi bi-exclamation-triangle text-danger me-1"></i>
+                {% if commission_settings.paypal_sandbox %}
+                <strong>Sandbox mode is on but no sandbox PayPal email is set, so requesters can't pay.</strong> Add your sandbox business account's email under <strong>Settings &gt; Queue</strong> below, or switch sandbox off.
+                {% else %}
+                <strong>No PayPal email set, so requesters can't pay online.</strong> Their request pages show no PayPal button. Add the account requests should pay into under <strong>Settings &gt; Queue &gt; PayPal email</strong> below.
+                {% endif %}
+            </div>
+            {% elif commission_settings.paypal_sandbox %}
+            <div class="alert border-warning small mb-3">
+                <i class="bi bi-cone-striped text-warning me-1"></i>
+                <strong>PayPal sandbox mode is on.</strong> Payments go to {{ commission_settings.paypal_sandbox_email }} on PayPal's test site; no real money moves. Switch it off before taking real requests.
+            </div>
+            {% endif %}
 
-            <div class="collapse{% if not active_commissions and not released_commissions %} show{% endif %}" id="cm-add">
+            {% if pending_commissions %}
+            <h6 class="text-warning"><i class="bi bi-hourglass-split me-1"></i> Awaiting approval ({{ pending_commissions|length }})</h6>
+            <p class="text-muted small mb-2">Check the pick, then Approve to add it to the end of the queue. Payments PayPal confirms show here automatically; use Mark paid for one that came some other way. Unpaid requests expire on their own.</p>
+            <div class="d-flex flex-column gap-2 mb-4">
+                {% for c in pending_commissions %}
+                {% include 'pod_manager/creator_tabs/_commission_pending_row.html' %}
+                {% endfor %}
+            </div>
+            {% endif %}
+
+            <div class="collapse{% if not active_commissions and not released_commissions and not pending_commissions %} show{% endif %}" id="cm-add">
                 <p class="text-muted small mb-2">Add a commission by hand, e.g. one paid for outside Vecto or an existing queue you're bringing over. It goes straight into the queue, with no approval step.</p>
                 {% include 'pod_manager/creator_tabs/_commission_form.html' with uid='new' form_class='mb-4 pb-4 border-bottom border-secondary' %}
             </div>
@@ -65,7 +90,7 @@
 
             {% if closed_commissions %}
             <button class="btn btn-sm btn-subtle w-100 mt-2 text-start" type="button" data-bs-toggle="collapse" data-bs-target="#cm-closed">
-                <i class="bi bi-chevron-down me-1"></i> Removed ({{ closed_commissions|length }})
+                <i class="bi bi-chevron-down me-1"></i> Removed, withdrawn and expired ({{ closed_commissions|length }})
             </button>
             <div class="collapse" id="cm-closed">
                 <div class="d-flex flex-column gap-2 mt-2">
@@ -75,18 +100,20 @@
                             <div class="flex-grow-1 min-w-0">
                                 <div class="fw-bold text-truncate">{{ c.pick }} <span class="badge border border-secondary text-muted fw-normal">{{ c.get_status_display }}</span></div>
                                 <div class="small text-muted">
-                                    {{ c.credit_name|default:'No name' }} &middot; {{ c.requested_at|date:"M j, Y" }}
+                                    {{ c.requester_name|default:c.credit_name|default:'No name' }}{% if c.requester_email %} &lt;{{ c.requester_email }}&gt;{% endif %} &middot; {{ c.requested_at|date:"M j, Y" }}
+                                    {% if c.paypal_txn_id %}&middot; PayPal {{ c.paid_amount|money:c.paid_currency }}{% endif %}{% if c.payment_flag %} &middot; <span class="text-danger">{{ c.get_payment_flag_display }}</span>{% endif %}
                                     {% if c.quoted_price is not None %}&middot; {{ c.quoted_price|money:commission_settings.currency }}{% endif %}
                                     &middot; {{ c.reference }}
                                 </div>
                                 {% if c.removal_reason %}<div class="small text-muted fst-italic">{{ c.removal_reason }}</div>{% endif %}
                             </div>
-                            {% if c.status == 'removed' %}
+                            {% if c.status == 'removed' or c.status == 'expired' %}
                             <form method="POST" action="{% url 'creator_settings' %}?network={{ current_network.slug }}&tab=commissions">
                                 {% csrf_token %}
                                 <input type="hidden" name="action" value="restore_commission">
                                 <input type="hidden" name="commission_id" value="{{ c.id }}">
-                                <button type="submit" class="btn btn-sm btn-subtle"><i class="bi bi-arrow-counterclockwise"></i> Put back in queue</button>
+                                <button type="submit" class="btn btn-sm btn-subtle"><i class="bi bi-arrow-counterclockwise"></i>
+                                    {% if c.status == 'expired' %}Back to awaiting approval{% else %}Put back in queue{% endif %}</button>
                             </form>
                             {% endif %}
                             <form method="POST" action="{% url 'creator_settings' %}?network={{ current_network.slug }}&tab=commissions">
@@ -251,10 +278,21 @@
                     <div class="col-md-6">
                         <label class="form-label text-muted small fw-bold" for="cs-paypal">PayPal email</label>
                         <input type="email" id="cs-paypal" name="paypal_email" value="{{ commission_settings.paypal_email }}"
-                               class="form-control bg-black text-light border-secondary" placeholder="Where online requests will pay">
+                               class="form-control bg-black text-light border-secondary" placeholder="The account requests pay into">
+                        <div class="form-text text-muted">Blank hides the PayPal button; you'd collect payment yourself.</div>
+                    </div>
+                    <div class="col-md-6">
+                        <label class="form-label text-muted small fw-bold" for="cs-paypal-sandbox">Sandbox PayPal email <span class="fw-normal">(testing only)</span></label>
+                        <input type="email" id="cs-paypal-sandbox" name="paypal_sandbox_email" value="{{ commission_settings.paypal_sandbox_email }}"
+                               class="form-control bg-black text-light border-secondary" placeholder="sb-xxxx@business.example.com">
+                        <div class="form-text text-muted">Your sandbox <em>business</em> account from developer.paypal.com &gt; Sandbox accounts. Pay with the sandbox <em>personal</em> account.</div>
+                        <div class="form-check form-switch mt-2">
+                            <input class="form-check-input" type="checkbox" role="switch" name="paypal_sandbox" id="cs-sandbox" {% if commission_settings.paypal_sandbox %}checked{% endif %}>
+                            <label class="form-check-label small" for="cs-sandbox">Use the sandbox (no real money)</label>
+                        </div>
                     </div>
                 </div>
-                <div class="form-text text-muted">Estimates, expiry and PayPal take effect once online requests are built; save them now if you like.</div>
+                <div class="form-text text-muted">PayPal confirms each payment back to Vecto automatically. Cadence estimates arrive with release planning.</div>
 
                 <h6 class="text-warning mt-4">Page copy</h6>
                 <div class="mb-3">
@@ -271,7 +309,7 @@
                     {% include 'pod_manager/snippets/_quill_editor.html' with quill_content=commission_settings.details quill_input_name='details' quill_class='bg-black text-light' %}
                 </div>
                 <div class="mb-3 quill-dark">
-                    <label class="form-label text-muted small fw-bold">Request terms <span class="fw-normal">(requesters will have to accept these once online requests open)</span></label>
+                    <label class="form-label text-muted small fw-bold">Request terms <span class="fw-normal">(requesters must tick to accept these; blank means no terms)</span></label>
                     {% include 'pod_manager/snippets/_quill_editor.html' with quill_content=commission_settings.request_terms quill_input_name='request_terms' quill_class='bg-black text-light' %}
                 </div>
 
@@ -280,3 +318,14 @@
         </div>
     </div>
 </div>
+
+<style>
+    /* Queue rows: the pick and its details take the leftover width and scroll
+       sideways when they're long, so the status select, Edit and Remove always
+       stay on the same line. */
+    #commissions-tab .cm-row-text {
+        min-width: 0; overflow-x: auto; white-space: nowrap;
+        scrollbar-width: thin; padding-bottom: 2px;
+    }
+    #commissions-tab .cm-row-text .small { white-space: nowrap; }
+</style>

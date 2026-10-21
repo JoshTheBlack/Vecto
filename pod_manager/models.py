@@ -1349,6 +1349,13 @@ class CommissionSettings(models.Model):
     pending_expiry_days = models.PositiveIntegerField(default=7)
     default_podcast = models.ForeignKey('Podcast', on_delete=models.SET_NULL, null=True, blank=True, related_name='+')
 
+    # Point the PayPal form and IPN verification at PayPal's sandbox, for
+    # testing end to end with sandbox accounts.
+    paypal_sandbox = models.BooleanField(default=False)
+    # The sandbox business account (developer.paypal.com > Sandbox accounts)
+    # paid while paypal_sandbox is on. Sandbox checkout rejects a real account.
+    paypal_sandbox_email = models.EmailField(blank=True)
+
     page_title = models.CharField(max_length=100, default='Commission a Podcast')
     # Rich text (Quill), sanitised with sanitize_user_html on save.
     intro = models.TextField(blank=True)
@@ -1358,6 +1365,11 @@ class CommissionSettings(models.Model):
 
     def __str__(self):
         return f"{self.network.name} commissions"
+
+    @property
+    def active_paypal_email(self):
+        """The account payments go to right now: the sandbox one in sandbox mode."""
+        return self.paypal_sandbox_email if self.paypal_sandbox else self.paypal_email
 
 
 class CommissionVersion(models.Model):
@@ -1385,8 +1397,19 @@ def new_commission_reference():
     return 'C-' + ''.join(secrets.choice(_REFERENCE_ALPHABET) for _ in range(6))
 
 
+def new_commission_access_token():
+    return secrets.token_urlsafe(24)
+
+
 class Commission(models.Model):
     """One paid request for the hosts to watch and podcast about something."""
+
+    class PaymentFlag(models.TextChoices):
+        NONE = '', 'None'
+        # PayPal reported a payment that doesn't match quoted_price/currency
+        # (the buyer can edit the form).
+        AMOUNT_MISMATCH = 'amount_mismatch', 'Amount mismatch'
+        REFUNDED = 'refunded', 'Refunded in PayPal'
 
     class Status(models.TextChoices):
         PENDING = 'pending', 'Awaiting approval'
@@ -1408,8 +1431,14 @@ class Commission(models.Model):
     network = models.ForeignKey(Network, on_delete=models.CASCADE, related_name='commissions')
     # Sent to PayPal as `invoice` so the owner can match the payment.
     reference = models.CharField(max_length=12, unique=True, default=new_commission_reference, editable=False)
-    # Null for entries the owner added by hand.
+    # Null for a guest request or an entry the owner added by hand.
     requester = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='commissions')
+    # Who to email. Copied from the account for signed-in requests, typed in by
+    # guests (unverified until a login proves it; see attach_guest_requests).
+    requester_name = models.CharField(max_length=100, blank=True)
+    requester_email = models.EmailField(blank=True, db_index=True)
+    # Guests only: the secret in their private link (?t=). Null otherwise.
+    access_token = models.CharField(max_length=64, unique=True, null=True, blank=True, editable=False)
     pick = models.CharField(max_length=200)
     requester_notes = models.TextField(blank=True)
     version = models.ForeignKey(CommissionVersion, on_delete=models.SET_NULL, null=True, blank=True, related_name='commissions')
@@ -1426,6 +1455,14 @@ class Commission(models.Model):
     approved_at = models.DateTimeField(null=True, blank=True)
     released_at = models.DateTimeField(null=True, blank=True)
     paid_marked_at = models.DateTimeField(null=True, blank=True)
+    # When the expiry clock started: the request, or the owner's Restore.
+    pending_since = models.DateTimeField(null=True, blank=True)
+
+    # Filled in from PayPal's IPN.
+    paypal_txn_id = models.CharField(max_length=32, unique=True, null=True, blank=True)
+    paid_amount = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
+    paid_currency = models.CharField(max_length=3, blank=True)
+    payment_flag = models.CharField(max_length=20, choices=PaymentFlag.choices, blank=True, default='')
 
     # Owner-only: when the hosts plan to watch it.
     watch_date = models.DateField(null=True, blank=True)
@@ -1450,6 +1487,17 @@ class Commission(models.Model):
     @property
     def credit_display(self):
         return self.credit_name if self.credit_public and self.credit_name else 'Anonymous'
+
+    @property
+    def is_paid(self):
+        return self.paid_marked_at is not None
+
+    def can_be_viewed_by(self, user, token=None):
+        """The requester (signed in, or a guest holding the private link's
+        token). Owners are checked separately by the views."""
+        if user is not None and user.is_authenticated and self.requester_id == user.id:
+            return True
+        return bool(token and self.access_token and secrets.compare_digest(token, self.access_token))
 
 
 class EpisodeEditSuggestion(models.Model):

@@ -1260,6 +1260,57 @@ class NotFoundEntry(ProcessedImageMixin, models.Model):
     def display_image(self):
         return self.versioned_image_url('image_upload')
 
+
+class SupportPage(models.Model):
+    """A network's public Support Us page: the switch that publishes it (and its
+    navbar link) plus the hero copy. The cards themselves are SupportLink rows."""
+    network = models.OneToOneField(Network, on_delete=models.CASCADE, related_name='support_page')
+    enabled = models.BooleanField(default=False)
+    title = models.CharField(max_length=100, default='Support Us')
+    tagline = models.CharField(max_length=255, blank=True)
+
+    def __str__(self):
+        return f"{self.network.name} - {self.title}"
+
+
+def support_link_image_path(instance, filename):
+    """Stable R2 key for a Support Us card image: support/<UUID>.webp. Always
+    .webp, so a re-upload overwrites rather than orphaning. Filename ignored."""
+    return f"support/{instance.unique_id}.webp"
+
+
+class SupportLink(ProcessedImageMixin, models.Model):
+    """One card on a network's Support Us page (Patreon, merch, donate, ...)."""
+    PROCESSED_IMAGES = (
+        # Card art is shown letterboxed, so keep the whole frame.
+        ProcessedImage('image_upload', 'image_version', 800, crop_square=False,
+                       filename='support.webp'),
+    )
+
+    network = models.ForeignKey(Network, on_delete=models.CASCADE, related_name='support_links')
+    unique_id = models.UUIDField(default=uuid.uuid4, editable=False, unique=True)
+    title = models.CharField(max_length=100)
+    description = models.CharField(max_length=500, blank=True)
+    button_text = models.CharField(max_length=50, default='Learn more')
+    url = models.URLField(max_length=2000)
+    # A Bootstrap Icons name (e.g. "cup-hot"), shown when there is no image.
+    icon = models.CharField(max_length=50, blank=True)
+    image_upload = models.ImageField(upload_to=support_link_image_path, storage=select_media_storage, blank=True, null=True)
+    image_version = models.IntegerField(default=0)
+    position = models.PositiveIntegerField(default=0)
+    is_visible = models.BooleanField(default=True)
+
+    class Meta:
+        ordering = ['position', 'id']
+
+    def __str__(self):
+        return f"{self.network.name} support - {self.title}"
+
+    @property
+    def display_image(self):
+        return self.versioned_image_url('image_upload')
+
+
 class EpisodeEditSuggestion(models.Model):
     class Status(models.TextChoices):
         PENDING = 'pending', 'Pending'

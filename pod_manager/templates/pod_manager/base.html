@@ -36,6 +36,9 @@
     never re-registers). Bump ?v= on change; filenames are not hashed.
     {% endcomment %}
     <script src="{% static 'pod_manager/js/confirm_slide.js' %}?v=1" defer></script>
+    {# Drag-to-reorder ([data-sortable-list]); shell-loaded for the same reason as confirm_slide.js. Bump ?v= on change. #}
+    <script src="{% static 'pod_manager/js/sortable.min.js' %}" defer></script>
+    <script src="{% static 'pod_manager/js/sortable_list.js' %}?v=1" defer></script>
     <style>
         /* Two-step confirm (confirm_slide.js): checkmark + optional warning
            sliding out the LEFT of an armed destructive control. */
@@ -952,6 +955,10 @@ enforces that; hx-select used to paper over it at runtime.
                     <li class="nav-item"><a class="nav-link" href="{% url 'user_feeds' %}">Your Feeds</a></li>
                     {% if current_network %}
                         <li class="nav-item"><a class="nav-link" href="{% url 'calendar' %}">Calendar</a></li>
+                        {# support_page is select_related by NetworkMiddleware; a network with no row reads as falsy. #}
+                        {% if current_network.support_page.enabled %}
+                            <li class="nav-item"><a class="nav-link" href="{% url 'support_page' %}">Support Us</a></li>
+                        {% endif %}
                     {% endif %}
                 </ul>
                 

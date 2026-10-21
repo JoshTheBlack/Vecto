@@ -1,0 +1,94 @@
+{% extends base_template|default:'pod_manager/base.html' %}
+
+{% block content %}
+<style>
+    .support-hero { padding: 2.5rem 0 2rem; }
+    .support-hero h1 { color: var(--vecto-bg-text); letter-spacing: -0.02em; }
+    .support-hero .support-tagline { color: var(--vecto-bg-muted); max-width: 40rem; margin: 0 auto; }
+    .support-hero .support-rule {
+        width: 3rem; height: 3px; margin: 1.25rem auto 0;
+        background: var(--vecto-primary); border-radius: var(--vecto-radius-sm);
+    }
+
+    /* Cards sit on surfaces: surface tokens only, never --vecto-bg-*. */
+    .support-card {
+        display: flex; flex-direction: column;
+        border: 1px solid var(--bs-border-color);
+        color: var(--vecto-surface-text);
+        text-decoration: none;
+        overflow: hidden;
+        transition: transform 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease;
+    }
+    .support-card:hover, .support-card:focus-visible {
+        transform: translateY(-3px);
+        border-color: var(--vecto-primary) !important;
+        box-shadow: 0 0.75rem 2rem rgba(0, 0, 0, 0.35);
+        color: var(--vecto-surface-text);
+    }
+    .support-card-media {
+        aspect-ratio: 2 / 1;
+        display: flex; align-items: center; justify-content: center;
+        background: color-mix(in srgb, var(--vecto-primary) 10%, var(--vecto-surface-bg));
+        border-bottom: 1px solid var(--bs-border-color);
+    }
+    /* From md up: one wide row per card, image left, text right. Phones keep
+       the stacked layout above (image on top), where a side image is too thin. */
+    @media (min-width: 768px) {
+        .support-card { flex-direction: row; }
+        .support-card-media {
+            flex: 0 0 34%; aspect-ratio: auto; min-height: 12rem;
+            border-bottom: 0; border-right: 1px solid var(--bs-border-color);
+        }
+        .support-card-body { padding: 1.75rem 2rem; justify-content: center; }
+        .support-card-body h2 { font-size: 1.5rem; }
+        .support-card-body p { flex-grow: 0; }
+    }
+    .support-card-media img { width: 100%; height: 100%; object-fit: cover; }
+    .support-card-media .bi { font-size: 3.25rem; color: var(--vecto-primary); }
+    .support-card-body { display: flex; flex-direction: column; flex-grow: 1; padding: 1.25rem; }
+    .support-card-body h2 { font-size: 1.25rem; font-weight: 700; margin-bottom: 0.5rem; }
+    .support-card-body p { color: var(--vecto-surface-muted); flex-grow: 1; margin-bottom: 1.25rem; }
+    .support-card-cta { align-self: flex-start; font-weight: 700; }
+    .support-card-cta .bi { transition: transform 0.15s ease; }
+    .support-card:hover .support-card-cta .bi { transform: translateX(3px); }
+</style>
+
+{% if not page.enabled %}
+<div class="alert border-warning d-flex align-items-center gap-2 mb-0" role="status">
+    <i class="bi bi-eye-slash text-warning"></i>
+    <span>Preview: this page is not published yet, so only network owners can see it. Publish it in
+        <a href="{% url 'creator_settings' %}?network={{ current_network.slug }}&tab=support" class="text-warning">Creator Settings</a>.</span>
+</div>
+{% endif %}
+
+<section class="support-hero text-center">
+    <h1 class="display-5 fw-bold mb-3">{{ page.title }}</h1>
+    {% if page.tagline %}<p class="lead support-tagline mb-0">{{ page.tagline }}</p>{% endif %}
+    <div class="support-rule"></div>
+</section>
+
+<div class="row g-4 justify-content-center pb-5">
+    {% for link in links %}
+    <div class="col-12 col-xl-10 d-flex">
+        <a class="card support-card w-100" href="{{ link.url }}" target="_blank" rel="noopener">
+            <div class="support-card-media">
+                {% if link.display_image %}
+                <img src="{{ link.display_image }}" alt="" loading="lazy">
+                {% else %}
+                <i class="bi bi-{{ link.icon|default:'heart' }}" aria-hidden="true"></i>
+                {% endif %}
+            </div>
+            <div class="support-card-body">
+                <h2>{{ link.title }}</h2>
+                <p>{{ link.description }}</p>
+                <span class="btn btn-warning support-card-cta">{{ link.button_text }} <i class="bi bi-arrow-right ms-1"></i></span>
+            </div>
+        </a>
+    </div>
+    {% empty %}
+    <div class="col-12 text-center text-muted py-5">
+        {% if is_owner %}No cards yet. Add some in Creator Settings &gt; Support Page.{% else %}Nothing here yet. Check back soon.{% endif %}
+    </div>
+    {% endfor %}
+</div>
+{% endblock %}

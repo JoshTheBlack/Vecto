@@ -121,5 +121,6 @@ from .calendar import (
     calendar_episode_search,
 )
 
+from .support import support_page
 from .transcripts import serve_transcript
 from .api import backfill_transcripts_api, retranscribe_episode_api

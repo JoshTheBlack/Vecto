@@ -1,0 +1,116 @@
+<div id="support-tab">
+    <div class="card bg-dark border-secondary shadow-sm mb-4">
+        <div class="card-header border-secondary bg-black d-flex justify-content-between align-items-center">
+            <h5 class="mb-0 text-warning"><i class="bi bi-heart me-2"></i> Support Page</h5>
+            {% if current_network.custom_domain %}
+            <a href="https://{{ current_network.custom_domain }}{% url 'support_page' %}" target="_blank" rel="noopener" class="btn btn-sm btn-subtle">
+                <i class="bi bi-box-arrow-up-right me-1"></i> View page
+            </a>
+            {% endif %}
+        </div>
+        <div class="card-body">
+            <p class="text-muted small mb-4">A public page of ways to support the network: Patreon, merch, donations, anything with a link. When it's on, a <strong>Support Us</strong> link appears in the navbar. Owners can preview it while it's off.</p>
+
+            <form method="POST" action="{% url 'creator_settings' %}?network={{ current_network.slug }}&tab=support" class="row g-3 align-items-end">
+                {% csrf_token %}
+                <input type="hidden" name="action" value="update_support_page">
+                <div class="col-md-4">
+                    <label class="form-label text-muted small fw-bold" for="support-title">Page title</label>
+                    <input type="text" id="support-title" name="title" value="{{ support_page.title }}" maxlength="100"
+                           class="form-control bg-black text-light border-secondary">
+                </div>
+                <div class="col-md-8">
+                    <label class="form-label text-muted small fw-bold" for="support-tagline">Tagline</label>
+                    <input type="text" id="support-tagline" name="tagline" value="{{ support_page.tagline }}" maxlength="255"
+                           class="form-control bg-black text-light border-secondary"
+                           placeholder="e.g., We wouldn't be able to do what we do without your support.">
+                </div>
+                <div class="col-md-8">
+                    <div class="form-check form-switch">
+                        <input class="form-check-input" type="checkbox" role="switch" name="enabled" id="support-enabled" {% if support_page.enabled %}checked{% endif %}>
+                        <label class="form-check-label" for="support-enabled">Published (shows the navbar link)</label>
+                    </div>
+                </div>
+                <div class="col-md-4">
+                    <button type="submit" class="btn btn-warning fw-bold w-100"><i class="bi bi-check-lg"></i> Save page</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <div class="card bg-dark border-secondary shadow-sm mb-4">
+        <div class="card-header border-secondary bg-black d-flex justify-content-between align-items-center">
+            <h5 class="mb-0"><i class="bi bi-grid-3x2-gap me-2"></i> Cards</h5>
+            <button type="button" class="btn btn-sm btn-warning fw-bold" data-bs-toggle="collapse" data-bs-target="#support-add-card">
+                <i class="bi bi-plus-lg"></i> Add card
+            </button>
+        </div>
+        <div class="card-body">
+            <div class="collapse{% if not support_links %} show{% endif %}" id="support-add-card">
+                {% include 'pod_manager/creator_tabs/_support_link_form.html' with uid='new' form_class='mb-4 pb-4 border-bottom border-secondary' %}
+            </div>
+
+            {% if support_links %}
+            <p class="text-muted small">Drag <i class="bi bi-grip-vertical"></i> to reorder. Cards appear on the page in this order.</p>
+            {% endif %}
+            <div class="d-flex flex-column gap-2" data-sortable-list
+                 data-reorder-url="{% url 'creator_settings' %}?network={{ current_network.slug }}"
+                 data-reorder-action="reorder_support_links">
+                {% for link in support_links %}
+                <div class="card bg-black border-secondary" data-id="{{ link.id }}">
+                    <div class="card-body py-2 d-flex align-items-center gap-3">
+                        <i class="bi bi-grip-vertical fs-5 text-muted" data-sortable-handle style="cursor: grab;" title="Drag to reorder"></i>
+                        {% if link.display_image %}
+                        <img src="{{ link.display_image }}" alt="" class="border border-secondary flex-shrink-0"
+                             style="width: 40px; height: 40px; object-fit: cover; border-radius: var(--vecto-radius-sm);">
+                        {% else %}
+                        <span class="d-inline-flex justify-content-center align-items-center border border-secondary flex-shrink-0 text-warning"
+                              style="width: 40px; height: 40px; border-radius: var(--vecto-radius-sm);">
+                            <i class="bi bi-{{ link.icon|default:'link-45deg' }}"></i>
+                        </span>
+                        {% endif %}
+                        <div class="flex-grow-1 min-w-0">
+                            <div class="fw-bold text-truncate">{{ link.title }}</div>
+                            <div class="small text-muted text-truncate">{{ link.url }}</div>
+                        </div>
+                        {% if not link.is_visible %}<span class="badge border border-secondary text-muted">Hidden</span>{% endif %}
+                        <button type="button" class="btn btn-sm btn-subtle" data-bs-toggle="collapse" data-bs-target="#support-edit-{{ link.id }}">
+                            <i class="bi bi-pencil"></i> Edit
+                        </button>
+                        <form method="POST" action="{% url 'creator_settings' %}?network={{ current_network.slug }}&tab=support">
+                            {% csrf_token %}
+                            <input type="hidden" name="action" value="delete_support_link">
+                            <input type="hidden" name="link_id" value="{{ link.id }}">
+                            <button type="submit" class="btn btn-sm btn-outline-danger" data-confirm-slide="Deletes this card." title="Delete"><i class="bi bi-trash"></i></button>
+                        </form>
+                    </div>
+                    <div class="collapse" id="support-edit-{{ link.id }}">
+                        {% include 'pod_manager/creator_tabs/_support_link_form.html' with uid=link.id form_class='card-body border-top border-secondary' %}
+                    </div>
+                </div>
+                {% endfor %}
+            </div>
+            {% if not support_links %}
+            <p class="text-muted text-center py-4 mb-0">No cards yet. Add one above.</p>
+            {% endif %}
+        </div>
+    </div>
+</div>
+
+<style>
+    .sortable-ghost { opacity: 0.4; }
+    [data-sortable-list].sortable-failed { outline: 1px solid var(--bs-danger); }
+</style>
+<script>
+(function () {
+    // Live icon preview: the box beside each icon field shows the typed name.
+    var root = document.getElementById('support-tab');
+    root.addEventListener('input', function (evt) {
+        var input = evt.target.closest('[data-icon-input]');
+        if (!input) return;
+        var name = input.value.trim().toLowerCase().split(/\s+/).pop().replace(/^bi-/, '');
+        var preview = input.closest('.input-group').querySelector('[data-icon-preview]');
+        preview.className = 'bi' + (name ? ' bi-' + name : '');
+    });
+})();
+</script>

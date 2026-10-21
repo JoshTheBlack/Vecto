@@ -57,7 +57,11 @@ class NetworkMiddleware:
         # set lets us skip the DB round-trip entirely for hosts that aren't
         # a known tenant (bots, typos, unconfigured subdomains) -- a match
         # still does a live query so the Network row is never stale.
-        network = Network.objects.filter(custom_domain=host).first() if host in live_tenant_domains() else None
+        # support_page rides along so base.html's navbar link costs no query.
+        network = (
+            Network.objects.filter(custom_domain=host).select_related('support_page').first()
+            if host in live_tenant_domains() else None
+        )
         request.network = network
         request.tenant_profile = None
         

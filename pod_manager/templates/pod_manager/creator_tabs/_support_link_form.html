@@ -1,0 +1,68 @@
+{% comment %}
+The Support Us card form, shared by "Add card" and each card's edit panel.
+Params: link (omit to add a card), uid (unique per form, for label ids),
+form_class (extra classes on the <form>).
+Multipart + hx-encoding because it hosts snippets/_image_upload.html.
+{% endcomment %}
+<form method="POST" action="{% url 'creator_settings' %}?network={{ current_network.slug }}&tab=support"
+      enctype="multipart/form-data" hx-encoding="multipart/form-data" class="{{ form_class }}">
+{% csrf_token %}
+{% if link %}
+<input type="hidden" name="action" value="edit_support_link">
+<input type="hidden" name="link_id" value="{{ link.id }}">
+{% else %}
+<input type="hidden" name="action" value="add_support_link">
+{% endif %}
+<div class="row g-3">
+    <div class="col-md-6">
+        <label class="form-label text-muted small fw-bold" for="sl-title-{{ uid }}">Title</label>
+        <input type="text" id="sl-title-{{ uid }}" name="title" value="{{ link.title }}" maxlength="100" required
+               class="form-control bg-black text-light border-secondary" placeholder="e.g., Join the Club">
+    </div>
+    <div class="col-md-6">
+        <label class="form-label text-muted small fw-bold" for="sl-button-{{ uid }}">Button text</label>
+        <input type="text" id="sl-button-{{ uid }}" name="button_text" value="{{ link.button_text|default:'Learn more' }}" maxlength="50"
+               class="form-control bg-black text-light border-secondary">
+    </div>
+    <div class="col-12">
+        <label class="form-label text-muted small fw-bold" for="sl-desc-{{ uid }}">Description</label>
+        <textarea id="sl-desc-{{ uid }}" name="description" rows="2" maxlength="500"
+                  class="form-control bg-black text-light border-secondary">{{ link.description }}</textarea>
+    </div>
+    <div class="col-md-8">
+        <label class="form-label text-muted small fw-bold" for="sl-url-{{ uid }}">Button link</label>
+        <input type="url" id="sl-url-{{ uid }}" name="url" value="{{ link.url }}" maxlength="2000" required
+               class="form-control bg-black text-light border-secondary" placeholder="https://">
+    </div>
+    <div class="col-md-4">
+        <label class="form-label text-muted small fw-bold" for="sl-icon-{{ uid }}">Icon</label>
+        <div class="input-group">
+            <span class="input-group-text bg-black border-secondary text-warning" style="min-width: 2.75rem;">
+                <i class="bi {% if link.icon %}bi-{{ link.icon }}{% endif %}" data-icon-preview></i>
+            </span>
+            <input type="text" id="sl-icon-{{ uid }}" name="icon" value="{{ link.icon }}" maxlength="50" data-icon-input
+                   class="form-control bg-black text-light border-secondary" placeholder="cup-hot">
+        </div>
+        <div class="form-text text-muted">A <a href="https://icons.getbootstrap.com/" target="_blank" rel="noopener">Bootstrap Icons</a> name. Shown when there's no image.</div>
+    </div>
+    <div class="col-md-8">
+        {% include 'pod_manager/snippets/_image_upload.html' with name='image_upload' label='Image (optional)' current_url=link.display_image preview_px=64 help_text='Best as a landscape image around 3:2, e.g. 1200×800. It is resized to 800px on the long side and cropped to fill the space beside the text (on top on phones), so keep the subject centered and avoid text near the edges.' %}
+        {% if link.image_upload %}
+        <div class="form-check mt-2">
+            <input class="form-check-input" type="checkbox" name="remove_image" id="sl-rmimg-{{ uid }}">
+            <label class="form-check-label small text-muted" for="sl-rmimg-{{ uid }}">Remove image (use the icon instead)</label>
+        </div>
+        {% endif %}
+    </div>
+    <div class="col-md-4 d-flex align-items-end">
+        <div class="form-check form-switch">
+            <input class="form-check-input" type="checkbox" role="switch" name="is_visible" id="sl-visible-{{ uid }}"
+                   {% if not link or link.is_visible %}checked{% endif %}>
+            <label class="form-check-label small" for="sl-visible-{{ uid }}">Shown on the page</label>
+        </div>
+    </div>
+</div>
+<button type="submit" class="btn btn-warning fw-bold mt-3">
+    {% if link %}<i class="bi bi-check-lg"></i> Save card{% else %}<i class="bi bi-plus-lg"></i> Add card{% endif %}
+</button>
+</form>

@@ -71,6 +71,10 @@ def _notfound(request, net):
     return _data.gather_notfound_context(net)
 
 
+def _support(request, net):
+    return _data.gather_support_context(net)
+
+
 # name -> (builder(request, current_network) -> context dict, template).
 TAB_CONTENT = {
     'shows':       (_shows,                   'pod_manager/creator_tabs/tab_podcasts.html'),
@@ -83,6 +87,7 @@ TAB_CONTENT = {
     'audit':       (_data.gather_audit_log,   'pod_manager/creator_tabs/tab_audit_log.html'),
     'transcripts': (_transcripts,             'pod_manager/creator_tabs/tab_transcripts.html'),
     'notfound':    (_notfound,                'pod_manager/creator_tabs/tab_notfound.html'),
+    'support':     (_support,                 'pod_manager/creator_tabs/tab_support.html'),
 }
 
 

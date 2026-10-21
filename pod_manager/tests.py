@@ -1259,6 +1259,7 @@ class EveryImageUploadHasProgressTests(SimpleTestCase):
     EXPECTED_SURFACES = {
         'creator_tabs/tab_network.html',      # fallback image + logo
         'creator_tabs/tab_notfound.html',     # 404 pool
+        'creator_tabs/_support_link_form.html',    # Support Us cards
         'creator_tabs/tab_mixes.html',        # add network mix
         'creator_tabs/_mix_form.html',        # edit network mix
         'snippets/mix_modals.html',           # user mix create + edit
@@ -6995,6 +6996,7 @@ class VendoredAssetTests(SimpleTestCase):
         "pod_manager/js/quill.js": None,
         "pod_manager/js/htmx.min.js": 'version:"2.0.8"',
         "pod_manager/js/fullcalendar.min.js": "FullCalendar Standard Bundle v6.1.15",
+        "pod_manager/js/sortable.min.js": "Sortable 1.15.6",
         "pod_manager/audio/blank.wav": None,
     }
 
@@ -15148,7 +15150,7 @@ class VerifyR2MediaCommandTests(TestCase):
             ('Network', 'custom_font_upload'), ('Network', 'default_image_upload'),
             ('Network', 'logo_upload'), ('NetworkMembership', 'custom_image_upload'),
             ('NetworkMix', 'image_upload'), ('NotFoundEntry', 'image_upload'),
-            ('UserMix', 'image_upload'),
+            ('SupportLink', 'image_upload'), ('UserMix', 'image_upload'),
         })
 
     @override_settings(R2_MEDIA_ENABLED=True)
@@ -16602,3 +16604,214 @@ class DbBackupRetentionTests(SimpleTestCase):
         self.assertEqual(db_backup._backup_time('db-backups/vecto-2026-10-04-023015.dump.enc', fallback),
                          datetime.datetime(2026, 10, 4, 2, 30, 15, tzinfo=datetime.timezone.utc))
         self.assertEqual(db_backup._backup_time('db-backups/odd-name.dump.enc', fallback), fallback)
+
+
+class ApplyOrderTests(TestCase):
+    """services.ordering: the shared drag-to-reorder persistence."""
+
+    def setUp(self):
+        from pod_manager.models import SupportLink
+        self.network = Network.objects.create(name='Ord', slug='ord')
+        self.a, self.b, self.c = (
+            SupportLink.objects.create(network=self.network, title=t, url='https://x.test', position=i)
+            for i, t in enumerate('abc'))
+
+    def _titles(self):
+        return [l.title for l in self.network.support_links.all()]
+
+    def test_rewrites_positions_in_posted_order(self):
+        from pod_manager.services.ordering import apply_order
+        self.assertTrue(apply_order(self.network.support_links.all(), [self.c.id, self.a.id, self.b.id]))
+        self.assertEqual(self._titles(), ['c', 'a', 'b'])
+
+    def test_rejects_partial_duplicate_and_foreign_lists(self):
+        from pod_manager.models import SupportLink
+        from pod_manager.services.ordering import apply_order
+        other = Network.objects.create(name='Other', slug='ord2')
+        foreign = SupportLink.objects.create(network=other, title='f', url='https://x.test')
+        qs = self.network.support_links.all()
+        for ids in ([self.c.id, self.a.id],
+                    [self.a.id, self.a.id, self.b.id],
+                    [self.a.id, self.b.id, foreign.id]):
+            with self.subTest(ids=ids):
+                self.assertFalse(apply_order(qs, ids))
+        self.assertEqual(self._titles(), ['a', 'b', 'c'])
+
+    def test_parse_id_list(self):
+        from pod_manager.services.ordering import parse_id_list
+        self.assertEqual(parse_id_list('3, 1,2'), [3, 1, 2])
+        self.assertEqual(parse_id_list(''), [])
+        self.assertIsNone(parse_id_list('3,x'))
+
+
+class SupportPageCreatorTests(TestCase):
+    """Creator Settings > Support Page handlers: owner-scoped, validated."""
+
+    def setUp(self):
+        self.factory = RequestFactory()
+        self.owner = User.objects.create_user(username='sowner', email='sowner@example.com')
+        self.network = Network.objects.create(name='Net', slug='supnet')
+        self.network.owners.add(self.owner)
+
+    def _post(self, data, user=None):
+        req = _make_tenant_request(self.factory, self.network, method='post',
+                                   path=f'/creator/?network={self.network.slug}&tab=support',
+                                   data=data, user=user or self.owner)
+        return views.creator_settings(req)
+
+    def _card(self, **overrides):
+        data = {'action': 'add_support_link', 'title': 'Patreon', 'button_text': 'Join',
+                'description': 'Bonus shows', 'url': 'https://patreon.com/x', 'icon': '',
+                'is_visible': 'on'}
+        data.update(overrides)
+        return data
+
+    def test_update_support_page_creates_row(self):
+        from pod_manager.models import SupportPage
+        self._post({'action': 'update_support_page', 'enabled': 'on',
+                    'title': 'Help Us', 'tagline': 'Thanks!'})
+        page = SupportPage.objects.get(network=self.network)
+        self.assertEqual((page.enabled, page.title, page.tagline), (True, 'Help Us', 'Thanks!'))
+
+        self._post({'action': 'update_support_page', 'title': '', 'tagline': ''})
+        page.refresh_from_db()
+        self.assertEqual((page.enabled, page.title), (False, 'Support Us'))
+
+    def test_add_appends_at_the_end_and_normalises_icon(self):
+        self._post(self._card(title='First'))
+        self._post(self._card(title='Second', icon='bi bi-cup-hot', button_text=''))
+        links = list(self.network.support_links.all())
+        self.assertEqual([l.title for l in links], ['First', 'Second'])
+        self.assertEqual(links[1].position, links[0].position + 1)
+        self.assertEqual(links[1].icon, 'cup-hot')
+        self.assertEqual(links[1].button_text, 'Learn more')
+
+    def test_add_rejects_bad_url_icon_and_missing_title(self):
+        for bad in ({'url': 'javascript:alert(1)'}, {'url': 'patreon.com'},
+                    {'icon': '"><script>'}, {'title': ''}):
+            with self.subTest(bad=bad):
+                self._post(self._card(**bad))
+        self.assertFalse(self.network.support_links.exists())
+
+    def test_add_with_image_processes_it(self):
+        self._post(self._card(image_upload=_tiny_image_upload()))
+        link = self.network.support_links.get()
+        self.assertTrue(link.image_upload.name.endswith('.webp'))
+        self.assertEqual(link.image_version, 1)
+        self.assertIn('?v=1', link.display_image)
+
+    def test_edit_updates_fields_and_removes_image(self):
+        self._post(self._card(image_upload=_tiny_image_upload()))
+        link = self.network.support_links.get()
+        self._post(self._card(action='edit_support_link', link_id=link.id, title='Merch',
+                              remove_image='on', is_visible=''))
+        link.refresh_from_db()
+        self.assertEqual(link.title, 'Merch')
+        self.assertFalse(link.image_upload)
+        self.assertFalse(link.is_visible)
+
+    def test_edit_and_delete_are_scoped_to_the_network(self):
+        from pod_manager.models import SupportLink
+        other = Network.objects.create(name='Other', slug='supother')
+        foreign = SupportLink.objects.create(network=other, title='Theirs', url='https://x.test')
+        for action in ('edit_support_link', 'delete_support_link'):
+            with self.subTest(action=action), self.assertRaises(Http404):
+                self._post(self._card(action=action, link_id=foreign.id))
+        self.assertTrue(SupportLink.objects.filter(pk=foreign.pk, title='Theirs').exists())
+
+    def test_delete_removes_row(self):
+        self._post(self._card())
+        link = self.network.support_links.get()
+        self._post({'action': 'delete_support_link', 'link_id': link.id})
+        self.assertFalse(self.network.support_links.exists())
+
+    def test_reorder_returns_204_and_rejects_bad_lists(self):
+        self._post(self._card(title='A'))
+        self._post(self._card(title='B'))
+        a, b = self.network.support_links.all()
+        resp = self._post({'action': 'reorder_support_links', 'order': f'{b.id},{a.id}'})
+        self.assertEqual(resp.status_code, 204)
+        self.assertEqual([l.title for l in self.network.support_links.all()], ['B', 'A'])
+
+        for order in (f'{a.id}', 'nope'):
+            with self.subTest(order=order):
+                resp = self._post({'action': 'reorder_support_links', 'order': order})
+                self.assertEqual(resp.status_code, 400)
+
+    def test_tab_renders_each_card_with_its_edit_form(self):
+        self._post(self._card(icon='cup-hot'))
+        link = self.network.support_links.get()
+        req = _make_tenant_request(self.factory, self.network, path='/creator/tab/support/',
+                                   data={'network': self.network.slug}, user=self.owner)
+        req.META['HTTP_HX_REQUEST'] = 'true'
+        body = views.creator_tab_partial(req, 'support').content.decode()
+        self.assertIn(f'data-id="{link.id}"', body)
+        self.assertIn(f'name="link_id" value="{link.id}"', body)
+        self.assertIn('value="add_support_link"', body)
+        self.assertIn('bi-cup-hot', body)
+
+    def test_non_owner_cannot_post(self):
+        stranger = User.objects.create_user(username='stranger-sup')
+        self.assertEqual(self._post(self._card(), user=stranger).status_code, 403)
+        self.assertFalse(self.network.support_links.exists())
+
+
+@override_settings(ALLOWED_HOSTS=['*'])
+class SupportPagePublicTests(TestCase):
+    """The public /support/ page and its navbar link, through NetworkMiddleware."""
+
+    def setUp(self):
+        from pod_manager.models import SupportLink, SupportPage
+        cache.clear()
+        self.host = 'support.example.test'
+        self.network = Network.objects.create(name='SupNet', slug='suppub', custom_domain=self.host)
+        self.owner = User.objects.create_user('supowner', password='x')
+        self.network.owners.add(self.owner)
+        self.page = SupportPage.objects.create(network=self.network, enabled=True,
+                                               title='Support Us', tagline='We need you')
+        SupportLink.objects.create(network=self.network, title='Second card', url='https://b.test', position=1)
+        SupportLink.objects.create(network=self.network, title='First card', url='https://a.test', position=0,
+                                   icon='cup-hot')
+        SupportLink.objects.create(network=self.network, title='Secret card', url='https://c.test', position=2,
+                                   is_visible=False)
+
+    def _get(self, path='/support/'):
+        return self.client.get(path, HTTP_HOST=self.host)
+
+    def test_enabled_page_lists_visible_cards_in_order(self):
+        resp = self._get()
+        self.assertEqual(resp.status_code, 200)
+        body = resp.content.decode()
+        self.assertIn('We need you', body)
+        self.assertLess(body.index('First card'), body.index('Second card'))
+        self.assertNotIn('Secret card', body)
+        self.assertIn('bi-cup-hot', body)
+        self.assertNotIn('Preview:', body)
+
+    def test_disabled_page_404s_for_listeners_but_owner_can_preview(self):
+        self.page.enabled = False
+        self.page.save()
+        self.assertEqual(self._get().status_code, 404)
+        self.client.force_login(self.owner)
+        resp = self._get()
+        self.assertEqual(resp.status_code, 200)
+        self.assertContains(resp, 'Preview:')
+
+    def test_network_without_a_page_404s(self):
+        self.page.delete()
+        self.assertEqual(self._get().status_code, 404)
+
+    def test_navbar_link_follows_enabled(self):
+        self.assertContains(self._get('/calendar/'), '>Support Us</a>')
+        self.page.enabled = False
+        self.page.save()
+        self.assertNotContains(self._get('/calendar/'), '>Support Us</a>')
+        self.page.delete()
+        self.assertNotContains(self._get('/calendar/'), '>Support Us</a>')
+
+    def test_middleware_loads_support_page_with_the_network(self):
+        from pod_manager.middleware import NetworkMiddleware
+        request = RequestFactory().get('/', HTTP_HOST=self.host)
+        NetworkMiddleware(lambda r: None)(request)
+        with self.assertNumQueries(0):
+            self.assertTrue(request.network.support_page.enabled)

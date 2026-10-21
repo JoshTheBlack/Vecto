@@ -128,6 +128,7 @@ const TAB_PARAM_MAP = {
     'sync':         '#list-sync',
     'gdrive':       '#list-gdrive-recovery',
     'transcripts':  '#list-transcripts',
+    'support':      '#list-support',
 };
 const TAB_ID_MAP = Object.fromEntries(Object.entries(TAB_PARAM_MAP).map(([k, v]) => [v, k]));
 

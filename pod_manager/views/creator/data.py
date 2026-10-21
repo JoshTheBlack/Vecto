@@ -12,7 +12,7 @@ from django.core.paginator import Paginator
 from django.db.models import Q, Case, When, CharField, IntegerField, Max, Count, F
 from django.db.models.functions import Substr, Lower
 
-from ...models import EpisodeEditSuggestion, EpisodeMatchSuggestion, NetworkMembership, Episode
+from ...models import EpisodeEditSuggestion, EpisodeMatchSuggestion, NetworkMembership, Episode, SupportPage
 from ...services.guid_links import generated_guid_q
 from ...services.edits import chapter_items, score_contribution, scoring_config, FIRST_RESPONDER_BONUS, REJECT_PENALTY
 from ...utils import diagnostic_timer
@@ -571,6 +571,12 @@ def gather_cross_publish_context(request, current_network):
 @diagnostic_timer("5c. Gather 404 Page Context")
 def gather_notfound_context(current_network):
     return {'notfound_entries': current_network.notfound_entries.order_by('-created_at')}
+
+
+def gather_support_context(current_network):
+    # Unsaved defaults until the owner first saves the page settings.
+    page = SupportPage.objects.filter(network=current_network).first() or SupportPage(network=current_network)
+    return {'support_page': page, 'support_links': current_network.support_links.all()}
 
 
 @diagnostic_timer("6. Gather S3 Reports")
